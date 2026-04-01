@@ -32,10 +32,154 @@ const CAMPUS_LOOP = [
 ];
 
 const ROBOTS = [
-  { id: "R1", color: "#3b82f6", speedMps: 3.2, startIdx: 0 },
-  { id: "R2", color: "#22c55e", speedMps: 3.0, startIdx: 3 },
-  { id: "R3", color: "#ef4444", speedMps: 3.4, startIdx: 6 },
+  { id: "R1", color: "#3b82f6", speedMps: 3.2, startIdx: 0 }, // blue
+  { id: "R2", color: "#facc15", speedMps: 3.0, startIdx: 3 }, // yellow
+  { id: "R3", color: "#a78bfa", speedMps: 3.4, startIdx: 6 }, // purple
 ];
+
+const CAMPUS_ROBOT_CAR_ICONS = ROBOTS.map((r) => ({ id: `campus-robot-car-${r.id}`, color: r.color }));
+
+function ensureCampusRobotCarIcons(map) {
+  const size = 96;
+  const pixelRatio = 2;
+
+  const roundRectPath = (ctx, x, y, w, h, r) => {
+    const radius = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+    if (typeof ctx.roundRect === "function") {
+      ctx.roundRect(x, y, w, h, radius);
+      return;
+    }
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + w - radius, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+    ctx.lineTo(x + w, y + h - radius);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+    ctx.lineTo(x + radius, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+  };
+
+  const buildIcon = (hex) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+
+    ctx.clearRect(0, 0, size, size);
+
+    // Contrast shadow so it reads on 3D campus style.
+    ctx.shadowColor = "rgba(0,0,0,0.35)";
+    ctx.shadowBlur = 6;
+    ctx.shadowOffsetY = 2;
+
+    // Shadow / base
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
+    ctx.beginPath();
+    roundRectPath(ctx, 24, 22, 48, 56, 16);
+    ctx.fill();
+
+    // Body
+    ctx.fillStyle = hex;
+    ctx.strokeStyle = "#0b1220";
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    roundRectPath(ctx, 22, 20, 48, 56, 16);
+    ctx.fill();
+    ctx.stroke();
+
+    // Clear shadow for crisp details.
+    ctx.shadowColor = "rgba(0,0,0,0)";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+
+    // Panel lines
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(30, 34);
+    ctx.lineTo(62, 34);
+    ctx.moveTo(30, 58);
+    ctx.lineTo(62, 58);
+    ctx.stroke();
+
+    // "Sensor" dome
+    ctx.fillStyle = "#e5e7eb";
+    ctx.strokeStyle = "#0b1220";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(46, 30, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Lidar ring
+    ctx.strokeStyle = "rgba(229,231,235,0.75)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(46, 30, 14, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Antenna
+    ctx.strokeStyle = "#0b1220";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(58, 26);
+    ctx.lineTo(68, 16);
+    ctx.stroke();
+    ctx.fillStyle = "#e5e7eb";
+    ctx.beginPath();
+    ctx.arc(68, 16, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Front indicator stripe
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(34, 24);
+    ctx.lineTo(58, 24);
+    ctx.stroke();
+
+    // Wheels
+    ctx.fillStyle = "#111827";
+    const wheel = (x, y) => {
+      ctx.beginPath();
+      roundRectPath(ctx, x, y, 10, 16, 5);
+      ctx.fill();
+    };
+    wheel(12, 30);
+    wheel(12, 56);
+    wheel(74, 30);
+    wheel(74, 56);
+
+    // Wheel hubs
+    ctx.fillStyle = "#e5e7eb";
+    const hub = (cx, cy) => {
+      ctx.beginPath();
+      ctx.arc(cx, cy, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    hub(17, 38);
+    hub(17, 64);
+    hub(79, 38);
+    hub(79, 64);
+
+    const imageData = ctx.getImageData(0, 0, size, size);
+    return { width: size, height: size, data: new Uint8Array(imageData.data.buffer) };
+  };
+
+  for (const icon of CAMPUS_ROBOT_CAR_ICONS) {
+    try {
+      if (map.hasImage(icon.id)) continue;
+      const data = buildIcon(icon.color);
+      if (!data) continue;
+      map.addImage(icon.id, data, { pixelRatio });
+    } catch {
+      // ignore
+    }
+  }
+}
 
 function buildRouteData(coords) {
   const safe = Array.isArray(coords) ? coords : [];
@@ -50,6 +194,27 @@ function buildRouteData(coords) {
     cum.push(totalLen);
   }
   return { coords: safe, segLens, cum, totalLen };
+}
+
+function degToRad(d) {
+  return (d * Math.PI) / 180;
+}
+
+function radToDeg(r) {
+  return (r * 180) / Math.PI;
+}
+
+function bearingDeg(a, b) {
+  // a,b are [lng,lat]
+  const lat1 = degToRad(a[1]);
+  const lat2 = degToRad(b[1]);
+  const dLon = degToRad(b[0] - a[0]);
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x =
+    Math.cos(lat1) * Math.sin(lat2) -
+    Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+  const brng = radToDeg(Math.atan2(y, x));
+  return (brng + 360) % 360;
 }
 
 function sliceLoop(loop, fromIdx, toIdx) {
@@ -82,7 +247,7 @@ function getPositionAlongRoute(route, distanceMeters) {
     const ma = mapboxgl.MercatorCoordinate.fromLngLat(a, 0);
     const mb = mapboxgl.MercatorCoordinate.fromLngLat(b, 0);
     const angleRad = Math.atan2(mb.y - ma.y, mb.x - ma.x);
-    const bearing = ((90 - (angleRad * 180) / Math.PI) + 360) % 360;
+    const bearing = bearingDeg(a, b);
     return { lngLat: b, bearing, angleRad, done: true, segIdx: Math.max(0, coords.length - 2) };
   }
 
@@ -97,8 +262,13 @@ function getPositionAlongRoute(route, distanceMeters) {
   const ma = mapboxgl.MercatorCoordinate.fromLngLat(a, 0);
   const mb = mapboxgl.MercatorCoordinate.fromLngLat(b, 0);
   const angleRad = Math.atan2(mb.y - ma.y, mb.x - ma.x);
-  const bearing = ((90 - (angleRad * 180) / Math.PI) + 360) % 360;
+  const bearing = bearingDeg(a, b);
   return { lngLat, bearing, angleRad, done: false, segIdx };
+}
+
+function normalizeAngleDiffDeg(a, b) {
+  const d = ((b - a + 540) % 360) - 180;
+  return d;
 }
 
 function createCampusRobotsLayer({ runtimeRef, followRobotIdRef }) {
@@ -434,6 +604,7 @@ export default function CampusMap() {
   const runtimeRef = useRef([]);
   const rafRef = useRef(null);
   const followRobotIdRef = useRef(null);
+  const missionMarkersRef = useRef(new Map());
   const [followRobotId, setFollowRobotId] = useState(null);
   useEffect(() => {
     followRobotIdRef.current = followRobotId;
@@ -441,6 +612,109 @@ export default function CampusMap() {
 
   useEffect(() => {
     let mounted = true;
+
+    const removeMissionMarkers = (robotId) => {
+      const entry = missionMarkersRef.current.get(robotId);
+      if (!entry) return;
+      try {
+        entry.pickup?.remove?.();
+      } catch {
+        // ignore
+      }
+      try {
+        entry.drop?.remove?.();
+      } catch {
+        // ignore
+      }
+      missionMarkersRef.current.delete(robotId);
+    };
+
+    const createPickupMarkerEl = (robotId, color) => {
+      const wrap = document.createElement("div");
+      wrap.style.display = "flex";
+      wrap.style.flexDirection = "column";
+      wrap.style.alignItems = "center";
+      wrap.style.gap = "2px";
+
+      const label = document.createElement("div");
+      label.textContent = String(robotId || "");
+      label.style.fontSize = "12px";
+      label.style.fontWeight = "800";
+      label.style.letterSpacing = "0.04em";
+      label.style.color = color || "#e5e7eb";
+      label.style.textShadow = "0 1px 2px rgba(0,0,0,0.9)";
+
+      const pin = document.createElement("div");
+      pin.textContent = "📍";
+      pin.style.fontSize = "26px";
+      pin.style.lineHeight = "1";
+      pin.style.userSelect = "none";
+      pin.style.filter = "drop-shadow(0 1px 2px rgba(0,0,0,0.8))";
+
+      wrap.appendChild(label);
+      wrap.appendChild(pin);
+      wrap.title = "Pickup Point";
+      return wrap;
+    };
+
+    const createDropMarkerEl = (robotId, color) => {
+      const wrap = document.createElement("div");
+      wrap.style.display = "flex";
+      wrap.style.flexDirection = "column";
+      wrap.style.alignItems = "center";
+      wrap.style.gap = "2px";
+
+      const label = document.createElement("div");
+      label.textContent = String(robotId || "");
+      label.style.fontSize = "12px";
+      label.style.fontWeight = "800";
+      label.style.letterSpacing = "0.04em";
+      label.style.color = color || "#e5e7eb";
+      label.style.textShadow = "0 1px 2px rgba(0,0,0,0.9)";
+
+      const pin = document.createElement("div");
+      pin.textContent = "📍";
+      pin.style.fontSize = "26px";
+      pin.style.lineHeight = "1";
+      pin.style.userSelect = "none";
+      pin.style.filter =
+        "hue-rotate(110deg) saturate(2.2) brightness(1.05) drop-shadow(0 1px 2px rgba(0,0,0,0.8))";
+
+      wrap.appendChild(label);
+      wrap.appendChild(pin);
+      wrap.title = "Destination Point";
+      return wrap;
+    };
+
+    const upsertMissionMarkers = (rr) => {
+      const map = mapRef.current;
+      if (!map) return;
+      if (!rr?.mission?.pickup || !rr?.mission?.drop) return;
+
+      let entry = missionMarkersRef.current.get(rr.id);
+      if (!entry) {
+        const pickup = new mapboxgl.Marker({ element: createPickupMarkerEl(rr.id, rr.color), anchor: "bottom" })
+          .setLngLat(rr.mission.pickup)
+          .addTo(map);
+        const drop = new mapboxgl.Marker({ element: createDropMarkerEl(rr.id, rr.color), anchor: "bottom" })
+          .setLngLat(rr.mission.drop)
+          .addTo(map);
+        entry = { pickup, drop };
+        missionMarkersRef.current.set(rr.id, entry);
+        return;
+      }
+
+      try {
+        entry.pickup?.setLngLat?.(rr.mission.pickup);
+      } catch {
+        // ignore
+      }
+      try {
+        entry.drop?.setLngLat?.(rr.mission.drop);
+      } catch {
+        // ignore
+      }
+    };
 
     const destroy = () => {
       try {
@@ -456,6 +730,13 @@ export default function CampusMap() {
       }
       mapRef.current = null;
       runtimeRef.current = [];
+
+      try {
+        for (const [id] of missionMarkersRef.current) removeMissionMarkers(id);
+      } catch {
+        // ignore
+      }
+      missionMarkersRef.current.clear();
     };
 
     const init = () => {
@@ -544,7 +825,8 @@ export default function CampusMap() {
               source: pickupSourceId,
               layout: { "line-join": "round", "line-cap": "round" },
               paint: {
-                "line-color": "#facc15",
+                // Route-to-pickup is dashed; its color matches the robot car.
+                "line-color": r.color,
                 "line-width": 4,
                 "line-opacity": 0.85,
                 "line-dasharray": [2, 2],
@@ -558,7 +840,8 @@ export default function CampusMap() {
               source: dropSourceId,
               layout: { "line-join": "round", "line-cap": "round" },
               paint: {
-                "line-color": "#22c55e",
+                // Pickup -> destination uses the same color as robot + pickup path.
+                "line-color": r.color,
                 "line-width": 5,
                 "line-opacity": 0.8,
               },
@@ -599,6 +882,16 @@ export default function CampusMap() {
             lastLngLat: start,
             lastAngleRad: 0,
             lastBearing: 0,
+            displayBearing: 0,
+            prevSegIdx: 0,
+            turning: false,
+            turnStartTs: 0,
+            turnFrom: 0,
+            turnTo: 0,
+            turnDurationMs: 550,
+            turnCornerSegIdx: 0,
+            turnCornerDistance: 0,
+            turnAdvanceMeters: 2.5,
             mission: { start, pickup, drop },
             routeToPickup,
             routeToDrop,
@@ -606,14 +899,90 @@ export default function CampusMap() {
         });
         runtimeRef.current = runtime;
 
-        // custom 3D layer
+        // Pickup/Destination markers
         try {
-          if (!map.getLayer("campus-3d-robots")) {
-            map.addLayer(createCampusRobotsLayer({ runtimeRef, followRobotIdRef }));
-          }
-        } catch (e) {
-          console.error("CAMPUS 3D ROBOTS LAYER ERROR:", e);
+          runtime.forEach((rr) => upsertMissionMarkers(rr));
+        } catch {
+          // ignore
         }
+
+        // 2D robot cars (always visible)
+        try {
+          ensureCampusRobotCarIcons(map);
+          if (!map.getSource("campus-robots")) {
+            map.addSource("campus-robots", {
+              type: "geojson",
+              data: { type: "FeatureCollection", features: [] },
+            });
+          }
+          if (!map.getLayer("campus-robots-layer")) {
+            map.addLayer({
+              id: "campus-robots-layer",
+              type: "symbol",
+              source: "campus-robots",
+              layout: {
+                "icon-image": ["get", "icon"],
+                "icon-size": [
+                  "interpolate",
+                  ["linear"],
+                  ["zoom"],
+                  17,
+                  0.85,
+                  18,
+                  1.05,
+                  19,
+                  1.25,
+                  20,
+                  1.45,
+                ],
+                "icon-rotate": ["get", "bearing"],
+                "icon-rotation-alignment": "map",
+                "icon-pitch-alignment": "map",
+                "icon-allow-overlap": true,
+                "icon-ignore-placement": true,
+
+                "text-field": ["get", "id"],
+                "text-font": ["DIN Offc Pro Medium", "Arial Unicode MS Bold"],
+                "text-size": 13,
+                "text-offset": [0, 1.25],
+                "text-anchor": "top",
+                "text-allow-overlap": true,
+                "text-ignore-placement": true,
+              },
+              paint: {
+                "text-color": ["get", "color"],
+                "text-halo-color": "rgba(0,0,0,0.85)",
+                "text-halo-width": 1.25,
+              },
+            });
+
+            map.on("click", "campus-robots-layer", (e) => {
+              const id = e?.features?.[0]?.properties?.id;
+              if (!id) return;
+              setFollowRobotId((prev) => (prev === id ? null : id));
+            });
+
+            map.on("mouseenter", "campus-robots-layer", () => {
+              try {
+                map.getCanvas().style.cursor = "pointer";
+              } catch {
+                // ignore
+              }
+            });
+            map.on("mouseleave", "campus-robots-layer", () => {
+              try {
+                map.getCanvas().style.cursor = "";
+              } catch {
+                // ignore
+              }
+            });
+          }
+        } catch {
+          // ignore
+        }
+
+        // Note: we intentionally avoid the 3D GLTF truck layer here because missing assets
+        // can make robots invisible. 2D icons are reliable and match the requested UX.
 
         // hit layer for selection
         try {
@@ -678,11 +1047,57 @@ export default function CampusMap() {
             const dt = clamp((ts - rr.lastTs) / 1000, 0, 0.08);
             rr.lastTs = ts;
 
-            rr.distance += rr.speedMps * dt;
-            const pos = getPositionAlongRoute(route, rr.distance);
+            if (rr.turning) {
+              const t = clamp((ts - (rr.turnStartTs || ts)) / (rr.turnDurationMs || 550), 0, 1);
+              const diff = normalizeAngleDiffDeg(rr.turnFrom || 0, rr.turnTo || 0);
+              rr.displayBearing = (rr.turnFrom || 0) + diff * t;
+              if (t >= 1) {
+                rr.displayBearing = (rr.turnTo || 0) % 360;
+                rr.turning = false;
+
+                // Nudge into next segment to avoid bouncing on the corner.
+                const adv = rr.turnAdvanceMeters || 2.5;
+                rr.distance = (rr.turnCornerDistance || rr.distance || 0) + adv;
+                rr.prevSegIdx = rr.turnCornerSegIdx ?? rr.prevSegIdx;
+              }
+            } else {
+              rr.distance += rr.speedMps * dt;
+            }
+            const pos = rr.turning
+              ? getPositionAlongRoute(route, rr.turnCornerDistance || rr.distance || 0)
+              : getPositionAlongRoute(route, rr.distance);
             rr.lastLngLat = pos.lngLat;
             rr.lastAngleRad = pos.angleRad;
             rr.lastBearing = pos.bearing;
+
+            try {
+              const targetBearing = pos.bearing;
+              const prevSeg = rr.prevSegIdx ?? pos.segIdx;
+              if (!rr.turning && pos.segIdx !== prevSeg) {
+                const delta = Math.abs(normalizeAngleDiffDeg(rr.displayBearing || targetBearing, targetBearing));
+                if (delta >= 28) {
+                  const cornerSegIdx = pos.segIdx;
+                  const cornerDistance = route.cum?.[cornerSegIdx] ?? rr.distance ?? 0;
+
+                  rr.turning = true;
+                  rr.turnStartTs = ts;
+                  rr.turnFrom = rr.displayBearing || targetBearing;
+                  rr.turnTo = targetBearing;
+                  rr.turnCornerSegIdx = cornerSegIdx;
+                  rr.turnCornerDistance = cornerDistance;
+
+                  rr.distance = cornerDistance;
+                  const cornerPos = getPositionAlongRoute(route, cornerDistance);
+                  rr.lastLngLat = cornerPos.lngLat;
+                  rr.lastAngleRad = cornerPos.angleRad;
+                  rr.lastBearing = cornerPos.bearing;
+                }
+              }
+              if (!rr.turning) rr.prevSegIdx = pos.segIdx;
+              if (!rr.turning) rr.displayBearing = targetBearing;
+            } catch {
+              rr.displayBearing = rr.displayBearing || rr.lastBearing || 0;
+            }
 
             const pickupSourceId = `campus-route-to-pickup-${rr.id}`;
             const dropSourceId = `campus-route-to-drop-${rr.id}`;
@@ -717,6 +1132,11 @@ export default function CampusMap() {
                 const pickup = CAMPUS_LOOP[pickupIdx];
                 const drop = CAMPUS_LOOP[dropIdx];
                 rr.mission = { start, pickup, drop };
+                try {
+                  upsertMissionMarkers(rr);
+                } catch {
+                  // ignore
+                }
                 rr.routeToPickup = buildRouteData(sliceLoop(CAMPUS_LOOP, startIdx, pickupIdx));
                 rr.routeToDrop = buildRouteData(sliceLoop(CAMPUS_LOOP, pickupIdx, dropIdx));
                 rr.state = "TO_PICKUP";
@@ -733,6 +1153,23 @@ export default function CampusMap() {
                 });
               }
             }
+          }
+
+          // push 2D cars
+          try {
+            const features = runtimeRef.current.map((rr) => ({
+              type: "Feature",
+              geometry: { type: "Point", coordinates: rr.lastLngLat || RNSIT_CENTER },
+              properties: {
+                id: rr.id,
+                bearing: rr.displayBearing || rr.lastBearing || 0,
+                icon: `campus-robot-car-${rr.id}`,
+                color: rr.color || "#e5e7eb",
+              },
+            }));
+            liveMap.getSource("campus-robots")?.setData({ type: "FeatureCollection", features });
+          } catch {
+            // ignore
           }
 
           // camera follow

@@ -20,18 +20,14 @@ const AREA_BOUNDS = {
 };
 
 const ROBOTS = [
-  { id: "R1", name: "Robot R1", color: "#06b6d4", speedMps: 7.5 },
-  { id: "R2", name: "Robot R2", color: "#a78bfa", speedMps: 7.0 },
-  { id: "R3", name: "Robot R3", color: "#34d399", speedMps: 6.8 },
+  // color is used for the route-to-pickup dashed path AND the robot car icon.
+  { id: "R1", name: "Robot R1", color: "#3b82f6", speedMps: 7.5 }, // blue
+  { id: "R2", name: "Robot R2", color: "#facc15", speedMps: 7.0 }, // yellow
+  { id: "R3", name: "Robot R3", color: "#a78bfa", speedMps: 6.8 }, // purple
 ];
 
-// Icon IDs registered in Mapbox.
-// Keep these exact names so per-robot coloring is data-driven.
-const TRUCK_ICONS = [
-  { id: "truck-blue", color: "#3b82f6" },
-  { id: "truck-green", color: "#22c55e" },
-  { id: "truck-red", color: "#ef4444" },
-];
+// Icon IDs registered in Mapbox (one per robot).
+const ROBOT_CAR_ICONS = ROBOTS.map((r) => ({ id: `robot-car-${r.id}`, color: r.color }));
 
 // Fixed, real coordinates inside each supported area.
 // No random movement, no offsets, no drifting.
@@ -77,6 +73,12 @@ function bearingDeg(a, b) {
     Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
   const brng = radToDeg(Math.atan2(y, x));
   return (brng + 360) % 360;
+}
+
+function normalizeAngleDiffDeg(a, b) {
+  // Smallest signed difference from a -> b, in degrees (-180..180]
+  const d = ((b - a + 540) % 360) - 180;
+  return d;
 }
 
 function isInsideBounds(lngLat, bounds) {
@@ -254,26 +256,64 @@ export default function FleetDirectionsMap({ area, center }) {
     missionMarkersRef.current.delete(robotId);
   };
 
-  const createPickupMarkerEl = () => {
-    const pickupEl = document.createElement("div");
-    pickupEl.style.width = "14px";
-    pickupEl.style.height = "14px";
-    pickupEl.style.background = "#facc15";
-    pickupEl.style.border = "2px solid #000";
-    pickupEl.style.borderRadius = "50%";
-    pickupEl.title = "Pickup Location";
-    return pickupEl;
+  const createPickupMarkerEl = (robotId, color) => {
+    // Pickup point as 📍 with the robot id label.
+    const wrap = document.createElement("div");
+    wrap.style.display = "flex";
+    wrap.style.flexDirection = "column";
+    wrap.style.alignItems = "center";
+    wrap.style.gap = "2px";
+
+    const label = document.createElement("div");
+    label.textContent = String(robotId || "");
+    label.style.fontSize = "12px";
+    label.style.fontWeight = "800";
+    label.style.letterSpacing = "0.04em";
+    label.style.color = color || "#e5e7eb";
+    label.style.textShadow = "0 1px 2px rgba(0,0,0,0.9)";
+
+    const pin = document.createElement("div");
+    pin.textContent = "📍";
+    pin.style.fontSize = "26px";
+    pin.style.lineHeight = "1";
+    pin.style.userSelect = "none";
+    pin.style.filter = "drop-shadow(0 1px 2px rgba(0,0,0,0.8))";
+
+    wrap.appendChild(label);
+    wrap.appendChild(pin);
+    wrap.title = "Pickup Point";
+    return wrap;
   };
 
-  const createDropMarkerEl = () => {
-    const dropEl = document.createElement("div");
-    dropEl.style.width = "16px";
-    dropEl.style.height = "16px";
-    dropEl.style.background = "#ef4444";
-    dropEl.style.borderRadius = "50%";
-    dropEl.style.boxShadow = "0 0 0 2px white";
-    dropEl.title = "Drop Location";
-    return dropEl;
+  const createDropMarkerEl = (robotId, color) => {
+    // Destination point should look like the pickup pin, but green.
+    // We hue-rotate the emoji to tint it green (simple + lightweight).
+    const wrap = document.createElement("div");
+    wrap.style.display = "flex";
+    wrap.style.flexDirection = "column";
+    wrap.style.alignItems = "center";
+    wrap.style.gap = "2px";
+
+    const label = document.createElement("div");
+    label.textContent = String(robotId || "");
+    label.style.fontSize = "12px";
+    label.style.fontWeight = "800";
+    label.style.letterSpacing = "0.04em";
+    label.style.color = color || "#e5e7eb";
+    label.style.textShadow = "0 1px 2px rgba(0,0,0,0.9)";
+
+    const pin = document.createElement("div");
+    pin.textContent = "📍";
+    pin.style.fontSize = "26px";
+    pin.style.lineHeight = "1";
+    pin.style.userSelect = "none";
+    pin.style.filter =
+      "hue-rotate(110deg) saturate(2.2) brightness(1.05) drop-shadow(0 1px 2px rgba(0,0,0,0.8))";
+
+    wrap.appendChild(label);
+    wrap.appendChild(pin);
+    wrap.title = "Destination Point";
+    return wrap;
   };
 
   const upsertMissionMarkers = (rr) => {
@@ -283,10 +323,16 @@ export default function FleetDirectionsMap({ area, center }) {
 
     let entry = missionMarkersRef.current.get(rr.id);
     if (!entry) {
-      const pickup = new mapboxgl.Marker(createPickupMarkerEl())
+      const pickup = new mapboxgl.Marker({
+        element: createPickupMarkerEl(rr.id, rr.color),
+        anchor: "bottom",
+      })
         .setLngLat(rr.mission.pickup)
         .addTo(map);
-      const drop = new mapboxgl.Marker(createDropMarkerEl())
+      const drop = new mapboxgl.Marker({
+        element: createDropMarkerEl(rr.id, rr.color),
+        anchor: "bottom",
+      })
         .setLngLat(rr.mission.drop)
         .addTo(map);
       entry = { pickup, drop };
@@ -306,45 +352,145 @@ export default function FleetDirectionsMap({ area, center }) {
     }
   };
 
-  const ensureTruckIcons = (map, baseImage) => {
-    // baseImage comes from map.loadImage and can be HTMLImageElement or ImageBitmap.
-    // We register multiple tinted variants and store the chosen icon name in each robot feature.
-    const createTinted = (img, tint) => {
-      const w = img?.width || 64;
-      const h = img?.height || 64;
+  const ensureRobotCarIcons = (map) => {
+    // Create a simple, non-copyrighted 2D "robotic car" (top-down) icon per robot.
+    // Colors match the route-to-pickup dashed line.
+    const size = 96;
+    const pixelRatio = 2;
+
+    const roundRectPath = (ctx, x, y, w, h, r) => {
+      const radius = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+      // Prefer native roundRect when available.
+      if (typeof ctx.roundRect === "function") {
+        ctx.roundRect(x, y, w, h, radius);
+        return;
+      }
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + w - radius, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+      ctx.lineTo(x + w, y + h - radius);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+      ctx.lineTo(x + radius, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+    };
+
+    const buildIcon = (hex) => {
       const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
+      canvas.width = size;
+      canvas.height = size;
       const ctx = canvas.getContext("2d");
       if (!ctx) return null;
-      ctx.clearRect(0, 0, w, h);
-      ctx.drawImage(img, 0, 0, w, h);
-      ctx.globalCompositeOperation = "source-atop";
-      ctx.fillStyle = tint;
-      ctx.fillRect(0, 0, w, h);
-      const imageData = ctx.getImageData(0, 0, w, h);
-      return { width: w, height: h, data: new Uint8Array(imageData.data.buffer) };
+
+      ctx.clearRect(0, 0, size, size);
+
+      // Slight global shadow for contrast on map.
+      ctx.shadowColor = "rgba(0,0,0,0.35)";
+      ctx.shadowBlur = 6;
+      ctx.shadowOffsetY = 2;
+
+      // Shadow / base
+      ctx.fillStyle = "rgba(0,0,0,0.28)";
+      ctx.beginPath();
+      roundRectPath(ctx, 24, 22, 48, 56, 16);
+      ctx.fill();
+
+      // Body
+      ctx.fillStyle = hex;
+      ctx.strokeStyle = "#0b1220";
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      roundRectPath(ctx, 22, 20, 48, 56, 16);
+      ctx.fill();
+      ctx.stroke();
+
+      // Clear shadow for crisp details.
+      ctx.shadowColor = "rgba(0,0,0,0)";
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetY = 0;
+
+      // Panel lines
+      ctx.strokeStyle = "rgba(255,255,255,0.22)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(30, 34);
+      ctx.lineTo(62, 34);
+      ctx.moveTo(30, 58);
+      ctx.lineTo(62, 58);
+      ctx.stroke();
+
+      // "Sensor" dome
+      ctx.fillStyle = "#e5e7eb";
+      ctx.strokeStyle = "#0b1220";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(46, 30, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Lidar ring
+      ctx.strokeStyle = "rgba(229,231,235,0.75)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(46, 30, 14, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Antenna
+      ctx.strokeStyle = "#0b1220";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(58, 26);
+      ctx.lineTo(68, 16);
+      ctx.stroke();
+      ctx.fillStyle = "#e5e7eb";
+      ctx.beginPath();
+      ctx.arc(68, 16, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Front indicator stripe
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.moveTo(34, 24);
+      ctx.lineTo(58, 24);
+      ctx.stroke();
+
+      // Wheels
+      ctx.fillStyle = "#111827";
+      const wheel = (x, y) => {
+        ctx.beginPath();
+        roundRectPath(ctx, x, y, 10, 16, 5);
+        ctx.fill();
+      };
+      wheel(12, 30);
+      wheel(12, 56);
+      wheel(74, 30);
+      wheel(74, 56);
+
+      // Wheel hubs
+      ctx.fillStyle = "#e5e7eb";
+      const hub = (cx, cy) => {
+        ctx.beginPath();
+        ctx.arc(cx, cy, 2.6, 0, Math.PI * 2);
+        ctx.fill();
+      };
+      hub(17, 38);
+      hub(17, 64);
+      hub(79, 38);
+      hub(79, 64);
+
+      const imageData = ctx.getImageData(0, 0, size, size);
+      return { width: size, height: size, data: new Uint8Array(imageData.data.buffer) };
     };
 
-    const addIfMissing = (id, data) => {
-      if (!data) return;
-      if (map.hasImage(id)) return;
-      map.addImage(id, data);
-    };
-
-    // Ensure a base icon exists as well (kept for compatibility).
-    if (!map.hasImage("truck-icon") && baseImage) {
+    for (const icon of ROBOT_CAR_ICONS) {
       try {
-        map.addImage("truck-icon", baseImage);
-      } catch {
-        // ignore
-      }
-    }
-
-    for (const icon of TRUCK_ICONS) {
-      try {
-        const tinted = createTinted(baseImage, icon.color);
-        addIfMissing(icon.id, tinted);
+        if (map.hasImage(icon.id)) continue;
+        const data = buildIcon(icon.color);
+        if (!data) continue;
+        map.addImage(icon.id, data, { pixelRatio });
       } catch {
         // ignore
       }
@@ -352,7 +498,8 @@ export default function FleetDirectionsMap({ area, center }) {
   };
 
   const addFallbackTruckIcons = (map) => {
-    if (TRUCK_ICONS.every((x) => map.hasImage(x.id))) return;
+    // Legacy fallback kept, but we now prefer robot-car icons.
+    if (ROBOT_CAR_ICONS.every((x) => map.hasImage(x.id))) return;
 
     const size = 64;
     const canvas = document.createElement("canvas");
@@ -416,7 +563,7 @@ export default function FleetDirectionsMap({ area, center }) {
       return { width: size, height: size, data: new Uint8Array(d.data.buffer) };
     };
 
-    for (const icon of TRUCK_ICONS) {
+    for (const icon of ROBOT_CAR_ICONS) {
       try {
         if (!map.hasImage(icon.id)) map.addImage(icon.id, tint(icon.color), { pixelRatio: 2 });
       } catch {
@@ -642,7 +789,8 @@ export default function FleetDirectionsMap({ area, center }) {
               source: pickupSourceId,
               layout: { "line-join": "round", "line-cap": "round" },
               paint: {
-                "line-color": "#facc15", // yellow
+                // Route-to-pickup is dashed and its color matches the robot car.
+                "line-color": r.color,
                 "line-width": 5,
                 "line-opacity": 0.9,
                 "line-dasharray": [2, 2],
@@ -657,7 +805,8 @@ export default function FleetDirectionsMap({ area, center }) {
               source: dropSourceId,
               layout: { "line-join": "round", "line-cap": "round" },
               paint: {
-                "line-color": "#22c55e", // green
+                // Pickup -> destination should use the same color as the robot + pickup path.
+                "line-color": r.color,
                 "line-width": 5,
                 "line-opacity": 0.9,
               },
@@ -676,7 +825,7 @@ export default function FleetDirectionsMap({ area, center }) {
           const m0 = buildMissionPoints(areaKey, idx, 0, null);
           const start = clampLngLatToBounds(m0?.start || areaCenter);
 
-          const iconId = TRUCK_ICONS[idx % TRUCK_ICONS.length]?.id || "truck-blue";
+          const iconId = `robot-car-${r.id}`;
 
           return {
             id: r.id,
@@ -698,6 +847,16 @@ export default function FleetDirectionsMap({ area, center }) {
             lastLngLat: start,
             lastBearing: 0,
             bearing: 0,
+            displayBearing: 0,
+            prevSegIdx: 0,
+            turning: false,
+            turnStartTs: 0,
+            turnFrom: 0,
+            turnTo: 0,
+            turnDurationMs: 550,
+            turnCornerSegIdx: 0,
+            turnCornerDistance: 0,
+            turnAdvanceMeters: 2.5,
             isVisible: true,
             status: "to_pickup",
           };
@@ -714,8 +873,12 @@ export default function FleetDirectionsMap({ area, center }) {
             });
           }
 
+          // Ensure our custom robot-car icons exist before creating the symbol layer.
+          ensureRobotCarIcons(map);
+          addFallbackTruckIcons(map);
+
           const ensureRobotsLayer = () => {
-            if (!TRUCK_ICONS.some((x) => map.hasImage(x.id)) && !map.hasImage("truck-icon")) return;
+            if (!ROBOT_CAR_ICONS.some((x) => map.hasImage(x.id)) && !map.hasImage("truck-icon")) return;
             if (map.getLayer("robots-layer")) return;
 
             map.addLayer({
@@ -729,19 +892,32 @@ export default function FleetDirectionsMap({ area, center }) {
                   ["linear"],
                   ["zoom"],
                   12,
-                  0.12,
+                  0.34,
                   16,
-                  0.18,
+                  0.48,
                   18,
-                  0.28,
+                  0.62,
                   20,
-                  0.45,
+                  0.85,
                 ],
                 "icon-rotate": ["get", "bearing"],
                 "icon-rotation-alignment": "map",
                 "icon-pitch-alignment": "map",
                 "icon-allow-overlap": true,
                 "icon-ignore-placement": true,
+
+                "text-field": ["get", "id"],
+                "text-font": ["DIN Offc Pro Medium", "Arial Unicode MS Bold"],
+                "text-size": 13,
+                "text-offset": [0, 1.25],
+                "text-anchor": "top",
+                "text-allow-overlap": true,
+                "text-ignore-placement": true,
+              },
+              paint: {
+                "text-color": ["get", "color"],
+                "text-halo-color": "rgba(0,0,0,0.85)",
+                "text-halo-width": 1.25,
               },
             });
 
@@ -767,16 +943,8 @@ export default function FleetDirectionsMap({ area, center }) {
             });
           };
 
-          map.loadImage("/icons/truck.png", (err, image) => {
-            try {
-              if (!err && image) ensureTruckIcons(map, image);
-            } catch {
-              // ignore
-            }
-
-            addFallbackTruckIcons(map);
-            ensureRobotsLayer();
-          });
+          // Icons are generated in-canvas; no external image required.
+          ensureRobotsLayer();
         } catch (e) {
           console.error("2D ROBOTS LAYER ERROR:", e);
         }
@@ -799,23 +967,66 @@ export default function FleetDirectionsMap({ area, center }) {
             const dt = clamp((ts - rr.lastTs) / 1000, 0, 0.08);
             rr.lastTs = ts;
 
-            rr.distance = (rr.distance || 0) + rr.speedMps * dt;
-            const pos = getPositionAlongRoute(route, rr.distance);
+            // If we are in a turning pause, rotate in place at the corner.
+            if (rr.turning) {
+              const t = clamp((ts - (rr.turnStartTs || ts)) / (rr.turnDurationMs || 550), 0, 1);
+              const diff = normalizeAngleDiffDeg(rr.turnFrom || 0, rr.turnTo || 0);
+              rr.displayBearing = (rr.turnFrom || 0) + diff * t;
+              if (t >= 1) {
+                rr.displayBearing = (rr.turnTo || 0) % 360;
+                rr.turning = false;
+
+                // Move slightly into the next segment so we don't bounce on the corner.
+                const adv = rr.turnAdvanceMeters || 2.5;
+                rr.distance = (rr.turnCornerDistance || rr.distance || 0) + adv;
+                rr.prevSegIdx = rr.turnCornerSegIdx ?? rr.prevSegIdx;
+              }
+            } else {
+              rr.distance = (rr.distance || 0) + rr.speedMps * dt;
+            }
+
+            const pos = rr.turning
+              ? getPositionAlongRoute(route, rr.turnCornerDistance || rr.distance || 0)
+              : getPositionAlongRoute(route, rr.distance);
             rr.lastLngLat = pos.lngLat;
             rr.lastBearing = pos.bearing;
             rr.isVisible = isInsideBounds(rr.lastLngLat, activeBounds);
 
-            // bearing for 2D icon rotation
+            // bearing for 2D icon rotation: use true compass bearing along the route.
             try {
               const current = pos.lngLat;
               const next = route.coords[Math.min(pos.segIdx + 1, route.coords.length - 1)] || current;
-              const dx = next[0] - current[0];
-              const dy = next[1] - current[1];
-              const angle = Math.atan2(dy, dx);
-              const deg = (angle * 180) / Math.PI;
-              rr.bearing = Number.isFinite(deg) ? deg : 0;
+              const targetBearing = bearingDeg(current, next);
+
+              // If we just entered a new segment and it's a sharp turn, stop and rotate.
+              const prevSeg = rr.prevSegIdx ?? pos.segIdx;
+              if (!rr.turning && pos.segIdx !== prevSeg) {
+                const delta = Math.abs(normalizeAngleDiffDeg(rr.displayBearing || targetBearing, targetBearing));
+                if (delta >= 28) {
+                  const cornerSegIdx = pos.segIdx;
+                  const cornerDistance = route.cum?.[cornerSegIdx] ?? rr.distance ?? 0;
+
+                  rr.turning = true;
+                  rr.turnStartTs = ts;
+                  rr.turnFrom = rr.displayBearing || targetBearing;
+                  rr.turnTo = targetBearing;
+                  rr.turnCornerSegIdx = cornerSegIdx;
+                  rr.turnCornerDistance = cornerDistance;
+
+                  // Snap to the corner point while turning.
+                  rr.distance = cornerDistance;
+                  const cornerPos = getPositionAlongRoute(route, cornerDistance);
+                  rr.lastLngLat = cornerPos.lngLat;
+                  rr.lastBearing = cornerPos.bearing;
+                }
+              }
+
+              if (!rr.turning) rr.prevSegIdx = pos.segIdx;
+
+              if (!rr.turning) rr.displayBearing = targetBearing;
             } catch {
-              rr.bearing = rr.bearing || 0;
+              // keep last displayBearing
+              rr.displayBearing = rr.displayBearing || 0;
             }
 
             if (!rr.isVisible) {
@@ -891,7 +1102,12 @@ export default function FleetDirectionsMap({ area, center }) {
               .map((rr) => ({
                 type: "Feature",
                 geometry: { type: "Point", coordinates: rr.lastLngLat },
-                properties: { id: rr.id, bearing: rr.bearing || 0, icon: rr.icon || "truck-blue" },
+                properties: {
+                  id: rr.id,
+                  bearing: rr.displayBearing || 0,
+                  icon: rr.icon || "robot-car-R1",
+                  color: rr.color || "#e5e7eb",
+                },
               }));
 
             liveMap.getSource("robots")?.setData({
