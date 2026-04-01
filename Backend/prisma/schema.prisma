@@ -1,0 +1,30 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Robot {
+  id        Int      @id @default(autoincrement())
+  robotId   String   @unique
+  status    String
+  battery   Int
+  createdAt DateTime @default(now())
+
+  tasks     Task[]
+}
+
+model Task {
+  id          Int      @id @default(autoincrement())
+  taskId      String   @unique
+  robotId     String
+  status      String
+  pickup      String
+  drop        String
+  createdAt   DateTime @default(now())
+
+  robot       Robot @relation(fields: [robotId], references: [robotId])
+}

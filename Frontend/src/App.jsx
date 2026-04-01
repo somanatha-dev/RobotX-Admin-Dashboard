@@ -1,11 +1,6 @@
-import React from 'react'
+import React from 'react';
+import RobotXApp from './app/RobotXApp.jsx';
 
-const App = () => {
-  return (
-    <div>
-      
-    </div>
-  )
+export default function App() {
+  return <RobotXApp />;
 }
-
-export default App

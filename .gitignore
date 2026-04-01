@@ -4,3 +4,24 @@ dist/
 build/
 *.log
 .DS_Store
+
+# React
+frontend/node_modules/
+frontend/build/
+frontend/dist/
+frontend/.env
+frontend/.env.*
+frontend/.cache/
+frontend/.vite/
+
+# Backend
+backend/node_modules/
+backend/dist/
+
+# Prisma
+backend/prisma/dev.db
+backend/prisma/dev.db-journal
+backend/prisma/*.db
+
+# Generated Prisma client (optional)
+backend/node_modules/.prisma/
