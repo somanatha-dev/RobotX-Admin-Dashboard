@@ -7,24 +7,311 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Robot {
-  id        Int      @id @default(autoincrement())
-  robotId   String   @unique
-  status    String
-  battery   Int
-  createdAt DateTime @default(now())
+//////////////////////////////////////////////////////
+// ENUMS
+//////////////////////////////////////////////////////
 
-  tasks     Task[]
+enum RobotStatus {
+  IDLE
+  ACTIVE
+  PAUSED
+  OFFLINE
+  ERROR
+  ISSUES
 }
 
+enum TaskStatus {
+  PENDING
+  ASSIGNED
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum CommandType {
+  STOP
+  PAUSE
+  RETURN
+  RESUME
+}
+
+enum CommandStatus {
+  SENT
+  ACK
+  FAILED
+}
+
+enum EventType {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum DecisionAction {
+  WAIT
+  REROUTE
+  CANCEL
+}
+
+enum LocationType {
+  COUNTRY
+  STATE
+  CITY
+  AREA
+}
+
+//////////////////////////////////////////////////////
+// USER (SUPER ADMIN ONLY)
+//////////////////////////////////////////////////////
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  role      String   @default("SUPER_ADMIN")
+
+  createdAt DateTime @default(now())
+}
+
+//////////////////////////////////////////////////////
+// LOCATION (CORE FILTER SYSTEM)
+//////////////////////////////////////////////////////
+
+model Location {
+  id        String   @id @default(uuid())
+  name      String
+  type      LocationType
+
+  // Optional stable identifier for clean URLs/APIs.
+  // Example: "india", "karnataka", "bengaluru", "rr-nagar"
+  slug      String?  @unique
+
+  parentId  String?
+  parent    Location? @relation("Hierarchy", fields: [parentId], references: [id])
+  children  Location[] @relation("Hierarchy")
+
+  lat       Float?
+  lon       Float?
+
+  robots    Robot[]
+
+  @@index([type])
+  @@index([parentId])
+  @@unique([name, parentId])
+}
+
+//////////////////////////////////////////////////////
+// ROBOT (REAL-TIME STATE)
+//////////////////////////////////////////////////////
+
+model Robot {
+  id            String   @id @default(uuid())
+  robotId       String   @unique
+
+  //////////////////////////////////////////////////
+  // 🔥 REQUIRED (FILTER SYSTEM)
+  //////////////////////////////////////////////////
+
+  locationId    String
+  location      Location @relation(fields: [locationId], references: [id])
+
+  campusId      String?
+  campus        Campus?  @relation(fields: [campusId], references: [id])
+
+  status        RobotStatus @default(IDLE)
+  battery       Float?
+
+  isOnline      Boolean   @default(false)
+  socketId      String?
+  lastSeenAt    DateTime?
+
+  // live location (FAST access for dashboard/map)
+  lat           Float?
+  lon           Float?
+  speed         Float?
+
+  //////////////////////////////////////////////////
+  // RELATIONS
+  //////////////////////////////////////////////////
+
+  // 🔥 CURRENT TASK (1:1 STRICT)
+  currentTaskId String?  @unique
+  currentTask   Task?    @relation("CurrentTask", fields: [currentTaskId], references: [id])
+
+  // 🔥 ALL TASK HISTORY (1:N)
+  tasks         Task[]   @relation("RobotTasks")
+
+  telemetry     Telemetry[]
+  events        Event[]
+  commands      Command[]
+  decisions     Decision[]
+
+  createdAt     DateTime @default(now())
+
+  //////////////////////////////////////////////////
+  // INDEXES (PERFORMANCE)
+  //////////////////////////////////////////////////
+
+  @@index([status])
+  @@index([isOnline])
+  @@index([lastSeenAt])
+  @@index([locationId])
+  @@index([locationId, isOnline])
+  @@index([campusId])
+  @@index([lat, lon])
+}
+
+//////////////////////////////////////////////////////
+// CAMPUS (OPTIONAL: GROUP ROBOTS + TASKS)
+//////////////////////////////////////////////////////
+
+model Campus {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  name      String
+
+  centerLat Float
+  centerLon Float
+
+  robots    Robot[]
+
+  createdAt DateTime @default(now())
+}
+
+//////////////////////////////////////////////////////
+// TASK SYSTEM
+//////////////////////////////////////////////////////
+
 model Task {
-  id          Int      @id @default(autoincrement())
+  id          String   @id @default(uuid())
   taskId      String   @unique
-  robotId     String
-  status      String
+
+  //////////////////////////////////////////////////
+  // RELATIONS
+  //////////////////////////////////////////////////
+
+  // assigned robot
+  robotId     String?
+  robot       Robot?   @relation("RobotTasks", fields: [robotId], references: [id], onDelete: SetNull)
+
+  // reverse for currentTask (STRICT 1:1)
+  currentFor  Robot?   @relation("CurrentTask")
+
+  //////////////////////////////////////////////////
+  // DATA
+  //////////////////////////////////////////////////
+
   pickup      String
+  pickupLat   Float
+  pickupLon   Float
   drop        String
+  dropLat     Float
+  dropLon     Float
+
+  status      TaskStatus @default(PENDING)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  events      Event[]
+  decisions   Decision[]
+
   createdAt   DateTime @default(now())
 
-  robot       Robot @relation(fields: [robotId], references: [robotId])
+  //////////////////////////////////////////////////
+  // INDEXES
+  //////////////////////////////////////////////////
+
+  @@index([robotId])
+  @@index([status])
+}
+
+//////////////////////////////////////////////////////
+// TELEMETRY (HIGH FREQUENCY STREAM)
+//////////////////////////////////////////////////////
+
+model Telemetry {
+  id        String   @id @default(uuid())
+
+  robotId   String
+  robot     Robot    @relation(fields: [robotId], references: [id], onDelete: Cascade)
+
+  lat       Float?
+  lon       Float?
+  speed     Float?
+  battery   Float?
+
+  createdAt DateTime @default(now())
+
+  @@index([robotId, createdAt])
+}
+
+//////////////////////////////////////////////////////
+// EVENTS (NOTIFICATIONS + LOGS)
+//////////////////////////////////////////////////////
+
+model Event {
+  id        String   @id @default(uuid())
+
+  robotId   String?
+  robot     Robot?   @relation(fields: [robotId], references: [id], onDelete: SetNull)
+
+  taskId    String?
+  task      Task?    @relation(fields: [taskId], references: [id])
+
+  type      EventType
+  message   String
+
+  createdAt DateTime @default(now())
+
+  @@index([robotId])
+  @@index([taskId])
+  @@index([createdAt])
+}
+
+//////////////////////////////////////////////////////
+// COMMAND TRACKING (VERY IMPORTANT)
+//////////////////////////////////////////////////////
+
+model Command {
+  id         String   @id @default(uuid())
+
+  robotId    String
+  robot      Robot    @relation(fields: [robotId], references: [id], onDelete: Cascade)
+
+  type       CommandType
+
+  status     CommandStatus @default(SENT)
+
+  issuedAt   DateTime @default(now())
+  executedAt DateTime?
+
+  @@index([robotId])
+  @@index([issuedAt])
+}
+
+//////////////////////////////////////////////////////
+// DECISION SYSTEM (YOUR MODAL FEATURE)
+//////////////////////////////////////////////////////
+
+model Decision {
+  id        String   @id @default(uuid())
+
+  robotId   String
+  robot     Robot    @relation(fields: [robotId], references: [id], onDelete: Cascade)
+
+  taskId    String?
+  task      Task?    @relation(fields: [taskId], references: [id])
+
+  reason    String
+  imageUrl  String?
+
+  action    DecisionAction?
+  resolvedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([robotId])
+  @@index([taskId])
 }
