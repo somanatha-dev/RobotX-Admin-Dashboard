@@ -271,7 +271,7 @@ function normalizeAngleDiffDeg(a, b) {
   return d;
 }
 
-function createCampusRobotsLayer({ runtimeRef, followRobotIdRef }) {
+function _createCampusRobotsLayer({ runtimeRef, followRobotIdRef }) {
   return {
     id: "campus-3d-robots",
     type: "custom",

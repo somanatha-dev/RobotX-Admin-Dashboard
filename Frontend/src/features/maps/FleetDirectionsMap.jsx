@@ -1156,7 +1156,7 @@ export default function FleetDirectionsMap({ area, center }) {
       mounted = false;
       destroy();
     };
-  }, [areaKey, areaCenter]);
+  }, [areaKey, areaCenter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>

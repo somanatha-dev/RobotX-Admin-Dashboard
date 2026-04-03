@@ -1,8 +1,37 @@
 const { PrismaClient } = require("@prisma/client");
+const bcrypt = require("bcrypt");
 const prisma = new PrismaClient();
 
 async function main() {
   console.log("🌱 Seeding started...");
+
+  //////////////////////////////////////////////////
+  // 0. OPTIONAL: SUPER ADMIN USER
+  //////////////////////////////////////////////////
+
+  const adminEmail = String(process.env.SEED_ADMIN_EMAIL || process.env.ADMIN_EMAIL || "").trim();
+  const adminPassword = String(process.env.SEED_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || "");
+
+  if (adminEmail && adminPassword) {
+    const hashedPassword = await bcrypt.hash(adminPassword, 10);
+
+    await prisma.user.upsert({
+      where: { email: adminEmail },
+      update: {
+        password: hashedPassword,
+        role: "SUPER_ADMIN",
+      },
+      create: {
+        email: adminEmail,
+        password: hashedPassword,
+        role: "SUPER_ADMIN",
+      },
+    });
+
+    console.log(`✅ Admin user seeded: ${adminEmail}`);
+  } else {
+    console.log("ℹ️ Admin user not seeded (set SEED_ADMIN_EMAIL + SEED_ADMIN_PASSWORD)");
+  }
 
   //////////////////////////////////////////////////
   // 1. LOCATION TREE

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { INITIAL_ROBOTS, INITIAL_TASKS } from '../mocks/mockData.js';
 import { loadSession, saveSession } from '../lib/storage/sessionStorage.js';
@@ -9,6 +9,8 @@ import { getEffectiveRoute, getRouteTitle } from '../routes/routes.js';
 import useDecisionCountdown from '../hooks/useDecisionCountdown.js';
 import useNotificationsDismiss from '../hooks/useNotificationsDismiss.js';
 import useRobotSimulator from '../hooks/useRobotSimulator.js';
+
+import * as authApi from '../lib/api/auth.js';
 
 export default function AppProvider({ children }) {
   const [route, setRoute] = useState('/dashboard');
@@ -49,23 +51,70 @@ export default function AppProvider({ children }) {
   }, []);
 
   const login = useCallback(
-    (identity) => {
+    async (email, password) => {
+      const cleanEmail = String(email || '').trim();
+      const cleanPassword = String(password || '');
+
+      if (!cleanEmail || !cleanPassword) {
+        const err = new Error('Email and password required');
+        err.status = 400;
+        throw err;
+      }
+
+      const data = await authApi.login({ email: cleanEmail, password: cleanPassword });
+      const identity = data?.user?.email || cleanEmail;
+
       const next = { isAuthenticated: true, identity };
       setSession(next);
       saveSession(next);
       addEvent(`Signed in as ${identity}`, 'info');
       setRoute('/dashboard');
+
+      return data;
     },
     [addEvent]
   );
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    try {
+      await authApi.logout();
+    } catch {
+      // ignore
+    }
+
     const next = { isAuthenticated: false, identity: '' };
     setSession(next);
     saveSession(next);
     setIsSidebarOpen(false);
     setIsNotificationsOpen(false);
     setRoute('/login');
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      try {
+        const data = await authApi.me();
+        if (!active) return;
+
+        const identity = data?.user?.email || '';
+        const next = { isAuthenticated: true, identity };
+        setSession(next);
+        saveSession(next);
+      } catch {
+        if (!active) return;
+
+        const next = { isAuthenticated: false, identity: '' };
+        setSession(next);
+        saveSession(next);
+        setRoute('/login');
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   const requestAuth = useCallback((intent, action, isDestructive = false) => {

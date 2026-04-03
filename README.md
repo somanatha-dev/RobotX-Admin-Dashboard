@@ -150,7 +150,7 @@ Completed refactor outcomes:
 ### Prerequisites
 
 - Node.js (LTS recommended)
-- Redis running locally on `127.0.0.1:6379`
+- Redis (optional)
 - Postgres database (for Prisma) if you plan to use task persistence
 
 ### 1) Backend install
@@ -168,6 +168,22 @@ Prisma expects `DATABASE_URL` for Postgres (see `Backend/prisma/schema.prisma`).
 
 ```env
 DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/robotx?schema=public"
+
+# Optional: Redis cache for latest telemetry + socket<->robot binding
+# - Redis Cloud / hosted Redis typically requires TLS: use `rediss://...`
+# - Local Redis without TLS can use `redis://...`
+#
+# Local (no TLS)
+# REDIS_URL="redis://:PASSWORD@localhost:6379"
+#
+# Redis Cloud (TLS + username + host + port)
+# Format: rediss://<username>:<password>@<host>:<port>
+# Example:
+# REDIS_URL="rediss://default:YOUR_PASSWORD@redis-xxxx.xxxx.region.cache.amazonaws.com:12345"
+REDIS_URL="rediss://default:YOUR_PASSWORD@YOUR_REDIS_HOST:YOUR_REDIS_PORT"
+
+# Dev convenience: disable Redis completely
+# REDIS_ENABLED=false
 ```
 
 Then run migrations (optional but recommended if using tasks):
@@ -256,7 +272,7 @@ node robot.js
 ### Telemetry not updating
 
 - Confirm backend is running on port 3000.
-- Confirm Redis is running on `127.0.0.1:6379`.
+- If Redis is enabled, confirm your `REDIS_URL` is reachable (for Redis Cloud, use `rediss://...`).
 - Run the simulator (`node robot.js`) and watch the backend logs.
 
 ### Prisma task insert fails

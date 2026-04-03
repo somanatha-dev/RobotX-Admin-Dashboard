@@ -4,6 +4,8 @@ npm install prisma@5 @prisma/client@5
 
 npx prisma migrate dev --name init
 
+npx prisma generate     // for prisma client
+
 // only if all tables i should reconstruct 
 
 npx prisma migrate reset
