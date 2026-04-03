@@ -1,6 +1,11 @@
 import React from 'react';
 import { AlertTriangle } from 'lucide-react';
 
+import { Badge } from '../ui/badge.jsx';
+import { Button } from '../ui/button.jsx';
+import { Card } from '../ui/card.jsx';
+import { Dialog, DialogContent } from '../ui/dialog.jsx';
+
 export default function DecisionRequiredModal({
   decisionRequest,
   onWait,
@@ -10,63 +15,59 @@ export default function DecisionRequiredModal({
   if (!decisionRequest) return null;
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center p-4 animate-in fade-in duration-200">
-      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md relative z-10 overflow-hidden border border-slate-200 animate-in zoom-in-95 duration-200">
-        <div className="bg-amber-50 border-b border-amber-100 p-4 flex justify-between items-center">
-          <div className="flex items-center gap-2 text-amber-700">
-            <AlertTriangle className="w-5 h-5" />
-            <h2 className="font-bold tracking-wide">DECISION REQUIRED</h2>
+    <Dialog open onOpenChange={() => {}}>
+      <DialogContent className="max-w-md p-0 overflow-hidden" showClose={false}>
+        <div className="p-4 flex justify-between items-center border-b border-border/60 bg-muted/30">
+          <div className="flex items-center gap-2">
+            <Badge variant="destructive" className="gap-2">
+              <AlertTriangle className="w-4 h-4" /> DECISION REQUIRED
+            </Badge>
           </div>
-          <div className="text-xl font-mono font-bold text-amber-600 bg-white px-2 py-1 rounded shadow-sm">
+          <div className="text-lg font-mono font-semibold">
             00:{decisionRequest.countdown.toString().padStart(2, '0')}
           </div>
         </div>
 
         <div className="p-6 space-y-5">
-          <div className="grid grid-cols-2 gap-4 text-sm bg-slate-50 p-3 rounded-lg border border-slate-100">
-            <div>
-              <span className="text-slate-500 block text-xs uppercase mb-0.5">Robot ID</span>
-              <span className="font-mono font-bold text-slate-900">{decisionRequest.robotId}</span>
+          <Card className="p-3 bg-muted/30">
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <span className="text-muted-foreground block text-xs uppercase mb-0.5">Robot ID</span>
+                <span className="font-mono font-semibold text-foreground">{decisionRequest.robotId}</span>
+              </div>
+              <div>
+                <span className="text-muted-foreground block text-xs uppercase mb-0.5">Task ID</span>
+                <span className="font-mono font-semibold text-foreground">{decisionRequest.taskId}</span>
+              </div>
             </div>
-            <div>
-              <span className="text-slate-500 block text-xs uppercase mb-0.5">Task ID</span>
-              <span className="font-mono font-bold text-slate-900">{decisionRequest.taskId}</span>
-            </div>
-          </div>
+          </Card>
 
           <div>
-            <span className="text-slate-700 font-semibold block mb-2 text-sm">{decisionRequest.issue}</span>
-            <div className="relative h-40 bg-slate-900 rounded-lg overflow-hidden group border border-slate-200 shadow-inner">
-              <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&q=80&w=800')] bg-cover bg-center opacity-80 mix-blend-luminosity"></div>
+            <span className="text-foreground font-medium block mb-2 text-sm">{decisionRequest.issue}</span>
+            <div className="relative h-40 rounded-lg overflow-hidden border border-border/60 shadow-inner bg-muted">
+              <div
+                className="absolute inset-0 bg-cover bg-center opacity-80 mix-blend-luminosity"
+                style={{
+                  backgroundImage:
+                    "url('https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&q=80&w=800')",
+                }}
+              />
             </div>
           </div>
 
           <div className="flex gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onWait}
-              className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm"
-            >
+            <Button type="button" variant="outline" className="flex-1" onClick={onWait}>
               WAIT
-            </button>
-            <button
-              type="button"
-              onClick={onReroute}
-              className="flex-1 bg-amber-500 hover:bg-amber-600 text-white py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm"
-            >
+            </Button>
+            <Button type="button" className="flex-1" onClick={onReroute}>
               REROUTE
-            </button>
-            <button
-              type="button"
-              onClick={onCancel}
-              className="flex-1 bg-slate-900 hover:bg-slate-800 text-white py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm"
-            >
+            </Button>
+            <Button type="button" variant="destructive" className="flex-1" onClick={onCancel}>
               CANCEL
-            </button>
+            </Button>
           </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

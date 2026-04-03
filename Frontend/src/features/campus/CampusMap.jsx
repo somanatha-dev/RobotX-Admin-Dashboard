@@ -8,6 +8,9 @@ import { clamp, haversineMeters, interpolateLngLat } from "../../lib/geo";
 
 const STYLE = "mapbox://styles/somanatha-dev/cmndie4c6001a01sa75ykfgpp";
 
+const CAMERA_PITCH = 55;
+const CAMERA_BEARING = -20;
+
 // Google Maps (lat,lng): 12.902372122601147, 77.51867955304837
 // Mapbox expects [lng, lat]
 const RNSIT_CENTER = [Number("77.51867955304837"), Number("12.902372122601147")];
@@ -753,8 +756,8 @@ export default function CampusMap() {
         style: STYLE,
         center: RNSIT_CENTER,
         zoom: 18,
-        pitch: 60,
-        bearing: -20,
+        pitch: CAMERA_PITCH,
+        bearing: CAMERA_BEARING,
         antialias: true,
         maxBounds: CAMPUS_BOUNDS,
         minZoom: 17,
@@ -768,6 +771,17 @@ export default function CampusMap() {
 
       map.on("load", () => {
         if (!mounted) return;
+
+        try {
+          map.setFog({
+            color: "rgb(20,20,20)",
+            "high-color": "rgb(36, 92, 223)",
+            "horizon-blend": 0.2,
+          });
+        } catch {
+          // ignore
+        }
+
         setTimeout(() => map.resize(), 100);
         setTimeout(() => map.resize(), 300);
 
@@ -898,6 +912,38 @@ export default function CampusMap() {
           };
         });
         runtimeRef.current = runtime;
+
+        // Center the camera on the active route geometry.
+        try {
+          const bounds = new mapboxgl.LngLatBounds();
+          let hasAny = false;
+
+          for (const rr of runtime) {
+            const a = rr?.routeToPickup?.coords || [];
+            const b = rr?.routeToDrop?.coords || [];
+            for (const c of a) {
+              if (!c) continue;
+              bounds.extend(c);
+              hasAny = true;
+            }
+            for (const c of b) {
+              if (!c) continue;
+              bounds.extend(c);
+              hasAny = true;
+            }
+          }
+
+          if (hasAny) {
+            map.fitBounds(bounds, {
+              padding: { top: 80, bottom: 80, left: 80, right: 80 },
+              pitch: CAMERA_PITCH,
+              bearing: CAMERA_BEARING,
+              duration: 1000,
+            });
+          }
+        } catch {
+          // ignore
+        }
 
         // Pickup/Destination markers
         try {
@@ -1184,8 +1230,8 @@ export default function CampusMap() {
                   liveMap.easeTo({
                     center: rr.lastLngLat,
                     zoom: 19,
-                    pitch: 60,
-                    bearing: rr.lastBearing || 0,
+                    pitch: CAMERA_PITCH,
+                    bearing: CAMERA_BEARING,
                     duration: 1000,
                     essential: true,
                   });

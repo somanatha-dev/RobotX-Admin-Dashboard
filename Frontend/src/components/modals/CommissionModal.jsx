@@ -1,5 +1,10 @@
 import React, { useState } from 'react';
-import { Plus, ShieldCheck, X } from 'lucide-react';
+import { Plus, ShieldCheck } from 'lucide-react';
+
+import { Button } from '../ui/button.jsx';
+import { Dialog, DialogContent, DialogTitle } from '../ui/dialog.jsx';
+import { Input } from '../ui/input.jsx';
+import { Label } from '../ui/label.jsx';
 
 export default function CommissionModal({ onClose, onCommission }) {
   const [formData, setFormData] = useState({ id: 'RBT-1000', type: 'Rover', zone: 'Sector 1A' });
@@ -10,38 +15,36 @@ export default function CommissionModal({ onClose, onCommission }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
-      <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md relative z-10 overflow-hidden border border-slate-200 animate-in zoom-in-95 duration-200">
-        <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-          <div className="flex items-center gap-2 text-slate-900">
-            <Plus className="w-5 h-5 text-blue-600" />
-            <h2 className="font-bold tracking-wide text-lg">Commission New Unit</h2>
+    <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
+      <DialogContent className="max-w-md p-0 overflow-hidden">
+        <div className="p-5 border-b border-border/60 bg-muted/30">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
+              <Plus className="w-5 h-5" />
+            </div>
+            <DialogTitle>Commission New Unit</DialogTitle>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
-            <X className="w-5 h-5" />
-          </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          <div>
-            <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Unit Identifier</label>
-            <input
+          <div className="space-y-2">
+            <Label>Unit Identifier</Label>
+            <Input
               type="text"
               value={formData.id}
               onChange={(e) => setFormData({ ...formData, id: e.target.value })}
-              className="w-full bg-white border border-slate-300 rounded-lg px-4 py-2.5 font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
               placeholder="RBT-1234"
               required
+              className="font-mono font-semibold"
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Chassis Type</label>
+          <div className="space-y-2">
+            <Label>Chassis Type</Label>
             <select
               value={formData.type}
               onChange={(e) => setFormData({ ...formData, type: e.target.value })}
-              className="w-full bg-white border border-slate-300 rounded-lg px-4 py-2.5 text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+              className="flex h-10 w-full items-center justify-between rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-ring disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option>Rover (Ground)</option>
               <option>Drone (Aerial)</option>
@@ -49,12 +52,12 @@ export default function CommissionModal({ onClose, onCommission }) {
             </select>
           </div>
 
-          <div>
-            <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Initial Assignment Zone</label>
+          <div className="space-y-2">
+            <Label>Initial Assignment Zone</Label>
             <select
               value={formData.zone}
               onChange={(e) => setFormData({ ...formData, zone: e.target.value })}
-              className="w-full bg-white border border-slate-300 rounded-lg px-4 py-2.5 text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+              className="flex h-10 w-full items-center justify-between rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-ring disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option>Sector 1A (Logistics)</option>
               <option>Sector 7G (Assembly)</option>
@@ -62,23 +65,16 @@ export default function CommissionModal({ onClose, onCommission }) {
             </select>
           </div>
 
-          <div className="pt-4 border-t border-slate-100 flex gap-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 py-2.5 rounded-lg text-sm font-bold transition-colors"
-            >
+          <div className="pt-4 border-t border-border/60 flex gap-3">
+            <Button type="button" variant="outline" className="flex-1" onClick={onClose}>
               Cancel
-            </button>
-            <button
-              type="submit"
-              className="flex-2 bg-slate-900 hover:bg-slate-800 text-white py-2.5 rounded-lg text-sm font-bold transition-colors shadow-sm flex items-center justify-center gap-2"
-            >
+            </Button>
+            <Button type="submit" className="flex-2">
               <ShieldCheck className="w-4 h-4" /> Authorize Commissioning
-            </button>
+            </Button>
           </div>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

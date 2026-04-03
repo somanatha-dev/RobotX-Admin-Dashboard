@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   Battery,
@@ -16,7 +17,8 @@ import { useAppActions, useAppState } from '../context/appContext.js';
 
 export default function RobotsPage() {
   const { robots } = useAppState();
-  const { navigate, requestAuth, retire } = useAppActions();
+  const { requestAuth, retire } = useAppActions();
+  const navigate = useNavigate();
   const [filter, setFilter] = useState('All');
   const [selectedRobot, setSelectedRobot] = useState(null);
 
@@ -149,7 +151,7 @@ export default function RobotsPage() {
                         Control
                       </button>
                       <button
-                        onClick={() => navigate('/robots/:id', r.id)}
+                        onClick={() => navigate(`/robots/${r.id}`)}
                         className="flex-1 bg-slate-900 hover:bg-slate-800 text-white text-xs py-2 rounded-lg font-semibold transition-colors shadow-sm"
                       >
                         Inspect

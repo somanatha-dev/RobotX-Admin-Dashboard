@@ -8,7 +8,10 @@ const MAP_STYLE = "mapbox://styles/mapbox/dark-v11";
 
 // Rajarajeshwari Nagar, Bengaluru (approx)
 const RR_NAGAR_CENTER = [77.5199, 12.9256];
-const CITY_ZOOM = 14;
+const CITY_ZOOM = 16;
+
+const CAMERA_PITCH = 55;
+const CAMERA_BEARING = -20;
 
 // Area bounds used to restrict which robots render.
 // Format: [SW, NE] where each is [lng, lat]
@@ -167,6 +170,7 @@ export default function FleetDirectionsMap({ area, center }) {
   const routeCacheRef = useRef(new Map());
   const missionMarkersRef = useRef(new Map());
   const followRobotIdRef = useRef(null);
+  const didInitialFitRef = useRef(false);
   const [followRobotId, setFollowRobotId] = useState(null);
 
   useEffect(() => {
@@ -180,7 +184,6 @@ export default function FleetDirectionsMap({ area, center }) {
     return () => socket.off("robot_update");
   }, []);
 
-  console.log(robots);
   useEffect(() => {
     followRobotIdRef.current = followRobotId;
   }, [followRobotId]);
@@ -589,6 +592,8 @@ export default function FleetDirectionsMap({ area, center }) {
       }
       abortRef.current = null;
 
+      didInitialFitRef.current = false;
+
       try {
         if (rafRef.current) cancelAnimationFrame(rafRef.current);
       } catch {
@@ -748,7 +753,8 @@ export default function FleetDirectionsMap({ area, center }) {
         style: MAP_STYLE,
         center: areaCenter,
         zoom: CITY_ZOOM,
-        pitch: 0,
+        pitch: CAMERA_PITCH,
+        bearing: CAMERA_BEARING,
         antialias: true,
       });
 
@@ -760,6 +766,16 @@ export default function FleetDirectionsMap({ area, center }) {
 
       map.on("load", () => {
         if (!mounted) return;
+
+        try {
+          map.setFog({
+            color: "rgb(20,20,20)",
+            "high-color": "rgb(36, 92, 223)",
+            "horizon-blend": 0.2,
+          });
+        } catch {
+          // ignore (fog may not be supported in some contexts)
+        }
 
         // sources/layers
         ROBOTS.forEach((r) => {
@@ -949,8 +965,53 @@ export default function FleetDirectionsMap({ area, center }) {
           console.error("2D ROBOTS LAYER ERROR:", e);
         }
 
-        // plan routes
-        runtime.forEach((rr) => planRoutesForRobot(rr, rr.lastLngLat));
+        const fitToPlannedRoutesOnce = () => {
+          const liveMap = mapRef.current;
+          if (!liveMap) return;
+          if (didInitialFitRef.current) return;
+
+          try {
+            const bounds = new mapboxgl.LngLatBounds();
+            let hasAny = false;
+
+            for (const rr of runtimeRef.current || []) {
+              const a = rr?.routeA?.coords || [];
+              const b = rr?.routeB?.coords || [];
+              for (const c of a) {
+                if (!c) continue;
+                bounds.extend(c);
+                hasAny = true;
+              }
+              for (const c of b) {
+                if (!c) continue;
+                bounds.extend(c);
+                hasAny = true;
+              }
+            }
+
+            if (!hasAny) return;
+            didInitialFitRef.current = true;
+
+            liveMap.fitBounds(bounds, {
+              padding: { top: 80, bottom: 80, left: 80, right: 80 },
+              pitch: CAMERA_PITCH,
+              bearing: CAMERA_BEARING,
+              duration: 1000,
+            });
+          } catch {
+            // ignore
+          }
+        };
+
+        // Plan routes (async) and then fit map to route bounds once.
+        void (async () => {
+          try {
+            await Promise.all(runtime.map((rr) => planRoutesForRobot(rr, rr.lastLngLat)));
+          } finally {
+            if (!mounted) return;
+            fitToPlannedRoutesOnce();
+          }
+        })();
 
         setStatus("ready");
 
@@ -1131,7 +1192,8 @@ export default function FleetDirectionsMap({ area, center }) {
                   liveMap.easeTo({
                     center: rr.lastLngLat,
                     zoom: 17,
-                    pitch: 0,
+                    pitch: CAMERA_PITCH,
+                    bearing: CAMERA_BEARING,
                     duration: 1000,
                     essential: true,
                   });

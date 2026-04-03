@@ -1,5 +1,11 @@
 import React, { useState } from 'react';
-import { ListTodo, X } from 'lucide-react';
+import { ListTodo } from 'lucide-react';
+
+import { Button } from '../ui/button.jsx';
+import { Card } from '../ui/card.jsx';
+import { Dialog, DialogContent, DialogTitle } from '../ui/dialog.jsx';
+import { Input } from '../ui/input.jsx';
+import { Label } from '../ui/label.jsx';
 
 export default function CreateTaskModal({ robots, onClose, onCreate }) {
   const [form, setForm] = useState({
@@ -41,61 +47,50 @@ export default function CreateTaskModal({ robots, onClose, onCreate }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
-      <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md relative z-10 overflow-hidden border border-slate-200 animate-in zoom-in-95 duration-200">
-        <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-          <div className="flex items-center gap-2 text-slate-900">
-            <ListTodo className="w-5 h-5 text-blue-600" />
-            <h2 className="font-bold tracking-wide text-lg">Create Task</h2>
+    <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
+      <DialogContent className="max-w-md p-0 overflow-hidden">
+        <div className="p-5 border-b border-border/60 bg-muted/30">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
+              <ListTodo className="w-5 h-5" />
+            </div>
+            <DialogTitle>Create Task</DialogTitle>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
-            <X className="w-5 h-5" />
-          </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-            <div className="text-xs font-bold text-slate-500 uppercase tracking-widest">Assignment</div>
-            <div className="mt-2 text-sm text-slate-700 font-medium">Robot is auto-assigned based on availability.</div>
-          </div>
+          <Card className="p-4 bg-muted/30">
+            <div className="text-sm text-muted-foreground">Assignment</div>
+            <div className="mt-2 text-sm font-medium text-foreground">Robot is auto-assigned based on availability.</div>
+          </Card>
 
           <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Pickup</label>
-              <input
+            <div className="space-y-2">
+              <Label>Pickup</Label>
+              <Input
                 value={form.pickup}
                 onChange={(e) => setForm((prev) => ({ ...prev, pickup: e.target.value }))}
-                className="w-full bg-white border border-slate-300 rounded-lg px-4 py-2.5 text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50"
               />
             </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Drop</label>
-              <input
+            <div className="space-y-2">
+              <Label>Drop</Label>
+              <Input
                 value={form.drop}
                 onChange={(e) => setForm((prev) => ({ ...prev, drop: e.target.value }))}
-                className="w-full bg-white border border-slate-300 rounded-lg px-4 py-2.5 text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50"
               />
             </div>
           </div>
 
           <div className="flex gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 py-2.5 rounded-lg text-sm font-bold transition-colors"
-            >
+            <Button type="button" variant="outline" className="flex-1" onClick={onClose}>
               Cancel
-            </button>
-            <button
-              type="submit"
-              className="flex-1 bg-slate-900 hover:bg-slate-800 text-white py-2.5 rounded-lg text-sm font-bold transition-colors shadow-sm"
-            >
+            </Button>
+            <Button type="submit" className="flex-1">
               Create
-            </button>
+            </Button>
           </div>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

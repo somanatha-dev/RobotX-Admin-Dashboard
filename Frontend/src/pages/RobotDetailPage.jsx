@@ -1,12 +1,20 @@
 import React from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Camera, Trash2 } from 'lucide-react';
 import HealthRow from '../components/HealthRow.jsx';
 import { useAppActions, useAppState } from '../context/appContext.js';
 
 export default function RobotDetailPage() {
-  const { selectedRobotId, robots } = useAppState();
-  const { navigate, requestAuth, retire } = useAppActions();
-  const robot = robots.find((r) => r.id === selectedRobotId);
+  const { robots } = useAppState();
+  const { requestAuth, retire } = useAppActions();
+  const navigate = useNavigate();
+  const { id } = useParams();
+
+  const robot = robots.find((r) => r.id === id);
+
+  if (!robot && robots.length === 0) {
+    return <div className="p-8 text-center font-bold text-slate-500">Loading unit…</div>;
+  }
 
   if (!robot) {
     return (
@@ -77,8 +85,8 @@ export default function RobotDetailPage() {
         </div>
       </div>
 
-      <div className="p-4 lg:p-6 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
+      <div className="p-4 lg:p-6 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="space-y-6">
           <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
             <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
               <span className="text-sm font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">

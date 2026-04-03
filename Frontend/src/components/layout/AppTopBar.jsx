@@ -1,63 +1,92 @@
 import React from 'react';
 import { Bell, Menu } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import NotificationsMenu from './NotificationsMenu.jsx';
 import { useAppActions, useAppState } from '../../context/appContext.js';
+import { Button } from '../ui/button.jsx';
+import { Avatar, AvatarFallback } from '../ui/avatar.jsx';
+import { getRouteTitle } from '../../router/routeTitles.js';
 
 export default function AppTopBar() {
   const {
-    routeTitle,
     isSidebarOpen,
     events,
     bellButtonRef,
+    session,
+    preferences,
   } = useAppState();
-  const { setIsSidebarOpen, setIsNotificationsOpen, navigate } = useAppActions();
+  const { setIsSidebarOpen } = useAppActions();
+
+  const location = useLocation();
+  const navigate = useNavigate();
+  const routeTitle = getRouteTitle(location.pathname);
+
+  const email = session?.user?.email || session?.identity || '';
+  const initial = String(email).trim().charAt(0).toUpperCase() || 'U';
 
   return (
-    <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 lg:px-6 shrink-0 z-20 relative">
+    <header className="h-16 bg-background border-b border-border/60 flex items-center justify-between px-6 shrink-0 z-20 relative">
       <div className="flex items-center gap-3">
         {!isSidebarOpen && (
-          <button
+          <Button
             type="button"
-            className="text-slate-700 p-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 transition-colors"
+            variant="outline"
+            size="icon"
             onClick={() => setIsSidebarOpen(true)}
             aria-label="Open sidebar"
+            className="h-9 w-9"
           >
-            <Menu className="w-5 h-5" />
-          </button>
+            <Menu className="h-5 w-5" />
+          </Button>
         )}
-        <div className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">{routeTitle}</div>
+        <div className="text-2xl font-semibold tracking-tight">{routeTitle}</div>
       </div>
 
       <div className="flex items-center gap-2">
-        <div className="relative">
-          <button
-            ref={bellButtonRef}
+        {preferences?.notificationsEnabled ? (
+          <NotificationsMenu>
+            <Button
+              ref={bellButtonRef}
+              type="button"
+              variant="outline"
+              size="icon"
+              className="relative h-9 w-9"
+              aria-label="Notifications"
+            >
+              <Bell className="h-5 w-5" />
+              {events.length > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-primary text-primary-foreground text-[10px] font-semibold flex items-center justify-center">
+                  {Math.min(events.length, 9)}
+                </span>
+              )}
+            </Button>
+          </NotificationsMenu>
+        ) : (
+          <Button
             type="button"
-            onClick={() => setIsNotificationsOpen((v) => !v)}
-            className="relative p-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors"
-            aria-label="Notifications"
+            variant="outline"
+            size="icon"
+            className="relative h-9 w-9"
+            aria-label="Notifications disabled"
+            disabled
           >
-            <Bell className="w-5 h-5" />
-            {events.length > 0 && (
-              <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center">
-                {Math.min(events.length, 9)}
-              </span>
-            )}
-          </button>
+            <Bell className="h-5 w-5" />
+          </Button>
+        )}
 
-          <NotificationsMenu />
-        </div>
-
-        <button
+        <Button
           type="button"
+          variant="outline"
           onClick={() => navigate('/profile')}
-          className="flex items-center gap-2 pl-2 pr-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 transition-colors"
+          className="gap-2"
           aria-label="Open profile"
         >
-          <div className="w-8 h-8 rounded-full bg-slate-900 text-white flex items-center justify-center text-xs font-bold">RX</div>
-          <div className="hidden sm:block text-sm font-semibold text-slate-700">Profile</div>
-        </button>
+          <Avatar className="h-8 w-8">
+            <AvatarFallback>{initial}</AvatarFallback>
+          </Avatar>
+          <div className="hidden sm:block text-sm font-medium">Profile</div>
+        </Button>
       </div>
     </header>
   );

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import React from 'react';
 import { Outlet } from 'react-router-dom';
 
@@ -10,7 +11,7 @@ import AppSidebar from '../components/layout/AppSidebar.jsx';
 import AppTopBar from '../components/layout/AppTopBar.jsx';
 import { useAppActions, useAppState } from '../context/appContext.js';
 
-export default function AppShell() {
+export default function Layout() {
   const {
     isSidebarOpen,
     authRequest,
@@ -31,28 +32,31 @@ export default function AppShell() {
   } = useAppActions();
 
   return (
-    <div className="bg-muted/30 min-h-screen flex h-screen w-full text-foreground overflow-hidden">
+    <div className="flex h-screen bg-muted/40 text-foreground overflow-hidden">
+      {/* Sidebar */}
       <AppSidebar />
 
+      {/* Backdrop (mobile) */}
       {isSidebarOpen && <div className="fixed inset-0 bg-foreground/40 backdrop-blur-sm z-30 lg:hidden" />}
 
-      <main className="flex-1 overflow-hidden">
-        <div
-          className={`h-full flex flex-col min-w-0 relative transition-[padding] duration-300 ease-in-out ${
-            isSidebarOpen ? 'lg:pl-64' : 'lg:pl-0'
-          }`}
-        >
-          <AppTopBar />
-          <div className="flex-1 overflow-hidden min-h-0">
-            <div className="h-full overflow-auto p-6 space-y-6">
-              <Outlet />
-            </div>
+      {/* Main Content */}
+      <main
+        className={`flex-1 min-w-0 overflow-auto flex flex-col transition-[padding] duration-300 ease-in-out ${
+          isSidebarOpen ? 'lg:pl-64' : 'lg:pl-0'
+        }`}
+      >
+        <AppTopBar />
+        <div className="flex-1 min-h-0 px-6 py-5">
+          <div className="mt-6 h-full min-h-0">
+            <Outlet />
           </div>
         </div>
       </main>
 
       {authRequest && <AuthChallengeModal request={authRequest} onClose={() => setAuthRequest(null)} />}
-      {isCommissioning && <CommissionModal onClose={() => setIsCommissioning(false)} onCommission={commission} />}
+      {isCommissioning && (
+        <CommissionModal onClose={() => setIsCommissioning(false)} onCommission={commission} />
+      )}
       {isCreatingTask && (
         <CreateTaskModal robots={robots} onClose={() => setIsCreatingTask(false)} onCreate={createTask} />
       )}

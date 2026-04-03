@@ -12,60 +12,57 @@ import {
 
 import NavItem from './NavItem.jsx';
 import { useAppActions, useAppState } from '../../context/appContext.js';
+import { Button } from '../ui/button.jsx';
 
 export default function AppSidebar() {
-  const { effectiveRoute, isSidebarOpen } = useAppState();
-  const { navigate, logout, setIsSidebarOpen, setIsCommissioning } = useAppActions();
+  const { isSidebarOpen } = useAppState();
+  const { logout, setIsSidebarOpen, setIsCommissioning } = useAppActions();
 
   return (
     <aside
-      className={`fixed inset-y-0 left-0 z-40 w-64 bg-slate-950 border-r border-slate-900/60 flex flex-col justify-between transform transition-transform duration-300 ease-in-out ${
+      className={`fixed inset-y-0 left-0 z-40 w-64 bg-background border-r border-border flex flex-col justify-between transform transition-transform duration-300 ease-in-out ${
         isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
       } `}
     >
       <div>
-        <div className="h-16 flex items-center justify-between px-6 border-b border-slate-900/60">
+        <div className="h-16 flex items-center justify-between px-4 border-b border-border">
           <div className="flex items-center gap-3">
-            <ShieldAlert className="w-6 h-6 text-blue-400" />
-            <span className="font-bold text-white tracking-wider">RobotX</span>
+            <span className="p-1.5 rounded-md bg-primary/10 text-foreground">
+              <ShieldAlert className="w-5 h-5" />
+            </span>
+            <span className="font-semibold tracking-tight text-foreground">RobotX</span>
           </div>
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             onClick={() => setIsSidebarOpen(false)}
-            className="p-2 rounded-lg border border-slate-800/60 bg-slate-950/40 hover:bg-slate-900/60 text-slate-200 transition-colors"
             aria-label="Close sidebar"
+            className="h-9 w-9"
           >
             <ArrowLeft className="w-4 h-4" />
-          </button>
+          </Button>
         </div>
-        <nav className="p-4 space-y-1">
+        <nav className="p-3 space-y-1">
           <NavItem
             icon={<LayoutDashboard />}
             label="Dashboard"
-            active={effectiveRoute === '/dashboard'}
-            onClick={() => navigate('/dashboard')}
+            to="/"
+            end
           />
-          <NavItem icon={<Grid />} label="Robots" active={effectiveRoute === '/robots'} onClick={() => navigate('/robots')} />
-          <NavItem icon={<MapIcon />} label="Map Control" active={effectiveRoute === '/map'} onClick={() => navigate('/map')} />
-          <NavItem icon={<ListTodo />} label="Tasks" active={effectiveRoute === '/tasks'} onClick={() => navigate('/tasks')} />
+          <NavItem icon={<Grid />} label="Robots" to="/robots" />
+          <NavItem icon={<MapIcon />} label="Map Control" to="/map" />
+          <NavItem icon={<ListTodo />} label="Tasks" to="/tasks" />
         </nav>
       </div>
-      <div className="p-6 border-t border-slate-900/60">
-        <button
-          type="button"
-          onClick={() => setIsCommissioning(true)}
-          className="w-full flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 text-white py-2.5 rounded-lg text-sm font-bold transition-colors shadow-sm"
-        >
+      <div className="p-4 border-t border-border/40 space-y-3">
+        <Button type="button" onClick={() => setIsCommissioning(true)} className="w-full" size="sm">
           <Plus className="w-4 h-4" /> Commission Unit
-        </button>
-        <button
-          type="button"
-          onClick={logout}
-          className="mt-3 w-full flex items-center justify-center gap-2 bg-transparent border border-slate-800/60 hover:bg-slate-900/40 text-slate-200 py-2.5 rounded-lg text-sm font-bold transition-colors"
-        >
+        </Button>
+        <Button type="button" onClick={logout} className="w-full" size="sm" variant="outline">
           <LogOut className="w-4 h-4" /> Logout
-        </button>
-        <div className="mt-4 text-xs text-slate-400/60 font-mono text-center">System v2.4.1-prod</div>
+        </Button>
+        <div className="pt-1 text-xs text-muted-foreground text-center">System v2.4.1-prod</div>
       </div>
     </aside>
   );

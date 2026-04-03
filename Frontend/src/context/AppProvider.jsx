@@ -1,10 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { INITIAL_ROBOTS, INITIAL_TASKS } from '../mocks/mockData.js';
 import { loadSession, saveSession } from '../lib/storage/sessionStorage.js';
+import {
+  DEFAULT_PREFERENCES,
+  loadUserPreferences,
+  saveUserPreferences,
+} from '../lib/storage/userPreferencesStorage.js';
 
 import { AppActionsContext, AppStateContext } from './appContext.js';
-import { getEffectiveRoute, getRouteTitle } from '../routes/routes.js';
 
 import useDecisionCountdown from '../hooks/useDecisionCountdown.js';
 import useNotificationsDismiss from '../hooks/useNotificationsDismiss.js';
@@ -13,19 +18,26 @@ import useRobotSimulator from '../hooks/useRobotSimulator.js';
 import * as authApi from '../lib/api/auth.js';
 
 export default function AppProvider({ children }) {
-  const [route, setRoute] = useState('/dashboard');
-  const [selectedRobotId, setSelectedRobotId] = useState(null);
+  const rrNavigate = useNavigate();
+  const [isAuthResolved, setIsAuthResolved] = useState(false);
 
-  const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
-    if (typeof window === 'undefined') return true;
-    return window.matchMedia?.('(min-width: 1024px)')?.matches ?? true;
-  });
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const notificationsRef = useRef(null);
   const bellButtonRef = useRef(null);
 
   const [session, setSession] = useState(() => loadSession());
+
+  const [preferences, setPreferences] = useState(() => {
+    const identityEmail = String(loadSession()?.user?.email || loadSession()?.identity || '').trim();
+    return loadUserPreferences(identityEmail);
+  });
+
+  const preferencesRef = useRef(preferences);
+  useEffect(() => {
+    preferencesRef.current = preferences;
+  }, [preferences]);
 
   const [robots, setRobots] = useState(INITIAL_ROBOTS);
   const [tasks, setTasks] = useState(INITIAL_TASKS);
@@ -41,14 +53,26 @@ export default function AppProvider({ children }) {
   const [isCreatingTask, setIsCreatingTask] = useState(false);
 
   const addEvent = useCallback((msg, type) => {
+    if (!preferencesRef.current.auditLogEnabled) return;
     setEvents((prev) => [{ id: Date.now(), msg, time: 'Just now', type }, ...prev].slice(0, 6));
   }, []);
 
-  const navigate = useCallback((newRoute, id = null) => {
-    setRoute(newRoute);
-    if (id) setSelectedRobotId(id);
-    setIsNotificationsOpen(false);
-  }, []);
+  const updatePreferences = useCallback((patch) => {
+    setPreferences((prev) => {
+      const next = { ...prev, ...(patch || {}) };
+      const email = String(session?.user?.email || session?.identity || '').trim();
+      saveUserPreferences(email, next);
+      return next;
+    });
+  }, [session]);
+
+  const navigate = useCallback(
+    (to) => {
+      rrNavigate(to);
+      setIsNotificationsOpen(false);
+    },
+    [rrNavigate]
+  );
 
   const login = useCallback(
     async (email, password) => {
@@ -62,17 +86,21 @@ export default function AppProvider({ children }) {
       }
 
       const data = await authApi.login({ email: cleanEmail, password: cleanPassword });
-      const identity = data?.user?.email || cleanEmail;
+      const user = data?.user || null;
+      const identity = user?.email || cleanEmail;
 
-      const next = { isAuthenticated: true, identity };
+      const next = { isAuthenticated: true, identity, user };
       setSession(next);
       saveSession(next);
+
+      setPreferences(loadUserPreferences(identity));
       addEvent(`Signed in as ${identity}`, 'info');
-      setRoute('/dashboard');
+      setIsSidebarOpen(true);
+      navigate('/');
 
       return data;
     },
-    [addEvent]
+    [addEvent, navigate]
   );
 
   const logout = useCallback(async () => {
@@ -82,13 +110,14 @@ export default function AppProvider({ children }) {
       // ignore
     }
 
-    const next = { isAuthenticated: false, identity: '' };
+    const next = { isAuthenticated: false, identity: '', user: null };
     setSession(next);
     saveSession(next);
+    setPreferences({ ...DEFAULT_PREFERENCES });
     setIsSidebarOpen(false);
     setIsNotificationsOpen(false);
-    setRoute('/login');
-  }, []);
+    navigate('/login');
+  }, [navigate]);
 
   useEffect(() => {
     let active = true;
@@ -98,17 +127,23 @@ export default function AppProvider({ children }) {
         const data = await authApi.me();
         if (!active) return;
 
-        const identity = data?.user?.email || '';
-        const next = { isAuthenticated: true, identity };
+        const user = data?.user || null;
+        const identity = user?.email || '';
+        const next = { isAuthenticated: true, identity, user };
         setSession(next);
         saveSession(next);
+
+        setPreferences(loadUserPreferences(identity));
+        setIsAuthResolved(true);
       } catch {
         if (!active) return;
 
-        const next = { isAuthenticated: false, identity: '' };
+        const next = { isAuthenticated: false, identity: '', user: null };
         setSession(next);
         saveSession(next);
-        setRoute('/login');
+        setPreferences({ ...DEFAULT_PREFERENCES });
+        setIsAuthResolved(true);
+        navigate('/login');
       }
     })();
 
@@ -198,11 +233,7 @@ export default function AppProvider({ children }) {
     [addEvent, requestAuth]
   );
 
-  const effectiveRoute = session.isAuthenticated
-    ? getEffectiveRoute({ isAuthenticated: true, route })
-    : getEffectiveRoute({ isAuthenticated: false, route });
-
-  const routeTitle = useMemo(() => getRouteTitle(effectiveRoute), [effectiveRoute]);
+  const effectiveRoute = session.isAuthenticated ? '/' : '/login';
 
   useRobotSimulator({
     systemOnline,
@@ -223,15 +254,14 @@ export default function AppProvider({ children }) {
 
   const stateValue = useMemo(
     () => ({
-      route,
       effectiveRoute,
-      routeTitle,
-      selectedRobotId,
+      isAuthResolved,
       isSidebarOpen,
       isNotificationsOpen,
       notificationsRef,
       bellButtonRef,
       session,
+      preferences,
       robots,
       tasks,
       events,
@@ -242,13 +272,12 @@ export default function AppProvider({ children }) {
       isCreatingTask,
     }),
     [
-      route,
       effectiveRoute,
-      routeTitle,
-      selectedRobotId,
+      isAuthResolved,
       isSidebarOpen,
       isNotificationsOpen,
       session,
+      preferences,
       robots,
       tasks,
       events,
@@ -266,6 +295,7 @@ export default function AppProvider({ children }) {
       navigate,
       login,
       logout,
+      updatePreferences,
       requestAuth,
       stopAll,
       commission,
@@ -284,6 +314,7 @@ export default function AppProvider({ children }) {
       navigate,
       login,
       logout,
+      updatePreferences,
       requestAuth,
       stopAll,
       commission,

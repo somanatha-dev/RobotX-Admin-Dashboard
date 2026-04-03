@@ -1,13 +1,15 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { AlertTriangle, ArrowRight, Pause, RefreshCw, StopCircle, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Maximize2, Minimize2, Pause, RefreshCw, StopCircle, Trash2, X } from 'lucide-react';
 
 import FleetDirectionsMap from '../features/maps/FleetDirectionsMap.jsx';
 import CampusMap from '../features/campus/CampusMap.jsx';
 import { LOCATION_TREE, MAP_CENTER, MAP_FLEET_ROBOTS, MAP_ZOOM } from '../config/mapConfig';
 import { useAppActions, useAppState } from '../context/appContext.js';
+import { Button } from '../components/ui/button.jsx';
 
 import {
   bearingDeg,
@@ -22,7 +24,10 @@ const RNSIT_CENTER = [77.51867955304837, 12.902372122601147];
 
 export default function MapPage() {
   const { systemOnline } = useAppState();
-  const { requestAuth, retire, stopAll, navigate } = useAppActions();
+  const { requestAuth, retire, stopAll } = useAppActions();
+  const navigate = useNavigate();
+
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [selectedRobot, setSelectedRobot] = useState(null);
   const [localDecision, setLocalDecision] = useState(null);
@@ -42,12 +47,20 @@ export default function MapPage() {
   const isCampusMode = campus === 'RNSIT';
 
   useEffect(() => {
-    console.log('Map Mode:', isCampusMode ? 'CAMPUS' : 'CITY');
-  }, [isCampusMode]);
+    if (!isFullscreen) return;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') setIsFullscreen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isFullscreen]);
 
-  useEffect(() => {
-    console.log('Campus Mode:', isCampusMode);
-  }, [isCampusMode]);
+  const toggleFullscreen = () => {
+    setIsFullscreen((prev) => !prev);
+    // Ensure Mapbox instances inside child components recalc size.
+    setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+    setTimeout(() => window.dispatchEvent(new Event('resize')), 250);
+  };
 
   const modeRef = useRef('city');
   useEffect(() => {
@@ -575,7 +588,6 @@ export default function MapPage() {
       }, 12000);
 
       try {
-        console.log('TOKEN:', import.meta.env.VITE_MAPBOX_TOKEN);
         if (!import.meta.env.VITE_MAPBOX_TOKEN) {
           hardFail('VITE_MAPBOX_TOKEN is missing. Add it to Frontend/.env or Frontend/.env.local and restart `npm run dev`.');
           return;
@@ -609,8 +621,6 @@ export default function MapPage() {
         });
 
         map.on('load', () => {
-          console.log('MAP LOADED');
-
           try {
             directionsAbortRef.current?.abort?.();
           } catch {
@@ -625,7 +635,6 @@ export default function MapPage() {
           }
 
           map.once('idle', () => {
-            console.log('MAP FULLY RENDERED');
             if (!isMounted) return;
             hasMarkedReady = true;
             setMapStatus('ready');
@@ -633,7 +642,6 @@ export default function MapPage() {
 
           readyAfterLoadTimeout = setTimeout(() => {
             if (!isMounted) return;
-            console.log('MAP FULLY READY');
             hasMarkedReady = true;
             setMapStatus('ready');
           }, 300);
@@ -1166,7 +1174,13 @@ export default function MapPage() {
   }, [localDecision]);
 
   return (
-    <div className="h-full flex flex-col relative bg-slate-100/50">
+    <div
+      className={
+        isFullscreen
+          ? 'fixed inset-0 z-50 h-screen w-screen flex flex-col bg-slate-100/50 animate-in fade-in zoom-in-95 duration-200'
+          : 'h-full flex flex-col relative bg-slate-100/50'
+      }
+    >
       <div className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 shrink-0 shadow-sm z-10">
         <div className="flex items-center gap-3 flex-1 min-w-0">
           <div className="flex items-center gap-2 min-w-0 flex-wrap">
@@ -1247,8 +1261,24 @@ export default function MapPage() {
         </div>
       </div>
 
-      <div className="flex-1 relative overflow-hidden flex">
-        <div className="flex-1 relative bg-slate-900 overflow-hidden cursor-crosshair min-h-0">
+      <div className={`flex-1 relative overflow-hidden flex ${isFullscreen ? 'pb-0' : 'pb-4'}`}>
+        <div
+          className={`flex-1 relative bg-slate-900 overflow-hidden cursor-crosshair min-h-0 ${
+            isFullscreen ? 'rounded-none' : 'rounded-xl'
+          }`}
+        >
+          <div className="absolute top-3 right-3 z-20">
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon"
+              onClick={toggleFullscreen}
+              aria-label={isFullscreen ? 'Exit fullscreen map' : 'Enter fullscreen map'}
+              className="h-9 w-9 shadow-sm"
+            >
+              {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            </Button>
+          </div>
           <div className="absolute inset-0">
             <div className="w-full h-full relative">
               {isCampusMode ? <CampusMap /> : <FleetDirectionsMap area={area} center={selectedArea?.center} />}
