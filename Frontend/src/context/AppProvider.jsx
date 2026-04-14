@@ -49,7 +49,6 @@ export default function AppProvider({ children }) {
   const [decisionRequest, setDecisionRequest] = useState(null);
 
   const [authRequest, setAuthRequest] = useState(null); // { intent, action, isDestructive }
-  const [isCommissioning, setIsCommissioning] = useState(false);
   const [isCreatingTask, setIsCreatingTask] = useState(false);
 
   const addEvent = useCallback((msg, type) => {
@@ -185,7 +184,6 @@ export default function AppProvider({ children }) {
           },
           ...prev,
         ]);
-        setIsCommissioning(false);
         addEvent(`Unit ${robotData.id} commissioned and online`, 'info');
       });
     },
@@ -268,7 +266,6 @@ export default function AppProvider({ children }) {
       systemOnline,
       decisionRequest,
       authRequest,
-      isCommissioning,
       isCreatingTask,
     }),
     [
@@ -284,7 +281,6 @@ export default function AppProvider({ children }) {
       systemOnline,
       decisionRequest,
       authRequest,
-      isCommissioning,
       isCreatingTask,
     ]
   );
@@ -305,7 +301,6 @@ export default function AppProvider({ children }) {
       setIsSidebarOpen,
       setIsNotificationsOpen,
       setAuthRequest,
-      setIsCommissioning,
       setIsCreatingTask,
       setDecisionRequest,
     }),

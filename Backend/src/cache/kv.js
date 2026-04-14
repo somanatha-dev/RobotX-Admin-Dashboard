@@ -8,7 +8,30 @@ async function initKv({ logger }) {
   let redisAvailable = false;
   let redisWarned = false;
 
+  // In-memory fallback supports basic TTL semantics so higher-level code
+  // can rely on expirations even when Redis is unavailable.
   const memoryKv = new Map();
+
+  function nowMs() {
+    return Date.now();
+  }
+
+  function memorySet(key, value, { ex } = {}) {
+    const expiresAt = typeof ex === "number" && Number.isFinite(ex) && ex > 0 ? nowMs() + ex * 1000 : null;
+    memoryKv.set(key, { value, expiresAt });
+  }
+
+  function memoryGet(key) {
+    const entry = memoryKv.get(key);
+    if (!entry) return null;
+    // Backward-compat: if older code stored raw values.
+    if (typeof entry !== "object" || entry === null || !("value" in entry)) return entry;
+    if (entry.expiresAt && nowMs() > entry.expiresAt) {
+      memoryKv.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
 
   function disableRedis(err) {
     if (!redisWarned) {
@@ -65,16 +88,24 @@ async function initKv({ logger }) {
   }
 
   const kv = {
-    async set(key, value) {
+    // set(key, value[, options])
+    // - options.ex: expire in seconds
+    async set(key, value, options) {
+      const ex = options && typeof options === "object" ? options.ex : undefined;
       if (redisAvailable && redis) {
         try {
-          await redis.set(key, value);
+          if (typeof ex === "number" && Number.isFinite(ex) && ex > 0) {
+            await redis.set(key, value, "EX", Math.floor(ex));
+          } else {
+            await redis.set(key, value);
+          }
           return;
         } catch (e) {
           disableRedis(e);
         }
       }
-      memoryKv.set(key, value);
+
+      memorySet(key, value, { ex });
     },
     async get(key) {
       if (redisAvailable && redis) {
@@ -84,7 +115,7 @@ async function initKv({ logger }) {
           disableRedis(e);
         }
       }
-      return memoryKv.get(key) ?? null;
+      return memoryGet(key);
     },
     async del(key) {
       if (redisAvailable && redis) {
@@ -96,6 +127,14 @@ async function initKv({ logger }) {
         }
       }
       memoryKv.delete(key);
+    },
+
+    // Best-effort health signal for monitoring endpoints.
+    // Note: operations still fall back to in-memory when Redis is down.
+    health() {
+      return {
+        redis: Boolean(redisAvailable && redis),
+      };
     },
   };
 

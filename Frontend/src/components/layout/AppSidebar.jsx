@@ -16,7 +16,7 @@ import { Button } from '../ui/button.jsx';
 
 export default function AppSidebar() {
   const { isSidebarOpen } = useAppState();
-  const { logout, setIsSidebarOpen, setIsCommissioning } = useAppActions();
+  const { logout, setIsSidebarOpen, navigate } = useAppActions();
 
   return (
     <aside
@@ -56,7 +56,7 @@ export default function AppSidebar() {
         </nav>
       </div>
       <div className="p-4 border-t border-border/40 space-y-3">
-        <Button type="button" onClick={() => setIsCommissioning(true)} className="w-full" size="sm">
+        <Button type="button" onClick={() => navigate('/commission')} className="w-full" size="sm">
           <Plus className="w-4 h-4" /> Commission Unit
         </Button>
         <Button type="button" onClick={logout} className="w-full" size="sm" variant="outline">

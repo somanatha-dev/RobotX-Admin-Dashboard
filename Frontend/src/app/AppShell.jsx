@@ -2,7 +2,6 @@ import React from 'react';
 import { Outlet } from 'react-router-dom';
 
 import AuthChallengeModal from '../components/modals/AuthChallengeModal.jsx';
-import CommissionModal from '../components/modals/CommissionModal.jsx';
 import CreateTaskModal from '../components/modals/CreateTaskModal.jsx';
 import DecisionRequiredModal from '../components/modals/DecisionRequiredModal.jsx';
 
@@ -14,7 +13,6 @@ export default function AppShell() {
   const {
     isSidebarOpen,
     authRequest,
-    isCommissioning,
     isCreatingTask,
     decisionRequest,
     robots,
@@ -22,9 +20,7 @@ export default function AppShell() {
 
   const {
     setAuthRequest,
-    setIsCommissioning,
     setIsCreatingTask,
-    commission,
     createTask,
     requestAuth,
     setDecisionRequest,
@@ -52,12 +48,11 @@ export default function AppShell() {
       </main>
 
       {authRequest && <AuthChallengeModal request={authRequest} onClose={() => setAuthRequest(null)} />}
-      {isCommissioning && <CommissionModal onClose={() => setIsCommissioning(false)} onCommission={commission} />}
       {isCreatingTask && (
         <CreateTaskModal robots={robots} onClose={() => setIsCreatingTask(false)} onCreate={createTask} />
       )}
 
-      {decisionRequest && !authRequest && !isCommissioning && (
+      {decisionRequest && !authRequest && (
         <DecisionRequiredModal
           decisionRequest={decisionRequest}
           onWait={() => setDecisionRequest(null)}

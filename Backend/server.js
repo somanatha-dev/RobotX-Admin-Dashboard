@@ -26,9 +26,15 @@ async function start() {
   await ensureAdminUser(prisma, { logger });
   const { kv, close: closeKv } = await initKv({ logger });
 
+  // Make shared infrastructure available to route handlers without changing existing
+  // connection implementations.
+  app.locals.kv = kv;
+  app.locals.prisma = prisma;
+
   initSocketServer(io, { prisma, kv, logger });
 
   const port = Number(process.env.PORT || 3000);
+  const host = typeof process.env.HOST === "string" && process.env.HOST.trim() ? process.env.HOST.trim() : "0.0.0.0";
 
   server.on("error", (err) => {
     if (err && err.code === "EADDRINUSE") {
@@ -57,8 +63,8 @@ async function start() {
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-  server.listen(port, () => {
-    logger.info(`Server running on ${port}`);
+  server.listen(port, host, () => {
+    logger.info(`Server running on ${host}:${port}`);
   });
 }
 

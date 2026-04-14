@@ -8,6 +8,7 @@ export function getRouteTitle(pathname) {
   if (p === '/map') return 'Map Control';
   if (p === '/tasks') return 'Tasks';
   if (p === '/profile') return 'Profile';
+  if (p === '/commission') return 'Commission New Unit';
   if (p === '/dashboard') return 'Dashboard';
 
   return 'Dashboard';
