@@ -31,8 +31,8 @@ export function createRobotMarkerElement(color, labelText) {
   label.textContent = labelText;
   label.style.position = 'absolute';
   label.style.left = '50%';
-  label.style.top = '100%';
-  label.style.transform = 'translate(-50%, 6px)';
+  label.style.bottom = '100%';
+  label.style.transform = 'translate(-50%, -6px)';
   label.style.background = '#000';
   label.style.color = '#fff';
   label.style.padding = '2px 6px';

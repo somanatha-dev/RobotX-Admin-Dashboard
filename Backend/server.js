@@ -9,7 +9,6 @@ const { isOriginAllowed } = require("./src/config/cors");
 const { connectPrismaWithRetry, disconnectPrisma } = require("./src/db/prisma");
 const { initKv } = require("./src/cache/kv");
 const initSocketServer = require("./src/sockets/socket.server");
-const { ensureAdminUser } = require("./src/services/adminBootstrap.service");
 
 async function start() {
   const server = http.createServer(app);
@@ -23,7 +22,6 @@ async function start() {
   });
 
   const prisma = await connectPrismaWithRetry({ logger });
-  await ensureAdminUser(prisma, { logger });
   const { kv, close: closeKv } = await initKv({ logger });
 
   // Make shared infrastructure available to route handlers without changing existing

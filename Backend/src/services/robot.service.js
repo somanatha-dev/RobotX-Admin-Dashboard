@@ -5,8 +5,8 @@ async function commissionRobot(prisma, body) {
   const robotCode = toStringOrNull(body?.robotId);
   const locationId = toStringOrNull(body?.locationId);
   const campusId = toStringOrNull(body?.campusId);
-  const lat = toNumberOrNull(body?.lat);
-  const lon = toNumberOrNull(body?.lon);
+  const latIn = toNumberOrNull(body?.lat);
+  const lonIn = toNumberOrNull(body?.lon);
 
   if (!robotCode || !locationId) {
     const err = new Error("robotId and locationId are required");
@@ -14,12 +14,15 @@ async function commissionRobot(prisma, body) {
     throw err;
   }
 
-  const location = await prisma.location.findUnique({ where: { id: locationId }, select: { id: true } });
+  const location = await prisma.location.findUnique({ where: { id: locationId }, select: { id: true, lat: true, lon: true } });
   if (!location) {
     const err = new Error("Invalid locationId");
     err.status = 400;
     throw err;
   }
+
+  const lat = latIn === null ? toNumberOrNull(location.lat) : latIn;
+  const lon = lonIn === null ? toNumberOrNull(location.lon) : lonIn;
 
   if (campusId) {
     const campus = await prisma.campus.findUnique({ where: { id: campusId }, select: { id: true } });

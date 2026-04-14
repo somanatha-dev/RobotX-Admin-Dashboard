@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { INITIAL_ROBOTS, INITIAL_TASKS } from '../mocks/mockData.js';
 import { loadSession, saveSession } from '../lib/storage/sessionStorage.js';
 import {
   DEFAULT_PREFERENCES,
@@ -13,9 +12,11 @@ import { AppActionsContext, AppStateContext } from './appContext.js';
 
 import useDecisionCountdown from '../hooks/useDecisionCountdown.js';
 import useNotificationsDismiss from '../hooks/useNotificationsDismiss.js';
-import useRobotSimulator from '../hooks/useRobotSimulator.js';
 
 import * as authApi from '../lib/api/auth.js';
+import * as robotsApi from '../lib/api/robots.js';
+import * as tasksApi from '../lib/api/tasks.js';
+import * as locationsApi from '../lib/api/locations.js';
 
 export default function AppProvider({ children }) {
   const rrNavigate = useNavigate();
@@ -39,8 +40,8 @@ export default function AppProvider({ children }) {
     preferencesRef.current = preferences;
   }, [preferences]);
 
-  const [robots, setRobots] = useState(INITIAL_ROBOTS);
-  const [tasks, setTasks] = useState(INITIAL_TASKS);
+  const [robots, setRobots] = useState([]);
+  const [tasks, setTasks] = useState([]);
   const [events, setEvents] = useState([
     { id: 1, msg: 'System initialized successfully', time: 'Just now', type: 'info' },
   ]);
@@ -73,6 +74,15 @@ export default function AppProvider({ children }) {
     [rrNavigate]
   );
 
+  const refreshDbState = useCallback(async () => {
+    const [robotsNext, tasksNext] = await Promise.all([
+      robotsApi.getRobotsState(),
+      tasksApi.listTasks(),
+    ]);
+    setRobots(Array.isArray(robotsNext) ? robotsNext : []);
+    setTasks(Array.isArray(tasksNext) ? tasksNext : []);
+  }, []);
+
   const login = useCallback(
     async (email, password) => {
       const cleanEmail = String(email || '').trim();
@@ -97,9 +107,11 @@ export default function AppProvider({ children }) {
       setIsSidebarOpen(true);
       navigate('/');
 
+      await refreshDbState();
+
       return data;
     },
-    [addEvent, navigate]
+    [addEvent, navigate, refreshDbState]
   );
 
   const logout = useCallback(async () => {
@@ -134,6 +146,12 @@ export default function AppProvider({ children }) {
 
         setPreferences(loadUserPreferences(identity));
         setIsAuthResolved(true);
+
+        try {
+          await refreshDbState();
+        } catch {
+          // If robots/tasks APIs are unavailable, keep empty state.
+        }
       } catch {
         if (!active) return;
 
@@ -169,77 +187,92 @@ export default function AppProvider({ children }) {
 
   const commission = useCallback(
     (robotData) => {
-      requestAuth(`COMMISSION NEW UNIT: ${robotData.id}`, () => {
-        setRobots((prev) => [
-          {
-            ...robotData,
-            status: 'idle',
-            battery: 100,
-            speed: 0,
-            task: null,
-            location: { x: 50, y: 50 },
-            locText: robotData.zone,
-            health: { gps: true, telemetry: true, motors: true, connection: true },
-            issue: null,
-          },
-          ...prev,
-        ]);
-        addEvent(`Unit ${robotData.id} commissioned and online`, 'info');
+      requestAuth(`COMMISSION NEW UNIT: ${robotData.id}`, async () => {
+        const zoneName = String(robotData.zone || '').trim();
+        const robotId = String(robotData.id || '').trim();
+        if (!zoneName || !robotId) return;
+
+        // Create/reuse a Location row for this address.
+        const location = await locationsApi.createLocation({
+          name: zoneName,
+          type: 'AREA',
+          lat: robotData.zoneLat,
+          lon: robotData.zoneLon,
+        });
+
+        await robotsApi.commissionRobot({
+          robotId,
+          locationId: location.id,
+          lat: robotData.zoneLat,
+          lon: robotData.zoneLon,
+        });
+
+        await refreshDbState();
+        addEvent(`Unit ${robotId} commissioned`, 'info');
+        navigate('/robots');
       });
     },
-    [addEvent, requestAuth]
+    [addEvent, navigate, refreshDbState, requestAuth]
   );
 
   const retire = useCallback(
     (id) => {
       requestAuth(
         `DECOMMISSION UNIT: ${id}`,
-        () => {
-          setRobots((prev) => prev.filter((r) => r.id !== id));
-          addEvent(`Unit ${id} permanently decommissioned`, 'warning');
-          navigate('/map');
+        async () => {
+          await robotsApi.deleteRobot(id);
+          await refreshDbState();
+          addEvent(`Unit ${id} decommissioned`, 'warning');
+          navigate('/robots');
         },
         true
       );
     },
-    [addEvent, navigate, requestAuth]
+    [addEvent, navigate, refreshDbState, requestAuth]
   );
 
   const createTask = useCallback(
     (taskDraft) => {
       setIsCreatingTask(false);
-      requestAuth(`CREATE TASK: ${taskDraft.id}`, () => {
-        setTasks((prev) => [taskDraft, ...prev]);
-        addEvent(`Task ${taskDraft.id} created`, 'info');
+      const robotId = String(taskDraft?.robotId || '').trim();
+      const pickup = String(taskDraft?.pickup || '').trim();
+      const drop = String(taskDraft?.drop || '').trim();
+
+      requestAuth(`CREATE TASK: ${robotId || 'UNASSIGNED'}`, async () => {
+        const created = await tasksApi.assignTask({
+          robotId,
+          pickup,
+          pickupLat: taskDraft?.pickupLat,
+          pickupLon: taskDraft?.pickupLon,
+          drop,
+          dropLat: taskDraft?.dropLat,
+          dropLon: taskDraft?.dropLon,
+        });
+
+        await refreshDbState();
+        addEvent(`Task ${created?.taskId || ''} created`, 'info');
         navigate('/tasks');
       });
     },
-    [addEvent, navigate, requestAuth]
+    [addEvent, navigate, refreshDbState, requestAuth]
   );
 
   const cancelTask = useCallback(
     (id) => {
       requestAuth(
         `CANCEL TASK ${id}`,
-        () => {
-          setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status: 'failed' } : t)));
+        async () => {
+          await tasksApi.cancelTask(id);
+          await refreshDbState();
           addEvent(`Task ${id} cancelled`, 'warning');
         },
         true
       );
     },
-    [addEvent, requestAuth]
+    [addEvent, refreshDbState, requestAuth]
   );
 
   const effectiveRoute = session.isAuthenticated ? '/' : '/login';
-
-  useRobotSimulator({
-    systemOnline,
-    decisionRequest,
-    robots,
-    setRobots,
-    setDecisionRequest,
-  });
 
   useDecisionCountdown({ decisionRequest, setDecisionRequest, addEvent });
 

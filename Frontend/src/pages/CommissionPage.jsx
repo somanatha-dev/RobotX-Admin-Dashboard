@@ -47,6 +47,8 @@ export default function CommissionPage() {
     name: '',
     type: chassisOptions[0].value,
     zone: '',
+    zoneLat: null,
+    zoneLon: null,
   });
 
   const [zoneMenuOpen, setZoneMenuOpen] = useState(false);
@@ -112,7 +114,12 @@ export default function CommissionPage() {
         const next = Array.isArray(data?.features)
           ? data.features
               .filter((f) => f && typeof f.place_name === 'string')
-              .map((f) => ({ id: String(f.id || f.place_name), label: f.place_name }))
+              .map((f) => ({
+                id: String(f.id || f.place_name),
+                label: f.place_name,
+                lon: Array.isArray(f.center) ? f.center[0] : null,
+                lat: Array.isArray(f.center) ? f.center[1] : null,
+              }))
           : [];
 
         setZoneSuggestions(next);
@@ -224,7 +231,7 @@ export default function CommissionPage() {
                       type="text"
                       value={formData.zone}
                       onChange={(e) => {
-                        setFormData({ ...formData, zone: e.target.value });
+                        setFormData({ ...formData, zone: e.target.value, zoneLat: null, zoneLon: null });
                       }}
                       onFocus={() => {
                         if (zoneSuggestions.length > 0 || zoneLoading || zoneError) {
@@ -258,7 +265,7 @@ export default function CommissionPage() {
                     <DropdownMenuItem
                       key={s.id}
                       onSelect={() => {
-                        setFormData({ ...formData, zone: s.label });
+                        setFormData({ ...formData, zone: s.label, zoneLat: s.lat, zoneLon: s.lon });
                         setZoneMenuOpen(false);
                       }}
                       className="whitespace-normal leading-snug"

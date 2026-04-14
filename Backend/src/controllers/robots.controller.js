@@ -166,6 +166,38 @@ const commissionRobotWithPairing = asyncHandler(async (req, res) => {
   res.json({ ok: true, robot, pairingCode: code, expiresIn: 300 });
 });
 
+// DELETE /api/robots/:robotId
+const deleteRobot = asyncHandler(async (req, res) => {
+  const prisma = getPrisma();
+  const kv = req.app?.locals?.kv;
+  const robotCode = toStringOrNull(req.params?.robotId);
+
+  if (!robotCode) {
+    const err = new Error("robotId is required");
+    err.status = 400;
+    throw err;
+  }
+
+  const robot = await prisma.robot.findUnique({ where: { robotId: robotCode }, select: { id: true } });
+  if (!robot) {
+    const err = new Error("Unknown robotId");
+    err.status = 404;
+    throw err;
+  }
+
+  await prisma.robot.delete({ where: { robotId: robotCode } });
+
+  if (kv) {
+    try {
+      await kv.del(`robot:${robotCode}`);
+    } catch {
+      // ignore
+    }
+  }
+
+  res.json({ ok: true, robotId: robotCode });
+});
+
 // POST /api/robots/:robotId/command
 // Creates a persisted command row and (if online) emits it to the robot socket.
 const sendRobotCommand = asyncHandler(async (req, res) => {
@@ -288,4 +320,5 @@ module.exports = {
   getRobotHistory,
   commissionRobotWithPairing,
   sendRobotCommand,
+  deleteRobot,
 };

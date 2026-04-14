@@ -1,15 +1,22 @@
 const { toStringOrNull, toNumberOrNull } = require("../utils/parse");
+const crypto = require("crypto");
 
 async function assignTask(prisma, task) {
-  const taskId = toStringOrNull(task?.taskId || task?.id);
+  let taskId = toStringOrNull(task?.taskId || task?.id);
   const robotCode = toStringOrNull(task?.robotId);
   const pickup = toStringOrNull(task?.pickup);
   const drop = toStringOrNull(task?.drop);
 
-  if (!taskId || !robotCode || !pickup || !drop) {
-    const err = new Error("taskId, robotId, pickup, drop are required");
+  if (!robotCode || !pickup || !drop) {
+    const err = new Error("robotId, pickup, drop are required");
     err.status = 400;
     throw err;
+  }
+
+  if (!taskId) {
+    // Human-friendly id used across UI.
+    const suffix = crypto.randomInt(100, 1000);
+    taskId = `TSK-${Date.now()}-${suffix}`;
   }
 
   const pickupLat = toNumberOrNull(task?.pickupLat);

@@ -59,16 +59,38 @@ async function createLocation(prisma, body) {
     }
   }
 
-  return prisma.location.create({
-    data: {
+  // Idempotent behavior: the schema enforces @@unique([name, parentId]).
+  // If a matching location already exists, reuse it.
+  const existing = await prisma.location.findFirst({
+    where: {
       name,
-      type,
-      parentId,
-      slug,
-      lat,
-      lon,
+      ...(parentId ? { parentId } : { parentId: null }),
     },
   });
+  if (existing) return existing;
+
+  try {
+    return await prisma.location.create({
+      data: {
+        name,
+        type,
+        parentId,
+        slug,
+        lat,
+        lon,
+      },
+    });
+  } catch (e) {
+    // In case of a race, fall back to returning the existing record.
+    const raced = await prisma.location.findFirst({
+      where: {
+        name,
+        ...(parentId ? { parentId } : { parentId: null }),
+      },
+    });
+    if (raced) return raced;
+    throw e;
+  }
 }
 
 module.exports = {

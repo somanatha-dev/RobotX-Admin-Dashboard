@@ -9,11 +9,11 @@ import { PIE_COLORS } from '../components/system/pieColors.ts';
 
 export default function DashboardPage() {
   const { robots, tasks } = useAppState();
-  const online = robots.filter((r) => r.health.connection).length;
-  const active = robots.filter((r) => r.status === 'active').length;
-  const lowBatCount = robots.filter((r) => r.battery < 25).length;
-  const activeTasks = tasks.filter((t) => t.status === 'active').length;
-  const failedTasks = tasks.filter((t) => t.status === 'failed').length;
+  const online = robots.filter((r) => r.isOnline).length;
+  const active = robots.filter((r) => r.status === 'ACTIVE').length;
+  const lowBatCount = robots.filter((r) => (Number(r.battery) || 0) > 0 && Number(r.battery) < 25).length;
+  const activeTasks = tasks.filter((t) => ['PENDING', 'ASSIGNED', 'IN_PROGRESS'].includes(t.status)).length;
+  const failedTasks = tasks.filter((t) => t.status === 'FAILED').length;
 
   const totalRobots = robots.length;
   const avgBattery =
@@ -24,9 +24,9 @@ export default function DashboardPage() {
   const robotsByBattery = [...robots].sort((a, b) => (a.battery ?? 0) - (b.battery ?? 0));
 
   const batteryBuckets = {
-    healthy: robots.filter((r) => r.battery >= 60).length,
-    moderate: robots.filter((r) => r.battery >= 25 && r.battery < 60).length,
-    low: robots.filter((r) => r.battery < 25).length,
+    healthy: robots.filter((r) => (Number(r.battery) || 0) >= 60).length,
+    moderate: robots.filter((r) => (Number(r.battery) || 0) >= 25 && (Number(r.battery) || 0) < 60).length,
+    low: robots.filter((r) => (Number(r.battery) || 0) > 0 && (Number(r.battery) || 0) < 25).length,
   };
 
   const batteryData = [
@@ -135,12 +135,12 @@ export default function DashboardPage() {
                       className="flex items-center justify-between py-2 border-b last:border-none border-border/30 hover:bg-muted/30 rounded-sm px-1 transition"
                     >
                       <div>
-                        <p className="text-sm font-medium">{robot.id}</p>
-                        <p className="text-xs text-muted-foreground">{robot.status}</p>
+                        <p className="text-sm font-medium">{robot.robotId}</p>
+                        <p className="text-xs text-muted-foreground">{String(robot.status || '').toLowerCase()}</p>
                       </div>
 
                       <div className="flex items-center gap-2">
-                        <span className="text-sm">{Number(robot.battery).toFixed(0)}%</span>
+                        <span className="text-sm">{Number(robot.battery || 0).toFixed(0)}%</span>
                         <Badge variant={s.variant} className="text-[10px] px-2 py-0.5">
                           {s.label}
                         </Badge>
@@ -177,8 +177,8 @@ export default function DashboardPage() {
                       className="flex items-center justify-between py-2 border-b last:border-none border-border/30 hover:bg-muted/30 rounded-sm px-1 transition"
                     >
                       <div>
-                        <p className="text-sm font-medium">{robot.id}</p>
-                        <p className="text-xs text-muted-foreground">{robot.status}</p>
+                        <p className="text-sm font-medium">{robot.robotId}</p>
+                        <p className="text-xs text-muted-foreground">{String(robot.status || '').toLowerCase()}</p>
                       </div>
 
                       <div className="flex items-center gap-2">

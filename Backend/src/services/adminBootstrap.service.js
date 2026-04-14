@@ -43,7 +43,12 @@ async function ensureAdminUser(prisma, { logger } = {}) {
     },
   });
 
-  (logger || console).info("Admin user ensured", { email: creds.email });
+  const logPii = String(process.env.LOG_PII || "").toLowerCase() === "true";
+  if (logPii) {
+    (logger || console).info("Admin user ensured", { email: creds.email });
+  } else {
+    (logger || console).info("Admin user ensured");
+  }
   return { bootstrapped: true, email: creds.email };
 }
 

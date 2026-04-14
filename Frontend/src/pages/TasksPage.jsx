@@ -17,14 +17,21 @@ import {
 export default function TasksPage() {
   const { tasks, robots } = useAppState();
   const { setIsCreatingTask, cancelTask } = useAppActions();
+  const normalizeStatus = (s) => String(s || '').toUpperCase();
   const totalTasks = tasks.length;
-  const activeTasks = tasks.filter((t) => t.status === 'active').length;
-  const completedTasks = tasks.filter((t) => t.status === 'completed').length;
-  const failedTasks = tasks.filter((t) => t.status === 'failed').length;
+  const activeTasks = tasks.filter((t) => ['PENDING', 'ASSIGNED', 'IN_PROGRESS'].includes(normalizeStatus(t.status))).length;
+  const completedTasks = tasks.filter((t) => normalizeStatus(t.status) === 'COMPLETED').length;
+  const failedTasks = tasks.filter((t) => normalizeStatus(t.status) === 'FAILED').length;
+
+  const canCancel = (status) => !['COMPLETED', 'FAILED', 'CANCELLED'].includes(normalizeStatus(status));
 
   const statusBadge = (status) => {
-    if (status === 'active') return { variant: 'default', className: 'bg-primary text-primary-foreground border-transparent' };
-    if (status === 'completed') return { variant: 'secondary', className: '' };
+    const s = normalizeStatus(status);
+    if (['PENDING', 'ASSIGNED', 'IN_PROGRESS'].includes(s)) {
+      return { variant: 'default', className: 'bg-primary text-primary-foreground border-transparent' };
+    }
+    if (s === 'COMPLETED') return { variant: 'secondary', className: '' };
+    if (s === 'CANCELLED') return { variant: 'secondary', className: 'text-muted-foreground' };
     return { variant: 'destructive', className: '' };
   };
 
@@ -66,11 +73,12 @@ export default function TasksPage() {
           <TableBody>
             {tasks.map((t) => {
               const pill = statusBadge(t.status);
+              const taskId = t.taskId || t.id;
 
               return (
-                <TableRow key={t.id}>
-                  <TableCell className="font-mono font-semibold">{t.id}</TableCell>
-                  <TableCell className="font-mono text-muted-foreground">{t.robotId}</TableCell>
+                <TableRow key={taskId}>
+                  <TableCell className="font-mono font-semibold">{taskId}</TableCell>
+                  <TableCell className="font-mono text-muted-foreground">{t.robot?.robotId || '—'}</TableCell>
                   <TableCell className="font-medium">
                     {t.pickup} → {t.drop}
                   </TableCell>
@@ -79,15 +87,15 @@ export default function TasksPage() {
                       variant={pill.variant}
                       className={`uppercase text-[10px] tracking-wide ${pill.className}`}
                     >
-                      {t.status}
+                      {normalizeStatus(t.status)}
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right">
-                    {t.status === 'active' ? (
+                    {canCancel(t.status) ? (
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => cancelTask(t.id)}
+                        onClick={() => cancelTask(taskId)}
                         className="text-destructive hover:bg-muted/50"
                       >
                         Cancel

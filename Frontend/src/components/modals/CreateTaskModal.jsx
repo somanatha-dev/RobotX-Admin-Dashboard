@@ -9,41 +9,75 @@ import { Label } from '../ui/label.jsx';
 
 export default function CreateTaskModal({ robots, onClose, onCreate }) {
   const [form, setForm] = useState({
-    pickup: 'Zone A',
-    drop: 'Zone D',
+    pickup: '',
+    drop: '',
   });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const normalizeStatus = (s) => String(s || '').toUpperCase();
 
   const pickAutoRobotId = () => {
     const pool = Array.isArray(robots) ? robots : [];
-    const preferred = pool.find((r) => r.status === 'idle') || pool.find((r) => r.status === 'active') || pool[0];
-    return preferred?.id || 'RBT-1000';
+    const preferred =
+      pool.find((r) => r.isOnline && normalizeStatus(r.status) === 'IDLE') ||
+      pool.find((r) => r.isOnline) ||
+      pool[0];
+    return preferred?.robotId || '';
   };
 
-  const makeTaskId = () => {
-    const base = 8000;
-    const rand = Math.floor(Math.random() * 900) + 100;
-    return `TSK-${base + rand}`;
-  };
+  const geocodeOne = async (query) => {
+    const token = import.meta.env.VITE_MAPBOX_TOKEN;
+    const q = String(query || '').trim();
+    if (!q) return null;
+    if (!token) throw new Error('Missing VITE_MAPBOX_TOKEN');
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    const now = new Date().toISOString();
-    const robotId = pickAutoRobotId();
-    const task = {
-      id: makeTaskId(),
-      robotId,
-      status: 'active',
-      pickup: form.pickup,
-      drop: form.drop,
-      time: now,
-      timeline: [
-        { state: 'Created', time: 'Just now', done: true },
-        { state: 'Assigned', time: 'Just now', done: true },
-        { state: 'Started', time: '--', done: false },
-        { state: 'In Progress', time: '--', done: false },
-      ],
+    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(q)}.json?access_token=${encodeURIComponent(
+      token
+    )}&autocomplete=true&limit=1&types=address,poi`;
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Failed to geocode address');
+    const data = await res.json();
+    const feature = data?.features?.[0];
+    if (!feature || !Array.isArray(feature.center) || feature.center.length < 2) return null;
+
+    const [lon, lat] = feature.center;
+    return {
+      label: feature.place_name || q,
+      lat,
+      lon,
     };
-    onCreate(task);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setIsSubmitting(true);
+    try {
+      const robotId = pickAutoRobotId();
+      if (!robotId) throw new Error('No commissioned robots available');
+
+      const pickupGeo = await geocodeOne(form.pickup);
+      const dropGeo = await geocodeOne(form.drop);
+
+      if (!pickupGeo) throw new Error('Pickup address not found');
+      if (!dropGeo) throw new Error('Drop address not found');
+
+      onCreate({
+        robotId,
+        pickup: pickupGeo.label,
+        pickupLat: pickupGeo.lat,
+        pickupLon: pickupGeo.lon,
+        drop: dropGeo.label,
+        dropLat: dropGeo.lat,
+        dropLon: dropGeo.lon,
+      });
+    } catch (err) {
+      setError(err?.message || 'Failed to create task');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -63,6 +97,8 @@ export default function CreateTaskModal({ robots, onClose, onCreate }) {
             <div className="text-sm text-muted-foreground">Assignment</div>
             <div className="mt-2 text-sm font-medium text-foreground">Robot is auto-assigned based on availability.</div>
           </Card>
+
+          {error ? <div className="text-sm text-destructive font-medium">{error}</div> : null}
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -85,8 +121,8 @@ export default function CreateTaskModal({ robots, onClose, onCreate }) {
             <Button type="button" variant="outline" className="flex-1" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" className="flex-1">
-              Create
+            <Button type="submit" className="flex-1" disabled={isSubmitting}>
+              {isSubmitting ? 'Creating…' : 'Create'}
             </Button>
           </div>
         </form>

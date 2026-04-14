@@ -5,7 +5,7 @@ import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { AlertTriangle, ArrowRight, Maximize2, Minimize2, Pause, RefreshCw, StopCircle, Trash2, X } from 'lucide-react';
 
-import FleetDirectionsMap from '../features/maps/FleetDirectionsMap.jsx';
+import FleetDbMap from '../features/maps/FleetDbMap.jsx';
 import CampusMap from '../features/campus/CampusMap.jsx';
 import { LOCATION_TREE, MAP_CENTER, MAP_FLEET_ROBOTS, MAP_ZOOM } from '../config/mapConfig';
 import { useAppActions, useAppState } from '../context/appContext.js';
@@ -1281,7 +1281,7 @@ export default function MapPage() {
           </div>
           <div className="absolute inset-0">
             <div className="w-full h-full relative">
-              {isCampusMode ? <CampusMap /> : <FleetDirectionsMap area={area} center={selectedArea?.center} />}
+              {isCampusMode ? <CampusMap /> : <FleetDbMap center={selectedArea?.center} />}
             </div>
           </div>
 

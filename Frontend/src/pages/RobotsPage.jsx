@@ -14,21 +14,41 @@ import {
 } from 'lucide-react';
 
 import { useAppActions, useAppState } from '../context/appContext.js';
+import * as robotsApi from '../lib/api/robots.js';
 
 export default function RobotsPage() {
   const { robots } = useAppState();
-  const { requestAuth, retire } = useAppActions();
+  const { requestAuth, retire, addEvent } = useAppActions();
   const navigate = useNavigate();
   const [filter, setFilter] = useState('All');
   const [selectedRobot, setSelectedRobot] = useState(null);
+  const [search, setSearch] = useState('');
+
+  const normalizeStatus = (s) => String(s || '').toUpperCase();
+  const isIssues = (s) => ['ERROR', 'ISSUES'].includes(normalizeStatus(s));
+  const isActive = (s) => normalizeStatus(s) === 'ACTIVE';
+  const isIdle = (s) => normalizeStatus(s) === 'IDLE';
 
   const filteredRobots = robots.filter((r) => {
-    if (filter === 'Active') return r.status === 'active';
-    if (filter === 'Idle') return r.status === 'idle';
-    if (filter === 'Issues') return r.status === 'issues' || r.status === 'error';
-    if (filter === 'Low Battery') return r.battery < 25;
+    const q = String(search || '').trim().toLowerCase();
+    if (q) {
+      const id = String(r.robotId || '').toLowerCase();
+      if (!id.includes(q)) return false;
+    }
+
+    if (filter === 'Active') return isActive(r.status);
+    if (filter === 'Idle') return isIdle(r.status);
+    if (filter === 'Issues') return isIssues(r.status);
+    if (filter === 'Low Battery') return (Number(r.battery) || 0) > 0 && Number(r.battery) < 25;
     return true;
   });
+
+  const sendCommand = (robotId, type) => {
+    requestAuth(`${type} UNIT ${robotId}`, async () => {
+      await robotsApi.sendCommand(robotId, type);
+      addEvent(`Command ${type} sent to ${robotId}`, 'info');
+    });
+  };
 
   return (
     <div className="h-full flex flex-col relative bg-slate-100/50">
@@ -43,6 +63,8 @@ export default function RobotsPage() {
             <input
               type="text"
               placeholder="Search ID..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
               className="w-full bg-slate-50 border border-slate-200 rounded-lg py-1.5 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-slate-900"
             />
           </div>
@@ -90,58 +112,49 @@ export default function RobotsPage() {
                     watermark: AlertTriangle,
                   },
                 };
-                const tone = tones[r.status] || {
+                const statusKey = isActive(r.status) ? 'active' : isIssues(r.status) ? 'issues' : 'idle';
+                const cardTone = tones[statusKey] || {
                   text: 'text-blue-700',
                   border: 'border-blue-100',
                   bg: 'bg-gradient-to-br from-blue-100/60 via-blue-50 to-white',
                   watermark: MapPin,
                 };
-                const Watermark = tone.watermark;
+                const CardWatermark = cardTone.watermark;
 
                 return (
                   <div
-                    key={r.id}
+                    key={r.robotId}
                     className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col shadow-sm hover:shadow-md transition-all group relative overflow-hidden"
                   >
-                    <Watermark className={`absolute -right-8 -bottom-8 w-28 h-28 ${tone.text} opacity-[0.05]`} aria-hidden="true" />
+                    <CardWatermark className={`absolute -right-8 -bottom-8 w-28 h-28 ${cardTone.text} opacity-[0.05]`} aria-hidden="true" />
                     <div className="flex justify-between items-start mb-4">
                       <div>
                         <div className="font-mono font-bold text-slate-900 text-lg flex items-center gap-2">
-                          {r.id}
+                          {r.robotId}
                           <div
                             className={`w-2 h-2 rounded-full ${
-                              r.status === 'active'
-                                ? 'bg-emerald-500'
-                                : r.status === 'issues'
-                                  ? 'bg-rose-500'
-                                  : 'bg-amber-500'
+                              r.isOnline ? 'bg-emerald-500' : 'bg-slate-400'
                             }`}
                           />
                         </div>
-                        <div className="text-xs text-slate-500 font-medium mt-1 uppercase tracking-wide">{r.status}</div>
+                        <div className="text-xs text-slate-500 font-medium mt-1 uppercase tracking-wide">{normalizeStatus(r.status)}</div>
                       </div>
                       <div className="text-right">
-                        <div className={`font-mono font-bold text-sm ${r.battery < 25 ? 'text-rose-600' : 'text-slate-700'}`}>{r.battery.toFixed(0)}%</div>
-                        <Battery className={`w-4 h-4 ml-auto mt-1 ${r.battery < 25 ? 'text-rose-500' : 'text-slate-400'}`} />
+                        <div className={`font-mono font-bold text-sm ${(Number(r.battery) || 0) < 25 ? 'text-rose-600' : 'text-slate-700'}`}>{Number(r.battery || 0).toFixed(0)}%</div>
+                        <Battery className={`w-4 h-4 ml-auto mt-1 ${(Number(r.battery) || 0) < 25 ? 'text-rose-500' : 'text-slate-400'}`} />
                       </div>
                     </div>
 
                     <div className="bg-white/70 rounded-xl p-3 text-sm border border-slate-200/60 mb-4 flex-1">
                       <div className="flex justify-between mb-2">
                         <span className="text-slate-500 text-xs">Task</span>
-                        <span className="font-mono font-medium text-slate-900">{r.task || 'None'}</span>
+                        <span className="font-mono font-medium text-slate-900">{r.currentTask?.taskId || 'None'}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-500 text-xs">Location</span>
-                        <span className="font-medium text-slate-700">{r.locText}</span>
+                        <span className="font-medium text-slate-700">{r.location?.name || '—'}</span>
                       </div>
                     </div>
-
-                    {r.issue && (
-                      <div className="text-xs text-rose-700 mb-4 flex items-center gap-1.5 bg-rose-50 px-2 py-1.5 rounded-md font-medium border border-rose-100">
-                        <AlertTriangle className="w-3.5 h-3.5" /> {r.issue}
-                      </div>
-                    )}
 
                     <div className="mt-auto flex gap-2">
                       <button
@@ -151,13 +164,13 @@ export default function RobotsPage() {
                         Control
                       </button>
                       <button
-                        onClick={() => navigate(`/robots/${r.id}`)}
+                        onClick={() => navigate(`/robots/${r.robotId}`)}
                         className="flex-1 bg-slate-900 hover:bg-slate-800 text-white text-xs py-2 rounded-lg font-semibold transition-colors shadow-sm"
                       >
                         Inspect
                       </button>
                       <button
-                        onClick={() => retire(r.id)}
+                        onClick={() => retire(r.robotId)}
                         className="bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-700 px-3 rounded-lg text-xs font-bold transition-colors shadow-sm"
                         title="Permanently Remove Unit"
                       >
@@ -188,17 +201,17 @@ export default function RobotsPage() {
             <>
               <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
                 <div className="flex items-center gap-3">
-                  <div className="font-mono text-xl font-bold text-slate-900">{selectedRobot.id}</div>
+                  <div className="font-mono text-xl font-bold text-slate-900">{selectedRobot.robotId}</div>
                   <span
                     className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                      ['active', 'delivering'].includes(String(selectedRobot.status).toLowerCase())
+                      isActive(selectedRobot.status)
                         ? 'bg-emerald-100 text-emerald-700'
-                        : ['idle', 'to_pickup'].includes(String(selectedRobot.status).toLowerCase())
+                        : isIdle(selectedRobot.status)
                           ? 'bg-amber-100 text-amber-700'
                           : 'bg-rose-100 text-rose-700'
                     }`}
                   >
-                    {selectedRobot.status}
+                    {normalizeStatus(selectedRobot.status)}
                   </span>
                 </div>
                 <button
@@ -212,37 +225,35 @@ export default function RobotsPage() {
               <div className="flex-1 overflow-y-auto p-5 space-y-6">
                 <div className="grid grid-cols-3 gap-2">
                   <button
-                    onClick={() => requestAuth(`STOP UNIT ${selectedRobot.id}`, () => {})}
+                    onClick={() => sendCommand(selectedRobot.robotId, 'STOP')}
                     className="bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-100 p-3 rounded-xl flex flex-col items-center gap-1.5 text-xs font-bold transition-colors"
                   >
                     <StopCircle className="w-5 h-5" /> STOP
                   </button>
                   <button
-                    onClick={() => requestAuth(`PAUSE UNIT ${selectedRobot.id}`, () => {})}
+                    onClick={() => sendCommand(selectedRobot.robotId, 'PAUSE')}
                     className="bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-100 p-3 rounded-xl flex flex-col items-center gap-1.5 text-xs font-bold transition-colors"
                   >
                     <Pause className="w-5 h-5" /> PAUSE
                   </button>
                   <button
-                    onClick={() => requestAuth(`RETURN UNIT ${selectedRobot.id}`, () => {})}
+                    onClick={() => sendCommand(selectedRobot.robotId, 'RETURN')}
                     className="bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-100 p-3 rounded-xl flex flex-col items-center gap-1.5 text-xs font-bold transition-colors"
                   >
                     <RefreshCw className="w-5 h-5" /> RETURN
                   </button>
                 </div>
 
-                {selectedRobot?.id?.startsWith('RBT-') && (
-                  <button
-                    onClick={() => {
-                      retire(selectedRobot.id);
-                      setSelectedRobot(null);
-                    }}
-                    className="w-full bg-rose-600 hover:bg-rose-700 text-white py-2.5 rounded-xl font-bold transition-colors shadow-sm flex items-center justify-center gap-2 text-sm"
-                    title="Permanently Remove Unit"
-                  >
-                    <Trash2 className="w-4 h-4" /> Retire Unit
-                  </button>
-                )}
+                <button
+                  onClick={() => {
+                    retire(selectedRobot.robotId);
+                    setSelectedRobot(null);
+                  }}
+                  className="w-full bg-rose-600 hover:bg-rose-700 text-white py-2.5 rounded-xl font-bold transition-colors shadow-sm flex items-center justify-center gap-2 text-sm"
+                  title="Permanently Remove Unit"
+                >
+                  <Trash2 className="w-4 h-4" /> Retire Unit
+                </button>
 
                 <div className="h-px bg-slate-100 w-full" />
 
@@ -254,33 +265,23 @@ export default function RobotsPage() {
                       <div className="flex items-center gap-3">
                         <div className="w-24 h-2 bg-slate-200 rounded-full overflow-hidden">
                           <div
-                            className={`h-full ${selectedRobot.battery < 25 ? 'bg-rose-500' : 'bg-emerald-500'}`}
-                            style={{ width: `${selectedRobot.battery}%` }}
+                            className={`h-full ${(Number(selectedRobot.battery) || 0) < 25 ? 'bg-rose-500' : 'bg-emerald-500'}`}
+                            style={{ width: `${Number(selectedRobot.battery || 0)}%` }}
                           />
                         </div>
-                        <span className="font-mono font-bold w-9 text-right text-slate-700">{selectedRobot.battery.toFixed(0)}%</span>
+                        <span className="font-mono font-bold w-9 text-right text-slate-700">{Number(selectedRobot.battery || 0).toFixed(0)}%</span>
                       </div>
                     </div>
                     <div className="flex justify-between items-center">
                       <span className="text-slate-500 font-medium">Speed</span>
-                      <span className="font-mono font-bold text-slate-700">{selectedRobot.speed} m/s</span>
+                      <span className="font-mono font-bold text-slate-700">{selectedRobot.speed ?? '—'}{selectedRobot.speed == null ? '' : ' m/s'}</span>
                     </div>
                     <div className="flex justify-between items-center">
                       <span className="text-slate-500 font-medium">Task</span>
-                      <span className="font-mono font-bold text-blue-600">{selectedRobot.task || 'None'}</span>
+                      <span className="font-mono font-bold text-blue-600">{selectedRobot.currentTask?.taskId || 'None'}</span>
                     </div>
                   </div>
                 </div>
-
-                {selectedRobot.issue && (
-                  <div>
-                    <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Warnings</h3>
-                    <div className="bg-rose-50 border border-rose-200 rounded-xl p-3 flex items-start gap-2 text-sm text-rose-700 font-medium">
-                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                      <span>{selectedRobot.issue}</span>
-                    </div>
-                  </div>
-                )}
               </div>
             </>
           )}

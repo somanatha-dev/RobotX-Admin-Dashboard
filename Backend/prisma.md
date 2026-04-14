@@ -13,7 +13,7 @@ then create new migration file then seed if needed since all the data would be l
 
 // seeding
 
-npx prisma db seed
+SEED_ENABLED=true npx prisma db seed
 
 // see database
 
