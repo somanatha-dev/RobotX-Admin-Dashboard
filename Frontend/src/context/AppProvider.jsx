@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { loadSession, saveSession } from '../lib/storage/sessionStorage.js';
 import {
   DEFAULT_PREFERENCES,
   loadUserPreferences,
@@ -28,12 +27,18 @@ export default function AppProvider({ children }) {
   const notificationsRef = useRef(null);
   const bellButtonRef = useRef(null);
 
-  const [session, setSession] = useState(() => loadSession());
+  const [session, setSession] = useState(() => ({ isAuthenticated: false, identity: '', user: null }));
 
-  const [preferences, setPreferences] = useState(() => {
-    const identityEmail = String(loadSession()?.user?.email || loadSession()?.identity || '').trim();
-    return loadUserPreferences(identityEmail);
-  });
+  const [preferences, setPreferences] = useState(() => ({ ...DEFAULT_PREFERENCES }));
+
+  // Legacy cleanup: session is cookie-based now; remove any old persisted client session.
+  useEffect(() => {
+    try {
+      window.localStorage.removeItem('robotx_session');
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const preferencesRef = useRef(preferences);
   useEffect(() => {
@@ -57,14 +62,18 @@ export default function AppProvider({ children }) {
     setEvents((prev) => [{ id: Date.now(), msg, time: 'Just now', type }, ...prev].slice(0, 6));
   }, []);
 
-  const updatePreferences = useCallback((patch) => {
-    setPreferences((prev) => {
-      const next = { ...prev, ...(patch || {}) };
-      const email = String(session?.user?.email || session?.identity || '').trim();
-      saveUserPreferences(email, next);
-      return next;
-    });
-  }, [session]);
+  const updatePreferences = useCallback(
+    (patch) => {
+      setPreferences((prev) => {
+        const next = { ...prev, ...(patch || {}) };
+        const userId = session?.user?.id;
+        const email = session?.user?.email || session?.identity || '';
+        saveUserPreferences({ userId, email }, next);
+        return next;
+      });
+    },
+    [session]
+  );
 
   const navigate = useCallback(
     (to) => {
@@ -84,7 +93,7 @@ export default function AppProvider({ children }) {
   }, []);
 
   const login = useCallback(
-    async (email, password) => {
+    async (email, password, options = {}) => {
       const cleanEmail = String(email || '').trim();
       const cleanPassword = String(password || '');
 
@@ -100,12 +109,13 @@ export default function AppProvider({ children }) {
 
       const next = { isAuthenticated: true, identity, user };
       setSession(next);
-      saveSession(next);
 
-      setPreferences(loadUserPreferences(identity));
+      setPreferences(loadUserPreferences({ userId: user?.id, email: user?.email || identity }));
       addEvent(`Signed in as ${identity}`, 'info');
       setIsSidebarOpen(true);
-      navigate('/');
+
+      const shouldNavigate = options?.navigate !== false;
+      if (shouldNavigate) navigate('/');
 
       await refreshDbState();
 
@@ -123,7 +133,6 @@ export default function AppProvider({ children }) {
 
     const next = { isAuthenticated: false, identity: '', user: null };
     setSession(next);
-    saveSession(next);
     setPreferences({ ...DEFAULT_PREFERENCES });
     setIsSidebarOpen(false);
     setIsNotificationsOpen(false);
@@ -142,9 +151,8 @@ export default function AppProvider({ children }) {
         const identity = user?.email || '';
         const next = { isAuthenticated: true, identity, user };
         setSession(next);
-        saveSession(next);
 
-        setPreferences(loadUserPreferences(identity));
+        setPreferences(loadUserPreferences({ userId: user?.id, email: user?.email || identity }));
         setIsAuthResolved(true);
 
         try {
@@ -157,7 +165,6 @@ export default function AppProvider({ children }) {
 
         const next = { isAuthenticated: false, identity: '', user: null };
         setSession(next);
-        saveSession(next);
         setPreferences({ ...DEFAULT_PREFERENCES });
         setIsAuthResolved(true);
         navigate('/login');
@@ -192,19 +199,22 @@ export default function AppProvider({ children }) {
         const robotId = String(robotData.id || '').trim();
         if (!zoneName || !robotId) return;
 
+        const lat = robotData?.lat ?? robotData?.zoneLat ?? null;
+        const lon = robotData?.lon ?? robotData?.zoneLon ?? null;
+
         // Create/reuse a Location row for this address.
         const location = await locationsApi.createLocation({
           name: zoneName,
           type: 'AREA',
-          lat: robotData.zoneLat,
-          lon: robotData.zoneLon,
+          lat,
+          lon,
         });
 
         await robotsApi.commissionRobot({
           robotId,
           locationId: location.id,
-          lat: robotData.zoneLat,
-          lon: robotData.zoneLon,
+          lat,
+          lon,
         });
 
         await refreshDbState();

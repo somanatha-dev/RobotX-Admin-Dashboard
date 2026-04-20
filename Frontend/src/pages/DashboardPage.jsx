@@ -1,5 +1,6 @@
 import React from 'react';
 import { ListTodo, Play, ShieldCheck, X } from 'lucide-react';
+import { motion } from 'framer-motion';
 import MetricCard from '../components/MetricCard.jsx';
 import { useAppState } from '../context/appContext.js';
 import { Badge } from '../components/ui/badge.jsx';
@@ -47,7 +48,12 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <motion.div
+      className="space-y-6"
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, ease: 'easeOut' }}
+    >
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">System Confidence</h1>
         <p className="text-sm text-muted-foreground">Real-time overview of fleet health and operations.</p>
@@ -197,6 +203,6 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       </div>
-    </div>
+    </motion.div>
   );
 }

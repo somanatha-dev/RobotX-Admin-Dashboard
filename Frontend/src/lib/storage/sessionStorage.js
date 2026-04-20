@@ -1,39 +1,29 @@
 const SESSION_KEY = 'robotx_session';
 
+const DEFAULT_SESSION = { isAuthenticated: false, identity: '', user: null };
+
+// Session is cookie-based (httpOnly) now. We never read/write auth session to localStorage.
+// These functions remain only for backwards compatibility with older code/branches.
 export function loadSession() {
   try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (!raw) return { isAuthenticated: false, identity: '', user: null };
-
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && typeof parsed.isAuthenticated === 'boolean') {
-      const user = parsed.user && typeof parsed.user === 'object' ? parsed.user : null;
-      const normalizedUser = user
-        ? {
-            id: String(user.id || ''),
-            email: String(user.email || ''),
-            role: String(user.role || ''),
-          }
-        : null;
-
-      const identity = String(parsed.identity || normalizedUser?.email || '');
-
-      return {
-        isAuthenticated: !!parsed.isAuthenticated,
-        identity,
-        user: normalizedUser,
-      };
-    }
+    localStorage.removeItem(SESSION_KEY);
   } catch {
     // ignore
   }
-
-  return { isAuthenticated: false, identity: '', user: null };
+  return { ...DEFAULT_SESSION };
 }
 
-export function saveSession(next) {
+export function saveSession() {
   try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+    localStorage.removeItem(SESSION_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+export function clearStoredSession() {
+  try {
+    localStorage.removeItem(SESSION_KEY);
   } catch {
     // ignore
   }

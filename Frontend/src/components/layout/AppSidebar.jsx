@@ -62,7 +62,7 @@ export default function AppSidebar() {
         <Button type="button" onClick={logout} className="w-full" size="sm" variant="outline">
           <LogOut className="w-4 h-4" /> Logout
         </Button>
-        <div className="pt-1 text-xs text-muted-foreground text-center">System v2.4.1-prod</div>
+        <div className="pt-1 text-xs text-muted-foreground text-center">Super Admin</div>
       </div>
     </aside>
   );

@@ -81,7 +81,7 @@ export default function ProfilePage() {
               <Card className="p-4 bg-muted/30">
                 <div className="text-sm text-muted-foreground">Workspace</div>
                 <div className="mt-2 text-sm font-medium">RobotX Console</div>
-                <div className="text-xs text-muted-foreground mt-1">System v2.4.1-prod</div>
+                <div className="text-xs text-muted-foreground mt-1">Super Admin</div>
               </Card>
               <Card className="p-4 bg-muted/30">
                 <div className="text-sm text-muted-foreground">Region</div>

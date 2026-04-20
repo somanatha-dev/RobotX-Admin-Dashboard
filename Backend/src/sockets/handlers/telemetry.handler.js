@@ -155,7 +155,8 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
         return;
       }
 
-      const now = new Date();
+      const nowMs = Date.now();
+      const now = new Date(nowMs);
       const lat = toNumberOrNull(payload?.lat);
       const lon = toNumberOrNull(payload?.lon);
       const speed = toNumberOrNull(payload?.speed);
@@ -166,7 +167,10 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
       const statusDb = statusRaw ? mapIncomingStatusToDb(statusRaw) : null;
 
       // Reject unknown robotId (must exist in DB).
-      const existing = await prisma.robot.findUnique({ where: { robotId }, select: { id: true, status: true } });
+      const existing = await prisma.robot.findUnique({
+        where: { robotId },
+        select: { id: true, status: true, lat: true, lon: true, speed: true, battery: true },
+      });
       if (!existing) {
         io.emit("robot_unregistered", { robotId });
         return;
@@ -183,39 +187,84 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
         }
       }
 
-      // 1) Redis live state (overwrite only)
-      await kv.set(
-        `robot:${robotId}`,
-        JSON.stringify({
-          lat,
-          lon,
-          battery,
-          status: statusRaw || null,
-          speed,
-          lastSeenAt: now.toISOString(),
-        }),
-        { ex: 15 }
-      );
+      // 1) Build full state (enrich minimal payload)
+      let prevState = null;
+      try {
+        const raw = await kv.get(`robot:${robotId}`);
+        if (raw) prevState = JSON.parse(raw);
+      } catch {
+        prevState = null;
+      }
 
-      // 2) Update Robot table (source of truth)
-      const robotRow = await prisma.robot.update({
+      const fullState = {
+        robotId,
+        lat:
+          typeof lat === "number"
+            ? lat
+            : typeof prevState?.lat === "number"
+              ? prevState.lat
+              : typeof existing.lat === "number"
+                ? existing.lat
+                : null,
+        lon:
+          typeof lon === "number"
+            ? lon
+            : typeof prevState?.lon === "number"
+              ? prevState.lon
+              : typeof existing.lon === "number"
+                ? existing.lon
+                : null,
+        battery:
+          typeof battery === "number"
+            ? battery
+            : typeof prevState?.battery === "number"
+              ? prevState.battery
+              : typeof existing.battery === "number"
+                ? existing.battery
+                : null,
+        status:
+          statusDb ||
+          (typeof prevState?.status === "string" ? prevState.status : null) ||
+          (existing.status ? String(existing.status) : "IDLE"),
+        speed:
+          typeof speed === "number"
+            ? speed
+            : typeof prevState?.speed === "number"
+              ? prevState.speed
+              : typeof existing.speed === "number"
+                ? existing.speed
+                : 0,
+        isOnline: true,
+        lastSeenAt: nowMs,
+      };
+
+      // 2) Store in Redis (final format)
+      await kv.set(`robot:${robotId}`, JSON.stringify(fullState), { ex: 10 });
+
+      // 3) Update DB (light)
+      await prisma.robot.update({
         where: { robotId },
         data: {
-          isOnline: true,
-          socketId: socket.id,
+          ...(typeof fullState.lat === "number" ? { lat: fullState.lat } : {}),
+          ...(typeof fullState.lon === "number" ? { lon: fullState.lon } : {}),
+          ...(typeof fullState.battery === "number" ? { battery: fullState.battery } : {}),
           lastSeenAt: now,
-          ...(lat === null ? {} : { lat }),
-          ...(lon === null ? {} : { lon }),
-          ...(speed === null ? {} : { speed }),
-          ...(battery === null ? {} : { battery }),
+          isOnline: true,
           ...statusUpdate,
         },
       });
 
-      // 3) Snapshot (smart gating: time OR movement OR battery delta)
-      if (await shouldStoreSnapshotSmart(kv, robotId, { lat, lon, battery }, { maxSeconds: 15, moveMeters: 10, batteryDelta: 2 })) {
-        await telemetryService.saveTelemetry(prisma, robotRow.id, { lat, lon, speed, battery }, now);
-        await updateSnapshotState(kv, robotId, { lat, lon, battery });
+      // 4) Snapshot (optional: time OR movement OR battery delta)
+      if (
+        await shouldStoreSnapshotSmart(
+          kv,
+          robotId,
+          { lat: fullState.lat, lon: fullState.lon, battery: fullState.battery },
+          { maxSeconds: 15, moveMeters: 10, batteryDelta: 2 }
+        )
+      ) {
+        await telemetryService.saveTelemetry(prisma, existing.id, { lat: fullState.lat, lon: fullState.lon, speed: fullState.speed, battery: fullState.battery }, now);
+        await updateSnapshotState(kv, robotId, { lat: fullState.lat, lon: fullState.lon, battery: fullState.battery });
       }
 
       log.info(`[ROBOT ${robotId}] TELEMETRY`, {
@@ -226,7 +275,10 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
         status,
       });
 
-      // 4) Emit to frontend (optimized)
+      // 5) Emit to frontend (new contract)
+      io.emit("robot:update", fullState);
+
+      // Backward compatible emits
       io.to("dashboard").emit("ROBOT_UPDATE", { robotId, ...payload });
 
       // Preserve existing frontend contract (robot_update includes enriched robot row)

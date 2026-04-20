@@ -14,8 +14,41 @@ const commissionRobot = asyncHandler(async (req, res) => {
 
 const listRobots = asyncHandler(async (req, res) => {
   const prisma = getPrisma();
+  const kv = req.app?.locals?.kv;
   const robots = await robotService.listRobots(prisma, req.query);
-  res.json({ ok: true, robots });
+
+  // Main API behavior: DB robots + Redis live overlay (when available).
+  // This keeps robot ownership/metadata in DB, and live state in Redis.
+  if (!kv) {
+    res.json({ ok: true, robots });
+    return;
+  }
+
+  const merged = await Promise.all(
+    robots.map(async (r) => {
+      let live = null;
+      try {
+        const raw = await kv.get(`robot:${r.robotId}`);
+        if (raw) live = JSON.parse(raw);
+      } catch {
+        live = null;
+      }
+
+      if (!live || typeof live !== "object") return r;
+
+      return {
+        ...r,
+        ...(typeof live.lat === "number" ? { lat: live.lat } : {}),
+        ...(typeof live.lon === "number" ? { lon: live.lon } : {}),
+        ...(typeof live.speed === "number" ? { speed: live.speed } : {}),
+        ...(typeof live.battery === "number" ? { battery: live.battery } : {}),
+        ...(typeof live.status === "string" ? { status: live.status } : {}),
+        live,
+      };
+    })
+  );
+
+  res.json({ ok: true, robots: merged });
 });
 
 // GET /api/robots/state

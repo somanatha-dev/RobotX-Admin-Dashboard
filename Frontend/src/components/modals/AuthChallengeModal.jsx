@@ -119,7 +119,8 @@ export default function AuthChallengeModal({ request, onClose }) {
       });
 
       if (!assertion) throw new Error('Passkey authentication was cancelled.');
-      request.action();
+
+      await Promise.resolve(request.action());
       onClose();
     } catch (e) {
       setError(e?.message || 'Passkey authentication failed.');
@@ -128,14 +129,22 @@ export default function AuthChallengeModal({ request, onClose }) {
     }
   };
 
-  const handleAuth = (e) => {
+  const handleAuth = async (e) => {
     e.preventDefault();
     setLoading(true);
-    // Simulate Passkey/WebAuthn cryptographic delay
-    setTimeout(() => {
-      request.action();
+    setError('');
+
+    try {
+      // Simulate Passkey/WebAuthn cryptographic delay
+      await new Promise((r) => setTimeout(r, 800));
+
+      await Promise.resolve(request.action());
       onClose();
-    }, 800);
+    } catch (e) {
+      setError(e?.message || 'Authorization failed.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

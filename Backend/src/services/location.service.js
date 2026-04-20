@@ -1,8 +1,38 @@
 const { toStringOrNull, toNumberOrNull } = require("../utils/parse");
 
 async function collectDescendantLocationIds(prisma, rootId) {
+  const startId = toStringOrNull(rootId);
+  if (!startId) return [];
+
+  // Production-grade: use a single recursive query (PostgreSQL).
+  // This avoids N+1 queries when a location has many descendants.
+  try {
+    const rows = await prisma.$queryRaw`
+      WITH RECURSIVE loc_tree AS (
+        SELECT id
+        FROM "Location"
+        WHERE id = ${startId}
+
+        UNION ALL
+
+        SELECT l.id
+        FROM "Location" l
+        JOIN loc_tree t ON l."parentId" = t.id
+      )
+      SELECT id FROM loc_tree;
+    `;
+
+    if (Array.isArray(rows)) {
+      return rows
+        .map((r) => (r && typeof r.id === "string" ? r.id : null))
+        .filter(Boolean);
+    }
+  } catch {
+    // Fall back to a safe JS traversal (works across providers).
+  }
+
   const ids = [];
-  const queue = [rootId];
+  const queue = [startId];
   const seen = new Set();
 
   while (queue.length) {
@@ -24,8 +54,16 @@ async function collectDescendantLocationIds(prisma, rootId) {
 
 async function listLocations(prisma, { parentId, type }) {
   const where = {};
-  if (typeof parentId === "string" && parentId) where.parentId = parentId;
   if (typeof type === "string" && type) where.type = type;
+
+  // Cascading dropdown semantics:
+  // - When parentId is omitted/empty, return only root locations (parentId = null)
+  // - When parentId is provided, filter children of that parent
+  if (typeof parentId === "string" && parentId.trim()) {
+    where.parentId = parentId.trim();
+  } else {
+    where.parentId = null;
+  }
 
   return prisma.location.findMany({
     where,

@@ -33,8 +33,14 @@ export async function getRobotsState() {
   return data?.robots || [];
 }
 
-export async function listRobots() {
-  const data = await requestJson('/api/robots');
+export async function listRobots(params) {
+  const q = params && typeof params === 'object' ? params : null;
+  const sp = new URLSearchParams();
+  if (q?.locationId) sp.set('locationId', String(q.locationId));
+  if (q?.campusId) sp.set('campusId', String(q.campusId));
+  if (typeof q?.includeDescendants === 'boolean') sp.set('includeDescendants', String(q.includeDescendants));
+  const qs = sp.toString();
+  const data = await requestJson(qs ? `/api/robots?${qs}` : '/api/robots');
   return data?.robots || [];
 }
 

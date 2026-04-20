@@ -1,40 +1,50 @@
-import React, { useState } from 'react';
-import { ArrowLeft, RefreshCw, ShieldAlert } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Eye, EyeOff, RefreshCw, ShieldAlert } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
+
+import { Button } from '../components/ui/button.jsx';
+import { Input } from '../components/ui/input.jsx';
+import { Label } from '../components/ui/label.jsx';
 import { useAppActions } from '../context/appContext.js';
 
 export default function LoginPage() {
+  const rrNavigate = useNavigate();
   const { login } = useAppActions();
-  const [step, setStep] = useState('identity'); // 'identity' | 'password'
+
   const [identity, setIdentity] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
   const [loading, setLoading] = useState(false);
+  const [isExiting, setIsExiting] = useState(false);
   const [error, setError] = useState('');
 
-  const canContinue = identity.trim().length > 0;
-  const canLogin = password.trim().length > 0;
+  const exitTimerRef = useRef(null);
 
-  const handleNext = (e) => {
-    e.preventDefault();
-    if (!canContinue) return;
-    setError('');
-    setStep('password');
-  };
+  useEffect(() => {
+    return () => {
+      if (exitTimerRef.current) window.clearTimeout(exitTimerRef.current);
+    };
+  }, []);
 
-  const handleBack = (e) => {
-    e.preventDefault();
-    setPassword('');
-    setError('');
-    setStep('identity');
-  };
+  const canLogin = identity.trim().length > 0 && password.trim().length > 0;
+  const busy = loading || isExiting;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!canLogin) return;
+    if (!canLogin || busy) return;
+
     setLoading(true);
     setError('');
 
     try {
-      await login(identity.trim(), password);
+      await login(identity.trim(), password, { navigate: false });
+
+      setIsExiting(true);
+      exitTimerRef.current = window.setTimeout(() => {
+        rrNavigate('/');
+      }, 360);
     } catch (err) {
       setError(err?.message || 'Invalid email or password');
       setLoading(false);
@@ -42,131 +52,134 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="fixed inset-0 w-full h-full bg-slate-50 overflow-hidden overscroll-none">
-      <div className="absolute inset-0 pointer-events-none">
-        <div className="absolute -top-48 -left-48 w-140 h-140 bg-blue-200/35 blur-3xl rounded-full" />
-        <div className="absolute -bottom-48 -right-48 w-140 h-140 bg-slate-200/60 blur-3xl rounded-full" />
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4 py-8 overflow-hidden overscroll-none">
+      {/* ambient background */}
+      <div className="pointer-events-none fixed inset-0">
+        <div className="absolute -top-56 -left-56 w-140 h-140 rounded-full bg-blue-200/35 blur-3xl" />
+        <div className="absolute -bottom-56 -right-56 w-140 h-140 rounded-full bg-indigo-200/30 blur-3xl" />
       </div>
 
-      <div className="relative h-full w-full flex items-center justify-center p-4 sm:p-6">
-        <div className="w-full max-w-4xl max-h-[calc(100vh-3rem)] bg-white border border-slate-200 rounded-3xl shadow-xl overflow-hidden">
-          <div className="grid grid-cols-1 md:grid-cols-2 h-full">
-            <div className="relative p-8 sm:p-10 bg-linear-to-br from-slate-950 via-slate-900 to-blue-900 text-white overflow-hidden">
-              <div className="absolute inset-0 opacity-20">
-                <div className="absolute -top-24 -left-24 w-72 h-72 border-2 border-white/30 rounded-full" />
-                <div className="absolute top-20 right-10 w-56 h-56 border-2 border-white/20 rounded-full" />
-                <div className="absolute -bottom-28 left-24 w-80 h-80 border-2 border-white/20 rounded-full" />
+      <div className="relative w-full max-w-5xl mx-auto">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.98 }}
+          animate={isExiting ? { opacity: 0, scale: 0.96 } : { opacity: 1, scale: 1 }}
+          transition={{ duration: 0.35, ease: 'easeOut' }}
+          className="rounded-2xl shadow-xl border border-border/60 overflow-hidden bg-card"
+        >
+          <div className="grid grid-cols-1 md:grid-cols-[55%_45%]">
+            {/* LEFT: Branding */}
+            <div className="relative p-10 text-white overflow-hidden bg-linear-to-br from-slate-950 via-slate-900 to-indigo-900">
+              <div className="absolute inset-0">
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(255,255,255,0.14),transparent_55%)]" />
+                <div className="absolute inset-0 bg-white/5 backdrop-blur-xl" />
               </div>
+
               <div className="relative">
-                <div className="inline-flex items-center gap-2 bg-white/15 border border-white/20 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide">
+                <div className="inline-flex items-center gap-2 bg-white/10 border border-white/15 px-3 py-1.5 rounded-full text-xs font-semibold tracking-wide">
                   <ShieldAlert className="w-4 h-4" /> RobotX
                 </div>
-                <div className="mt-8 text-3xl font-extrabold tracking-tight leading-snug">
-                  Simple, secure
-                  <br />
-                  command console.
+
+                <div className="mt-8 max-w-sm space-y-3">
+                  <div className="text-2xl font-semibold tracking-tight">
+                    Control your robotic fleet with precision.
+                  </div>
+                  <div className="text-sm text-white/75">
+                    Real-time coordination, secure access, and intelligent automation in one unified system.
+                  </div>
                 </div>
-                <div className="mt-4 text-sm text-white/85 font-medium max-w-sm">
-                  Access fleet controls with passkey/PIN authorization for privileged actions.
-                </div>
-                <div className="mt-10 text-xs text-white/75 font-mono">v2.4.1-prod</div>
               </div>
             </div>
 
-            <div className="p-8 sm:p-10">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-2xl font-bold text-slate-900 tracking-tight">Welcome</div>
-                  <div className="text-sm text-slate-500 mt-1">Sign in to continue.</div>
-                </div>
+            {/* RIGHT: Form */}
+            <div className="p-10 bg-background">
+              <div className="space-y-1">
+                <div className="text-2xl font-semibold tracking-tight text-foreground">Welcome back</div>
+                <div className="text-sm text-muted-foreground">Sign in to continue</div>
               </div>
 
-              <div className="mt-8 overflow-hidden">
-                <div
-                  className={`flex w-[200%] transition-transform duration-500 ease-out will-change-transform ${
-                    step === 'password' ? '-translate-x-1/2' : 'translate-x-0'
-                  }`}
-                >
-                  {/* STEP 1 */}
-                  <form onSubmit={handleNext} className="w-1/2 pr-4">
-                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Email</label>
-                    <input
-                      value={identity}
-                      onChange={(e) => setIdentity(e.target.value)}
-                      placeholder="admin@robotx.local"
-                      className="w-full bg-white border-b border-slate-200 px-0 py-3 text-slate-900 font-medium focus:outline-none focus:border-blue-600 transition-colors"
-                      autoComplete="username"
-                      disabled={loading}
+              <form onSubmit={handleSubmit} className="mt-8 space-y-6">
+                <div className="space-y-2">
+                  <Label htmlFor="email" className="block">
+                    Email
+                  </Label>
+                  <Input
+                    id="email"
+                    value={identity}
+                    onChange={(e) => setIdentity(e.target.value)}
+                    placeholder="admin@robotx.local"
+                    autoComplete="username"
+                    disabled={busy}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="password" className="block">
+                    Password
+                  </Label>
+
+                  <div className="relative">
+                    <Input
+                      id="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      type={showPassword ? 'text' : 'password'}
+                      placeholder="Enter your password"
+                      autoComplete="current-password"
+                      disabled={busy}
+                      className="pr-10"
                     />
-                    <div className="mt-6">
-                      <button
-                        type="submit"
-                        disabled={!canContinue || loading}
-                        className={`w-full py-3 rounded-xl font-bold text-sm transition-all ${
-                          !canContinue || loading
-                            ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                            : 'bg-slate-900 hover:bg-slate-800 text-white shadow-sm'
-                        }`}
-                      >
-                        Next
-                      </button>
-                    </div>
-                  </form>
-
-                  {/* STEP 2 */}
-                  <form onSubmit={handleSubmit} className="w-1/2 pl-4">
-                    <button
+                    <Button
                       type="button"
-                      onClick={handleBack}
-                      className="text-xs font-bold text-slate-600 hover:text-slate-900 inline-flex items-center gap-2"
+                      variant="ghost"
+                      size="sm"
+                      className="absolute right-1 top-1/2 -translate-y-1/2 h-8 w-8 px-0 text-muted-foreground hover:text-foreground"
+                      onClick={() => setShowPassword((v) => !v)}
+                      disabled={busy}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
                     >
-                      <ArrowLeft className="w-4 h-4" /> Back
-                    </button>
-                    <div className="mt-4 text-2xl font-bold text-slate-900 tracking-tight">Enter Password</div>
-                    <div className="text-sm text-slate-500 mt-1">
-                      Welcome back, <span className="font-mono font-bold text-slate-700">{identity.trim() || '—'}</span>
-                    </div>
-
-                    <div className="mt-8">
-                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Password</label>
-                      <input
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        type="password"
-                        placeholder="Enter your password"
-                        className="w-full bg-white border-b border-slate-200 px-0 py-3 text-slate-900 font-medium focus:outline-none focus:border-blue-600 transition-colors"
-                        autoComplete="current-password"
-                        disabled={loading}
-                      />
-                    </div>
-
-                    <div className="mt-8">
-                      <button
-                        type="submit"
-                        disabled={!canLogin || loading}
-                        className={`w-full py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 ${
-                          !canLogin || loading
-                            ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                            : 'bg-blue-600 hover:bg-blue-700 text-white shadow-sm'
-                        }`}
-                      >
-                        {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : null}
-                        {loading ? 'Signing in…' : 'Log In'}
-                      </button>
-                    </div>
-
-                    {error ? (
-                      <div className="mt-4 text-xs font-semibold text-red-600">{error}</div>
-                    ) : null}
-                  </form>
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                  </div>
                 </div>
-              </div>
 
-              <div className="mt-8 text-xs text-slate-500">No Google sign-in, no signup, no reset in this demo.</div>
+                {error ? (
+                  <div className="text-sm font-medium text-destructive">{error}</div>
+                ) : null}
+
+                <Button
+                  type="submit"
+                  disabled={!canLogin || busy}
+                  className="w-full h-11 rounded-xl transition-all duration-200 hover:shadow-md active:scale-[0.98]"
+                >
+                  {loading ? (
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <span className="h-4 w-4" aria-hidden />
+                  )}
+                  {loading ? 'Signing in…' : 'Sign in'}
+                </Button>
+              </form>
             </div>
           </div>
-        </div>
+        </motion.div>
       </div>
+
+      <AnimatePresence>
+        {isExiting ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 bg-background/70 backdrop-blur-sm flex items-center justify-center"
+          >
+            <div className="flex items-center gap-3 text-sm text-muted-foreground">
+              <RefreshCw className="h-4 w-4 animate-spin" />
+              Preparing dashboard…
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }
