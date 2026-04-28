@@ -6,9 +6,60 @@ const crypto = require("crypto");
 const { getRobotSocket } = require("../sockets/robotSockets");
 const { z } = require("zod");
 
+async function writeRobotLiveState(kv, robot, { exSeconds = 15 } = {}) {
+  if (!kv || !robot) return;
+  const robotId = toStringOrNull(robot.robotId);
+  if (!robotId) return;
+
+  const lat = typeof robot.lat === "number" ? robot.lat : null;
+  const lon = typeof robot.lon === "number" ? robot.lon : null;
+  const battery = typeof robot.battery === "number" ? robot.battery : null;
+  const speed = typeof robot.speed === "number" ? robot.speed : 0;
+  const status = typeof robot.status === "string" && robot.status ? robot.status : "IDLE";
+
+  const lastSeenAtMs = robot.lastSeenAt ? new Date(robot.lastSeenAt).getTime() : Date.now();
+  const lastSeenAt = Number.isFinite(lastSeenAtMs) ? lastSeenAtMs : Date.now();
+
+  // Contract: minimal live state only (no history).
+  const live = { lat, lon, battery, status, speed, lastSeenAt };
+
+  await Promise.all([
+    kv.set(`robot:${robotId}`, JSON.stringify(live), { ex: exSeconds }),
+    typeof kv.sadd === "function" ? kv.sadd("robots:all", robotId) : Promise.resolve(),
+  ]);
+}
+
+function emitRobotUpdate(req, payload) {
+  const io = req.app?.locals?.io;
+  if (!io) return;
+  try {
+    io.to("dashboard").emit("ROBOT_UPDATE", payload);
+  } catch {
+    // ignore
+  }
+}
+
 const commissionRobot = asyncHandler(async (req, res) => {
   const prisma = getPrisma();
+  const kv = req.app?.locals?.kv;
   const robot = await robotService.commissionRobot(prisma, req.body);
+
+  // Controlled simulation: make commissioned robot instantly visible via Redis + dashboard socket.
+  try {
+    await writeRobotLiveState(kv, robot, { exSeconds: 15 });
+  } catch {
+    // ignore KV failures
+  }
+
+  emitRobotUpdate(req, {
+    robotId: robot.robotId,
+    lat: robot.lat,
+    lon: robot.lon,
+    battery: robot.battery,
+    status: robot.status || "IDLE",
+    speed: robot.speed || 0,
+  });
+
   res.json({ ok: true, robot });
 });
 
@@ -196,6 +247,22 @@ const commissionRobotWithPairing = asyncHandler(async (req, res) => {
   const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
   await kv.set(`pairing:${robotId}`, code, { ex: 300 });
 
+  // Ensure Redis live state exists for immediate UI visibility.
+  try {
+    await writeRobotLiveState(kv, robot, { exSeconds: 15 });
+  } catch {
+    // ignore
+  }
+
+  emitRobotUpdate(req, {
+    robotId: robot.robotId,
+    lat: robot.lat,
+    lon: robot.lon,
+    battery: robot.battery,
+    status: robot.status || "IDLE",
+    speed: robot.speed || 0,
+  });
+
   res.json({ ok: true, robot, pairingCode: code, expiresIn: 300 });
 });
 
@@ -223,6 +290,7 @@ const deleteRobot = asyncHandler(async (req, res) => {
   if (kv) {
     try {
       await kv.del(`robot:${robotCode}`);
+      if (typeof kv.srem === "function") await kv.srem("robots:all", robotCode);
     } catch {
       // ignore
     }

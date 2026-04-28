@@ -10,6 +10,7 @@ router.post("/login", authControllers.loginUser);
 // Authenticated routes
 router.get("/me", authMiddleware.authUser, authControllers.getMe);
 router.post("/change-password", authMiddleware.authUser, authControllers.changePassword);
+router.post("/pin-auth", authMiddleware.authUser, authControllers.pinAuth);
 
 // Logout
 router.post("/logout", authControllers.logout);

@@ -1,7 +1,77 @@
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 
 const { getPrisma } = require("../db/prisma");
+
+//////////////////////////////////////////////////
+// PIN AUTH
+//////////////////////////////////////////////////
+async function pinAuth(req, res) {
+  try {
+    const { pin } = req.body || {};
+
+    const normalizedPin = String(pin ?? "").trim();
+
+    if (!normalizedPin) {
+      return res.status(400).json({ message: "PIN required" });
+    }
+
+    // user comes from existing JWT middleware
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const prisma = getPrisma();
+
+    // fetch PIN for THIS user only
+    const authPin = await prisma.adminPinAuth.findUnique({
+      where: { userId },
+    });
+
+    if (!authPin) {
+      return res.status(403).json({ message: "PIN not configured" });
+    }
+
+    const stored = String(authPin.pinHash ?? "");
+    const looksBcrypt = stored.startsWith("$2a$") || stored.startsWith("$2b$") || stored.startsWith("$2y$");
+
+    // verify PIN (bcrypt preferred; allow legacy/plain pins and auto-migrate)
+    let isValid = false;
+    if (looksBcrypt) {
+      isValid = await bcrypt.compare(normalizedPin, stored);
+    } else {
+      const a = Buffer.from(normalizedPin, "utf8");
+      const b = Buffer.from(stored.trim(), "utf8");
+      isValid = a.length === b.length && crypto.timingSafeEqual(a, b);
+
+      // Auto-migrate plain-text PINs to bcrypt hash after first successful auth.
+      if (isValid) {
+        const nextHash = await bcrypt.hash(normalizedPin, 10);
+        await prisma.adminPinAuth.update({
+          where: { userId },
+          data: { pinHash: nextHash },
+        });
+      }
+    }
+
+    if (!isValid) {
+      return res.status(401).json({ message: "Invalid PIN" });
+    }
+
+    // success — no new JWT
+    return res.status(200).json({
+      message: "Authorized",
+      authorized: true,
+    });
+  } catch (error) {
+    console.error("PIN AUTH ERROR:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+}
+
 
 function getAuthCookieOptions() {
   const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
@@ -184,5 +254,6 @@ module.exports = {
   loginUser,
   getMe,
   changePassword,
-  logout
+  logout,
+  pinAuth,
 };

@@ -63,3 +63,22 @@ export async function logout() {
 
   return data;
 }
+
+export async function pinAuth(pin) {
+  const res = await fetch(`${API_URL}/api/auth/pin-auth`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ pin }),
+  });
+
+  const data = await readJsonSafe(res);
+  if (!res.ok) {
+    const message = data?.message || 'PIN authorization failed';
+    const err = new Error(message);
+    err.status = res.status;
+    throw err;
+  }
+
+  return data;
+}

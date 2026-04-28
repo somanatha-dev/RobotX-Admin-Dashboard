@@ -9,6 +9,8 @@ const { isOriginAllowed } = require("./src/config/cors");
 const { connectPrismaWithRetry, disconnectPrisma } = require("./src/db/prisma");
 const { initKv } = require("./src/cache/kv");
 const initSocketServer = require("./src/sockets/socket.server");
+const { createSimulationEngine } = require("./src/services/simulation.service");
+const { recoverActiveTasks } = require("./src/services/taskRecovery.service");
 
 async function start() {
   const server = http.createServer(app);
@@ -28,8 +30,21 @@ async function start() {
   // connection implementations.
   app.locals.kv = kv;
   app.locals.prisma = prisma;
+  app.locals.io = io;
 
   initSocketServer(io, { prisma, kv, logger });
+
+  // Resilience: rebuild Redis task/path state after restarts.
+  try {
+    await recoverActiveTasks(prisma, kv, io, { logger });
+  } catch (e) {
+    logger.error("Task recovery failed", { e });
+  }
+
+  // Controlled robot simulation engine (Redis primary live state; DB secondary).
+  // Safe: skips robots with an active robot socket connection.
+  const simulation = createSimulationEngine({ prisma, kv, io, logger });
+  simulation.start({ intervalMs: 2000 });
 
   const port = Number(process.env.PORT || 3000);
   const host = typeof process.env.HOST === "string" && process.env.HOST.trim() ? process.env.HOST.trim() : "0.0.0.0";
@@ -47,6 +62,11 @@ async function start() {
   const shutdown = async (signal) => {
     try {
       logger.info(`Shutting down (${signal})...`);
+      try {
+        simulation?.stop?.();
+      } catch {
+        // ignore
+      }
       await new Promise((resolve) => server.close(resolve));
       io.close();
       await closeKv();

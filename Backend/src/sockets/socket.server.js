@@ -57,12 +57,12 @@ function initSocketServer(io, { prisma, kv, logger }) {
         // ADMIN CREATES TASK
         socket.on("assign_task", async (task) => {
             try {
-                const created = await taskService.assignTask(prisma, task);
-                io.emit("task_assigned", created);
+                const created = await taskService.assignTask(prisma, task, { kv, io });
+                io.to("dashboard").emit("task_assigned", created);
             } catch (e) {
                 const taskId = toStringOrNull(task?.taskId || task?.id);
                 const robotId = toStringOrNull(task?.robotId);
-                io.emit("task_error", {
+                io.to("dashboard").emit("task_error", {
                     taskId,
                     robotId,
                     error: e && e.message ? e.message : "Failed to assign task",

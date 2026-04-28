@@ -6,6 +6,8 @@ import { Button } from '../ui/button.jsx';
 import { Dialog, DialogContent, DialogTitle } from '../ui/dialog.jsx';
 import { Input } from '../ui/input.jsx';
 
+import { pinAuth } from '../../lib/api/auth.js';
+
 export default function AuthChallengeModal({ request, onClose }) {
   const [method, setMethod] = useState('passkey'); // 'passkey' | 'pin'
   const [pin, setPin] = useState('');
@@ -135,8 +137,7 @@ export default function AuthChallengeModal({ request, onClose }) {
     setError('');
 
     try {
-      // Simulate Passkey/WebAuthn cryptographic delay
-      await new Promise((r) => setTimeout(r, 800));
+      await pinAuth(pin);
 
       await Promise.resolve(request.action());
       onClose();
@@ -262,7 +263,7 @@ export default function AuthChallengeModal({ request, onClose }) {
                 </Button>
                 <Button
                   type="submit"
-                  disabled={loading || pin.length < 6}
+                  disabled={loading || String(pin).trim().length === 0}
                   variant={request.isDestructive ? 'destructive' : 'default'}
                   className="flex-1"
                 >

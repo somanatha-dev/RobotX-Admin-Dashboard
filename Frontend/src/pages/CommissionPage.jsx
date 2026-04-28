@@ -81,10 +81,7 @@ export default function CommissionPage() {
     });
   };
 
-  const showSelectedZone =
-    String(formData.zone || '').trim().length > 0 &&
-    formData.zoneLat !== null &&
-    formData.zoneLon !== null;
+  const showSelectedZone = String(formData.zone || '').trim().length > 0;
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-6">
@@ -191,22 +188,37 @@ export default function CommissionPage() {
                       inputValue={formData.zone}
                       onInputValueChange={(value) => {
                         setFormError('');
-                        setFormData({
-                          ...formData,
-                          zone: value,
-                          zoneLat: null,
-                          zoneLon: null,
+                        setFormData((prev) => {
+                          const nextZone = value;
+                          const prevZone = String(prev.zone || '');
+                          const nextZoneStr = String(nextZone || '');
+
+                          // If the user is typing the same selected value again (cmdk can
+                          // emit redundant input updates), don't wipe saved coordinates.
+                          const sameZone = prevZone.trim() === nextZoneStr.trim();
+                          const hasCoords = prev.zoneLat !== null && prev.zoneLon !== null;
+
+                          return {
+                            ...prev,
+                            zone: nextZone,
+                            ...(sameZone && hasCoords
+                              ? {}
+                              : {
+                                  zoneLat: null,
+                                  zoneLon: null,
+                                }),
+                          };
                         });
                       }}
                       onChange={(loc) => {
                         if (!loc) return;
                         setFormError('');
-                        setFormData({
-                          ...formData,
+                        setFormData((prev) => ({
+                          ...prev,
                           zone: loc.place_name,
                           zoneLat: loc.lat,
                           zoneLon: loc.lon,
-                        });
+                        }));
                       }}
                       placeholder="Search an area (India)…"
                       country="IN"
@@ -222,12 +234,17 @@ export default function CommissionPage() {
                         <Badge variant="secondary" className="max-w-full">
                           <span className="truncate">{formData.zone}</span>
                         </Badge>
+                        {formData.zoneLat !== null && formData.zoneLon !== null ? (
+                          <Badge variant="outline" className="max-w-full">
+                            <span className="truncate">Pinned</span>
+                          </Badge>
+                        ) : null}
                         <Button
                           type="button"
                           size="sm"
                           variant="ghost"
                           className="h-7 px-2"
-                          onClick={() => setFormData({ ...formData, zone: '', zoneLat: null, zoneLon: null })}
+                          onClick={() => setFormData((prev) => ({ ...prev, zone: '', zoneLat: null, zoneLon: null }))}
                         >
                           Clear
                         </Button>

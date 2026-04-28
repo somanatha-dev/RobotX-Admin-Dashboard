@@ -35,7 +35,9 @@ const listTasks = asyncHandler(async (req, res) => {
 // POST /api/tasks/assign
 const assignTask = asyncHandler(async (req, res) => {
   const prisma = getPrisma();
-  const created = await taskService.assignTask(prisma, req.body);
+  const kv = req.app?.locals?.kv;
+  const io = req.app?.locals?.io;
+  const created = await taskService.assignTask(prisma, req.body, { kv, io });
   res.json({ ok: true, task: created });
 });
 

@@ -1,6 +1,14 @@
 const { toStringOrNull, toNumberOrNull } = require("../utils/parse");
 const { collectDescendantLocationIds } = require("./location.service");
 
+function randFloat(min, max) {
+  return min + Math.random() * (max - min);
+}
+
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
+
 async function commissionRobot(prisma, body) {
   const robotCode = toStringOrNull(body?.robotId);
   const locationId = toStringOrNull(body?.locationId);
@@ -33,21 +41,31 @@ async function commissionRobot(prisma, body) {
     }
   }
 
+  const now = new Date();
+  const battery = clamp(Math.round(randFloat(70, 100)), 0, 100);
+
   return prisma.robot.upsert({
     where: { robotId: robotCode },
     create: {
       robotId: robotCode,
       locationId,
       campusId,
+      status: "IDLE",
+      battery,
       lat,
       lon,
-      isOnline: false,
+      speed: 0,
+      isOnline: true,
+      lastSeenAt: now,
     },
     update: {
       locationId,
       campusId,
       ...(lat === null ? {} : { lat }),
       ...(lon === null ? {} : { lon }),
+      // Do not clobber existing operational state; just ensure it's visible immediately.
+      isOnline: true,
+      lastSeenAt: now,
     },
     include: { location: true, campus: true, currentTask: true },
   });

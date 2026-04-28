@@ -211,6 +211,17 @@ export function LocationCombobox({
     limit,
   });
 
+  const selectItem = React.useCallback(
+    (item: LocationSuggestion) => {
+      if (!item) return;
+      lastSelectedRef.current = item.place_name;
+      setQuery(item.place_name);
+      onChange?.(item);
+      setOpen(false);
+    },
+    [onChange, setQuery]
+  );
+
   const showEmpty = !loading && !error && query.trim().length >= 3 && items.length === 0;
 
   return (
@@ -257,12 +268,12 @@ export function LocationCombobox({
                   <CommandItem
                     key={item.id}
                     value={item.place_name}
-                    onSelect={() => {
-                      lastSelectedRef.current = item.place_name;
-                      setQuery(item.place_name);
-                      onChange?.(item);
-                      setOpen(false);
+                    // Prevent focus from leaving the input before cmdk processes selection.
+                    // Without this, clicks can appear to do nothing in some browser/radix setups.
+                    onMouseDown={(e) => {
+                      e.preventDefault();
                     }}
+                    onSelect={() => selectItem(item)}
                   >
                     {item.place_name}
                   </CommandItem>

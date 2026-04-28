@@ -11,6 +11,8 @@ async function initKv({ logger }) {
   // In-memory fallback supports basic TTL semantics so higher-level code
   // can rely on expirations even when Redis is unavailable.
   const memoryKv = new Map();
+  // In-memory fallback for Redis SET semantics.
+  const memorySets = new Map();
 
   function nowMs() {
     return Date.now();
@@ -31,6 +33,46 @@ async function initKv({ logger }) {
       return null;
     }
     return entry.value;
+  }
+
+  function memorySAdd(key, ...members) {
+    const k = String(key);
+    let set = memorySets.get(k);
+    if (!set) {
+      set = new Set();
+      memorySets.set(k, set);
+    }
+    let added = 0;
+    for (const m of members) {
+      if (m === undefined || m === null) continue;
+      const s = String(m);
+      if (!set.has(s)) {
+        set.add(s);
+        added += 1;
+      }
+    }
+    return added;
+  }
+
+  function memorySRem(key, ...members) {
+    const k = String(key);
+    const set = memorySets.get(k);
+    if (!set) return 0;
+    let removed = 0;
+    for (const m of members) {
+      if (m === undefined || m === null) continue;
+      const s = String(m);
+      if (set.delete(s)) removed += 1;
+    }
+    if (set.size === 0) memorySets.delete(k);
+    return removed;
+  }
+
+  function memorySMembers(key) {
+    const k = String(key);
+    const set = memorySets.get(k);
+    if (!set) return [];
+    return Array.from(set);
   }
 
   function disableRedis(err) {
@@ -117,6 +159,17 @@ async function initKv({ logger }) {
       }
       return memoryGet(key);
     },
+    async exists(key) {
+      if (redisAvailable && redis) {
+        try {
+          const n = await redis.exists(key);
+          return Number(n) > 0;
+        } catch (e) {
+          disableRedis(e);
+        }
+      }
+      return memoryGet(key) !== null;
+    },
     async del(key) {
       if (redisAvailable && redis) {
         try {
@@ -127,6 +180,68 @@ async function initKv({ logger }) {
         }
       }
       memoryKv.delete(key);
+    },
+
+    // Redis Set helpers (best-effort). Used for live robot indexing.
+    async sadd(key, ...members) {
+      if (redisAvailable && redis) {
+        try {
+          // ioredis returns number added
+          return await redis.sadd(key, ...members.map((m) => String(m)));
+        } catch (e) {
+          disableRedis(e);
+        }
+      }
+      return memorySAdd(key, ...members);
+    },
+    async srem(key, ...members) {
+      if (redisAvailable && redis) {
+        try {
+          return await redis.srem(key, ...members.map((m) => String(m)));
+        } catch (e) {
+          disableRedis(e);
+        }
+      }
+      return memorySRem(key, ...members);
+    },
+    async smembers(key) {
+      if (redisAvailable && redis) {
+        try {
+          const out = await redis.smembers(key);
+          return Array.isArray(out) ? out : [];
+        } catch (e) {
+          disableRedis(e);
+        }
+      }
+      return memorySMembers(key);
+    },
+
+    // Batch set using Redis pipelining (performance-critical for simulation).
+    // entries: [{ key, value, ex }]
+    async setManyEx(entries) {
+      if (!Array.isArray(entries) || entries.length === 0) return;
+
+      if (redisAvailable && redis) {
+        try {
+          const pipeline = redis.pipeline();
+          for (const e of entries) {
+            if (!e || !e.key) continue;
+            const ex = typeof e.ex === "number" && Number.isFinite(e.ex) && e.ex > 0 ? Math.floor(e.ex) : null;
+            if (ex) pipeline.set(String(e.key), e.value, "EX", ex);
+            else pipeline.set(String(e.key), e.value);
+          }
+          await pipeline.exec();
+          return;
+        } catch (e) {
+          disableRedis(e);
+        }
+      }
+
+      // Fallback: sequential set
+      for (const e of entries) {
+        if (!e || !e.key) continue;
+        await kv.set(String(e.key), e.value, { ex: e.ex });
+      }
     },
 
     // Best-effort health signal for monitoring endpoints.

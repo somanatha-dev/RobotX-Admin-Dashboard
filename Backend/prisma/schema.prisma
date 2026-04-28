@@ -75,6 +75,25 @@ model User {
   password  String
   role      Role     @default(SUPER_ADMIN)
 
+  pinAuth AdminPinAuth?
+
+  createdAt DateTime @default(now())
+}
+
+
+//////////////////////////////////////////////////////
+// 🔐 ADMIN PIN AUTH (SEPARATE TABLE)
+//////////////////////////////////////////////////////
+
+
+model AdminPinAuth {
+  id        String   @id @default(uuid())
+
+  pinHash   String
+
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   createdAt DateTime @default(now())
 }
 

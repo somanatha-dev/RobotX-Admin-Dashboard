@@ -41,7 +41,12 @@ async function updateSnapshotState(kv, robotId, { lat, lon, battery }) {
   await kv.set(`snapshotState:${robotId}`, JSON.stringify(state), { ex: 86400 });
 }
 
-async function shouldStoreSnapshotSmart(kv, robotId, { lat, lon, battery }, { maxSeconds = 15, moveMeters = 10, batteryDelta = 2 } = {}) {
+async function shouldStoreSnapshotSmart(
+  kv,
+  robotId,
+  { lat, lon, battery },
+  { maxSeconds = 15, moveDegreesThreshold = 0.0001, batteryDelta = 2 } = {}
+) {
   const key = `snapshotState:${robotId}`;
   const now = Date.now();
   const raw = await kv.get(key);
@@ -61,10 +66,14 @@ async function shouldStoreSnapshotSmart(kv, robotId, { lat, lon, battery }, { ma
   const pLon = typeof prev.lon === "number" ? prev.lon : null;
   const pBat = typeof prev.battery === "number" ? prev.battery : null;
 
-  if (pLat !== null && pLon !== null && typeof lat === "number" && typeof lon === "number") {
-    const moved = haversineMeters(pLat, pLon, lat, lon);
-    if (moved >= moveMeters) return true;
-  }
+  if (
+    pLat !== null &&
+    pLon !== null &&
+    typeof lat === "number" &&
+    typeof lon === "number" &&
+    (Math.abs(lat - pLat) > moveDegreesThreshold || Math.abs(lon - pLon) > moveDegreesThreshold)
+  )
+    return true;
 
   if (pBat !== null && typeof battery === "number") {
     if (Math.abs(battery - pBat) >= batteryDelta) return true;
@@ -239,7 +248,18 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
       };
 
       // 2) Store in Redis (final format)
-      await kv.set(`robot:${robotId}`, JSON.stringify(fullState), { ex: 10 });
+      await kv.set(
+        `robot:${robotId}`,
+        JSON.stringify({
+          lat: fullState.lat,
+          lon: fullState.lon,
+          battery: fullState.battery,
+          status: fullState.status,
+          speed: fullState.speed,
+          lastSeenAt: fullState.lastSeenAt,
+        }),
+        { ex: 15 }
+      );
 
       // 3) Update DB (light)
       await prisma.robot.update({
