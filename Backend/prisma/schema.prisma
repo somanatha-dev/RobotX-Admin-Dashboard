@@ -131,6 +131,7 @@ model Location {
 model Robot {
   id            String   @id @default(uuid())
   robotId       String   @unique
+  name          String?
 
   //////////////////////////////////////////////////
   // 🔥 REQUIRED (FILTER SYSTEM)
@@ -141,6 +142,11 @@ model Robot {
 
   campusId      String?
   campus        Campus?  @relation(fields: [campusId], references: [id])
+
+  // DTARO: zone assignment + utilization tracking
+  zoneId        String?
+  zone          Zone?    @relation(fields: [zoneId], references: [id], onDelete: SetNull)
+  utilization   Float?   @default(0)
 
   status        RobotStatus @default(IDLE)
   battery       Float?
@@ -182,7 +188,51 @@ model Robot {
   @@index([locationId])
   @@index([locationId, isOnline])
   @@index([campusId])
+  @@index([zoneId])
   @@index([lat, lon])
+}
+
+//////////////////////////////////////////////////////
+// ZONE (DTARO: GEOGRAPHIC SUB-AREA)
+//////////////////////////////////////////////////////
+
+model Zone {
+  id        String   @id @default(uuid())
+  name      String   @unique
+
+  minLat    Float
+  maxLat    Float
+  minLon    Float
+  maxLon    Float
+
+  robots    Robot[]
+  obstacles ObstacleEvent[]
+
+  createdAt DateTime @default(now())
+}
+
+//////////////////////////////////////////////////////
+// OBSTACLE EVENT (DTARO: ENVIRONMENTAL KNOWLEDGE BASE)
+//////////////////////////////////////////////////////
+
+model ObstacleEvent {
+  id               String   @id @default(uuid())
+  obstacleId       String   @unique
+
+  lat              Float
+  lon              Float
+
+  zoneId           String?
+  zone             Zone?    @relation(fields: [zoneId], references: [id], onDelete: SetNull)
+
+  severity         String   @default("MEDIUM")
+  reportingRobotId String?
+
+  expiresAt        DateTime
+  createdAt        DateTime @default(now())
+
+  @@index([zoneId])
+  @@index([expiresAt])
 }
 
 //////////////////////////////////////////////////////

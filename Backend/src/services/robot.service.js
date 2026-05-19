@@ -15,10 +15,19 @@ async function commissionRobot(prisma, body) {
   const campusId = toStringOrNull(body?.campusId);
   const latIn = toNumberOrNull(body?.lat);
   const lonIn = toNumberOrNull(body?.lon);
+  const name = toStringOrNull(body?.name) || null;
 
   if (!robotCode || !locationId) {
     const err = new Error("robotId and locationId are required");
     err.status = 400;
+    throw err;
+  }
+
+  // Reject duplicate robot IDs — each unit must have a unique identifier.
+  const duplicate = await prisma.robot.findUnique({ where: { robotId: robotCode }, select: { id: true } });
+  if (duplicate) {
+    const err = new Error(`A robot with ID "${robotCode}" is already commissioned. Choose a different identifier.`);
+    err.status = 409;
     throw err;
   }
 
@@ -44,10 +53,10 @@ async function commissionRobot(prisma, body) {
   const now = new Date();
   const battery = clamp(Math.round(randFloat(70, 100)), 0, 100);
 
-  return prisma.robot.upsert({
-    where: { robotId: robotCode },
-    create: {
+  return prisma.robot.create({
+    data: {
       robotId: robotCode,
+      name,
       locationId,
       campusId,
       status: "IDLE",
@@ -55,15 +64,6 @@ async function commissionRobot(prisma, body) {
       lat,
       lon,
       speed: 0,
-      isOnline: true,
-      lastSeenAt: now,
-    },
-    update: {
-      locationId,
-      campusId,
-      ...(lat === null ? {} : { lat }),
-      ...(lon === null ? {} : { lon }),
-      // Do not clobber existing operational state; just ensure it's visible immediately.
       isOnline: true,
       lastSeenAt: now,
     },

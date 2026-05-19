@@ -5,6 +5,7 @@ import { Outlet } from 'react-router-dom';
 import AuthChallengeModal from '../components/modals/AuthChallengeModal.jsx';
 import CreateTaskModal from '../components/modals/CreateTaskModal.jsx';
 import DecisionRequiredModal from '../components/modals/DecisionRequiredModal.jsx';
+import * as tasksApi from '../lib/api/tasks.js';
 
 import AppSidebar from '../components/layout/AppSidebar.jsx';
 import AppTopBar from '../components/layout/AppTopBar.jsx';
@@ -16,7 +17,6 @@ export default function Layout() {
     authRequest,
     isCreatingTask,
     decisionRequest,
-    robots,
   } = useAppState();
 
   const {
@@ -25,6 +25,7 @@ export default function Layout() {
     createTask,
     requestAuth,
     setDecisionRequest,
+    addEvent,
   } = useAppActions();
 
   return (
@@ -50,16 +51,33 @@ export default function Layout() {
       </main>
 
       {authRequest && <AuthChallengeModal request={authRequest} onClose={() => setAuthRequest(null)} />}
+
       {isCreatingTask && (
-        <CreateTaskModal robots={robots} onClose={() => setIsCreatingTask(false)} onCreate={createTask} />
+        <CreateTaskModal onClose={() => setIsCreatingTask(false)} onCreate={createTask} />
       )}
 
       {decisionRequest && !authRequest && (
         <DecisionRequiredModal
           decisionRequest={decisionRequest}
           onWait={() => setDecisionRequest(null)}
-          onReroute={() => requestAuth('SWARM OVERRIDE: REROUTE', () => setDecisionRequest(null))}
-          onCancel={() => requestAuth('SWARM OVERRIDE: CANCEL TASK', () => setDecisionRequest(null))}
+          onReroute={() =>
+            requestAuth('SWARM OVERRIDE: REROUTE', () => {
+              addEvent(`Manual reroute confirmed for ${decisionRequest?.robotId}`, 'info');
+              setDecisionRequest(null);
+            })
+          }
+          onCancel={() =>
+            requestAuth('SWARM OVERRIDE: CANCEL TASK', async () => {
+              // Direct API call — cannot use the cancelTask action because it
+              // wraps in requestAuth again, which would nest two auth modals.
+              const taskId = decisionRequest?.taskId;
+              if (taskId) {
+                await tasksApi.cancelTask(taskId).catch(() => {});
+                addEvent(`Task ${taskId} cancelled via swarm override`, 'warning');
+              }
+              setDecisionRequest(null);
+            })
+          }
         />
       )}
     </div>

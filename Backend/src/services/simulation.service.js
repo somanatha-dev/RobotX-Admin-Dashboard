@@ -1,35 +1,12 @@
 const { toStringOrNull, toNumberOrNull } = require("../utils/parse");
 const telemetryService = require("./telemetry.service");
 const { getRobotSocket } = require("../sockets/robotSockets");
+const { updatePlannedPath, updateUtilization, updateZone, getRobotState } = require("./robotRegistry.service");
+const { getZoneForCoordinates } = require("./zoneManager.service");
+const { haversineMeters } = require("../utils/distance");
+const { safeJsonParse } = require("../utils/json");
 
 const ROBOT_STATUS = new Set(["IDLE", "ACTIVE", "PAUSED", "OFFLINE", "ERROR", "ISSUES"]);
-
-function clamp(n, min, max) {
-  return Math.max(min, Math.min(max, n));
-}
-
-function randFloat(min, max) {
-  return min + Math.random() * (max - min);
-}
-
-function haversineMeters(aLat, aLon, bLat, bLon) {
-  const toRad = (d) => (d * Math.PI) / 180;
-  const R = 6371000;
-  const dLat = toRad(bLat - aLat);
-  const dLon = toRad(bLon - aLon);
-  const s1 = Math.sin(dLat / 2);
-  const s2 = Math.sin(dLon / 2);
-  const aa = s1 * s1 + Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * s2 * s2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(aa)));
-}
-
-function safeJsonParse(raw) {
-  try {
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
 
 function clamp01(x) {
   if (typeof x !== "number" || !Number.isFinite(x)) return 0;
@@ -40,16 +17,7 @@ function lerp(a, b, t) {
   return a + (b - a) * clamp01(t);
 }
 
-function bearingDeg(fromLat, fromLon, toLat, toLon) {
-  const toRad = (d) => (d * Math.PI) / 180;
-  const lat1 = toRad(fromLat);
-  const lat2 = toRad(toLat);
-  const dLon = toRad(toLon - fromLon);
-  const y = Math.sin(dLon) * Math.cos(lat2);
-  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
-  const brng = (Math.atan2(y, x) * 180) / Math.PI;
-  return (brng + 360) % 360;
-}
+const { bearingDeg } = require("../utils/distance");
 
 function headingAtan2Deg(currentLat, currentLon, nextLat, nextLon) {
   // Spec: atan2(nextLon - currentLon, nextLat - currentLat)
@@ -588,7 +556,7 @@ function createSimulationEngine({ prisma, kv, io, logger }) {
               if (taskStep?.completed && taskStep?.taskId) {
                 try {
                   await prisma.$transaction(async (tx) => {
-                    await tx.task.update({ where: { taskId: String(taskStep.taskId) }, data: { status: "COMPLETED" } });
+                    await tx.task.update({ where: { taskId: String(taskStep.taskId) }, data: { status: "COMPLETED", completedAt: now } });
                     await tx.robot.update({
                       where: { robotId },
                       data: { currentTaskId: null, status: "IDLE", speed: 0, isOnline: true, lastSeenAt: now },
@@ -596,6 +564,64 @@ function createSimulationEngine({ prisma, kv, io, logger }) {
                   });
                 } catch {
                   // ignore
+                }
+
+                // DTARO: clear planned path and assigned task from registry
+                try {
+                  await updatePlannedPath(kv, robotId, null);
+                } catch {
+                  // ignore
+                }
+              }
+
+              // DTARO: update planned path in registry when robot has active task
+              if (taskStep && !taskStep.completed && taskStep.taskId) {
+                try {
+                  const pathRaw = await kv.get(`taskPath:${taskStep.taskId}`);
+                  if (pathRaw) {
+                    const path = safeJsonParse(pathRaw);
+                    const activePath = taskStep.segment === "toDrop" ? path?.toDrop : path?.toPickup;
+                    if (Array.isArray(activePath)) {
+                      await updatePlannedPath(kv, robotId, activePath.slice(taskStep.pathIndex || 0));
+                    }
+                  }
+                } catch {
+                  // ignore
+                }
+              }
+
+              // DTARO: update utilization ratio (ACTIVE = busy, IDLE = free)
+              try {
+                const prevState = await getRobotState(kv, robotId);
+                const prevUtil = typeof prevState?.utilization === "number" ? prevState.utilization : 0;
+                // Exponential moving average: α=0.05 keeps history while responding to changes
+                const alpha = 0.05;
+                const isActive = finalStatus === "ACTIVE" ? 1 : 0;
+                const newUtil = prevUtil + alpha * (isActive - prevUtil);
+                await updateUtilization(kv, robotId, newUtil);
+              } catch {
+                // ignore
+              }
+
+              // DTARO: update zone based on current position
+              if (typeof next.lat === "number" && typeof next.lon === "number") {
+                try {
+                  const zone = await getZoneForCoordinates(prisma, kv, next.lat, next.lon);
+                  const newZoneId = zone?.id || null;
+                  const prevRegState = await getRobotState(kv, robotId);
+                  if (newZoneId !== (prevRegState?.zoneId || null)) {
+                    await updateZone(kv, robotId, newZoneId);
+                    if (io && newZoneId !== null) {
+                      io.to("dashboard").emit("ZONE_UPDATED", {
+                        robotId,
+                        newZoneId,
+                        zoneName: zone?.name || null,
+                        timestamp: nowMs,
+                      });
+                    }
+                  }
+                } catch {
+                  // ignore zone update failure
                 }
               }
 

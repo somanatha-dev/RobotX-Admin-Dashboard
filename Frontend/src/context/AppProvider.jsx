@@ -16,6 +16,7 @@ import * as authApi from '../lib/api/auth.js';
 import * as robotsApi from '../lib/api/robots.js';
 import * as tasksApi from '../lib/api/tasks.js';
 import * as locationsApi from '../lib/api/locations.js';
+import { socket } from '../lib/socket.js';
 
 export default function AppProvider({ children }) {
   const rrNavigate = useNavigate();
@@ -46,6 +47,9 @@ export default function AppProvider({ children }) {
   }, [preferences]);
 
   const [robots, setRobots] = useState([]);
+  const robotsRef = useRef([]);
+  useEffect(() => { robotsRef.current = robots; }, [robots]);
+
   const [tasks, setTasks] = useState([]);
   const [events, setEvents] = useState([
     { id: 1, msg: 'System initialized successfully', time: 'Just now', type: 'info' },
@@ -83,13 +87,23 @@ export default function AppProvider({ children }) {
     [rrNavigate]
   );
 
+  // Guard: prevents concurrent refreshDbState() calls from racing each other.
+  // Multiple actions (login, commission, cancel) can fire near-simultaneously;
+  // without this, two parallel Promise.all fetches could set stale state.
+  const refreshingRef = useRef(false);
   const refreshDbState = useCallback(async () => {
-    const [robotsNext, tasksNext] = await Promise.all([
-      robotsApi.getRobotsState(),
-      tasksApi.listTasks(),
-    ]);
-    setRobots(Array.isArray(robotsNext) ? robotsNext : []);
-    setTasks(Array.isArray(tasksNext) ? tasksNext : []);
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
+    try {
+      const [robotsNext, tasksNext] = await Promise.all([
+        robotsApi.getRobotsState(),
+        tasksApi.listTasks(),
+      ]);
+      setRobots(Array.isArray(robotsNext) ? robotsNext : []);
+      setTasks(Array.isArray(tasksNext) ? tasksNext : []);
+    } finally {
+      refreshingRef.current = false;
+    }
   }, []);
 
   const login = useCallback(
@@ -183,10 +197,17 @@ export default function AppProvider({ children }) {
   const stopAll = useCallback(() => {
     requestAuth(
       'EXECUTE GLOBAL EMERGENCY STOP',
-      () => {
+      async () => {
         setSystemOnline(false);
-        setRobots((prev) => prev.map((r) => ({ ...r, status: 'stopped', speed: 0 })));
         addEvent('EMERGENCY STOP EXECUTED BY COMMANDER', 'critical');
+
+        // Send STOP command to every online robot via the backend.
+        const targets = robotsRef.current.filter((r) => r.isOnline);
+        await Promise.allSettled(
+          targets.map((r) => robotsApi.sendCommand(r.robotId, 'STOP').catch(() => {}))
+        );
+
+        setRobots((prev) => prev.map((r) => ({ ...r, status: 'PAUSED', speed: 0 })));
       },
       true
     );
@@ -197,6 +218,7 @@ export default function AppProvider({ children }) {
       requestAuth(`COMMISSION NEW UNIT: ${robotData.id}`, async () => {
         const zoneName = String(robotData.zone || '').trim();
         const robotId = String(robotData.id || '').trim();
+        const robotName = String(robotData.name || '').trim() || null;
         if (!zoneName || !robotId) return;
 
         const lat = robotData?.lat ?? robotData?.zoneLat ?? null;
@@ -212,6 +234,7 @@ export default function AppProvider({ children }) {
 
         await robotsApi.commissionRobot({
           robotId,
+          name: robotName,
           locationId: location.id,
           lat,
           lon,
@@ -285,6 +308,139 @@ export default function AppProvider({ children }) {
   const effectiveRoute = session.isAuthenticated ? '/' : '/login';
 
   useDecisionCountdown({ decisionRequest, setDecisionRequest, addEvent });
+
+  // ── Live socket subscriptions ─────────────────────────────────────────────
+  // Keep global robots/tasks state in sync with backend events so every page
+  // (Dashboard, Robots, Tasks) reflects live data without a full refresh.
+  useEffect(() => {
+    // Single-robot telemetry update — keep battery/status/speed/position live.
+    const onRobotUpdate = (data) => {
+      const robotId = String(data?.robotId || '').trim();
+      if (!robotId) return;
+      setRobots((prev) =>
+        prev.map((r) => {
+          if (String(r.robotId || '').trim() !== robotId) return r;
+          return {
+            ...r,
+            ...(typeof data.lat === 'number' ? { lat: data.lat } : {}),
+            ...(typeof data.lon === 'number' ? { lon: data.lon } : {}),
+            ...(typeof data.battery === 'number' ? { battery: data.battery } : {}),
+            ...(typeof data.speed === 'number' ? { speed: data.speed } : {}),
+            ...(typeof data.status === 'string' ? { status: data.status } : {}),
+            ...(typeof data.isOnline === 'boolean' ? { isOnline: data.isOnline } : {}),
+          };
+        })
+      );
+    };
+
+    // Robot fault / status change pushed by ROBOT_FAULT handler.
+    const onRobotUpdated = (data) => {
+      const robotId = String(data?.robotId || '').trim();
+      if (!robotId) return;
+      setRobots((prev) =>
+        prev.map((r) => {
+          if (String(r.robotId || '').trim() !== robotId) return r;
+          return {
+            ...r,
+            ...(typeof data.status === 'string' ? { status: data.status } : {}),
+          };
+        })
+      );
+      if (data?.fault || data?.healthStatus === 'FAULT') {
+        addEvent(`Fault on ${robotId}: ${data?.fault?.message || 'hardware fault'}`, 'critical');
+      }
+    };
+
+    // Task status change (COMPLETED, REROUTED, CANCELLED, FAILED).
+    const TERMINAL_STATUSES = new Set(['COMPLETED', 'CANCELLED', 'FAILED']);
+    const onTaskUpdated = (data) => {
+      const taskId = String(data?.taskId || '').trim();
+      if (!taskId) return;
+      if (data?.status === 'COMPLETED') {
+        addEvent(`Task ${taskId} completed`, 'info');
+      } else if (data?.status === 'CANCELLED') {
+        addEvent(`Task ${taskId} cancelled`, 'warning');
+      } else if (data?.status === 'FAILED') {
+        addEvent(`Task ${taskId} failed`, 'critical');
+      }
+      setTasks((prev) =>
+        prev.map((t) => {
+          if (String(t.taskId || '').trim() !== taskId) return t;
+          return {
+            ...t,
+            ...(typeof data.status === 'string' ? { status: data.status } : {}),
+          };
+        })
+      );
+      // Release robot from task on any terminal status so the UI never shows stale task.
+      if (TERMINAL_STATUSES.has(data?.status) && data?.robotId) {
+        const rid = String(data.robotId).trim();
+        setRobots((prev) =>
+          prev.map((r) => {
+            if (String(r.robotId || '').trim() !== rid) return r;
+            return { ...r, status: 'IDLE', currentTaskId: null, currentTask: null, speed: 0 };
+          })
+        );
+      }
+    };
+
+    // Obstacle detected — open the decision modal.
+    const onAlertCreated = (data) => {
+      const reporterId = String(data?.reportingRobotId || '').trim();
+      const severity = String(data?.severity || 'MEDIUM');
+      const zone = String(data?.zoneName || data?.zoneId || '');
+      const lat = typeof data?.lat === 'number' ? data.lat.toFixed(4) : '?';
+      const lon = typeof data?.lon === 'number' ? data.lon.toFixed(4) : '?';
+
+      // Look up the robot's active task ID from the current robots snapshot.
+      const reporter = reporterId
+        ? robotsRef.current.find((r) => String(r.robotId || '').trim() === reporterId)
+        : null;
+      const activeTaskId = reporter?.currentTask?.taskId || '';
+
+      addEvent(
+        `Obstacle detected${reporterId ? ` by ${reporterId}` : ''} — ${severity}${zone ? ` in ${zone}` : ''}`,
+        'critical'
+      );
+
+      setDecisionRequest((prev) => {
+        // Don't overwrite an active decision already being shown.
+        if (prev) return prev;
+        return {
+          robotId: reporterId || 'UNKNOWN',
+          taskId: activeTaskId || String(data?.obstacleId || ''),
+          issue: `${severity} obstacle at (${lat}, ${lon})${zone ? ` in ${zone}` : ''}. Backend is auto-rerouting.`,
+          countdown: 60,
+        };
+      });
+    };
+
+    // Reroute notification — route overlays handled by useRobotStream.
+    const onRerouteAlert = (data) => {
+      const robotId = String(data?.robotId || '').trim();
+      if (robotId) {
+        addEvent(`Robot ${robotId} rerouted around obstacle`, 'warning');
+      }
+    };
+
+    // Subscribe to the single canonical telemetry event.
+    // "robot_update" and "ROBOT_UPDATE" were legacy aliases removed from the
+    // backend; subscribing to all three was firing the same handler 3× per tick.
+    socket.on('robot:update', onRobotUpdate);
+    socket.on('ROBOT_UPDATED', onRobotUpdated);
+    socket.on('TASK_UPDATED', onTaskUpdated);
+    socket.on('ALERT_CREATED', onAlertCreated);
+    socket.on('REROUTE_ALERT', onRerouteAlert);
+
+    return () => {
+      socket.off('robot:update', onRobotUpdate);
+      socket.off('ROBOT_UPDATED', onRobotUpdated);
+      socket.off('TASK_UPDATED', onTaskUpdated);
+      socket.off('ALERT_CREATED', onAlertCreated);
+      socket.off('REROUTE_ALERT', onRerouteAlert);
+    };
+  }, [addEvent, setDecisionRequest]);
+  // ─────────────────────────────────────────────────────────────────────────
 
   useNotificationsDismiss({
     isOpen: isNotificationsOpen,

@@ -7,24 +7,10 @@ import { Dialog, DialogContent, DialogTitle } from '../ui/dialog.jsx';
 import { Input } from '../ui/input.jsx';
 import { Label } from '../ui/label.jsx';
 
-export default function CreateTaskModal({ robots, onClose, onCreate }) {
-  const [form, setForm] = useState({
-    pickup: '',
-    drop: '',
-  });
+export default function CreateTaskModal({ onClose, onCreate }) {
+  const [form, setForm] = useState({ pickup: '', drop: '' });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
-
-  const normalizeStatus = (s) => String(s || '').toUpperCase();
-
-  const pickAutoRobotId = () => {
-    const pool = Array.isArray(robots) ? robots : [];
-    const preferred =
-      pool.find((r) => r.isOnline && normalizeStatus(r.status) === 'IDLE') ||
-      pool.find((r) => r.isOnline) ||
-      pool[0];
-    return preferred?.robotId || '';
-  };
 
   const geocodeOne = async (query) => {
     const token = import.meta.env.VITE_MAPBOX_TOKEN;
@@ -43,11 +29,7 @@ export default function CreateTaskModal({ robots, onClose, onCreate }) {
     if (!feature || !Array.isArray(feature.center) || feature.center.length < 2) return null;
 
     const [lon, lat] = feature.center;
-    return {
-      label: feature.place_name || q,
-      lat,
-      lon,
-    };
+    return { label: feature.place_name || q, lat, lon };
   };
 
   const handleSubmit = async (e) => {
@@ -55,17 +37,14 @@ export default function CreateTaskModal({ robots, onClose, onCreate }) {
     setError('');
     setIsSubmitting(true);
     try {
-      const robotId = pickAutoRobotId();
-      if (!robotId) throw new Error('No commissioned robots available');
-
       const pickupGeo = await geocodeOne(form.pickup);
       const dropGeo = await geocodeOne(form.drop);
 
       if (!pickupGeo) throw new Error('Pickup address not found');
       if (!dropGeo) throw new Error('Drop address not found');
 
+      // No robotId — backend DTARO cost function selects the optimal robot.
       onCreate({
-        robotId,
         pickup: pickupGeo.label,
         pickupLat: pickupGeo.lat,
         pickupLon: pickupGeo.lon,
@@ -95,7 +74,9 @@ export default function CreateTaskModal({ robots, onClose, onCreate }) {
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
           <Card className="p-4 bg-muted/30">
             <div className="text-sm text-muted-foreground">Assignment</div>
-            <div className="mt-2 text-sm font-medium text-foreground">Robot is auto-assigned based on availability.</div>
+            <div className="mt-2 text-sm font-medium text-foreground">
+              Robot auto-assigned by DTARO cost function (distance, battery, utilization).
+            </div>
           </Card>
 
           {error ? <div className="text-sm text-destructive font-medium">{error}</div> : null}
@@ -106,6 +87,7 @@ export default function CreateTaskModal({ robots, onClose, onCreate }) {
               <Input
                 value={form.pickup}
                 onChange={(e) => setForm((prev) => ({ ...prev, pickup: e.target.value }))}
+                placeholder="e.g. Gate 1, RNSIT"
               />
             </div>
             <div className="space-y-2">
@@ -113,6 +95,7 @@ export default function CreateTaskModal({ robots, onClose, onCreate }) {
               <Input
                 value={form.drop}
                 onChange={(e) => setForm((prev) => ({ ...prev, drop: e.target.value }))}
+                placeholder="e.g. Block C, RNSIT"
               />
             </div>
           </div>
@@ -121,7 +104,11 @@ export default function CreateTaskModal({ robots, onClose, onCreate }) {
             <Button type="button" variant="outline" className="flex-1" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" className="flex-1" disabled={isSubmitting}>
+            <Button
+              type="submit"
+              className="flex-1"
+              disabled={isSubmitting || !form.pickup.trim() || !form.drop.trim()}
+            >
               {isSubmitting ? 'Creating…' : 'Create'}
             </Button>
           </div>

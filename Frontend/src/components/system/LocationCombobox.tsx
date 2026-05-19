@@ -1,15 +1,20 @@
 // @ts-nocheck
+/**
+ * LocationCombobox
+ *
+ * Uses Mapbox Search Box API v1 (suggest + retrieve) instead of the older
+ * Geocoding v5 endpoint.  The Search Box API has far better POI coverage —
+ * colleges, hospitals, landmarks, and named buildings are all indexed.
+ *
+ * Flow:
+ *   1. User types  →  suggest endpoint returns name/id pairs
+ *   2. User clicks →  retrieve endpoint returns exact lat/lon
+ *   3. onChange fires with { place_name, lat, lon, center }
+ *
+ * The dropdown opens UPWARD so it never pushes page content down.
+ */
 import * as React from "react";
-
-import { Button } from "../ui/button.jsx";
-import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
-import {
-  Command,
-  CommandEmpty,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "../ui/command";
+import { MapPin, Loader2 } from "lucide-react";
 
 export type LocationSuggestion = {
   id: string;
@@ -19,36 +24,108 @@ export type LocationSuggestion = {
   lon: number;
 };
 
-type MapboxFeature = {
-  id?: string;
-  place_name?: string;
-  center?: [number, number];
+type Suggestion = {
+  mapbox_id: string;
+  name: string;
+  full_address: string;
+  place_formatted: string;
 };
 
-type UseMapboxLocationsArgs = {
-  query: string;
-  debounceMs: number;
-  token?: string;
-  country?: string | null;
-  limit: number;
-};
+const PROXIMITY = "77.5155,12.9279"; // Bengaluru campus bias
 
-function useMapboxLocations({
+// ── Step 1: suggest ──────────────────────────────────────────────────────────
+
+async function fetchSuggestions(
+  q: string,
+  token: string,
+  sessionToken: string,
+  country: string | null | undefined,
+  limit: number,
+  signal: AbortSignal
+): Promise<Suggestion[]> {
+  const url = new URL("https://api.mapbox.com/search/searchbox/v1/suggest");
+  url.searchParams.set("q", q);
+  url.searchParams.set("access_token", token);
+  url.searchParams.set("session_token", sessionToken);
+  url.searchParams.set("limit", String(limit));
+  url.searchParams.set("language", "en");
+  url.searchParams.set("proximity", PROXIMITY);
+  if (country) url.searchParams.set("country", country);
+
+  const res = await fetch(url.toString(), { signal });
+  if (!res.ok) throw new Error(`Search failed (${res.status})`);
+  const data = await res.json();
+
+  return (Array.isArray(data?.suggestions) ? data.suggestions : []).map((s: any) => ({
+    mapbox_id: String(s.mapbox_id || ""),
+    name: String(s.name || ""),
+    full_address: String(s.full_address || s.place_formatted || s.name || ""),
+    place_formatted: String(s.place_formatted || ""),
+  }));
+}
+
+// ── Step 2: retrieve ─────────────────────────────────────────────────────────
+
+async function retrieveLocation(
+  mapboxId: string,
+  token: string,
+  sessionToken: string
+): Promise<LocationSuggestion | null> {
+  const url = new URL(
+    `https://api.mapbox.com/search/searchbox/v1/retrieve/${encodeURIComponent(mapboxId)}`
+  );
+  url.searchParams.set("access_token", token);
+  url.searchParams.set("session_token", sessionToken);
+
+  const res = await fetch(url.toString());
+  if (!res.ok) return null;
+  const data = await res.json();
+
+  const feature = data?.features?.[0];
+  if (!feature) return null;
+
+  const coords = feature.geometry?.coordinates;
+  if (!Array.isArray(coords) || coords.length < 2) return null;
+
+  const lon = coords[0] as number;
+  const lat = coords[1] as number;
+  const props = feature.properties || {};
+  const placeName =
+    String(props.full_address || props.name || mapboxId);
+
+  return {
+    id: mapboxId,
+    place_name: placeName,
+    center: [lon, lat],
+    lat,
+    lon,
+  };
+}
+
+// ── Suggestions hook ─────────────────────────────────────────────────────────
+
+function useSuggestions({
   query,
   debounceMs,
   token,
+  sessionToken,
   country,
   limit,
-}: UseMapboxLocationsArgs) {
-  const [items, setItems] = React.useState<LocationSuggestion[]>([]);
+}: {
+  query: string;
+  debounceMs: number;
+  token?: string;
+  sessionToken: string;
+  country?: string | null;
+  limit: number;
+}) {
+  const [items, setItems] = React.useState<Suggestion[]>([]);
   const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string>("");
-
+  const [error, setError] = React.useState("");
   const abortRef = React.useRef<AbortController | null>(null);
 
   React.useEffect(() => {
     const q = query.trim();
-
     setError("");
 
     if (abortRef.current) {
@@ -59,11 +136,11 @@ function useMapboxLocations({
     if (!token) {
       setItems([]);
       setLoading(false);
-      if (q.length >= 3) setError("Missing VITE_MAPBOX_TOKEN (Mapbox access token)");
+      if (q.length >= 2) setError("VITE_MAPBOX_TOKEN is not set");
       return;
     }
 
-    if (q.length < 3) {
+    if (q.length < 2) {
       setItems([]);
       setLoading(false);
       return;
@@ -72,65 +149,22 @@ function useMapboxLocations({
     const timer = window.setTimeout(async () => {
       const controller = new AbortController();
       abortRef.current = controller;
-
       setLoading(true);
 
       try {
-        const url = new URL(
-          `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(q)}.json`
+        const results = await fetchSuggestions(
+          q,
+          token,
+          sessionToken,
+          country,
+          limit,
+          controller.signal
         );
-        url.searchParams.set("access_token", token);
-        url.searchParams.set("autocomplete", "true");
-        url.searchParams.set("fuzzyMatch", "true");
-        url.searchParams.set("limit", String(limit));
-        url.searchParams.set(
-          "types",
-          "place,locality,neighborhood,address"
-        );
-        url.searchParams.set("language", "en");
-        if (country) url.searchParams.set("country", country);
-
-        const res = await fetch(url.toString(), {
-          method: "GET",
-          signal: controller.signal,
-        });
-
-        if (!res.ok) {
-          throw new Error("Failed to fetch locations");
-        }
-
-        const data = (await res.json()) as { features?: MapboxFeature[] };
-
-        const next = Array.isArray(data?.features)
-          ? data.features
-              .filter((f) =>
-                Boolean(
-                  f &&
-                    typeof f.place_name === "string" &&
-                    Array.isArray(f.center) &&
-                    typeof f.center[0] === "number" &&
-                    typeof f.center[1] === "number"
-                )
-              )
-              .map((f) => {
-                const center = f.center as [number, number];
-                const lon = center[0];
-                const lat = center[1];
-                return {
-                  id: String(f.id || f.place_name),
-                  place_name: String(f.place_name),
-                  center,
-                  lat,
-                  lon,
-                } satisfies LocationSuggestion;
-              })
-          : [];
-
-        setItems(next);
-      } catch (e) {
-        if ((e as any)?.name === "AbortError") return;
+        setItems(results);
+      } catch (e: any) {
+        if (e?.name === "AbortError") return;
         setItems([]);
-        setError((e as Error)?.message || "Failed to fetch locations");
+        setError(e?.message || "Search failed");
       } finally {
         setLoading(false);
       }
@@ -138,23 +172,22 @@ function useMapboxLocations({
 
     return () => {
       window.clearTimeout(timer);
-      if (abortRef.current) abortRef.current.abort();
+      abortRef.current?.abort();
     };
-  }, [query, debounceMs, token, country, limit]);
+  }, [query, debounceMs, token, sessionToken, country, limit]);
 
   return { items, loading, error };
 }
 
+// ── Component ────────────────────────────────────────────────────────────────
+
 export type LocationComboboxProps = {
   value?: LocationSuggestion | null;
   onChange?: (value: LocationSuggestion | null) => void;
-
   inputValue?: string;
   onInputValueChange?: (value: string) => void;
-
   placeholder?: string;
   disabled?: boolean;
-
   debounceMs?: number;
   country?: string | null;
   limit?: number;
@@ -167,121 +200,264 @@ export function LocationCombobox({
   onInputValueChange,
   placeholder = "Search location…",
   disabled = false,
-  debounceMs = 400,
+  debounceMs = 350,
   country = "IN",
-  limit = 6,
+  limit = 7,
 }: LocationComboboxProps) {
-  const [open, setOpen] = React.useState(false);
-
-  const [uncontrolledQuery, setUncontrolledQuery] = React.useState(
+  const [internalQuery, setInternalQuery] = React.useState(
     value?.place_name ?? ""
   );
+  const [open, setOpen] = React.useState(false);
+  const [retrieving, setRetrieving] = React.useState(false);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const inputRef = React.useRef<HTMLInputElement>(null);
 
-  const query = inputValue ?? uncontrolledQuery;
+  // One session token per search interaction — reset after selection.
+  const sessionTokenRef = React.useRef(crypto.randomUUID());
+
+  const query = inputValue !== undefined ? inputValue : internalQuery;
+
   const setQuery = React.useCallback(
     (next: string) => {
       if (onInputValueChange) onInputValueChange(next);
-      else setUncontrolledQuery(next);
+      else setInternalQuery(next);
     },
     [onInputValueChange]
   );
 
-  const lastSelectedRef = React.useRef<string>(value?.place_name ?? "");
-
-  React.useEffect(() => {
-    const next = value?.place_name ?? "";
-    if (next !== lastSelectedRef.current) {
-      lastSelectedRef.current = next;
-      setQuery(next);
-    }
-  }, [value?.place_name, setQuery]);
-
   const token =
-    String(import.meta.env.VITE_MAPBOX_TOKEN || "").trim() ||
-    String(
-      typeof process !== "undefined" ? (process.env as any)?.REACT_APP_MAPBOX_TOKEN || "" : ""
-    ).trim() ||
-    undefined;
+    String((import.meta as any).env?.VITE_MAPBOX_TOKEN ?? "").trim() || undefined;
 
-  const { items, loading, error } = useMapboxLocations({
+  const { items, loading, error } = useSuggestions({
     query,
     debounceMs,
     token,
+    sessionToken: sessionTokenRef.current,
     country,
     limit,
   });
 
-  const selectItem = React.useCallback(
-    (item: LocationSuggestion) => {
-      if (!item) return;
-      lastSelectedRef.current = item.place_name;
-      setQuery(item.place_name);
-      onChange?.(item);
-      setOpen(false);
-    },
-    [onChange, setQuery]
-  );
+  const busy = loading || retrieving;
+  const showDropdown = open && (busy || !!error || items.length > 0);
 
-  const showEmpty = !loading && !error && query.trim().length >= 3 && items.length === 0;
+  // Close on outside click.
+  React.useEffect(() => {
+    if (!open) return;
+    const handle = (e: MouseEvent) => {
+      if (!containerRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [open]);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setQuery(e.target.value);
+    setOpen(true);
+  };
+
+  const handleSelect = async (item: Suggestion) => {
+    if (!token) return;
+    setOpen(false);
+    setRetrieving(true);
+
+    // Show the name immediately while we fetch coords.
+    const displayName = item.full_address || item.name;
+    setQuery(displayName);
+
+    try {
+      const loc = await retrieveLocation(
+        item.mapbox_id,
+        token,
+        sessionTokenRef.current
+      );
+
+      if (loc) {
+        // Prefer the full_address from the suggestion as the display name.
+        const finalName = displayName || loc.place_name;
+        const result: LocationSuggestion = { ...loc, place_name: finalName };
+        setQuery(finalName);
+        onChange?.(result);
+      }
+    } catch {
+      // retrieve failed — still pass what we have so the user isn't stuck.
+    } finally {
+      setRetrieving(false);
+      // Reset session token for the next search interaction.
+      sessionTokenRef.current = crypto.randomUUID();
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") setOpen(false);
+  };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          className="w-full justify-between"
+    <div ref={containerRef} style={{ position: "relative", width: "100%" }}>
+      {/* ── Input ──────────────────────────────────────────────────────── */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          border: "1px solid hsl(var(--border))",
+          borderRadius: "calc(var(--radius, 6px))",
+          background: "hsl(var(--background))",
+          padding: "0 10px",
+          gap: 6,
+          opacity: disabled ? 0.6 : 1,
+        }}
+      >
+        <MapPin size={14} style={{ color: "hsl(var(--muted-foreground))", flexShrink: 0 }} />
+        <input
+          ref={inputRef}
+          type="text"
+          value={query}
+          placeholder={placeholder}
           disabled={disabled}
-          aria-expanded={open}
-        >
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {query.trim().length ? query : placeholder}
-          </span>
-          <span aria-hidden style={{ opacity: 0.6 }}>
+          autoComplete="off"
+          spellCheck={false}
+          onChange={handleInputChange}
+          onFocus={() => { if (items.length > 0 || loading) setOpen(true); }}
+          onKeyDown={handleKeyDown}
+          style={{
+            flex: 1,
+            border: "none",
+            outline: "none",
+            background: "transparent",
+            padding: "9px 0",
+            fontSize: "0.875rem",
+            color: "hsl(var(--foreground))",
+            cursor: disabled ? "not-allowed" : "text",
+            minWidth: 0,
+          }}
+        />
+        {busy ? (
+          <Loader2
+            size={14}
+            style={{
+              color: "hsl(var(--muted-foreground))",
+              flexShrink: 0,
+              animation: "lc-spin 0.8s linear infinite",
+            }}
+          />
+        ) : (
+          <span
+            style={{ color: "hsl(var(--muted-foreground))", fontSize: 11, opacity: 0.5, flexShrink: 0 }}
+            aria-hidden
+          >
             ▾
           </span>
-        </Button>
-      </PopoverTrigger>
+        )}
+      </div>
 
-      <PopoverContent>
-        <Command shouldFilter={false}>
-          <CommandInput
-            value={query}
-            onValueChange={setQuery}
-            placeholder={placeholder}
-            disabled={disabled}
-          />
+      {/* ── Dropdown — opens UPWARD ─────────────────────────────────────── */}
+      {showDropdown && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: "calc(100% + 6px)", /* upward */
+            left: 0,
+            right: 0,
+            zIndex: 9999,
+            background: "hsl(var(--popover))",
+            border: "1px solid hsl(var(--border))",
+            borderRadius: "calc(var(--radius, 6px))",
+            boxShadow: "0 -4px 24px rgba(0,0,0,0.18)",
+            overflow: "hidden",
+            maxHeight: 300,
+            overflowY: "auto",
+          }}
+        >
+          {/* Loading */}
+          {busy && !items.length && (
+            <div style={rowStyle("#888")}>
+              <Loader2 size={13} style={{ animation: "lc-spin 0.8s linear infinite", flexShrink: 0 }} />
+              <span>Searching…</span>
+            </div>
+          )}
 
-          <CommandList>
-            {loading ? (
-              <CommandItem disabled>Loading…</CommandItem>
-            ) : null}
+          {/* Error */}
+          {!busy && error && (
+            <div style={rowStyle("hsl(var(--destructive))")}>{error}</div>
+          )}
 
-            {error ? (
-              <CommandItem disabled>{error}</CommandItem>
-            ) : null}
+          {/* Empty */}
+          {!busy && !error && items.length === 0 && query.trim().length >= 2 && (
+            <div style={rowStyle("hsl(var(--muted-foreground))")}>
+              No results for &ldquo;{query}&rdquo;
+            </div>
+          )}
 
-            {showEmpty ? <CommandEmpty>No locations found</CommandEmpty> : null}
-
-            {!loading && !error
-              ? items.map((item) => (
-                  <CommandItem
-                    key={item.id}
-                    value={item.place_name}
-                    // Prevent focus from leaving the input before cmdk processes selection.
-                    // Without this, clicks can appear to do nothing in some browser/radix setups.
-                    onMouseDown={(e) => {
-                      e.preventDefault();
+          {/* Results */}
+          {items.map((item) => (
+            <button
+              key={item.mapbox_id}
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault(); // prevent input blur before handleSelect
+                handleSelect(item);
+              }}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 8,
+                width: "100%",
+                textAlign: "left",
+                padding: "9px 14px",
+                background: "transparent",
+                border: "none",
+                borderBottom: "1px solid hsl(var(--border) / 0.35)",
+                cursor: "pointer",
+                color: "hsl(var(--foreground))",
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLElement).style.background = "hsl(var(--accent))";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLElement).style.background = "transparent";
+              }}
+            >
+              <MapPin
+                size={13}
+                style={{ color: "hsl(var(--primary))", marginTop: 3, flexShrink: 0 }}
+              />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: "0.85rem", fontWeight: 500, lineHeight: 1.3 }}>
+                  {item.name}
+                </div>
+                {item.place_formatted && (
+                  <div
+                    style={{
+                      fontSize: "0.75rem",
+                      color: "hsl(var(--muted-foreground))",
+                      marginTop: 1,
+                      lineHeight: 1.3,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
                     }}
-                    onSelect={() => selectItem(item)}
                   >
-                    {item.place_name}
-                  </CommandItem>
-                ))
-              : null}
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+                    {item.place_formatted}
+                  </div>
+                )}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <style>{`@keyframes lc-spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
   );
+}
+
+function rowStyle(color: string): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "10px 14px",
+    fontSize: "0.82rem",
+    color,
+  };
 }

@@ -3,9 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import { animate } from 'framer-motion';
 
-import * as robotsApi from '../../../../lib/api/robots.js';
 import { socket } from '../../../../lib/socket.js';
-import { createRobotMarkerElement } from '../../../../lib/mapboxMarkers.js';
+import { createRobotMarkerElement, updateMarkerInfo } from '../../../../lib/mapboxMarkers.js';
 
 function hashStringToInt(str) {
   let h = 2166136261;
@@ -194,11 +193,10 @@ function createMissionMarkerEl({ color, label }) {
   return root;
 }
 
-export function useRobotStream({ locationId, campusId, mapRef, markersRef }) {
+export function useRobotStream({ robots: globalRobots, locationId, campusId, mapRef, markersRef }) {
   const [robots, setRobots] = useState([]);
 
   const activeRobotIdsRef = useRef(new Set());
-  const abortFetchRef = useRef(null);
   const routesRef = useRef(new Map());
   const taskPathsRef = useRef(new Map());
 
@@ -453,11 +451,57 @@ export function useRobotStream({ locationId, campusId, mapRef, markersRef }) {
       }
     };
 
+    // Single handler for all TASK_UPDATED cases — previously split across two
+    // useEffects which caused two subscriptions to the same event per render.
+    const TERMINAL_STATUSES_ROUTE = new Set(['COMPLETED', 'CANCELLED', 'FAILED']);
+    const onTaskUpdated = (msg) => {
+      const taskId = String(msg?.taskId || '').trim();
+      const robotId = String(msg?.robotId || '').trim();
+
+      // Case A: task reached a terminal status — remove route overlays.
+      if (TERMINAL_STATUSES_ROUTE.has(msg?.status)) {
+        if (robotId) removeRouteForRobot(robotId);
+        return;
+      }
+
+      // Case B: backend replanned a segment after an obstacle.
+      if (msg?.action !== 'REROUTED') return;
+
+      const newPath = Array.isArray(msg?.newPath) ? msg.newPath : null;
+      const segment = typeof msg?.segment === 'string' ? msg.segment : 'toPickup';
+      if (!taskId || !newPath) return;
+
+      const cached = taskPathsRef.current.get(taskId);
+      if (cached) {
+        const updated = {
+          ...cached,
+          ...(segment === 'toPickup' ? { pathToPickup: newPath } : { pathToDrop: newPath }),
+        };
+        taskPathsRef.current.set(taskId, updated);
+
+        if (robotId && activeRobotIdsRef.current.has(robotId)) {
+          upsertRoutes({
+            robotId,
+            task: {
+              taskId,
+              phase: segment === 'toPickup' ? 'TO_PICKUP' : 'TO_DROP',
+              pathToPickup: updated.pathToPickup,
+              pathToDrop: updated.pathToDrop,
+              pickup: updated.pickup ?? null,
+              drop: updated.drop ?? null,
+            },
+          });
+        }
+      }
+    };
+
     socket.on('TASK_ASSIGNED', onAssigned);
+    socket.on('TASK_UPDATED', onTaskUpdated);
     return () => {
       socket.off('TASK_ASSIGNED', onAssigned);
+      socket.off('TASK_UPDATED', onTaskUpdated);
     };
-  }, [upsertRoutes]);
+  }, [upsertRoutes, removeRouteForRobot]);
 
   // Rebuild route layers after style changes.
   useEffect(() => {
@@ -541,12 +585,18 @@ export function useRobotStream({ locationId, campusId, mapRef, markersRef }) {
 
         upsertRoutes(robot);
 
-        // Framer Motion: marker appearance (fade + pop)
-        animate(
-          root,
-          { opacity: [0, 1], transform: ['scale(0.75)', 'scale(1)'] },
-          { duration: 0.35, ease: 'easeOut' }
-        ).catch(() => {});
+        // Framer Motion: marker appearance (fade + pop).
+        // animate() returns AnimationPlaybackControls (not a Promise) in framer-motion v11+,
+        // so we can't call .catch() on it — wrap in try-catch instead.
+        try {
+          animate(
+            root,
+            { opacity: [0, 1], transform: ['scale(0.75)', 'scale(1)'] },
+            { duration: 0.35, ease: 'easeOut' }
+          );
+        } catch {
+          // ignore animation errors (e.g. element removed before animation completes)
+        }
 
         return;
       }
@@ -642,57 +692,30 @@ export function useRobotStream({ locationId, campusId, mapRef, markersRef }) {
     [mapRef, markersRef, upsertMarker, removeRouteForRobot]
   );
 
-  // Fetch robots for the selected Area (or Campus).
+  // Sync map markers from the global robots list whenever it changes or the
+  // location filter changes.  Robots are shown when any location/campus is
+  // selected; cleared when the map is at world view (no filter).
   useEffect(() => {
     const map = mapRef?.current;
     if (!map) return;
 
-    try {
-      abortFetchRef.current?.abort?.();
-    } catch {
-      // ignore
-    }
-
-    const ac = new AbortController();
-    abortFetchRef.current = ac;
-
     if (!locationId && !campusId) {
       setRobots([]);
       syncMarkersToRobots([]);
-      return () => {
-        try {
-          ac.abort();
-        } catch {
-          // ignore
-        }
-      };
+      return;
     }
 
-    (async () => {
-      try {
-        const list = await robotsApi.listRobots({
-          locationId,
-          campusId,
-          includeDescendants: true,
-        });
-        if (ac.signal.aborted) return;
-        setRobots(Array.isArray(list) ? list : []);
-        syncMarkersToRobots(list);
-      } catch {
-        if (ac.signal.aborted) return;
-        setRobots([]);
-        syncMarkersToRobots([]);
-      }
-    })();
+    // Show all robots that have valid coordinates — regardless of which DB
+    // location they were commissioned under.  This ensures robots commissioned
+    // with a custom Mapbox place (not in the seeded location hierarchy) still
+    // appear on the map.
+    const list = (Array.isArray(globalRobots) ? globalRobots : []).filter(
+      (r) => typeof r?.lat === 'number' && typeof r?.lon === 'number'
+    );
 
-    return () => {
-      try {
-        ac.abort();
-      } catch {
-        // ignore
-      }
-    };
-  }, [locationId, campusId, mapRef, syncMarkersToRobots]);
+    setRobots(list);
+    syncMarkersToRobots(list);
+  }, [locationId, campusId, globalRobots, mapRef, syncMarkersToRobots]);
 
   // Live updates via Socket.IO
   useEffect(() => {
@@ -704,6 +727,15 @@ export function useRobotStream({ locationId, campusId, mapRef, markersRef }) {
       if (!activeRobotIdsRef.current.has(robotId)) return;
 
       upsertMarker(data);
+
+      // Refresh battery bar and status icon in-place (no marker recreate).
+      const _store = markersRef?.current;
+      if (_store) {
+        const _entry = _store.get(robotId);
+        if (_entry?.root) {
+          updateMarkerInfo(_entry.root, { battery: data.battery, status: data.status });
+        }
+      }
 
       // Keep local list in sync (light update).
       setRobots((prev) => {
@@ -729,21 +761,40 @@ export function useRobotStream({ locationId, campusId, mapRef, markersRef }) {
       });
     };
 
+    // Subscribe to the single canonical telemetry event only.
+    // "robot_update" and "ROBOT_UPDATE" were legacy aliases; subscribing to all
+    // three was firing the same handler 3× per tick. TASK_UPDATED is now
+    // handled exclusively in the TASK_ASSIGNED useEffect above.
     socket.on('robot:update', handler);
-    socket.on('robot_update', handler);
-    socket.on('ROBOT_UPDATE', handler);
 
-    const handlerBatch = (list) => {
-      const arr = Array.isArray(list) ? list : [];
-      for (const item of arr) handler(item);
-    };
-
-    socket.on('ROBOT_UPDATE_BATCH', handlerBatch);
     return () => {
       socket.off('robot:update', handler);
-      socket.off('robot_update', handler);
-      socket.off('ROBOT_UPDATE', handler);
-      socket.off('ROBOT_UPDATE_BATCH', handlerBatch);
+    };
+  }, [upsertMarker]);
+
+  // Add newly commissioned robots to the map immediately, bypassing the location filter.
+  useEffect(() => {
+    const onCommissioned = (data) => {
+      const robotId = String(data?.robotId || '').trim();
+      if (!robotId) return;
+
+      // Activate so subsequent live telemetry updates are processed.
+      activeRobotIdsRef.current.add(robotId);
+
+      // Create marker right away.
+      upsertMarker(data);
+
+      // Seed the local robot list so the sidebar / counts reflect the new unit.
+      setRobots((prev) => {
+        const list = Array.isArray(prev) ? prev : [];
+        if (list.some((r) => String(r?.robotId || '').trim() === robotId)) return list;
+        return [...list, data];
+      });
+    };
+
+    socket.on('ROBOT_COMMISSIONED', onCommissioned);
+    return () => {
+      socket.off('ROBOT_COMMISSIONED', onCommissioned);
     };
   }, [upsertMarker]);
 

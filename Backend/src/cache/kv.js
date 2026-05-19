@@ -244,8 +244,35 @@ async function initKv({ logger }) {
       }
     },
 
+    /**
+     * Atomically increment a counter and set/refresh its TTL.
+     * Uses Redis INCR + EXPIRE for true atomicity; falls back to safe GET+SET.
+     *
+     * @param {string} key
+     * @param {{ ex?: number }} [options]  ex = TTL in seconds
+     * @returns {Promise<number>} new value after increment
+     */
+    async incr(key, { ex } = {}) {
+      if (redisAvailable && redis) {
+        try {
+          const next = await redis.incr(key);
+          if (typeof ex === "number" && Number.isFinite(ex) && ex > 0) {
+            await redis.expire(key, Math.floor(ex));
+          }
+          return next;
+        } catch (e) {
+          disableRedis(e);
+        }
+      }
+      // In-memory fallback: best-effort (not atomic across concurrent JS ops,
+      // but single-threaded Node.js makes this safe in practice).
+      const raw = memoryGet(key);
+      const next = (raw !== null ? Number.parseInt(String(raw), 10) : 0) + 1;
+      memorySet(key, String(next), { ex });
+      return Number.isFinite(next) ? next : 1;
+    },
+
     // Best-effort health signal for monitoring endpoints.
-    // Note: operations still fall back to in-memory when Redis is down.
     health() {
       return {
         redis: Boolean(redisAvailable && redis),

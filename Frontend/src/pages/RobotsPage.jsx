@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
-  Battery,
+  BatteryCharging,
   MapPin,
   Pause,
   RefreshCw,
@@ -16,6 +16,18 @@ import {
 import { useAppActions, useAppState } from '../context/appContext.js';
 import * as robotsApi from '../lib/api/robots.js';
 
+function formatLocationName(name) {
+  if (!name) return '—';
+  const first = name.split(',')[0].trim();
+  return first || name;
+}
+
+function batteryColors(pct) {
+  if (pct >= 75) return { bar: 'bg-emerald-500', text: 'text-emerald-700', track: 'bg-emerald-100' };
+  if (pct >= 25) return { bar: 'bg-amber-400',   text: 'text-amber-600',   track: 'bg-amber-100' };
+  return              { bar: 'bg-rose-500',    text: 'text-rose-600',    track: 'bg-rose-100' };
+}
+
 export default function RobotsPage() {
   const { robots } = useAppState();
   const { requestAuth, retire, addEvent } = useAppActions();
@@ -25,15 +37,17 @@ export default function RobotsPage() {
   const [search, setSearch] = useState('');
 
   const normalizeStatus = (s) => String(s || '').toUpperCase();
-  const isIssues = (s) => ['ERROR', 'ISSUES'].includes(normalizeStatus(s));
+  const isIssues = (s) => ['ERROR', 'ISSUES', 'OFFLINE'].includes(normalizeStatus(s));
   const isActive = (s) => normalizeStatus(s) === 'ACTIVE';
   const isIdle = (s) => normalizeStatus(s) === 'IDLE';
+  const isCharging = (s) => ['CHARGING', 'PAUSED'].includes(normalizeStatus(s));
 
   const filteredRobots = robots.filter((r) => {
     const q = String(search || '').trim().toLowerCase();
     if (q) {
       const id = String(r.robotId || '').toLowerCase();
-      if (!id.includes(q)) return false;
+      const nm = String(r.name || '').toLowerCase();
+      if (!id.includes(q) && !nm.includes(q)) return false;
     }
 
     if (filter === 'Active') return isActive(r.status);
@@ -62,7 +76,7 @@ export default function RobotsPage() {
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              placeholder="Search ID..."
+              placeholder="Search ID or name…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full bg-slate-50 border border-slate-200 rounded-lg py-1.5 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-slate-900"
@@ -89,7 +103,7 @@ export default function RobotsPage() {
 
       <div className="flex-1 relative overflow-hidden flex">
         <div className="flex-1 p-6 overflow-y-auto bg-slate-50">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 max-w-7xl mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-5 max-w-7xl mx-auto">
             {filteredRobots.map((r) =>
               (() => {
                 const tones = {
@@ -105,6 +119,12 @@ export default function RobotsPage() {
                     bg: 'bg-gradient-to-br from-amber-100/60 via-amber-50 to-white',
                     watermark: Pause,
                   },
+                  charging: {
+                    text: 'text-sky-700',
+                    border: 'border-sky-100',
+                    bg: 'bg-gradient-to-br from-sky-100/60 via-sky-50 to-white',
+                    watermark: BatteryCharging,
+                  },
                   issues: {
                     text: 'text-rose-700',
                     border: 'border-rose-100',
@@ -112,7 +132,13 @@ export default function RobotsPage() {
                     watermark: AlertTriangle,
                   },
                 };
-                const statusKey = isActive(r.status) ? 'active' : isIssues(r.status) ? 'issues' : 'idle';
+                const statusKey = isActive(r.status)
+                  ? 'active'
+                  : isCharging(r.status)
+                    ? 'charging'
+                    : isIssues(r.status)
+                      ? 'issues'
+                      : 'idle';
                 const cardTone = tones[statusKey] || {
                   text: 'text-blue-700',
                   border: 'border-blue-100',
@@ -120,61 +146,76 @@ export default function RobotsPage() {
                   watermark: MapPin,
                 };
                 const CardWatermark = cardTone.watermark;
+                const battery = Number(r.battery || 0);
+                const bc = batteryColors(battery);
 
                 return (
                   <div
                     key={r.robotId}
-                    className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col shadow-sm hover:shadow-md transition-all group relative overflow-hidden"
+                    className="bg-white border border-slate-200 rounded-2xl p-5 flex flex-col shadow-sm hover:shadow-md transition-all group relative overflow-hidden min-h-50"
                   >
                     <CardWatermark className={`absolute -right-8 -bottom-8 w-28 h-28 ${cardTone.text} opacity-[0.05]`} aria-hidden="true" />
+
+                    {/* Header */}
                     <div className="flex justify-between items-start mb-4">
-                      <div>
+                      <div className="min-w-0 flex-1 pr-3">
+                        {r.name ? (
+                          <div className="text-xs font-medium text-slate-500 mb-0.5 truncate">{r.name}</div>
+                        ) : null}
                         <div className="font-mono font-bold text-slate-900 text-lg flex items-center gap-2">
                           {r.robotId}
                           <div
-                            className={`w-2 h-2 rounded-full ${
-                              r.isOnline ? 'bg-emerald-500' : 'bg-slate-400'
-                            }`}
+                            className={`w-2 h-2 rounded-full shrink-0 ${r.isOnline ? 'bg-emerald-500' : 'bg-slate-400'}`}
                           />
                         </div>
-                        <div className="text-xs text-slate-500 font-medium mt-1 uppercase tracking-wide">{normalizeStatus(r.status)}</div>
+                        <div className="text-xs text-slate-500 font-medium mt-0.5 uppercase tracking-wide">
+                          {normalizeStatus(r.status)}
+                        </div>
                       </div>
-                      <div className="text-right">
-                        <div className={`font-mono font-bold text-sm ${(Number(r.battery) || 0) < 25 ? 'text-rose-600' : 'text-slate-700'}`}>{Number(r.battery || 0).toFixed(0)}%</div>
-                        <Battery className={`w-4 h-4 ml-auto mt-1 ${(Number(r.battery) || 0) < 25 ? 'text-rose-500' : 'text-slate-400'}`} />
+
+                      {/* Battery */}
+                      <div className="text-right shrink-0">
+                        <div className={`font-mono font-bold text-sm ${bc.text}`}>
+                          {battery.toFixed(0)}%
+                        </div>
+                        <div className={`w-14 h-2 ${bc.track} rounded-full overflow-hidden mt-1.5 ml-auto`}>
+                          <div
+                            className={`h-full ${bc.bar} rounded-full transition-all duration-700`}
+                            style={{ width: `${Math.max(3, battery)}%` }}
+                          />
+                        </div>
                       </div>
                     </div>
 
-                    <div className="bg-white/70 rounded-xl p-3 text-sm border border-slate-200/60 mb-4 flex-1">
-                      <div className="flex justify-between mb-2">
-                        <span className="text-slate-500 text-xs">Task</span>
-                        <span className="font-mono font-medium text-slate-900">{r.currentTask?.taskId || 'None'}</span>
+                    {/* Info */}
+                    <div className="bg-white/70 rounded-xl p-3.5 text-sm border border-slate-200/60 mb-4 flex-1 space-y-2.5">
+                      <div className="flex justify-between items-start gap-2">
+                        <span className="text-slate-500 text-xs shrink-0">Task</span>
+                        <span className="font-mono font-medium text-slate-900 text-right">
+                          {r.currentTask?.taskId || 'None'}
+                        </span>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-500 text-xs">Location</span>
-                        <span className="font-medium text-slate-700">{r.location?.name || '—'}</span>
+                      <div className="flex justify-between items-start gap-2">
+                        <span className="text-slate-500 text-xs shrink-0">Location</span>
+                        <span className="font-medium text-slate-700 text-right text-xs max-w-[65%] leading-snug">
+                          {formatLocationName(r.location?.name)}
+                        </span>
                       </div>
                     </div>
 
+                    {/* Actions — no delete in card */}
                     <div className="mt-auto flex gap-2">
                       <button
                         onClick={() => setSelectedRobot(r)}
-                        className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs py-2 rounded-lg font-semibold transition-colors shadow-sm"
+                        className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs py-2.5 rounded-xl font-semibold transition-colors shadow-sm"
                       >
                         Control
                       </button>
                       <button
                         onClick={() => navigate(`/robots/${r.robotId}`)}
-                        className="flex-1 bg-slate-900 hover:bg-slate-800 text-white text-xs py-2 rounded-lg font-semibold transition-colors shadow-sm"
+                        className="flex-1 bg-slate-900 hover:bg-slate-800 text-white text-xs py-2.5 rounded-xl font-semibold transition-colors shadow-sm"
                       >
                         Inspect
-                      </button>
-                      <button
-                        onClick={() => retire(r.robotId)}
-                        className="bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-700 px-3 rounded-lg text-xs font-bold transition-colors shadow-sm"
-                        title="Permanently Remove Unit"
-                      >
-                        <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
@@ -200,15 +241,22 @@ export default function RobotsPage() {
           {selectedRobot && (
             <>
               <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
-                <div className="flex items-center gap-3">
-                  <div className="font-mono text-xl font-bold text-slate-900">{selectedRobot.robotId}</div>
+                <div className="flex items-center gap-3 min-w-0">
+                  <div>
+                    {selectedRobot.name ? (
+                      <div className="text-xs text-slate-500 font-medium">{selectedRobot.name}</div>
+                    ) : null}
+                    <div className="font-mono text-xl font-bold text-slate-900">{selectedRobot.robotId}</div>
+                  </div>
                   <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${
                       isActive(selectedRobot.status)
                         ? 'bg-emerald-100 text-emerald-700'
-                        : isIdle(selectedRobot.status)
-                          ? 'bg-amber-100 text-amber-700'
-                          : 'bg-rose-100 text-rose-700'
+                        : isCharging(selectedRobot.status)
+                          ? 'bg-sky-100 text-sky-700'
+                          : isIdle(selectedRobot.status)
+                            ? 'bg-amber-100 text-amber-700'
+                            : 'bg-rose-100 text-rose-700'
                     }`}
                   >
                     {normalizeStatus(selectedRobot.status)}
@@ -216,7 +264,7 @@ export default function RobotsPage() {
                 </div>
                 <button
                   onClick={() => setSelectedRobot(null)}
-                  className="p-1.5 hover:bg-slate-200 rounded-md text-slate-500 transition-colors"
+                  className="p-1.5 hover:bg-slate-200 rounded-md text-slate-500 transition-colors shrink-0 ml-2"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -265,20 +313,26 @@ export default function RobotsPage() {
                       <div className="flex items-center gap-3">
                         <div className="w-24 h-2 bg-slate-200 rounded-full overflow-hidden">
                           <div
-                            className={`h-full ${(Number(selectedRobot.battery) || 0) < 25 ? 'bg-rose-500' : 'bg-emerald-500'}`}
+                            className={`h-full ${batteryColors(Number(selectedRobot.battery || 0)).bar}`}
                             style={{ width: `${Number(selectedRobot.battery || 0)}%` }}
                           />
                         </div>
-                        <span className="font-mono font-bold w-9 text-right text-slate-700">{Number(selectedRobot.battery || 0).toFixed(0)}%</span>
+                        <span className={`font-mono font-bold w-9 text-right ${batteryColors(Number(selectedRobot.battery || 0)).text}`}>
+                          {Number(selectedRobot.battery || 0).toFixed(0)}%
+                        </span>
                       </div>
                     </div>
                     <div className="flex justify-between items-center">
                       <span className="text-slate-500 font-medium">Speed</span>
-                      <span className="font-mono font-bold text-slate-700">{selectedRobot.speed ?? '—'}{selectedRobot.speed == null ? '' : ' m/s'}</span>
+                      <span className="font-mono font-bold text-slate-700">
+                        {selectedRobot.speed ?? '—'}{selectedRobot.speed == null ? '' : ' m/s'}
+                      </span>
                     </div>
                     <div className="flex justify-between items-center">
                       <span className="text-slate-500 font-medium">Task</span>
-                      <span className="font-mono font-bold text-blue-600">{selectedRobot.currentTask?.taskId || 'None'}</span>
+                      <span className="font-mono font-bold text-blue-600">
+                        {selectedRobot.currentTask?.taskId || 'None'}
+                      </span>
                     </div>
                   </div>
                 </div>

@@ -21,6 +21,7 @@ import { useMapContext } from './mapControl/mapContext.js';
 import { useMapController } from './mapControl/hooks/useMapController.js';
 import { useLocationFilters } from './mapControl/hooks/useLocationFilters.js';
 import { useRobotStream } from './mapControl/hooks/useRobotStream.js';
+import { useAppState } from '../../context/appContext.js';
 
 // WORLD VIEW (strict)
 const WORLD_CENTER = [20, 0];
@@ -162,6 +163,7 @@ function MapFiltersBar({
 
 function MapControlInner({ filtersHost }) {
   const { mapContainerRef, mapRef, markersRef } = useMapContext();
+  const { robots: globalRobots } = useAppState();
 
   const overlayRef = useRef(null);
   const canvasRef = useRef(null);
@@ -420,8 +422,12 @@ function MapControlInner({ filtersHost }) {
     };
   }, [campusId, mapRef, flyTo]);
 
-  // Robots: fetch only when AREA selected (strict)
+  // Robots: show all global robots on the map whenever any location is selected.
+  // The location/campus filter drives the map viewport (flyTo); the global
+  // robots list (from AppProvider) drives which markers are visible, so that
+  // robots commissioned with a custom location still appear on the map.
   useRobotStream({
+    robots: globalRobots,
     locationId: areaId,
     campusId,
     mapRef,

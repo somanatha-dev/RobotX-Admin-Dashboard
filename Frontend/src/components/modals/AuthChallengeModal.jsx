@@ -8,17 +8,44 @@ import { Input } from '../ui/input.jsx';
 
 import { pinAuth } from '../../lib/api/auth.js';
 
+function base64UrlDecode(base64url) {
+  const base64 = base64url.replaceAll('-', '+').replaceAll('_', '/');
+  const padded = base64 + '==='.slice((base64.length + 3) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function randomBytes(len) {
+  const bytes = new Uint8Array(len);
+  if (!globalThis.crypto?.getRandomValues) throw new Error('Secure random unavailable in this environment.');
+  globalThis.crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+function getStoredCredentialId() {
+  try { return localStorage.getItem('robotx_passkey_cred'); } catch { return null; }
+}
+
+function webAuthnErrorMessage(e) {
+  if (!e) return 'Passkey authentication failed.';
+  if (e.name === 'NotAllowedError') return 'Fingerprint authentication was cancelled or timed out. Try again.';
+  if (e.name === 'InvalidStateError') return 'No matching passkey found on this device. Re-register in Profile → Security.';
+  if (e.name === 'SecurityError') return 'Security error — passkeys require HTTPS or localhost.';
+  if (e.name === 'AbortError') return 'Authentication aborted. Try again.';
+  return e.message || 'Passkey authentication failed.';
+}
+
 export default function AuthChallengeModal({ request, onClose }) {
-  const [method, setMethod] = useState('passkey'); // 'passkey' | 'pin'
+  const [method, setMethod] = useState('passkey');
   const [pin, setPin] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef(null);
 
-  useEffect(() => {
-    setError('');
-    if (method === 'pin') inputRef.current?.focus();
-  }, [method]);
+  // Read registration status once on mount — no need to re-check during the modal's lifetime.
+  const [hasRegisteredPasskey] = useState(() => !!getStoredCredentialId());
 
   const supportsPasskey =
     typeof window !== 'undefined' &&
@@ -26,91 +53,22 @@ export default function AuthChallengeModal({ request, onClose }) {
     typeof navigator !== 'undefined' &&
     !!navigator.credentials;
 
-  const base64UrlEncode = (arrayBuffer) => {
-    const bytes = new Uint8Array(arrayBuffer);
-    let binary = '';
-    bytes.forEach((b) => {
-      binary += String.fromCharCode(b);
-    });
-    return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
-  };
-
-  const base64UrlDecode = (base64url) => {
-    const base64 = base64url.replaceAll('-', '+').replaceAll('_', '/');
-    const padded = base64 + '==='.slice((base64.length + 3) % 4);
-    const binary = atob(padded);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return bytes.buffer;
-  };
-
-  const randomBytes = (len) => {
-    const bytes = new Uint8Array(len);
-    if (!globalThis.crypto?.getRandomValues) throw new Error('Secure random is unavailable in this environment.');
-    globalThis.crypto.getRandomValues(bytes);
-    return bytes;
-  };
-
-  const getStoredCredentialId = () => {
-    try {
-      return localStorage.getItem('robotx_passkey_cred');
-    } catch {
-      return null;
-    }
-  };
-
-  const storeCredentialId = (rawIdBuffer) => {
-    try {
-      localStorage.setItem('robotx_passkey_cred', base64UrlEncode(rawIdBuffer));
-    } catch {
-      // ignore
-    }
-  };
-
-  const ensurePasskeyRegistered = async () => {
-    if (!supportsPasskey) throw new Error('Passkeys are not supported in this browser.');
-    if (!window.isSecureContext) throw new Error('Passkeys require a secure context (HTTPS or localhost).');
-
-    const existing = getStoredCredentialId();
-    if (existing) return existing;
-
-    const challenge = randomBytes(32);
-    const userId = randomBytes(16);
-    const rpId = window.location.hostname;
-
-    const publicKey = {
-      challenge,
-      rp: { name: 'RobotX Command Console', id: rpId },
-      user: {
-        id: userId,
-        name: 'commander@robotx.local',
-        displayName: 'Commander',
-      },
-      pubKeyCredParams: [
-        { type: 'public-key', alg: -7 },
-        { type: 'public-key', alg: -257 },
-      ],
-      timeout: 60000,
-      attestation: 'none',
-      authenticatorSelection: {
-        userVerification: 'required',
-        residentKey: 'preferred',
-      },
-    };
-
-    const cred = await navigator.credentials.create({ publicKey });
-    if (!cred) throw new Error('Passkey registration was cancelled.');
-    storeCredentialId(cred.rawId);
-    return getStoredCredentialId();
-  };
+  useEffect(() => {
+    setError('');
+    if (method === 'pin') inputRef.current?.focus();
+  }, [method]);
 
   const handlePasskeyAuth = async () => {
     setLoading(true);
     setError('');
     try {
-      const credId = await ensurePasskeyRegistered();
-      const challenge = randomBytes(32);
+      if (!supportsPasskey) throw new Error('Passkeys are not supported in this browser. Switch to the PIN tab.');
+      if (!window.isSecureContext) throw new Error('Passkeys require a secure context (HTTPS or localhost).');
 
+      const credId = getStoredCredentialId();
+      if (!credId) throw new Error('No fingerprint registered yet. Go to Profile → Security to register one first.');
+
+      const challenge = randomBytes(32);
       const assertion = await navigator.credentials.get({
         publicKey: {
           challenge,
@@ -125,7 +83,7 @@ export default function AuthChallengeModal({ request, onClose }) {
       await Promise.resolve(request.action());
       onClose();
     } catch (e) {
-      setError(e?.message || 'Passkey authentication failed.');
+      setError(webAuthnErrorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -135,10 +93,8 @@ export default function AuthChallengeModal({ request, onClose }) {
     e.preventDefault();
     setLoading(true);
     setError('');
-
     try {
       await pinAuth(pin);
-
       await Promise.resolve(request.action());
       onClose();
     } catch (e) {
@@ -168,7 +124,6 @@ export default function AuthChallengeModal({ request, onClose }) {
             <Fingerprint className="w-6 h-6" />
           </div>
           <DialogTitle>Authorization Required</DialogTitle>
-
           <div className="mt-3">
             <Badge variant="outline" className="font-mono uppercase text-xs">
               {request.intent}
@@ -207,11 +162,25 @@ export default function AuthChallengeModal({ request, onClose }) {
           {method === 'passkey' ? (
             <div className="mt-5">
               <div className="text-sm text-foreground font-medium flex items-center gap-2">
-                <Fingerprint className="w-4 h-4 text-muted-foreground" /> Authenticate with device passkey
+                <Fingerprint className="w-4 h-4 text-muted-foreground" />
+                Authenticate with fingerprint
               </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                Uses the OS/biometric prompt when available. (Best option in a browser UI.)
-              </p>
+
+              {!supportsPasskey ? (
+                <div className="mt-2 text-xs text-amber-600 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
+                  Passkeys are not supported in this browser. Please use the PIN tab instead.
+                </div>
+              ) : !hasRegisteredPasskey ? (
+                <div className="mt-2 text-xs text-amber-600 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
+                  No fingerprint registered yet. Go to{' '}
+                  <span className="font-semibold">Profile → Security</span> to register one, then
+                  come back here.
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Your device will prompt for biometric verification (fingerprint / face / PIN).
+                </p>
+              )}
 
               <div className="mt-4 flex gap-3">
                 <Button type="button" variant="outline" className="flex-1" onClick={onClose}>
@@ -220,23 +189,22 @@ export default function AuthChallengeModal({ request, onClose }) {
                 <Button
                   type="button"
                   onClick={handlePasskeyAuth}
-                  disabled={loading}
+                  disabled={loading || !supportsPasskey}
                   variant={request.isDestructive ? 'destructive' : 'default'}
                   className="flex-1"
                 >
-                  {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-                  {loading ? 'Waiting…' : 'Use Passkey'}
+                  {loading ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="w-4 h-4" />
+                  )}
+                  {loading ? 'Waiting…' : 'Use Fingerprint'}
                 </Button>
               </div>
 
-              {!supportsPasskey && (
-                <div className="mt-3 text-xs text-muted-foreground">
-                  Passkeys aren’t available here; use the PIN fallback.
-                </div>
-              )}
               {request.isDestructive && (
                 <div className="mt-3 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-lg p-3 font-medium">
-                  Destructive action: passkey is recommended.
+                  Destructive action: biometric or PIN confirmation required.
                 </div>
               )}
             </div>
@@ -256,7 +224,7 @@ export default function AuthChallengeModal({ request, onClose }) {
                 autoComplete="off"
                 className="h-12 text-center font-mono text-xl tracking-widest bg-muted/20"
               />
-              <div className="mt-2 text-xs text-muted-foreground">Minimum 6 digits recommended.</div>
+              <div className="mt-2 text-xs text-muted-foreground">Enter your admin PIN to authorize.</div>
               <div className="mt-6 flex gap-3">
                 <Button type="button" variant="outline" className="flex-1" onClick={onClose}>
                   Cancel
@@ -267,7 +235,11 @@ export default function AuthChallengeModal({ request, onClose }) {
                   variant={request.isDestructive ? 'destructive' : 'default'}
                   className="flex-1"
                 >
-                  {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                  {loading ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="w-4 h-4" />
+                  )}
                   {loading ? 'Verifying…' : 'Authenticate'}
                 </Button>
               </div>

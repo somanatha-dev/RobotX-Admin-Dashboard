@@ -24,7 +24,8 @@ export default function DecisionRequiredModal({
             </Badge>
           </div>
           <div className="text-lg font-mono font-semibold">
-            00:{decisionRequest.countdown.toString().padStart(2, '0')}
+            {String(Math.floor(decisionRequest.countdown / 60)).padStart(2, '0')}
+            :{String(decisionRequest.countdown % 60).padStart(2, '0')}
           </div>
         </div>
 

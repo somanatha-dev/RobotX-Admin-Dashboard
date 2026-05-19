@@ -2,34 +2,34 @@ const { toNumberOrNull, toStringOrNull } = require("../../utils/parse");
 const telemetryService = require("../../services/telemetry.service");
 const { allow } = require("../rateLimit");
 const { z } = require("zod");
+const { updateTelemetry, getRobotState } = require("../../services/robotRegistry.service");
+const { assignRobotToZone } = require("../../services/zoneManager.service");
+const { haversineMeters } = require("../../utils/distance");
 
+// DB-safe statuses (must map to the RobotStatus Prisma enum)
 const ROBOT_STATUS = new Set(["IDLE", "ACTIVE", "PAUSED", "OFFLINE", "ERROR", "ISSUES"]);
-const INCOMING_STATUS = new Set(["IDLE", "ACTIVE", "PAUSED", "OFFLINE", "ERROR", "ISSUES", "RETURNING"]);
+// Wider set accepted from robots (RETURNING and CHARGING are virtual-only labels)
+const INCOMING_STATUS = new Set(["IDLE", "ACTIVE", "PAUSED", "OFFLINE", "ERROR", "ISSUES", "RETURNING", "CHARGING"]);
 
 const TRANSITIONS = {
-  IDLE: new Set(["ACTIVE", "PAUSED", "ERROR", "ISSUES", "OFFLINE"]),
-  ACTIVE: new Set(["PAUSED", "IDLE", "ERROR", "ISSUES", "OFFLINE"]),
-  PAUSED: new Set(["ACTIVE", "IDLE", "ERROR", "ISSUES", "OFFLINE"]),
-  ISSUES: new Set(["ACTIVE", "PAUSED", "IDLE", "ERROR", "OFFLINE"]),
-  ERROR: new Set(["IDLE", "ACTIVE", "OFFLINE", "ISSUES"]),
-  OFFLINE: new Set(["IDLE", "ACTIVE", "ERROR", "ISSUES", "PAUSED"]),
+  IDLE:     new Set(["ACTIVE", "PAUSED", "ERROR", "ISSUES", "OFFLINE", "CHARGING"]),
+  ACTIVE:   new Set(["PAUSED", "IDLE", "ERROR", "ISSUES", "OFFLINE"]),
+  PAUSED:   new Set(["ACTIVE", "IDLE", "ERROR", "ISSUES", "OFFLINE", "CHARGING"]),
+  CHARGING: new Set(["IDLE", "ACTIVE", "PAUSED", "ERROR", "OFFLINE"]),
+  ISSUES:   new Set(["ACTIVE", "PAUSED", "IDLE", "ERROR", "OFFLINE", "CHARGING"]),
+  ERROR:    new Set(["IDLE", "ACTIVE", "OFFLINE", "ISSUES"]),
+  OFFLINE:  new Set(["IDLE", "ACTIVE", "ERROR", "ISSUES", "PAUSED", "CHARGING"]),
 };
 
 function mapIncomingStatusToDb(status) {
+  // RETURNING is displayed as ACTIVE in the DB (robot is in transit).
   if (status === "RETURNING") return "ACTIVE";
+  // CHARGING is not in the Prisma enum — store as PAUSED (robot is stationary).
+  // The raw "CHARGING" value is preserved in Redis and broadcast to the dashboard.
+  if (status === "CHARGING") return "PAUSED";
   return status;
 }
 
-function haversineMeters(aLat, aLon, bLat, bLon) {
-  const toRad = (d) => (d * Math.PI) / 180;
-  const R = 6371000;
-  const dLat = toRad(bLat - aLat);
-  const dLon = toRad(bLon - aLon);
-  const s1 = Math.sin(dLat / 2);
-  const s2 = Math.sin(dLon / 2);
-  const aa = s1 * s1 + Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * s2 * s2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(aa)));
-}
 
 async function updateSnapshotState(kv, robotId, { lat, lon, battery }) {
   const state = {
@@ -231,8 +231,10 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
               : typeof existing.battery === "number"
                 ? existing.battery
                 : null,
+        // Use the RAW incoming status (e.g. "CHARGING") for Redis + socket broadcast.
+        // statusDb (e.g. "PAUSED") is used only for the DB write below.
         status:
-          statusDb ||
+          statusRaw ||
           (typeof prevState?.status === "string" ? prevState.status : null) ||
           (existing.status ? String(existing.status) : "IDLE"),
         speed:
@@ -287,6 +289,30 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
         await updateSnapshotState(kv, robotId, { lat: fullState.lat, lon: fullState.lon, battery: fullState.battery });
       }
 
+      // DTARO: update registry with live telemetry
+      try {
+        await updateTelemetry(kv, robotId, {
+          lat: fullState.lat,
+          lon: fullState.lon,
+          battery: fullState.battery,
+          status: fullState.status,
+          speed: fullState.speed,
+        });
+      } catch {
+        // registry update is non-critical
+      }
+
+      // DTARO: update zone membership if position changed
+      try {
+        const registryState = await getRobotState(kv, robotId);
+        const currentZoneId = registryState?.zoneId || null;
+        if (typeof fullState.lat === "number" && typeof fullState.lon === "number") {
+          await assignRobotToZone(prisma, kv, io, robotId, fullState.lat, fullState.lon, socket, currentZoneId);
+        }
+      } catch {
+        // zone assignment is non-critical
+      }
+
       log.info(`[ROBOT ${robotId}] TELEMETRY`, {
         lat,
         lon,
@@ -295,23 +321,11 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
         status,
       });
 
-      // 5) Emit to frontend (new contract)
+      // 5) Emit live state to all connected clients.
+      // Single canonical event — frontend subscribes only to "robot:update".
+      // "ROBOT_UPDATE" and "robot_update" were legacy aliases; removed to
+      // eliminate 2 redundant socket emissions and 1 DB query per tick.
       io.emit("robot:update", fullState);
-
-      // Backward compatible emits
-      io.to("dashboard").emit("ROBOT_UPDATE", { robotId, ...payload });
-
-      // Preserve existing frontend contract (robot_update includes enriched robot row)
-      const robot = await prisma.robot.findUnique({
-        where: { robotId },
-        include: { currentTask: true, campus: true, location: true },
-      });
-
-      io.emit("robot_update", {
-        ...payload,
-        robotId,
-        robot,
-      });
     } catch (e) {
       log.error("TELEMETRY handler failed", e);
     }

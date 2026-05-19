@@ -1,0 +1,126 @@
+/**
+ * Command Dispatcher Service — DTARO
+ *
+ * Unified point for sending commands to robot sockets.
+ * Wraps the in-memory socket registry and provides typed dispatch helpers.
+ *
+ * Supported commands:
+ *   TASK_ASSIGN      — assign a task to a robot
+ *   REROUTE_ALERT    — instruct robot to follow a new path
+ *   STOP             — immediate halt
+ *   RETURN_TO_BASE   — navigate back to base station
+ *
+ * Retry policy: at most MAX_RETRIES additional attempts with back-off.
+ * If no socket is connected the payload is silently dropped (real robots
+ * should reconnect and pick up state from task recovery; virtual robots
+ * are handled by the simulation engine).
+ */
+
+const { getRobotSocket } = require("../sockets/robotSockets");
+
+const MAX_RETRIES = 2;
+const RETRY_BASE_MS = 1000; // first retry after 1 s, second after 2 s
+
+/**
+ * Low-level fire-and-forget emit with retry on missing socket.
+ *
+ * @param {string} robotId
+ * @param {string} event
+ * @param {object} payload
+ * @param {object} [options]
+ * @param {number} [options.retries]
+ * @returns {Promise<{ dispatched: boolean, socketId: string|null, attempts: number }>}
+ */
+async function dispatch(robotId, event, payload, { retries = MAX_RETRIES } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const socket = getRobotSocket(robotId);
+
+    if (!socket) {
+      // No socket connected — back off before retrying
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, RETRY_BASE_MS * (attempt + 1)));
+        continue;
+      }
+      return { dispatched: false, socketId: null, attempts: attempt + 1 };
+    }
+
+    try {
+      socket.emit(event, payload);
+      return { dispatched: true, socketId: socket.id, attempts: attempt + 1 };
+    } catch {
+      if (attempt >= retries) {
+        return { dispatched: false, socketId: null, attempts: attempt + 1 };
+      }
+      await new Promise((r) => setTimeout(r, RETRY_BASE_MS * (attempt + 1)));
+    }
+  }
+
+  return { dispatched: false, socketId: null, attempts: retries + 1 };
+}
+
+/**
+ * Dispatch TASK_ASSIGN to a robot socket.
+ *
+ * @param {string} robotId
+ * @param {{ taskId: string, pickup: object, drop: object, pathToPickup: object[], pathToDrop: object[] }} taskPayload
+ */
+async function dispatchTaskAssign(robotId, taskPayload) {
+  return dispatch(robotId, "TASK_ASSIGN", { ...taskPayload, timestamp: Date.now() });
+}
+
+/**
+ * Dispatch REROUTE_ALERT to a robot socket.
+ *
+ * @param {string} robotId
+ * @param {{ obstacleId: string, lat: number, lon: number, zoneId?: string, severity?: string, newPath?: object[] }} alertPayload
+ */
+async function dispatchRerouteAlert(robotId, alertPayload) {
+  // Single retry — rerouting is time-sensitive
+  return dispatch(robotId, "REROUTE_ALERT", { ...alertPayload, timestamp: Date.now() }, { retries: 1 });
+}
+
+/**
+ * Dispatch STOP to a robot socket.
+ *
+ * @param {string} robotId
+ * @param {object} [meta]
+ */
+async function dispatchStop(robotId, meta = {}) {
+  return dispatch(robotId, "STOP", { ...meta, timestamp: Date.now() });
+}
+
+/**
+ * Dispatch RETURN_TO_BASE to a robot socket.
+ *
+ * @param {string} robotId
+ * @param {object} [meta] - optional { baseLocation: { lat, lon } }
+ */
+async function dispatchReturnToBase(robotId, meta = {}) {
+  return dispatch(robotId, "RETURN_TO_BASE", { ...meta, timestamp: Date.now() });
+}
+
+/**
+ * Broadcast an event to all sockets in an IO room (zone, dashboard, etc.).
+ *
+ * @param {object} io
+ * @param {string} room
+ * @param {string} event
+ * @param {object} payload
+ */
+function broadcastToRoom(io, room, event, payload) {
+  if (!io || !room) return;
+  try {
+    io.to(room).emit(event, payload);
+  } catch {
+    // ignore
+  }
+}
+
+module.exports = {
+  dispatch,
+  dispatchTaskAssign,
+  dispatchRerouteAlert,
+  dispatchStop,
+  dispatchReturnToBase,
+  broadcastToRoom,
+};

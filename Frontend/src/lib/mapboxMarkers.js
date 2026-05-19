@@ -1,19 +1,60 @@
+/**
+ * Mapbox robot marker factory.
+ *
+ * createRobotMarkerElement(color, labelText)
+ *   Returns { root, car, label, batteryEl, statusEl }
+ *
+ * updateMarkerInfo(root, { battery, status })
+ *   Refreshes the battery bar and status icon without re-creating the DOM element.
+ *   Call this from live telemetry handlers to avoid destroying and re-attaching markers.
+ */
+
+const STATUS_ICONS = {
+  CHARGING: '⚡',
+  ISSUES:   '⚠',
+  ERROR:    '✕',
+  OFFLINE:  '○',
+  PAUSED:   '‖',
+};
+
+function batteryColor(pct) {
+  if (pct >= 50) return '#22c55e';  // green
+  if (pct >= 20) return '#f59e0b';  // amber
+  return '#ef4444';                  // red
+}
+
 export function createRobotMarkerElement(color, labelText) {
   const root = document.createElement('div');
   root.className = 'robot-marker-root';
   root.setAttribute('aria-hidden', 'true');
-  root.style.position = 'relative';
+  root.style.cssText = 'position:relative;display:flex;flex-direction:column;align-items:center;gap:0;';
 
+  // ── Robot ID label ──────────────────────────────────────────────────────────
+  const label = document.createElement('div');
+  label.className = 'robot-label';
+  label.textContent = labelText;
+  label.style.cssText = [
+    'position:absolute',
+    'left:50%',
+    'bottom:100%',
+    'transform:translate(-50%,-6px)',
+    'background:#000',
+    'color:#fff',
+    'padding:2px 6px',
+    'border-radius:4px',
+    'font-size:10px',
+    'font-weight:700',
+    'letter-spacing:0.06em',
+    'white-space:nowrap',
+    'pointer-events:none',
+    'z-index:1',
+    'opacity:0.95',
+  ].join(';');
+
+  // ── Robot SVG icon ──────────────────────────────────────────────────────────
   const car = document.createElement('div');
   car.className = 'robot-car';
-  car.style.width = '100%';
-  car.style.height = '100%';
-  car.style.display = 'flex';
-  car.style.alignItems = 'center';
-  car.style.justifyContent = 'center';
-  car.style.position = 'relative';
-  car.style.zIndex = '2';
-
+  car.style.cssText = 'display:flex;align-items:center;justify-content:center;position:relative;z-index:2;';
   car.innerHTML = `
     <svg width="26" height="26" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M14 36L18 22C19 18 22 16 26 16H38C42 16 45 18 46 22L50 36" stroke="${color}" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
@@ -26,26 +67,77 @@ export function createRobotMarkerElement(color, labelText) {
     </svg>
   `;
 
-  const label = document.createElement('div');
-  label.className = 'robot-label';
-  label.textContent = labelText;
-  label.style.position = 'absolute';
-  label.style.left = '50%';
-  label.style.bottom = '100%';
-  label.style.transform = 'translate(-50%, -6px)';
-  label.style.background = '#000';
-  label.style.color = '#fff';
-  label.style.padding = '2px 6px';
-  label.style.borderRadius = '4px';
-  label.style.fontSize = '10px';
-  label.style.fontWeight = '700';
-  label.style.letterSpacing = '0.06em';
-  label.style.whiteSpace = 'nowrap';
-  label.style.pointerEvents = 'none';
-  label.style.zIndex = '1';
-  label.style.opacity = '0.95';
+  // ── Battery bar ─────────────────────────────────────────────────────────────
+  const batteryWrap = document.createElement('div');
+  batteryWrap.style.cssText = [
+    'margin-top:2px',
+    'width:28px',
+    'height:5px',
+    'background:rgba(255,255,255,0.15)',
+    'border-radius:3px',
+    'overflow:hidden',
+  ].join(';');
 
-  root.appendChild(car);
+  const batteryFill = document.createElement('div');
+  batteryFill.className = 'robot-battery-fill';
+  batteryFill.style.cssText = 'height:100%;width:100%;background:#22c55e;border-radius:3px;transition:width 0.4s,background 0.4s;';
+  batteryWrap.appendChild(batteryFill);
+
+  // ── Status icon (visible only for non-idle/non-active states) ───────────────
+  const statusEl = document.createElement('div');
+  statusEl.className = 'robot-status-icon';
+  statusEl.style.cssText = [
+    'position:absolute',
+    'top:-4px',
+    'right:-6px',
+    'font-size:9px',
+    'line-height:1',
+    'display:none',
+    'pointer-events:none',
+    'z-index:3',
+  ].join(';');
+
   root.appendChild(label);
-  return { root, car, label };
+  root.appendChild(car);
+  root.appendChild(batteryWrap);
+  root.appendChild(statusEl);
+
+  // Store refs for live updates
+  root._batteryFill = batteryFill;
+  root._statusEl    = statusEl;
+
+  return { root, car, label, batteryEl: batteryFill, statusEl };
+}
+
+/**
+ * Update the battery bar and status icon on an existing marker element.
+ * Call this from the live telemetry handler instead of re-creating the marker.
+ *
+ * @param {HTMLElement} root - The root element returned by createRobotMarkerElement
+ * @param {{ battery?: number|null, status?: string|null }} info
+ */
+export function updateMarkerInfo(root, { battery, status } = {}) {
+  if (!root) return;
+
+  // Battery fill
+  const fill = root._batteryFill;
+  if (fill && typeof battery === 'number' && Number.isFinite(battery)) {
+    const pct = Math.max(0, Math.min(100, battery));
+    fill.style.width      = `${pct}%`;
+    fill.style.background = batteryColor(pct);
+  }
+
+  // Status icon
+  const icon = root._statusEl;
+  if (icon) {
+    const s = typeof status === 'string' ? status.toUpperCase() : '';
+    const glyph = STATUS_ICONS[s] || '';
+    if (glyph) {
+      icon.textContent    = glyph;
+      icon.style.display  = 'block';
+      icon.style.color    = s === 'CHARGING' ? '#facc15' : s === 'ERROR' ? '#ef4444' : '#f59e0b';
+    } else {
+      icon.style.display  = 'none';
+    }
+  }
 }

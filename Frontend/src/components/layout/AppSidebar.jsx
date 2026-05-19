@@ -15,8 +15,9 @@ import { useAppActions, useAppState } from '../../context/appContext.js';
 import { Button } from '../ui/button.jsx';
 
 export default function AppSidebar() {
-  const { isSidebarOpen } = useAppState();
+  const { isSidebarOpen, session } = useAppState();
   const { logout, setIsSidebarOpen, navigate } = useAppActions();
+  const roleLabel = session?.user?.role || session?.identity || 'Operator';
 
   return (
     <aside
@@ -62,7 +63,7 @@ export default function AppSidebar() {
         <Button type="button" onClick={logout} className="w-full" size="sm" variant="outline">
           <LogOut className="w-4 h-4" /> Logout
         </Button>
-        <div className="pt-1 text-xs text-muted-foreground text-center">Super Admin</div>
+        <div className="pt-1 text-xs text-muted-foreground text-center truncate">{roleLabel}</div>
       </div>
     </aside>
   );

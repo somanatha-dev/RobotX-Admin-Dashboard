@@ -8,6 +8,8 @@ const {
 } = require("../robotSockets");
 const crypto = require("crypto");
 const { z } = require("zod");
+const { markOnline, markOffline, getRobotState } = require("../../services/robotRegistry.service");
+const { assignRobotToZone } = require("../../services/zoneManager.service");
 
 async function markRobotOnline(prisma, robotId, socketId) {
   return prisma.robot.update({
@@ -35,13 +37,8 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
 
   async function recordPairingAttempt(robotId) {
     try {
-      const key = `pairingAttempts:${robotId}`;
-      const raw = await kv.get(key);
-      const n = raw ? Number.parseInt(String(raw), 10) : 0;
-      const next = (Number.isFinite(n) ? n : 0) + 1;
-      // 5 minute rolling window
-      await kv.set(key, String(next), { ex: 300 });
-      return next;
+      // kv.incr is atomic (Redis INCR) — safe under concurrent AUTH attempts.
+      return await kv.incr(`pairingAttempts:${robotId}`, { ex: 300 });
     } catch {
       return 0;
     }
@@ -133,6 +130,24 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
       socket.emit("AUTH_OK", { robotId, token: nextToken });
       io.emit("robot_online", { robotId });
 
+      // DTARO: join dedicated robot room for targeted commands
+      socket.join(`robot:${robotId}`);
+
+      // DTARO: update registry with online + auth state
+      await markOnline(kv, robotId, socket);
+
+      // DTARO: assign robot to zone based on last known position
+      try {
+        const liveState = await getRobotState(kv, robotId);
+        const lat = typeof liveState?.lat === "number" ? liveState.lat : null;
+        const lon = typeof liveState?.lon === "number" ? liveState.lon : null;
+        if (lat !== null && lon !== null) {
+          await assignRobotToZone(prisma, kv, io, robotId, lat, lon, socket, liveState?.zoneId || null);
+        }
+      } catch {
+        // zone assignment is non-critical — never block auth
+      }
+
       log.info("Robot AUTH success", {
         robotId,
         socketId: socket.id,
@@ -195,6 +210,8 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
         deleteRobotSocket(boundRobotId, socket);
 
         await markRobotOffline(prisma, boundRobotId);
+        // DTARO: update registry offline state
+        await markOffline(kv, boundRobotId);
         io.emit("robot_offline", { robotId: boundRobotId });
       } catch {
         // ignore

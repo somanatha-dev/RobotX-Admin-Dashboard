@@ -22,11 +22,12 @@ import {
 } from '../components/ui/select.jsx';
 
 import { LocationCombobox } from '../components/system/LocationCombobox.tsx';
-import { useAppActions } from '../context/appContext.js';
+import { useAppActions, useAppState } from '../context/appContext.js';
 
 export default function CommissionPage() {
   const rrNavigate = useNavigate();
   const { commission } = useAppActions();
+  const { robots } = useAppState();
 
   const chassisOptions = useMemo(
     () => [
@@ -70,6 +71,13 @@ export default function CommissionPage() {
 
     if (!zone) {
       setFormError('Initial Assignment Zone is required.');
+      return;
+    }
+
+    const alreadyExists = Array.isArray(robots) &&
+      robots.some((r) => String(r.robotId || '').trim().toLowerCase() === robotId.toLowerCase());
+    if (alreadyExists) {
+      setFormError(`Unit "${robotId}" is already commissioned. Choose a different identifier.`);
       return;
     }
 
@@ -188,31 +196,19 @@ export default function CommissionPage() {
                       inputValue={formData.zone}
                       onInputValueChange={(value) => {
                         setFormError('');
-                        setFormData((prev) => {
-                          const nextZone = value;
-                          const prevZone = String(prev.zone || '');
-                          const nextZoneStr = String(nextZone || '');
-
-                          // If the user is typing the same selected value again (cmdk can
-                          // emit redundant input updates), don't wipe saved coordinates.
-                          const sameZone = prevZone.trim() === nextZoneStr.trim();
-                          const hasCoords = prev.zoneLat !== null && prev.zoneLon !== null;
-
-                          return {
-                            ...prev,
-                            zone: nextZone,
-                            ...(sameZone && hasCoords
-                              ? {}
-                              : {
-                                  zoneLat: null,
-                                  zoneLon: null,
-                                }),
-                          };
-                        });
+                        // When the user edits the text manually, clear any saved
+                        // coordinates so stale coords don't attach to a new name.
+                        setFormData((prev) => ({
+                          ...prev,
+                          zone: value,
+                          zoneLat: null,
+                          zoneLon: null,
+                        }));
                       }}
                       onChange={(loc) => {
                         if (!loc) return;
                         setFormError('');
+                        // A suggestion was selected — save zone text + coordinates.
                         setFormData((prev) => ({
                           ...prev,
                           zone: loc.place_name,
@@ -220,13 +216,15 @@ export default function CommissionPage() {
                           zoneLon: loc.lon,
                         }));
                       }}
-                      placeholder="Search an area (India)…"
+                      placeholder="Search college, building, area…"
                       country="IN"
-                      debounceMs={450}
+                      debounceMs={350}
+                      limit={7}
                     />
 
                     <div className="mt-2 text-xs text-muted-foreground">
-                      Start typing to see suggestions. You can also submit a custom zone name.
+                      Search by name — colleges, buildings, landmarks are supported.
+                      Select a suggestion to pin exact coordinates.
                     </div>
 
                     {showSelectedZone ? (

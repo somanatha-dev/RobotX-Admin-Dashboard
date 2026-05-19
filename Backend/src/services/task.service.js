@@ -2,14 +2,10 @@ const { toStringOrNull, toNumberOrNull } = require("../utils/parse");
 const crypto = require("crypto");
 const { selectNearestRobot } = require("./taskAssignment.service");
 const { directionsPolyline } = require("./mapbox.service");
-
-function safeJsonParse(raw) {
-  try {
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
+const { updatePlannedPath, updateAssignedTask } = require("./robotRegistry.service");
+const { dispatchTaskAssign } = require("./commandDispatcher.service");
+const { recordAllocation } = require("./metrics.service");
+const { safeJsonParse } = require("../utils/json");
 
 async function readRobotLive(kv, robotId) {
   if (!kv) return null;
@@ -244,6 +240,40 @@ async function assignTask(prisma, task, { kv, io } = {}) {
       });
     } catch {
       // ignore
+    }
+
+    // DTARO: store planned path in registry (full route for intersection checks)
+    try {
+      const fullPlannedPath = [...(routes.toPickup || []), ...(routes.toDrop || [])];
+      await updatePlannedPath(kv, robotCode, fullPlannedPath);
+      await updateAssignedTask(kv, robotCode, taskId);
+    } catch {
+      // registry update is non-critical
+    }
+
+    // DTARO: dispatch TASK_ASSIGN directly to robot socket
+    try {
+      await dispatchTaskAssign(robotCode, {
+        taskId,
+        pickup: pickupCoord,
+        drop: dropCoord,
+        pathToPickup: routes.toPickup,
+        pathToDrop: routes.toDrop,
+      });
+    } catch {
+      // dispatch failure is non-critical — robot recovers on reconnect
+    }
+
+    // DTARO: record allocation metrics (cost is attached if cost-based selection was used)
+    try {
+      await recordAllocation(kv, {
+        robotId: robotCode,
+        taskId,
+        cost: null, // populated when called via cost-aware flow
+        latencyMs: null,
+      });
+    } catch {
+      // ignore metrics failure
     }
   }
 

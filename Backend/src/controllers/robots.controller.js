@@ -41,24 +41,59 @@ function emitRobotUpdate(req, payload) {
 
 const commissionRobot = asyncHandler(async (req, res) => {
   const prisma = getPrisma();
-  const kv = req.app?.locals?.kv;
+  const kv  = req.app?.locals?.kv;
+  const io  = req.app?.locals?.io;
   const robot = await robotService.commissionRobot(prisma, req.body);
 
-  // Controlled simulation: make commissioned robot instantly visible via Redis + dashboard socket.
+  // Make the commissioned robot instantly visible via Redis + dashboard socket.
   try {
     await writeRobotLiveState(kv, robot, { exSeconds: 15 });
   } catch {
     // ignore KV failures
   }
 
-  emitRobotUpdate(req, {
+  const livePayload = {
     robotId: robot.robotId,
-    lat: robot.lat,
-    lon: robot.lon,
+    lat:     robot.lat,
+    lon:     robot.lon,
     battery: robot.battery,
-    status: robot.status || "IDLE",
-    speed: robot.speed || 0,
-  });
+    status:  robot.status || "IDLE",
+    speed:   robot.speed || 0,
+    isOnline: true,
+  };
+
+  emitRobotUpdate(req, livePayload);
+
+  // Notify dashboard that a new robot has been commissioned (triggers map marker creation
+  // regardless of the current location filter).
+  try {
+    io?.to("dashboard")?.emit("ROBOT_COMMISSIONED", {
+      ...livePayload,
+      locationId: robot.locationId || null,
+      campusId:   robot.campusId   || null,
+      name:       robot.name       || null,
+    });
+  } catch {
+    // ignore
+  }
+
+  // Auto-start a VirtualRobot for this unit so it appears alive on the map immediately.
+  // If a physical robot later connects via AUTH, it seamlessly replaces the virtual one.
+  const virtualSimulator = req.app?.locals?.virtualSimulator;
+  if (virtualSimulator && typeof virtualSimulator.addRobot === "function") {
+    try {
+      await virtualSimulator.addRobot({
+        robotId: robot.robotId,
+        lat:     typeof robot.lat === "number" ? robot.lat : null,
+        lon:     typeof robot.lon === "number" ? robot.lon : null,
+      });
+    } catch (e) {
+      // Non-fatal — simulator may not be running yet or DB not ready
+      (req.app?.locals?.logger || console).warn(
+        `[commission] VirtualRobot addRobot failed for ${robot.robotId}: ${e?.message}`
+      );
+    }
+  }
 
   res.json({ ok: true, robot });
 });
