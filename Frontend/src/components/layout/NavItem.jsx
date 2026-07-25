@@ -1,7 +1,7 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 
-import { cn } from '../../lib/utils.js';
+import { cn } from '@/lib/utils.js';
 
 export default function NavItem({ icon, label, to, end, active, onClick, badge }) {
   if (to) {

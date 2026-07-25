@@ -13,8 +13,9 @@ import {
   X,
 } from 'lucide-react';
 
-import { useAppActions, useAppState } from '../context/appContext.js';
-import * as robotsApi from '../lib/api/robots.js';
+import { useAppActions, useAppState } from '@/context/appContext.js';
+import useRobotCommand from '@/hooks/useRobotCommand.js';
+import { normalizeStatus, isActive, isIdle, isIssues, isCharging } from '@/lib/robotStatus.js';
 
 function formatLocationName(name) {
   if (!name) return '—';
@@ -30,17 +31,12 @@ function batteryColors(pct) {
 
 export default function RobotsPage() {
   const { robots } = useAppState();
-  const { requestAuth, retire, addEvent } = useAppActions();
+  const { retire } = useAppActions();
   const navigate = useNavigate();
   const [filter, setFilter] = useState('All');
   const [selectedRobot, setSelectedRobot] = useState(null);
   const [search, setSearch] = useState('');
-
-  const normalizeStatus = (s) => String(s || '').toUpperCase();
-  const isIssues = (s) => ['ERROR', 'ISSUES', 'OFFLINE'].includes(normalizeStatus(s));
-  const isActive = (s) => normalizeStatus(s) === 'ACTIVE';
-  const isIdle = (s) => normalizeStatus(s) === 'IDLE';
-  const isCharging = (s) => ['CHARGING', 'PAUSED'].includes(normalizeStatus(s));
+  const sendCommand = useRobotCommand();
 
   const filteredRobots = robots.filter((r) => {
     const q = String(search || '').trim().toLowerCase();
@@ -56,13 +52,6 @@ export default function RobotsPage() {
     if (filter === 'Low Battery') return (Number(r.battery) || 0) > 0 && Number(r.battery) < 25;
     return true;
   });
-
-  const sendCommand = (robotId, type) => {
-    requestAuth(`${type} UNIT ${robotId}`, async () => {
-      await robotsApi.sendCommand(robotId, type);
-      addEvent(`Command ${type} sent to ${robotId}`, 'info');
-    });
-  };
 
   return (
     <div className="h-full flex flex-col relative bg-slate-100/50">

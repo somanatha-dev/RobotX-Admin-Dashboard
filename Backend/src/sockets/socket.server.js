@@ -84,6 +84,35 @@ function initSocketServer(io, { prisma, kv, logger }) {
             if (typeof log.socket === "function") {
                 log.socket("join", { socketId: socket.id, room: "dashboard" });
             }
+
+            // Re-hydrate this dashboard client with all active task paths so the
+            // map route overlays work even when the user opens the page after
+            // the initial TASK_ASSIGNED event was broadcast (on server startup or task creation).
+            setImmediate(async () => {
+                try {
+                    const activeTasks = await prisma.task.findMany({
+                        where: { status: { in: ["ASSIGNED", "IN_PROGRESS"] } },
+                        include: { robot: { select: { robotId: true } } },
+                    });
+                    for (const t of activeTasks) {
+                        const robotId = t.robot?.robotId;
+                        if (!robotId) continue;
+                        const pathRaw = await kv.get(`taskPath:${t.taskId}`).catch(() => null);
+                        if (!pathRaw) continue;
+                        let path;
+                        try { path = JSON.parse(pathRaw); } catch { continue; }
+                        if (!path?.toPickup || !path?.toDrop) continue;
+                        socket.emit("TASK_ASSIGNED", {
+                            taskId:       t.taskId,
+                            robotId,
+                            pickup:       path.pickup  ?? { lat: t.pickupLat, lon: t.pickupLon },
+                            drop:         path.drop    ?? { lat: t.dropLat,   lon: t.dropLon   },
+                            pathToPickup: path.toPickup,
+                            pathToDrop:   path.toDrop,
+                        });
+                    }
+                } catch { /* non-critical — dashboard will get routes via next emit */ }
+            });
         }
 
         socket.on("disconnect", (reason) => {

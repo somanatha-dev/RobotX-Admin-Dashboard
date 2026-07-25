@@ -1,6 +1,6 @@
-/* eslint-disable react-hooks/set-state-in-effect */
+/* eslint-disable react-hooks/set-state-in-effect -- intentional cascading-dropdown resets (country -> state -> city -> area) */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import * as locationsApi from '../../../../lib/api/locations.js';
+import * as locationsApi from '@/lib/api/locations.js';
 
 function byNameAsc(a, b) {
   const an = String(a?.name || '');
@@ -68,9 +68,7 @@ function persistFiltersSafe({ countryId, stateId, cityId, areaId, campusId }) {
 }
 
 export function useLocationFilters() {
-  const initialFiltersRef = useRef(null);
-  if (initialFiltersRef.current === null) initialFiltersRef.current = readStoredFiltersSafe();
-  const initialFilters = initialFiltersRef.current || {};
+  const [initialFilters] = useState(() => readStoredFiltersSafe());
 
   const [countries, setCountries] = useState([]);
   const [states, setStates] = useState([]);

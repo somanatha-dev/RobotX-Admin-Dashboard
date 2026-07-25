@@ -11,8 +11,8 @@ import {
 } from 'lucide-react';
 
 import NavItem from './NavItem.jsx';
-import { useAppActions, useAppState } from '../../context/appContext.js';
-import { Button } from '../ui/button.jsx';
+import { useAppActions, useAppState } from '@/context/appContext.js';
+import { Button } from '@/components/ui/button.jsx';
 
 export default function AppSidebar() {
   const { isSidebarOpen, session } = useAppState();

@@ -95,8 +95,24 @@ const cancelTask = asyncHandler(async (req, res) => {
   res.json({ ok: true, task: updated });
 });
 
+// POST /api/tasks/:taskId/reroute
+const rerouteTask = asyncHandler(async (req, res) => {
+  const prisma = getPrisma();
+  const kv = req.app?.locals?.kv;
+  const io = req.app?.locals?.io;
+  const taskId = toStringOrNull(req.params?.taskId);
+  if (!taskId) {
+    const err = new Error("taskId is required");
+    err.status = 400;
+    throw err;
+  }
+  const result = await taskService.rerouteTask(prisma, taskId, { kv, io });
+  res.json({ ok: true, ...result });
+});
+
 module.exports = {
   listTasks,
   assignTask,
   cancelTask,
+  rerouteTask,
 };

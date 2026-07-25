@@ -694,7 +694,7 @@ function createSimulationEngine({ prisma, kv, io, logger }) {
                   : {}),
               });
             } catch (e) {
-              log.error("Simulation tick failed for robot", { robotId, e });
+              log.error("Simulation tick failed for robot", { robotId, error: e?.message, code: e?.code });
             }
           })
         );

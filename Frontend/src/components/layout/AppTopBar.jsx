@@ -3,10 +3,10 @@ import { Bell, Menu } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import NotificationsMenu from './NotificationsMenu.jsx';
-import { useAppActions, useAppState } from '../../context/appContext.js';
-import { Button } from '../ui/button.jsx';
-import { Avatar, AvatarFallback } from '../ui/avatar.jsx';
-import { getRouteTitle } from '../../router/routeTitles.js';
+import { useAppActions, useAppState } from '@/context/appContext.js';
+import { Button } from '@/components/ui/button.jsx';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar.jsx';
+import { getRouteTitle } from '@/router/routeTitles.js';
 
 export default function AppTopBar() {
   const {

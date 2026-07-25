@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Maximize2, Minimize2, StopCircle } from 'lucide-react';
 
-import MapControl from '../features/maps/MapControl.jsx';
-import { useAppActions, useAppState } from '../context/appContext.js';
-import { Button } from '../components/ui/button.jsx';
+import MapControl from '@/features/maps/MapControl.jsx';
+import { useAppActions, useAppState } from '@/context/appContext.js';
+import { Button } from '@/components/ui/button.jsx';
 
 export default function MapPage() {
   const { systemOnline } = useAppState();

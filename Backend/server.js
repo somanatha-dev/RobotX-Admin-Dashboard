@@ -9,9 +9,10 @@ const { isOriginAllowed } = require("./src/config/cors");
 const { connectPrismaWithRetry, disconnectPrisma } = require("./src/db/prisma");
 const { initKv } = require("./src/cache/kv");
 const initSocketServer = require("./src/sockets/socket.server");
-const { createSimulationEngine } = require("./src/services/simulation.service");
 const { recoverActiveTasks } = require("./src/services/taskRecovery.service");
 const { createVirtualRobotSimulator } = require("./src/simulation/SimulationEngine");
+const { dispatchTaskAssign } = require("./src/services/commandDispatcher.service");
+const { safeJsonParse } = require("./src/utils/json");
 const { ensureAdminUser } = require("./src/services/adminBootstrap.service");
 
 async function start() {
@@ -58,11 +59,6 @@ async function start() {
     logger.error("Task recovery failed", { e });
   }
 
-  // Controlled robot simulation engine (Redis primary live state; DB secondary).
-  // Safe: skips robots with an active robot socket connection.
-  const simulation = createSimulationEngine({ prisma, kv, io, logger });
-  simulation.start({ intervalMs: 2000 });
-
   const port = Number(process.env.PORT || 3000);
   const host = typeof process.env.HOST === "string" && process.env.HOST.trim() ? process.env.HOST.trim() : "0.0.0.0";
 
@@ -82,7 +78,6 @@ async function start() {
     try {
       logger.warn(`Shutdown received (${signal}) — draining connections…`);
       try { virtualSimulator?.stop?.(); } catch { /* ignore */ }
-      try { simulation?.stop?.();        } catch { /* ignore */ }
       await new Promise((resolve) => server.close(resolve));
       io.close();
       await closeKv();
@@ -106,10 +101,92 @@ async function start() {
     logger.startup({
       env:       process.env.NODE_ENV || "development",
       port,
-      db:        true,   // if we got here, prisma connected
+      db:        true,
       redis:     redisLive,
-      simulator: "Ready — waiting for commissioned robots",
+      simulator: "Ready — re-hydrating commissioned robots…",
     });
+
+    // Re-hydrate VirtualRobot instances for every robot that was commissioned
+    // in a previous session.  Runs async after listen so it doesn't block the
+    // HTTP server from becoming ready.
+    (async () => {
+      try {
+        const existing = await prisma.robot.findMany({
+          select: { robotId: true, lat: true, lon: true },
+        });
+
+        if (existing.length === 0) return;
+
+        // Mark all robots online immediately so DTARO can assign tasks to them
+        // even in the brief window before their VirtualRobot socket connects.
+        await prisma.robot.updateMany({
+          where: { robotId: { in: existing.map((r) => r.robotId) } },
+          data:  { isOnline: true, lastSeenAt: new Date() },
+        });
+
+        for (const r of existing) {
+          try {
+            await virtualSimulator.addRobot({ robotId: r.robotId, lat: r.lat, lon: r.lon });
+          } catch (e) {
+            logger.warn(`[VR] Re-hydration failed for ${r.robotId}`, { message: e?.message });
+          }
+        }
+
+        logger.info(`[VR] Re-hydrated ${existing.length} robot(s) from DB`);
+
+        // After a brief window (5 s) for VirtualRobots to connect + authenticate,
+        // re-dispatch any tasks that were active when the server was last shut down.
+        // Without this, robots know they have tasks in DB but never receive TASK_ASSIGN.
+        setTimeout(async () => {
+          try {
+            const activeTasks = await prisma.task.findMany({
+              where: { status: { in: ["ASSIGNED", "IN_PROGRESS"] } },
+              include: { robot: { select: { robotId: true } } },
+            });
+
+            for (const task of activeTasks) {
+              const robotId = task.robot?.robotId;
+              if (!robotId) continue;
+
+              const pathRaw = await kv.get(`taskPath:${task.taskId}`);
+              const path = safeJsonParse(pathRaw);
+              if (!path?.toPickup || !path?.toDrop) continue;
+
+              const result = await dispatchTaskAssign(robotId, {
+                taskId: task.taskId,
+                pickup: { lat: task.pickupLat, lon: task.pickupLon },
+                drop:   { lat: task.dropLat,   lon: task.dropLon   },
+                pathToPickup: path.toPickup,
+                pathToDrop:   path.toDrop,
+              });
+
+              logger.info(`[VR] Re-dispatched task ${task.taskId} → ${robotId}`, {
+                dispatched: result.dispatched,
+                attempts: result.attempts,
+              });
+
+              // Also re-emit TASK_ASSIGNED so connected dashboards can draw the route.
+              try {
+                io.to("dashboard").emit("TASK_ASSIGNED", {
+                  taskId:        task.taskId,
+                  robotId,
+                  pickup:        { lat: task.pickupLat, lon: task.pickupLon },
+                  drop:          { lat: task.dropLat,   lon: task.dropLon   },
+                  pathToPickup:  path.toPickup,
+                  pathToDrop:    path.toDrop,
+                  usedFallback:  false,
+                });
+              } catch { /* ignore */ }
+            }
+          } catch (e) {
+            logger.warn("[VR] Active task re-dispatch error", { message: e?.message });
+          }
+        }, 5000);
+
+      } catch (e) {
+        logger.warn("[VR] Startup re-hydration error", { message: e?.message });
+      }
+    })();
   });
 }
 

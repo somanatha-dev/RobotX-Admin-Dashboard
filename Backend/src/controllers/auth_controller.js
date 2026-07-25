@@ -1,8 +1,17 @@
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+const { OAuth2Client } = require("google-auth-library");
 
 const { getPrisma } = require("../db/prisma");
+
+let googleClient = null;
+function getGoogleClient() {
+  if (!googleClient) {
+    googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+  }
+  return googleClient;
+}
 
 //////////////////////////////////////////////////
 // PIN AUTH
@@ -150,6 +159,79 @@ async function loginUser(req, res) {
 }
 
 //////////////////////////////////////////////////
+// GOOGLE LOGIN
+//////////////////////////////////////////////////
+async function googleLogin(req, res) {
+  const { credential } = req.body || {};
+
+  if (!credential) {
+    return res.status(400).json({ message: "Google credential required" });
+  }
+
+  if (!process.env.JWT_SECRET || !process.env.GOOGLE_CLIENT_ID) {
+    return res.status(500).json({ message: "Server misconfigured" });
+  }
+
+  let payload;
+  try {
+    const ticket = await getGoogleClient().verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    payload = ticket.getPayload();
+  } catch (error) {
+    return res.status(401).json({ message: "Invalid Google credential" });
+  }
+
+  if (!payload?.email || !payload.email_verified) {
+    return res.status(401).json({ message: "Google account email is not verified" });
+  }
+
+  // Same account, same email: this is the merge key. We never create a new
+  // account from Google sign-in — only link/authenticate an existing one —
+  // so a user always ends up in the single account tied to their email,
+  // whichever method they used to sign in.
+  const prisma = getPrisma();
+  const user = await prisma.user.findUnique({
+    where: { email: payload.email },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+      googleId: true,
+    },
+  });
+
+  if (!user) {
+    return res.status(403).json({ message: "No account found for this email" });
+  }
+
+  if (user.googleId !== payload.sub) {
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { googleId: payload.sub },
+    });
+  }
+
+  const token = jwt.sign(
+    { id: user.id, role: user.role },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+
+  res.cookie("token", token, getAuthCookieOptions());
+
+  return res.status(200).json({
+    message: "User logged in successfully",
+    user: {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+    },
+  });
+}
+
+//////////////////////////////////////////////////
 // GET ME
 //////////////////////////////////////////////////
 async function getMe(req, res) {
@@ -252,6 +334,7 @@ async function logout(req, res) {
 
 module.exports = {
   loginUser,
+  googleLogin,
   getMe,
   changePassword,
   logout,

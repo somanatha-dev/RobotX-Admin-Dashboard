@@ -1,10 +1,10 @@
 import React from 'react';
 import { AlertTriangle } from 'lucide-react';
 
-import { Badge } from '../ui/badge.jsx';
-import { Button } from '../ui/button.jsx';
-import { Card } from '../ui/card.jsx';
-import { Dialog, DialogContent } from '../ui/dialog.jsx';
+import { Badge } from '@/components/ui/badge.jsx';
+import { Button } from '@/components/ui/button.jsx';
+import { Card } from '@/components/ui/card.jsx';
+import { Dialog, DialogContent } from '@/components/ui/dialog.jsx';
 
 export default function DecisionRequiredModal({
   decisionRequest,

@@ -120,6 +120,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
       speed: numOpt,
       battery: numOpt,
       status: z.union([z.string(), z.number()]).optional().nullable().transform((v) => (v === null || v === undefined ? v : String(v))),
+      distanceTravelled: numOpt,
     })
     .passthrough();
 
@@ -171,6 +172,9 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
       const speed = toNumberOrNull(payload?.speed);
       const battery = toNumberOrNull(payload?.battery);
       const status = toStringOrNull(payload?.status);
+      const headingIn = toNumberOrNull(payload?.heading);
+      // VirtualRobots send distanceTravelled directly; real robots get it accumulated below.
+      const distanceTravelledIn = toNumberOrNull(payload?.distanceTravelled);
 
       const statusRaw = status && INCOMING_STATUS.has(status) ? status : null;
       const statusDb = statusRaw ? mapIncomingStatusToDb(statusRaw) : null;
@@ -247,7 +251,30 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
                 : 0,
         isOnline: true,
         lastSeenAt: nowMs,
+        heading: typeof headingIn === "number" && Number.isFinite(headingIn) ? headingIn : null,
       };
+
+      // distanceTravelled: VirtualRobots send it directly; for real robots we
+      // accumulate haversine distance from the previous stored position.
+      let distanceTravelled = typeof prevState?.distanceTravelled === "number"
+        ? prevState.distanceTravelled
+        : 0;
+
+      if (typeof distanceTravelledIn === "number") {
+        // VirtualRobot — trust the value it sends.
+        distanceTravelled = distanceTravelledIn;
+      } else if (
+        typeof prevState?.lat === "number" && typeof prevState?.lon === "number" &&
+        typeof fullState.lat === "number" && typeof fullState.lon === "number"
+      ) {
+        // Real robot — accumulate from position delta.
+        const moved = haversineMeters(prevState.lat, prevState.lon, fullState.lat, fullState.lon);
+        if (Number.isFinite(moved) && moved < 500) { // sanity: ignore GPS jumps > 500 m
+          distanceTravelled += moved;
+        }
+      }
+
+      fullState.distanceTravelled = Math.round(distanceTravelled);
 
       // 2) Store in Redis (final format)
       await kv.set(
@@ -259,6 +286,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
           status: fullState.status,
           speed: fullState.speed,
           lastSeenAt: fullState.lastSeenAt,
+          distanceTravelled: fullState.distanceTravelled,
         }),
         { ex: 15 }
       );
@@ -313,13 +341,26 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
         // zone assignment is non-critical
       }
 
-      log.info(`[ROBOT ${robotId}] TELEMETRY`, {
-        lat,
-        lon,
-        speed,
-        battery,
-        status,
-      });
+      // Persist battery level every ~2 minutes so real robots also survive
+      // server restarts with correct battery (mirrors VirtualRobot behaviour).
+      // Only write when battery is a valid number and 120-second window elapsed.
+      try {
+        if (typeof fullState.battery === "number" && Number.isFinite(fullState.battery)) {
+          const persistKey = `vr:battery:${robotId}`;
+          const lastPersistKey = `vr:batteryPersistAt:${robotId}`;
+          const lastPersistRaw = await kv.get(lastPersistKey);
+          const lastPersist = lastPersistRaw ? Number(lastPersistRaw) : 0;
+          if (nowMs - lastPersist >= 120_000) {
+            const snap = Math.round(fullState.battery * 10) / 10;
+            await Promise.all([
+              kv.set(persistKey,     String(snap), { ex: 48 * 3600 }),
+              kv.set(lastPersistKey, String(nowMs), { ex: 48 * 3600 }),
+            ]);
+          }
+        }
+      } catch { /* non-critical */ }
+
+      log.info(`[ROBOT ${robotId}] TELEMETRY`, { lat, lon, speed, battery, status });
 
       // 5) Emit live state to all connected clients.
       // Single canonical event — frontend subscribes only to "robot:update".

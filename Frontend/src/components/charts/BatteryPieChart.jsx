@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 
 import { Pie, PieChart, Cell, ResponsiveContainer, Sector, Tooltip } from 'recharts';
 
-import { PIE_COLORS } from '@/components/system/pieColors';
+import { PIE_COLORS } from '@/components/system/pieColors.js';
 
 const DEFAULT_INNER_RADIUS = 60;
 const DEFAULT_OUTER_RADIUS = 85;

@@ -1,12 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Fingerprint, Lock, RefreshCw, ShieldCheck } from 'lucide-react';
 
-import { Badge } from '../ui/badge.jsx';
-import { Button } from '../ui/button.jsx';
-import { Dialog, DialogContent, DialogTitle } from '../ui/dialog.jsx';
-import { Input } from '../ui/input.jsx';
+import { Badge } from '@/components/ui/badge.jsx';
+import { Button } from '@/components/ui/button.jsx';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog.jsx';
+import { Input } from '@/components/ui/input.jsx';
 
-import { pinAuth } from '../../lib/api/auth.js';
+import { pinAuth } from '@/lib/api/auth.js';
 
 function base64UrlDecode(base64url) {
   const base64 = base64url.replaceAll('-', '+').replaceAll('_', '/');

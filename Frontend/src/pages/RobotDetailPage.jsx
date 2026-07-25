@@ -1,27 +1,18 @@
 import React from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Camera, Trash2 } from 'lucide-react';
-import { useAppActions, useAppState } from '../context/appContext.js';
-import * as robotsApi from '../lib/api/robots.js';
+import { useAppActions, useAppState } from '@/context/appContext.js';
+import useRobotCommand from '@/hooks/useRobotCommand.js';
+import { normalizeStatus, isActive, isIdle } from '@/lib/robotStatus.js';
 
 export default function RobotDetailPage() {
   const { robots } = useAppState();
-  const { requestAuth, retire, addEvent } = useAppActions();
+  const { retire } = useAppActions();
   const navigate = useNavigate();
   const { id } = useParams();
-
-  const normalizeStatus = (s) => String(s || '').toUpperCase();
-  const isActive = (s) => normalizeStatus(s) === 'ACTIVE';
-  const isIdle = (s) => normalizeStatus(s) === 'IDLE';
+  const sendCommand = useRobotCommand();
 
   const robot = robots.find((r) => r.robotId === id);
-
-  const sendCommand = (robotId, type) => {
-    requestAuth(`${type} UNIT ${robotId}`, async () => {
-      await robotsApi.sendCommand(robotId, type);
-      addEvent(`Command ${type} sent to ${robotId}`, 'info');
-    });
-  };
 
   if (!robot && robots.length === 0) {
     return <div className="p-8 text-center font-bold text-slate-500">Loading unit…</div>;

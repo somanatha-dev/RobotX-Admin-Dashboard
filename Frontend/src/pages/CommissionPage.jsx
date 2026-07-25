@@ -2,27 +2,27 @@ import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MapPin, ShieldCheck } from 'lucide-react';
 
-import { Badge } from '../components/ui/badge.jsx';
-import { Button } from '../components/ui/button.jsx';
-import { Input } from '../components/ui/input.jsx';
-import { Label } from '../components/ui/label.jsx';
+import { Badge } from '@/components/ui/badge.jsx';
+import { Button } from '@/components/ui/button.jsx';
+import { Input } from '@/components/ui/input.jsx';
+import { Label } from '@/components/ui/label.jsx';
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from '../components/ui/card.jsx';
+} from '@/components/ui/card.jsx';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '../components/ui/select.jsx';
+} from '@/components/ui/select.jsx';
 
-import { LocationCombobox } from '../components/system/LocationCombobox.tsx';
-import { useAppActions, useAppState } from '../context/appContext.js';
+import { LocationCombobox } from '@/components/system/LocationCombobox.jsx';
+import { useAppActions, useAppState } from '@/context/appContext.js';
 
 export default function CommissionPage() {
   const rrNavigate = useNavigate();

@@ -1,18 +1,18 @@
 import React from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 
-import Layout from './layout.tsx';
+import Layout from './layout.jsx';
 
-import DashboardPage from '../pages/DashboardPage.jsx';
-import LoginPage from '../pages/LoginPage.jsx';
-import MapPage from '../pages/MapPage.jsx';
-import ProfilePage from '../pages/ProfilePage.jsx';
-import CommissionPage from '../pages/CommissionPage.jsx';
-import RobotDetailPage from '../pages/RobotDetailPage.jsx';
-import RobotsPage from '../pages/RobotsPage.jsx';
-import TasksPage from '../pages/TasksPage.jsx';
+import DashboardPage from '@/pages/DashboardPage.jsx';
+import LoginPage from '@/pages/LoginPage.jsx';
+import MapPage from '@/pages/MapPage.jsx';
+import ProfilePage from '@/pages/ProfilePage.jsx';
+import CommissionPage from '@/pages/CommissionPage.jsx';
+import RobotDetailPage from '@/pages/RobotDetailPage.jsx';
+import RobotsPage from '@/pages/RobotsPage.jsx';
+import TasksPage from '@/pages/TasksPage.jsx';
 
-import { useAppState } from '../context/appContext.js';
+import { useAppState } from '@/context/appContext.js';
 
 function RequireAuth({ children }) {
   const { session, isAuthResolved } = useAppState();

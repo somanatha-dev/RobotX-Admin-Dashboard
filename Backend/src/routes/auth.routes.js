@@ -6,6 +6,7 @@ const router = express.Router();
 
 // Login
 router.post("/login", authControllers.loginUser);
+router.post("/google", authControllers.googleLogin);
 
 // Authenticated routes
 router.get("/me", authMiddleware.authUser, authControllers.getMe);

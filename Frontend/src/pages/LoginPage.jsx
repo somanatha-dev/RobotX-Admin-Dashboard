@@ -2,15 +2,16 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Eye, EyeOff, RefreshCw, ShieldAlert } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
+import { GoogleLogin } from '@react-oauth/google';
 
-import { Button } from '../components/ui/button.jsx';
-import { Input } from '../components/ui/input.jsx';
-import { Label } from '../components/ui/label.jsx';
-import { useAppActions } from '../context/appContext.js';
+import { Button } from '@/components/ui/button.jsx';
+import { Input } from '@/components/ui/input.jsx';
+import { Label } from '@/components/ui/label.jsx';
+import { useAppActions } from '@/context/appContext.js';
 
 export default function LoginPage() {
   const rrNavigate = useNavigate();
-  const { login } = useAppActions();
+  const { login, loginWithGoogle } = useAppActions();
 
   const [identity, setIdentity] = useState('');
   const [password, setPassword] = useState('');
@@ -47,6 +48,24 @@ export default function LoginPage() {
       }, 360);
     } catch (err) {
       setError(err?.message || 'Invalid email or password');
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleSuccess = async (credentialResponse) => {
+    if (busy) return;
+    setLoading(true);
+    setError('');
+
+    try {
+      await loginWithGoogle(credentialResponse?.credential, { navigate: false });
+
+      setIsExiting(true);
+      exitTimerRef.current = window.setTimeout(() => {
+        rrNavigate('/');
+      }, 360);
+    } catch (err) {
+      setError(err?.message || 'Google sign-in failed');
       setLoading(false);
     }
   };
@@ -158,6 +177,23 @@ export default function LoginPage() {
                   )}
                   {loading ? 'Signing in…' : 'Sign in'}
                 </Button>
+
+                <div className="relative flex items-center py-1">
+                  <div className="grow border-t border-border" />
+                  <span className="mx-3 text-xs uppercase tracking-wide text-muted-foreground">
+                    or
+                  </span>
+                  <div className="grow border-t border-border" />
+                </div>
+
+                <div className="flex justify-center">
+                  <GoogleLogin
+                    onSuccess={handleGoogleSuccess}
+                    onError={() => setError('Google sign-in failed')}
+                    useOneTap={false}
+                    width="320"
+                  />
+                </div>
               </form>
             </div>
           </div>

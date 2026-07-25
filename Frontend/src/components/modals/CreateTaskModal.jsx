@@ -1,118 +1,129 @@
 import React, { useState } from 'react';
-import { ListTodo } from 'lucide-react';
+import { ListTodo, MapPin } from 'lucide-react';
 
-import { Button } from '../ui/button.jsx';
-import { Card } from '../ui/card.jsx';
-import { Dialog, DialogContent, DialogTitle } from '../ui/dialog.jsx';
-import { Input } from '../ui/input.jsx';
-import { Label } from '../ui/label.jsx';
+import { Button } from '@/components/ui/button.jsx';
+import { Card } from '@/components/ui/card.jsx';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog.jsx';
+import { Label } from '@/components/ui/label.jsx';
+import { LocationCombobox } from '@/components/system/LocationCombobox.jsx';
+
+const EMPTY_LOC = { text: '', lat: null, lon: null };
 
 export default function CreateTaskModal({ onClose, onCreate }) {
-  const [form, setForm] = useState({ pickup: '', drop: '' });
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState('');
+  const [pickup, setPickup] = useState(EMPTY_LOC);
+  const [drop, setDrop]     = useState(EMPTY_LOC);
+  const [error, setError]   = useState('');
 
-  const geocodeOne = async (query) => {
-    const token = import.meta.env.VITE_MAPBOX_TOKEN;
-    const q = String(query || '').trim();
-    if (!q) return null;
-    if (!token) throw new Error('Missing VITE_MAPBOX_TOKEN');
+  const canCreate =
+    pickup.text.trim().length > 0 && pickup.lat !== null &&
+    drop.text.trim().length > 0   && drop.lat !== null;
 
-    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(q)}.json?access_token=${encodeURIComponent(
-      token
-    )}&autocomplete=true&limit=1&types=address,poi`;
-
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Failed to geocode address');
-    const data = await res.json();
-    const feature = data?.features?.[0];
-    if (!feature || !Array.isArray(feature.center) || feature.center.length < 2) return null;
-
-    const [lon, lat] = feature.center;
-    return { label: feature.place_name || q, lat, lon };
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const handleCreate = () => {
     setError('');
-    setIsSubmitting(true);
-    try {
-      const pickupGeo = await geocodeOne(form.pickup);
-      const dropGeo = await geocodeOne(form.drop);
-
-      if (!pickupGeo) throw new Error('Pickup address not found');
-      if (!dropGeo) throw new Error('Drop address not found');
-
-      // No robotId — backend DTARO cost function selects the optimal robot.
-      onCreate({
-        pickup: pickupGeo.label,
-        pickupLat: pickupGeo.lat,
-        pickupLon: pickupGeo.lon,
-        drop: dropGeo.label,
-        dropLat: dropGeo.lat,
-        dropLon: dropGeo.lon,
-      });
-    } catch (err) {
-      setError(err?.message || 'Failed to create task');
-    } finally {
-      setIsSubmitting(false);
-    }
+    if (!pickup.lat || !pickup.lon) { setError('Select a pickup location from the suggestions.'); return; }
+    if (!drop.lat   || !drop.lon)   { setError('Select a drop location from the suggestions.');   return; }
+    onCreate({
+      pickup:    pickup.text,
+      pickupLat: pickup.lat,
+      pickupLon: pickup.lon,
+      drop:      drop.text,
+      dropLat:   drop.lat,
+      dropLon:   drop.lon,
+    });
   };
 
   return (
     <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
-      <DialogContent className="max-w-md p-0 overflow-hidden">
-        <div className="p-5 border-b border-border/60 bg-muted/30">
-          <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
-              <ListTodo className="w-5 h-5" />
-            </div>
-            <DialogTitle>Create Task</DialogTitle>
+      {/*
+        overflow-visible lets the suggestion dropdowns escape the dialog boundary.
+        The dialog itself is sized to fit compactly — no extra blank space.
+      */}
+      <DialogContent className="max-w-md p-0 overflow-visible">
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-border/60 bg-muted/30 rounded-t-lg flex items-center gap-3">
+          <div className="h-8 w-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+            <ListTodo className="w-4 h-4" />
           </div>
+          <DialogTitle className="text-base">Create Task</DialogTitle>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          <Card className="p-4 bg-muted/30">
-            <div className="text-sm text-muted-foreground">Assignment</div>
-            <div className="mt-2 text-sm font-medium text-foreground">
-              Robot auto-assigned by DTARO cost function (distance, battery, utilization).
+        {/* Body */}
+        <div className="px-5 py-4 space-y-4">
+          {/* DTARO info */}
+          <Card className="px-4 py-3 bg-muted/40">
+            <div className="text-xs text-muted-foreground">
+              Robot auto-assigned by{' '}
+              <span className="font-semibold text-foreground">DTARO</span> cost function
+              (distance · battery · utilization).
             </div>
           </Card>
 
-          {error ? <div className="text-sm text-destructive font-medium">{error}</div> : null}
+          {error ? (
+            <div className="text-sm text-destructive font-medium bg-destructive/10 px-3 py-2 rounded-lg border border-destructive/20">
+              {error}
+            </div>
+          ) : null}
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Pickup</Label>
-              <Input
-                value={form.pickup}
-                onChange={(e) => setForm((prev) => ({ ...prev, pickup: e.target.value }))}
+          {/* Pickup */}
+          <div className="space-y-1.5">
+            <Label className="flex items-center gap-1.5 text-sm">
+              <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+              Pickup
+            </Label>
+            <div className="relative">
+              <LocationCombobox
+                inputValue={pickup.text}
+                onInputValueChange={(v) => { setError(''); setPickup({ text: v, lat: null, lon: null }); }}
+                onChange={(loc) => { if (!loc) return; setError(''); setPickup({ text: loc.place_name, lat: loc.lat, lon: loc.lon }); }}
                 placeholder="e.g. Gate 1, RNSIT"
+                direction="down"
+                country="IN"
+                debounceMs={300}
+                limit={6}
               />
             </div>
-            <div className="space-y-2">
-              <Label>Drop</Label>
-              <Input
-                value={form.drop}
-                onChange={(e) => setForm((prev) => ({ ...prev, drop: e.target.value }))}
-                placeholder="e.g. Block C, RNSIT"
-              />
-            </div>
+            {pickup.lat !== null && (
+              <div className="text-[10px] text-emerald-600 font-mono pl-1">
+                ✓ {pickup.lat.toFixed(5)}, {pickup.lon.toFixed(5)}
+              </div>
+            )}
           </div>
 
-          <div className="flex gap-3 pt-2">
+          {/* Drop — dropdown opens downward; modal is short enough there's room below */}
+          <div className="space-y-1.5">
+            <Label className="flex items-center gap-1.5 text-sm">
+              <MapPin className="w-3.5 h-3.5 text-rose-500" />
+              Drop
+            </Label>
+            <div className="relative">
+              <LocationCombobox
+                inputValue={drop.text}
+                onInputValueChange={(v) => { setError(''); setDrop({ text: v, lat: null, lon: null }); }}
+                onChange={(loc) => { if (!loc) return; setError(''); setDrop({ text: loc.place_name, lat: loc.lat, lon: loc.lon }); }}
+                placeholder="e.g. Block C, RNSIT"
+                direction="down"
+                country="IN"
+                debounceMs={300}
+                limit={6}
+              />
+            </div>
+            {drop.lat !== null && (
+              <div className="text-[10px] text-rose-500 font-mono pl-1">
+                ✓ {drop.lat.toFixed(5)}, {drop.lon.toFixed(5)}
+              </div>
+            )}
+          </div>
+
+          {/* Actions */}
+          <div className="flex gap-3 pt-1">
             <Button type="button" variant="outline" className="flex-1" onClick={onClose}>
               Cancel
             </Button>
-            <Button
-              type="submit"
-              className="flex-1"
-              disabled={isSubmitting || !form.pickup.trim() || !form.drop.trim()}
-            >
-              {isSubmitting ? 'Creating…' : 'Create'}
+            <Button type="button" className="flex-1" disabled={!canCreate} onClick={handleCreate}>
+              Create
             </Button>
           </div>
-        </form>
+        </div>
       </DialogContent>
     </Dialog>
   );

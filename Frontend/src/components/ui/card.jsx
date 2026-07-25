@@ -1,6 +1,6 @@
 import * as React from 'react'
 
-import { cn } from '../../lib/utils'
+import { cn } from '@/lib/utils'
 
 const Card = React.forwardRef(({ className, ...props }, ref) => (
   <div
@@ -46,20 +46,10 @@ const CardContent = React.forwardRef(({ className, ...props }, ref) => (
 ))
 CardContent.displayName = 'CardContent'
 
-const CardFooter = React.forwardRef(({ className, ...props }, ref) => (
-  <div
-    ref={ref}
-    className={cn('flex items-center p-5 pt-0', className)}
-    {...props}
-  />
-))
-CardFooter.displayName = 'CardFooter'
-
 export {
   Card,
   CardHeader,
   CardTitle,
   CardDescription,
   CardContent,
-  CardFooter,
 }

@@ -1,10 +1,15 @@
-/* eslint-disable react-hooks/set-state-in-effect */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import { animate } from 'framer-motion';
 
-import { socket } from '../../../../lib/socket.js';
-import { createRobotMarkerElement, updateMarkerInfo } from '../../../../lib/mapboxMarkers.js';
+import { socket } from '@/lib/socket.js';
+import {
+  createRobotMarkerElement,
+  updateMarkerInfo,
+  injectPulseCSS,
+  applyMarkerZoomScale,
+  markerScaleForZoom,
+} from '@/lib/mapboxMarkers.js';
 
 function hashStringToInt(str) {
   let h = 2166136261;
@@ -108,8 +113,49 @@ function splitPath(points, pathIndex) {
   };
 }
 
+/**
+ * Fit the camera to a set of {lat,lon} points, with sane defaults for the
+ * live-tracking view. Shared by the auto-fit-on-assignment flow and the
+ * manual "Recenter" control so both frame routes the same way.
+ */
+function fitRouteBounds(map, points, opts = {}) {
+  if (!map) return false;
+  const lats = (Array.isArray(points) ? points : []).map((p) => p?.lat).filter((v) => typeof v === 'number');
+  const lons = (Array.isArray(points) ? points : []).map((p) => p?.lon).filter((v) => typeof v === 'number');
+  if (lats.length < 1 || lons.length < 1) return false;
+
+  try {
+    map.fitBounds(
+      [
+        [Math.min(...lons), Math.min(...lats)],
+        [Math.max(...lons), Math.max(...lats)],
+      ],
+      {
+        padding: { top: 90, bottom: 90, left: 90, right: 90 },
+        maxZoom: 17,
+        duration: 1600,
+        ...opts,
+      }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function safeRemoveLayerAndSource(map, layerId, sourceId) {
   if (!map) return;
+  // Remove glow/casing sublayers first (added before the main layer, must be removed before source)
+  try {
+    if (layerId && map.getLayer(`${layerId}-glow`)) map.removeLayer(`${layerId}-glow`);
+  } catch {
+    // ignore
+  }
+  try {
+    if (layerId && map.getLayer(`${layerId}-casing`)) map.removeLayer(`${layerId}-casing`);
+  } catch {
+    // ignore
+  }
   try {
     if (layerId && map.getLayer(layerId)) map.removeLayer(layerId);
   } catch {
@@ -122,9 +168,34 @@ function safeRemoveLayerAndSource(map, layerId, sourceId) {
   }
 }
 
+// Ground-proportionate widths — plain `line-width` numbers are constant
+// SCREEN pixels regardless of zoom, so a fixed 12px glow represents ~1m of
+// road at zoom 18 but hundreds of metres at zoom 10. These zoom expressions
+// keep the line's apparent ground-width close to a real road/lane at every
+// zoom, which is what makes it read as "on the road" instead of a fixed-size
+// ribbon that swamps the map when zoomed out.
+function zoomLineWidth(dashed) {
+  return dashed
+    ? ['interpolate', ['linear'], ['zoom'], 10, 1, 14, 2, 18, 3.2]
+    : ['interpolate', ['linear'], ['zoom'], 10, 1.4, 14, 2.6, 18, 5];
+}
+
+function zoomGlowWidth(dashed) {
+  return dashed
+    ? ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 4, 18, 7]
+    : ['interpolate', ['linear'], ['zoom'], 10, 3, 14, 6, 18, 12];
+}
+
+function zoomCasingWidth(dashed) {
+  return dashed
+    ? ['interpolate', ['linear'], ['zoom'], 10, 1.6, 14, 2.8, 18, 4.2]
+    : ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 3.4, 18, 6.2];
+}
+
 function ensureLineLayer({ map, sourceId, layerId, data, color, dashed, opacity }) {
   if (!map || !data) return;
 
+  // Update existing source or create it
   const src = map.getSource(sourceId);
   if (src && typeof src.setData === 'function') {
     try {
@@ -140,21 +211,64 @@ function ensureLineLayer({ map, sourceId, layerId, data, color, dashed, opacity 
     }
   }
 
+  // Subtle glow — just enough to stand out on dark map, not so wide it hides roads
+  const glowLayerId = `${layerId}-glow`;
+  if (!map.getLayer(glowLayerId)) {
+    try {
+      map.addLayer({
+        id: glowLayerId,
+        type: 'line',
+        source: sourceId,
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+          'line-color': color,
+          'line-width': zoomGlowWidth(dashed),
+          'line-opacity': 0.10,
+          'line-blur': 3,
+        },
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  // Casing — thin dark/white halo under the main line so the small, expected
+  // divergence between our full-precision route and the basemap's
+  // zoom-simplified road geometry reads as an intentional "route corridor"
+  // instead of visual misalignment.
+  const casingLayerId = `${layerId}-casing`;
+  if (!map.getLayer(casingLayerId)) {
+    try {
+      map.addLayer({
+        id: casingLayerId,
+        type: 'line',
+        source: sourceId,
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+          'line-color': '#0b1220',
+          'line-width': zoomCasingWidth(dashed),
+          'line-opacity': dashed ? 0.35 : 0.55,
+        },
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  // Main line layer
   if (!map.getLayer(layerId)) {
     try {
       map.addLayer({
         id: layerId,
         type: 'line',
         source: sourceId,
-        layout: {
-          'line-join': 'round',
-          'line-cap': 'round',
-        },
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
         paint: {
           'line-color': color,
-          'line-width': dashed ? 3 : 4,
-          'line-opacity': typeof opacity === 'number' ? opacity : dashed ? 0.7 : 0.85,
-          ...(dashed ? { 'line-dasharray': [2, 2] } : {}),
+          // dashed = robot→pickup (approaching); solid = pickup→drop (delivery route)
+          'line-width': zoomLineWidth(dashed),
+          'line-opacity': typeof opacity === 'number' ? opacity : dashed ? 0.85 : 0.95,
+          ...(dashed ? { 'line-dasharray': [8, 5] } : {}),
         },
       });
     } catch {
@@ -164,36 +278,94 @@ function ensureLineLayer({ map, sourceId, layerId, data, color, dashed, opacity 
 }
 
 function createMissionMarkerEl({ color, label }) {
-  const root = document.createElement('div');
-  root.style.width = '14px';
-  root.style.height = '14px';
-  root.style.borderRadius = '9999px';
-  root.style.background = color;
-  root.style.border = '2px solid rgba(15, 23, 42, 0.9)';
-  root.style.boxShadow = '0 1px 2px rgba(0,0,0,0.25)';
-  root.style.position = 'relative';
+  injectPulseCSS();
 
+  // Outer wrapper — the anchor is 'center', so this element's center = coordinate
+  // point. It's passed directly to `new mapboxgl.Marker({element: wrap})`, so
+  // Mapbox writes its own positioning transform onto `wrap` every frame — zoom
+  // scaling must go on the `inner` child instead (see mapboxMarkers.js for the
+  // same pattern on robot markers), or our scale and Mapbox's translate would
+  // clobber each other.
+  // `position:absolute` (not `relative`) — must agree with Mapbox's own
+  // `.mapboxgl-marker { position:absolute }` rule on this exact element, or
+  // the inline style wins and pulls it into normal document flow, stacking
+  // it under every marker created earlier (see mapboxMarkers.js for the
+  // full explanation — this was the actual cause of Pickup/Drop pins
+  // drifting from their true coordinate).
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'position:absolute;width:36px;height:36px;';
+
+  const inner = document.createElement('div');
+  inner.style.cssText = 'position:absolute;inset:0;transform-origin:50% 50%;will-change:transform;';
+  wrap._scaleWrap = inner;
+
+  // Pulse ring — absolutely centered in wrap
+  const pulse = document.createElement('div');
+  pulse.style.cssText = [
+    'position:absolute',
+    'top:50%', 'left:50%',
+    'transform:translate(-50%,-50%)',
+    'width:24px', 'height:24px',
+    'border-radius:50%',
+    `background:${color}`,
+    'animation:rx-pulse-a 2.5s ease-out 0.4s infinite',
+    'pointer-events:none',
+    'z-index:0',
+  ].join(';');
+
+  // Main dot — absolutely centered
+  const dot = document.createElement('div');
+  dot.style.cssText = [
+    'position:absolute',
+    'top:50%', 'left:50%',
+    'transform:translate(-50%,-50%)',
+    'width:24px', 'height:24px',
+    'border-radius:50%',
+    `background:${color}`,
+    'border:3px solid rgba(255,255,255,0.97)',
+    `box-shadow:0 3px 10px rgba(0,0,0,0.5), 0 0 0 4px ${color}33`,
+    'z-index:2',
+  ].join(';');
+
+  // Label badge (above the dot)
   const tag = document.createElement('div');
-  tag.textContent = label;
-  tag.style.position = 'absolute';
-  tag.style.left = '50%';
-  tag.style.bottom = '100%';
-  tag.style.transform = 'translate(-50%, -6px)';
-  tag.style.padding = '2px 6px';
-  tag.style.borderRadius = '9999px';
-  tag.style.background = 'rgba(15, 23, 42, 0.9)';
-  tag.style.color = '#fff';
-  tag.style.fontSize = '10px';
-  tag.style.fontWeight = '700';
-  tag.style.letterSpacing = '0.04em';
-  tag.style.whiteSpace = 'nowrap';
+  tag.textContent         = label;
+  tag.style.position      = 'absolute';
+  tag.style.left          = '50%';
+  tag.style.bottom        = '100%';
+  tag.style.transform     = 'translateX(-50%)';
+  tag.style.marginBottom  = '4px';
+  tag.style.padding       = '3px 10px';
+  tag.style.borderRadius  = '9999px';
+  tag.style.background    = color;
+  tag.style.color         = '#fff';
+  tag.style.fontSize      = '11px';
+  tag.style.fontWeight    = '800';
+  tag.style.letterSpacing = '0.05em';
+  tag.style.whiteSpace    = 'nowrap';
   tag.style.pointerEvents = 'none';
+  tag.style.boxShadow     = '0 2px 6px rgba(0,0,0,0.45)';
+  tag.style.border        = '1.5px solid rgba(255,255,255,0.5)';
+  tag.style.zIndex        = '10';
 
-  root.appendChild(tag);
-  return root;
+  dot.appendChild(tag);
+  inner.appendChild(pulse);
+  inner.appendChild(dot);
+  wrap.appendChild(inner);
+  return wrap;
 }
 
-export function useRobotStream({ robots: globalRobots, locationId, campusId, mapRef, markersRef }) {
+export function useRobotStream({
+  robots: globalRobots,
+  taskPathCacheRef,
+  countryId,
+  stateId,
+  cityId,
+  locationId,
+  campusId,
+  mapRef,
+  markersRef,
+}) {
   const [robots, setRobots] = useState([]);
 
   const activeRobotIdsRef = useRef(new Set());
@@ -362,40 +534,43 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
       let pickupMarker = existing?.pickupMarker || null;
       let dropMarker = existing?.dropMarker || null;
 
-      const pickupLL = toLngLat(pickup);
-      const dropLL = toLngLat(drop);
+      // Use the road-snapped PATH ENDPOINT for each marker, not the raw task address.
+      // Mapbox snaps coordinates to the nearest road; pathToPickup[-1] is where the
+      // dashed line actually ends, and pathToDrop[-1] is where the solid line ends.
+      // Placing markers at task.pickup/task.drop (unsnapped) causes a visible gap
+      // between the end of the line and the pin.
+      const snapPickupLL = pathToPickup && pathToPickup.length > 0
+        ? toLngLat(pathToPickup[pathToPickup.length - 1])
+        : toLngLat(pickup);
+      const snapDropLL = pathToDrop && pathToDrop.length > 0
+        ? toLngLat(pathToDrop[pathToDrop.length - 1])
+        : toLngLat(drop);
 
-      if (pickupLL) {
+      if (snapPickupLL) {
         if (!pickupMarker) {
           pickupMarker = new mapboxgl.Marker({
-            element: createMissionMarkerEl({ color: '#ef4444', label: 'Pickup' }),
-            anchor: 'bottom',
+            element: createMissionMarkerEl({ color, label: 'Pickup' }),
+            anchor: 'center',
           })
-            .setLngLat(pickupLL)
+            .setLngLat(snapPickupLL)
             .addTo(map);
+          applyMarkerZoomScale(pickupMarker.getElement()?._scaleWrap, map.getZoom());
         } else {
-          try {
-            pickupMarker.setLngLat(pickupLL);
-          } catch {
-            // ignore
-          }
+          try { pickupMarker.setLngLat(snapPickupLL); } catch { /* ignore */ }
         }
       }
 
-      if (dropLL) {
+      if (snapDropLL) {
         if (!dropMarker) {
           dropMarker = new mapboxgl.Marker({
             element: createMissionMarkerEl({ color: '#22c55e', label: 'Drop' }),
-            anchor: 'bottom',
+            anchor: 'center',
           })
-            .setLngLat(dropLL)
+            .setLngLat(snapDropLL)
             .addTo(map);
+          applyMarkerZoomScale(dropMarker.getElement()?._scaleWrap, map.getZoom());
         } else {
-          try {
-            dropMarker.setLngLat(dropLL);
-          } catch {
-            // ignore
-          }
+          try { dropMarker.setLngLat(snapDropLL); } catch { /* ignore */ }
         }
       }
 
@@ -417,6 +592,20 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
   );
 
   // Cache task routes once.
+  // On mount: seed taskPathsRef from AppProvider's persistent cache so routes
+  // are drawn even if TASK_ASSIGNED fired before this component mounted.
+  useEffect(() => {
+    const cache = taskPathCacheRef?.current;
+    if (!cache || cache.size === 0) return;
+    for (const [taskId, entry] of cache.entries()) {
+      if (!taskPathsRef.current.has(taskId)) {
+        taskPathsRef.current.set(taskId, entry);
+      }
+    }
+  // Run once on mount — ref contents don't cause re-renders.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     const onAssigned = (msg) => {
       const taskId = String(msg?.taskId || '').trim();
@@ -427,14 +616,18 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
       const pathToDrop = Array.isArray(msg?.pathToDrop) ? msg.pathToDrop : null;
       if (!pathToPickup || !pathToDrop) return;
 
-      taskPathsRef.current.set(taskId, {
+      const entry = {
         taskId,
         robotId: robotId || null,
         pickup: msg?.pickup ?? null,
         drop: msg?.drop ?? null,
         pathToPickup,
         pathToDrop,
-      });
+      };
+
+      taskPathsRef.current.set(taskId, entry);
+      // Also keep the AppProvider cache in sync.
+      if (taskPathCacheRef?.current) taskPathCacheRef.current.set(taskId, entry);
 
       if (robotId && activeRobotIdsRef.current.has(robotId)) {
         upsertRoutes({
@@ -448,6 +641,16 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
             drop: msg?.drop ?? null,
           },
         });
+      } else if (robotId) {
+        // Robot not yet in active set (e.g. user navigated to map after assignment).
+        // Add it to the active set so the next telemetry tick updates its marker.
+        activeRobotIdsRef.current.add(robotId);
+      }
+
+      // Auto-fit map to show the full route (robot → pickup → drop)
+      const map = mapRef?.current;
+      if (map) {
+        fitRouteBounds(map, [...pathToPickup, ...pathToDrop]);
       }
     };
 
@@ -501,7 +704,7 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
       socket.off('TASK_ASSIGNED', onAssigned);
       socket.off('TASK_UPDATED', onTaskUpdated);
     };
-  }, [upsertRoutes, removeRouteForRobot]);
+  }, [upsertRoutes, removeRouteForRobot, mapRef, taskPathCacheRef]);
 
   // Rebuild route layers after style changes.
   useEffect(() => {
@@ -533,6 +736,45 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
     };
   }, [mapRef]);
 
+  // Keep every marker's visual size proportionate to the current zoom.
+  // Fixed-pixel markers stay the same SCREEN size at any zoom, so at low
+  // zoom a 26-36px icon can cover hundreds of metres of ground — making an
+  // exactly-correct coordinate look like it's floating far from the road
+  // purely from oversized icon footprint, not a positioning bug. Shrinking
+  // markers as you zoom out (mirrors Uber/Swiggy) keeps them visually
+  // anchored to the road at every zoom level.
+  useEffect(() => {
+    const map = mapRef?.current;
+    if (!map) return;
+
+    const applyToAll = () => {
+      const zoom = map.getZoom();
+      for (const entry of markersRef?.current?.values() || []) {
+        applyMarkerZoomScale(entry?.scaleWrap, zoom);
+      }
+      for (const entry of routesRef.current.values()) {
+        applyMarkerZoomScale(entry?.pickupMarker?.getElement?.()?._scaleWrap, zoom);
+        applyMarkerZoomScale(entry?.dropMarker?.getElement?.()?._scaleWrap, zoom);
+      }
+    };
+
+    applyToAll();
+
+    try {
+      map.on('zoom', applyToAll);
+    } catch {
+      // ignore
+    }
+
+    return () => {
+      try {
+        map.off('zoom', applyToAll);
+      } catch {
+        // ignore
+      }
+    };
+  }, [mapRef, markersRef]);
+
   const upsertMarker = useCallback(
     (robot) => {
       const map = mapRef?.current;
@@ -557,19 +799,27 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
 
       if (!entry) {
         const color = colorForRobot(robotId);
-        const { root, car, label } = createRobotMarkerElement(color, robotId);
+        const { root, car, label, scaleWrap } = createRobotMarkerElement(color, robotId);
 
-        root.style.opacity = '0';
-        root.style.transform = 'scale(0.75)';
-        root.style.willChange = 'transform, opacity';
+        // NOTE: the appear animation and zoom-scaling both animate `scaleWrap`,
+        // never `root` — `root.style.transform` is owned by Mapbox (it writes
+        // its own translate/anchor transform onto the element passed to
+        // `mapboxgl.Marker`), so animating `root.style.transform` here would
+        // fight Mapbox's positioning and leave the marker mispositioned until
+        // the next map move/zoom re-triggers Mapbox's own update.
+        scaleWrap.style.opacity = '0';
+        scaleWrap.style.transform = 'scale(0.75)';
+        scaleWrap.style.willChange = 'transform, opacity';
 
         const marker = new mapboxgl.Marker({ element: root, anchor: 'center' }).setLngLat(to).addTo(map);
+        applyMarkerZoomScale(scaleWrap, map.getZoom());
 
         entry = {
           marker,
           root,
           carEl: car,
           labelEl: label,
+          scaleWrap,
           current: to,
           rafId: null,
           target: to,
@@ -578,9 +828,7 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
         store.set(key, entry);
 
         if (entry.carEl && typeof heading === 'number') {
-          entry.carEl.style.transformOrigin = '50% 50%';
           entry.carEl.style.transform = `rotate(${heading}deg)`;
-          entry.carEl.style.willChange = 'transform';
         }
 
         upsertRoutes(robot);
@@ -590,8 +838,8 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
         // so we can't call .catch() on it — wrap in try-catch instead.
         try {
           animate(
-            root,
-            { opacity: [0, 1], transform: ['scale(0.75)', 'scale(1)'] },
+            scaleWrap,
+            { opacity: [0, 1], transform: ['scale(0.75)', `scale(${markerScaleForZoom(map.getZoom())})`] },
             { duration: 0.35, ease: 'easeOut' }
           );
         } catch {
@@ -602,7 +850,6 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
       }
 
       if (entry.carEl && typeof heading === 'number') {
-        entry.carEl.style.transformOrigin = '50% 50%';
         entry.carEl.style.transform = `rotate(${heading}deg)`;
       }
 
@@ -621,7 +868,9 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
       }
 
       const start = performance.now();
-      const duration = 800;
+      // Match RAF duration to telemetry interval (2 000 ms) minus a small margin
+      // so the marker reaches the new position just before the next tick arrives.
+      const duration = 1800;
 
       entry.target = to;
 
@@ -693,13 +942,19 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
   );
 
   // Sync map markers from the global robots list whenever it changes or the
-  // location filter changes.  Robots are shown when any location/campus is
-  // selected; cleared when the map is at world view (no filter).
+  // location filter changes. Robots (and their routes/pickup/drop pins) are
+  // shown as soon as ANY filter level is picked — country, state, city,
+  // area, or campus — not just area/campus; cleared only at world view (no
+  // filter at all). Robots aren't actually filtered by geography here (see
+  // below), so there's no reason to withhold them until the narrowest
+  // filter is chosen — the zoom-scaled marker/route sizing already keeps
+  // the display readable at every one of those zoom levels.
   useEffect(() => {
     const map = mapRef?.current;
     if (!map) return;
 
-    if (!locationId && !campusId) {
+    const hasAnyFilter = Boolean(countryId || stateId || cityId || locationId || campusId);
+    if (!hasAnyFilter) {
       setRobots([]);
       syncMarkersToRobots([]);
       return;
@@ -715,7 +970,22 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
 
     setRobots(list);
     syncMarkersToRobots(list);
-  }, [locationId, campusId, globalRobots, mapRef, syncMarkersToRobots]);
+
+    // After markers are placed, draw any routes we have cached but haven't
+    // drawn yet (e.g. TASK_ASSIGNED fired while user was on a different page).
+    if (taskPathCacheRef?.current) {
+      for (const [taskId, entry] of taskPathCacheRef.current.entries()) {
+        const { robotId, pathToPickup, pathToDrop, pickup, drop } = entry;
+        if (!robotId || !pathToPickup || !pathToDrop) continue;
+        if (!activeRobotIdsRef.current.has(robotId)) continue;
+        if (routesRef.current.has(robotId)) continue; // already drawn
+        upsertRoutes({
+          robotId,
+          task: { taskId, phase: 'TO_PICKUP', pathToPickup, pathToDrop, pickup, drop },
+        });
+      }
+    }
+  }, [countryId, stateId, cityId, locationId, campusId, globalRobots, mapRef, syncMarkersToRobots, upsertRoutes, taskPathCacheRef]);
 
   // Live updates via Socket.IO
   useEffect(() => {
@@ -770,7 +1040,7 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
     return () => {
       socket.off('robot:update', handler);
     };
-  }, [upsertMarker]);
+  }, [upsertMarker, markersRef]);
 
   // Add newly commissioned robots to the map immediately, bypassing the location filter.
   useEffect(() => {
@@ -800,8 +1070,41 @@ export function useRobotStream({ robots: globalRobots, locationId, campusId, map
 
   const robotCount = useMemo(() => (Array.isArray(robots) ? robots.length : 0), [robots]);
 
+  // Manual "snap back" for when the user has panned/zoomed out far enough
+  // that markers no longer read as sitting on their roads (an inherent
+  // limit of any slippy map at very low zoom — see fixed-pixel marker note
+  // above). Frames every currently visible robot + its pickup/drop pins,
+  // same logic as the auto-fit run on TASK_ASSIGNED.
+  const recenter = useCallback(() => {
+    const map = mapRef?.current;
+    if (!map) return false;
+
+    const points = [];
+    for (const entry of markersRef?.current?.values() || []) {
+      try {
+        const ll = entry?.marker?.getLngLat?.();
+        if (ll) points.push({ lat: ll.lat, lon: ll.lng });
+      } catch {
+        // ignore
+      }
+    }
+    for (const entry of routesRef.current.values()) {
+      for (const m of [entry?.pickupMarker, entry?.dropMarker]) {
+        try {
+          const ll = m?.getLngLat?.();
+          if (ll) points.push({ lat: ll.lat, lon: ll.lng });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    return fitRouteBounds(map, points, { maxZoom: 17, duration: 900 });
+  }, [mapRef, markersRef]);
+
   return {
     robots,
     robotCount,
+    recenter,
   };
 }

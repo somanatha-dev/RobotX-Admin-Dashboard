@@ -7,21 +7,21 @@ import {
   ShieldAlert,
   ShieldCheck,
 } from 'lucide-react';
-import { Avatar, AvatarFallback } from '../components/ui/avatar.jsx';
-import { Badge } from '../components/ui/badge.jsx';
-import { Button } from '../components/ui/button.jsx';
-import { Card } from '../components/ui/card.jsx';
-import { Input } from '../components/ui/input.jsx';
-import { Switch } from '../components/ui/switch.jsx';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar.jsx';
+import { Badge } from '@/components/ui/badge.jsx';
+import { Button } from '@/components/ui/button.jsx';
+import { Card } from '@/components/ui/card.jsx';
+import { Input } from '@/components/ui/input.jsx';
+import { Switch } from '@/components/ui/switch.jsx';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '../components/ui/select.jsx';
-import { useAppActions, useAppState } from '../context/appContext.js';
-import { pinAuth } from '../lib/api/auth.js';
+} from '@/components/ui/select.jsx';
+import { useAppActions, useAppState } from '@/context/appContext.js';
+import { pinAuth } from '@/lib/api/auth.js';
 
 // ── WebAuthn helpers ───────────────────────────────────────────────────────────
 function base64UrlEncode(arrayBuffer) {

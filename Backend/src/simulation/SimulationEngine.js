@@ -65,13 +65,27 @@ function createVirtualRobotSimulator({ prisma, kv, serverUrl, logger } = {}) {
     const spawnLat = typeof lat === "number" ? lat : 12.9023;
     const spawnLon = typeof lon === "number" ? lon : 77.5183;
 
-    const vr = new VirtualRobot({ robotId, lat: spawnLat, lon: spawnLon, logger: log });
+    // Load DB battery as a fallback in case the Redis persistence key is absent.
+    // This ensures battery is never random on first start after commissioning.
+    let dbBattery = null;
+    if (prisma) {
+      try {
+        const row = await prisma.robot.findUnique({
+          where:  { robotId },
+          select: { battery: true },
+        });
+        if (typeof row?.battery === "number" && Number.isFinite(row.battery)) {
+          dbBattery = row.battery;
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    const vr = new VirtualRobot({ robotId, lat: spawnLat, lon: spawnLon, logger: log, kv, dbBattery });
 
     try {
       await vr.commission(kv);
     } catch (e) {
       log.error(`[VR] addRobot session seed failed for ${robotId}`, { message: e?.message });
-      // Non-fatal — robot may still connect via AUTH flow on next tick.
     }
 
     robots.push(vr);

@@ -75,6 +75,12 @@ model User {
   password  String
   role      Role     @default(SUPER_ADMIN)
 
+  // Set the first time this account signs in with "Continue with Google".
+  // Login is keyed off the unique email above, so a Google sign-in with a
+  // matching, verified email always resolves to this same row — it never
+  // creates a second account.
+  googleId  String?  @unique
+
   pinAuth AdminPinAuth?
 
   createdAt DateTime @default(now())
@@ -281,6 +287,8 @@ model Task {
   drop        String
   dropLat     Float
   dropLon     Float
+
+  distanceMeters Float?
 
   status      TaskStatus @default(PENDING)
 

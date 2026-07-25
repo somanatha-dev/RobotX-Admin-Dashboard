@@ -5,18 +5,18 @@ import {
   DEFAULT_PREFERENCES,
   loadUserPreferences,
   saveUserPreferences,
-} from '../lib/storage/userPreferencesStorage.js';
+} from '@/lib/storage/userPreferencesStorage.js';
 
 import { AppActionsContext, AppStateContext } from './appContext.js';
 
-import useDecisionCountdown from '../hooks/useDecisionCountdown.js';
-import useNotificationsDismiss from '../hooks/useNotificationsDismiss.js';
+import useDecisionCountdown from '@/hooks/useDecisionCountdown.js';
+import useNotificationsDismiss from '@/hooks/useNotificationsDismiss.js';
 
-import * as authApi from '../lib/api/auth.js';
-import * as robotsApi from '../lib/api/robots.js';
-import * as tasksApi from '../lib/api/tasks.js';
-import * as locationsApi from '../lib/api/locations.js';
-import { socket } from '../lib/socket.js';
+import * as authApi from '@/lib/api/auth.js';
+import * as robotsApi from '@/lib/api/robots.js';
+import * as tasksApi from '@/lib/api/tasks.js';
+import * as locationsApi from '@/lib/api/locations.js';
+import { socket } from '@/lib/socket.js';
 
 export default function AppProvider({ children }) {
   const rrNavigate = useNavigate();
@@ -51,6 +51,9 @@ export default function AppProvider({ children }) {
   useEffect(() => { robotsRef.current = robots; }, [robots]);
 
   const [tasks, setTasks] = useState([]);
+  // Persistent cache of task route paths — survives re-renders and page navigation.
+  // Populated from TASK_ASSIGNED socket events. Read by the map's useRobotStream.
+  const taskPathCacheRef = useRef(new Map());
   const [events, setEvents] = useState([
     { id: 1, msg: 'System initialized successfully', time: 'Just now', type: 'info' },
   ]);
@@ -106,20 +109,12 @@ export default function AppProvider({ children }) {
     }
   }, []);
 
-  const login = useCallback(
-    async (email, password, options = {}) => {
-      const cleanEmail = String(email || '').trim();
-      const cleanPassword = String(password || '');
-
-      if (!cleanEmail || !cleanPassword) {
-        const err = new Error('Email and password required');
-        err.status = 400;
-        throw err;
-      }
-
-      const data = await authApi.login({ email: cleanEmail, password: cleanPassword });
-      const user = data?.user || null;
-      const identity = user?.email || cleanEmail;
+  // Shared by both login methods so a Google sign-in lands in the exact same
+  // session shape as a password login — the backend already resolved it to
+  // the one account tied to this email, this just reflects that client-side.
+  const applyLoggedInSession = useCallback(
+    async (user, fallbackIdentity, options = {}) => {
+      const identity = user?.email || fallbackIdentity;
 
       const next = { isAuthenticated: true, identity, user };
       setSession(next);
@@ -132,10 +127,45 @@ export default function AppProvider({ children }) {
       if (shouldNavigate) navigate('/');
 
       await refreshDbState();
+    },
+    [addEvent, navigate, refreshDbState]
+  );
+
+  const login = useCallback(
+    async (email, password, options = {}) => {
+      const cleanEmail = String(email || '').trim();
+      const cleanPassword = String(password || '');
+
+      if (!cleanEmail || !cleanPassword) {
+        const err = new Error('Email and password required');
+        err.status = 400;
+        throw err;
+      }
+
+      const data = await authApi.login({ email: cleanEmail, password: cleanPassword });
+      await applyLoggedInSession(data?.user || null, cleanEmail, options);
 
       return data;
     },
-    [addEvent, navigate, refreshDbState]
+    [applyLoggedInSession]
+  );
+
+  const loginWithGoogle = useCallback(
+    async (credential, options = {}) => {
+      const cleanCredential = String(credential || '');
+
+      if (!cleanCredential) {
+        const err = new Error('Google credential required');
+        err.status = 400;
+        throw err;
+      }
+
+      const data = await authApi.loginWithGoogle(cleanCredential);
+      await applyLoggedInSession(data?.user || null, '', options);
+
+      return data;
+    },
+    [applyLoggedInSession]
   );
 
   const logout = useCallback(async () => {
@@ -188,7 +218,7 @@ export default function AppProvider({ children }) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [navigate, refreshDbState]);
 
   const requestAuth = useCallback((intent, action, isDestructive = false) => {
     setAuthRequest({ intent, action, isDestructive });
@@ -313,7 +343,7 @@ export default function AppProvider({ children }) {
   // Keep global robots/tasks state in sync with backend events so every page
   // (Dashboard, Robots, Tasks) reflects live data without a full refresh.
   useEffect(() => {
-    // Single-robot telemetry update — keep battery/status/speed/position live.
+    // Single-robot telemetry update — keep battery/status/speed/position/distanceTravelled live.
     const onRobotUpdate = (data) => {
       const robotId = String(data?.robotId || '').trim();
       if (!robotId) return;
@@ -328,6 +358,8 @@ export default function AppProvider({ children }) {
             ...(typeof data.speed === 'number' ? { speed: data.speed } : {}),
             ...(typeof data.status === 'string' ? { status: data.status } : {}),
             ...(typeof data.isOnline === 'boolean' ? { isOnline: data.isOnline } : {}),
+            ...(typeof data.distanceTravelled === 'number' ? { distanceTravelled: data.distanceTravelled } : {}),
+            ...(typeof data.heading === 'number' ? { heading: data.heading } : {}),
           };
         })
       );
@@ -351,7 +383,17 @@ export default function AppProvider({ children }) {
       }
     };
 
-    // Task status change (COMPLETED, REROUTED, CANCELLED, FAILED).
+    // New PENDING task created — add to list immediately so spinner shows.
+    const onTaskCreated = (data) => {
+      const taskId = String(data?.taskId || '').trim();
+      if (!taskId) return;
+      setTasks((prev) => {
+        if (prev.some((t) => String(t.taskId || '').trim() === taskId)) return prev;
+        return [{ ...data, status: 'PENDING' }, ...prev];
+      });
+    };
+
+    // Task status change + optional robot/distance enrichment (ASSIGNED, COMPLETED, etc.).
     const TERMINAL_STATUSES = new Set(['COMPLETED', 'CANCELLED', 'FAILED']);
     const onTaskUpdated = (data) => {
       const taskId = String(data?.taskId || '').trim();
@@ -369,6 +411,10 @@ export default function AppProvider({ children }) {
           return {
             ...t,
             ...(typeof data.status === 'string' ? { status: data.status } : {}),
+            // Enrich with robot info when DTARO assignment completes (ASSIGNED event).
+            ...(data.robot ? { robot: data.robot } : {}),
+            ...(typeof data.distanceMeters === 'number' ? { distanceMeters: data.distanceMeters } : {}),
+            ...(data.robotId ? { robotId: data.robotId } : {}),
           };
         })
       );
@@ -415,6 +461,25 @@ export default function AppProvider({ children }) {
       });
     };
 
+    // TASK_ASSIGNED — cache route path data so the map can draw lines even if
+    // the user navigates to /map after the event fired.
+    const onTaskAssigned = (data) => {
+      const taskId  = String(data?.taskId  || '').trim();
+      const robotId = String(data?.robotId || '').trim();
+      if (!taskId) return;
+      const pathToPickup = Array.isArray(data?.pathToPickup) ? data.pathToPickup : null;
+      const pathToDrop   = Array.isArray(data?.pathToDrop)   ? data.pathToDrop   : null;
+      if (!pathToPickup || !pathToDrop) return;
+      taskPathCacheRef.current.set(taskId, {
+        taskId,
+        robotId: robotId || null,
+        pickup: data?.pickup ?? null,
+        drop:   data?.drop   ?? null,
+        pathToPickup,
+        pathToDrop,
+      });
+    };
+
     // Reroute notification — route overlays handled by useRobotStream.
     const onRerouteAlert = (data) => {
       const robotId = String(data?.robotId || '').trim();
@@ -428,14 +493,18 @@ export default function AppProvider({ children }) {
     // backend; subscribing to all three was firing the same handler 3× per tick.
     socket.on('robot:update', onRobotUpdate);
     socket.on('ROBOT_UPDATED', onRobotUpdated);
+    socket.on('TASK_CREATED', onTaskCreated);
     socket.on('TASK_UPDATED', onTaskUpdated);
+    socket.on('TASK_ASSIGNED', onTaskAssigned);
     socket.on('ALERT_CREATED', onAlertCreated);
     socket.on('REROUTE_ALERT', onRerouteAlert);
 
     return () => {
       socket.off('robot:update', onRobotUpdate);
       socket.off('ROBOT_UPDATED', onRobotUpdated);
+      socket.off('TASK_CREATED', onTaskCreated);
       socket.off('TASK_UPDATED', onTaskUpdated);
+      socket.off('TASK_ASSIGNED', onTaskAssigned);
       socket.off('ALERT_CREATED', onAlertCreated);
       socket.off('REROUTE_ALERT', onRerouteAlert);
     };
@@ -466,6 +535,7 @@ export default function AppProvider({ children }) {
       decisionRequest,
       authRequest,
       isCreatingTask,
+      taskPathCacheRef,
     }),
     [
       effectiveRoute,
@@ -481,6 +551,8 @@ export default function AppProvider({ children }) {
       decisionRequest,
       authRequest,
       isCreatingTask,
+      // taskPathCacheRef is a ref — excluded from deps intentionally
+      // (its identity is stable; contents change without re-render)
     ]
   );
 
@@ -489,6 +561,7 @@ export default function AppProvider({ children }) {
       addEvent,
       navigate,
       login,
+      loginWithGoogle,
       logout,
       updatePreferences,
       requestAuth,
@@ -507,6 +580,7 @@ export default function AppProvider({ children }) {
       addEvent,
       navigate,
       login,
+      loginWithGoogle,
       logout,
       updatePreferences,
       requestAuth,

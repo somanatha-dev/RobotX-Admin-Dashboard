@@ -4,15 +4,15 @@ import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import gsap from 'gsap';
 
-import { MAP_STYLE } from '../../config/mapConfig.js';
+import { MAP_STYLE } from '@/config/mapConfig.js';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '../../components/ui/select.jsx';
-import { Button } from '../../components/ui/button.jsx';
+} from '@/components/ui/select.jsx';
+import { Button } from '@/components/ui/button.jsx';
 
 const CAMPUS_STYLE = 'mapbox://styles/mapbox/standard';
 
@@ -21,7 +21,7 @@ import { useMapContext } from './mapControl/mapContext.js';
 import { useMapController } from './mapControl/hooks/useMapController.js';
 import { useLocationFilters } from './mapControl/hooks/useLocationFilters.js';
 import { useRobotStream } from './mapControl/hooks/useRobotStream.js';
-import { useAppState } from '../../context/appContext.js';
+import { useAppState } from '@/context/appContext.js';
 
 // WORLD VIEW (strict)
 const WORLD_CENTER = [20, 0];
@@ -34,6 +34,25 @@ const ZOOM_LEVELS = {
   AREA: 13.2,
   CAMPUS: 17.2,
 };
+
+// Below this zoom, a fixed-pixel marker/route line represents so much ground
+// distance that even an exactly-correct GPS coordinate reads as "floating
+// off the road" — see mapboxMarkers.js / useRobotStream.js zoom-scaling
+// notes. Live delivery-tracking apps never expose that scale during
+// tracking, so once a location/campus is focused (robots become visible) we
+// clamp how far the user can scroll out. World overview (no filter) is
+// reached only programmatically via flyTo, so it's exempt.
+const TRACKING_MIN_ZOOM = 11;
+
+// Module-level (not component state) so it survives MapControl unmounting —
+// navigating to another route tears down the whole Mapbox instance (see the
+// map-init effect below), so anything that needs to outlive that has to live
+// outside the component tree. Holds wherever the user last left the camera,
+// and whether the map has ever been opened before in this browser session —
+// used to skip the "earth → area" flyTo intro on every return visit and
+// just restore the exact last view instantly instead.
+let persistedMapCamera = null; // { lon, lat, zoom, pitch, bearing }
+let mapHasBeenOpenedBefore = false;
 
 function toSelectableValue(id) {
   return id ? String(id) : '__none__';
@@ -163,13 +182,21 @@ function MapFiltersBar({
 
 function MapControlInner({ filtersHost }) {
   const { mapContainerRef, mapRef, markersRef } = useMapContext();
-  const { robots: globalRobots } = useAppState();
+  const { robots: globalRobots, taskPathCacheRef } = useAppState();
 
   const overlayRef = useRef(null);
   const canvasRef = useRef(null);
   const styleModeRef = useRef('default');
   const styleTransitionIdRef = useRef(0);
   const latestCameraRef = useRef(null);
+
+  // Captured once, at this component instance's first render — true if the
+  // map was already opened earlier in this session (i.e. this is a
+  // navigate-back-to-/map remount, not the very first visit). Consumed by
+  // the focusTarget effect below: on a returning visit, its first run
+  // should do nothing (the map is already constructed at the last-saved
+  // camera) instead of replaying the "earth → area" flyTo.
+  const skipNextFlyToRef = useRef(mapHasBeenOpenedBefore);
 
   const token = import.meta.env.VITE_MAPBOX_TOKEN;
 
@@ -181,17 +208,51 @@ function MapControlInner({ filtersHost }) {
 
     mapboxgl.accessToken = token;
 
+    // Returning visit: open exactly where the user left off, instantly —
+    // no world-view flash, no replayed flyTo animation.
+    const startCam = persistedMapCamera;
+
     const map = new mapboxgl.Map({
       container: mapContainerRef.current,
       style: MAP_STYLE,
-      center: WORLD_CENTER,
-      zoom: WORLD_ZOOM,
+      center: startCam ? [startCam.lon, startCam.lat] : WORLD_CENTER,
+      zoom: startCam ? startCam.zoom : WORLD_ZOOM,
+      pitch: startCam ? startCam.pitch : 0,
+      bearing: startCam ? startCam.bearing : 0,
+      maxPitch: 0,          // hard lock — no tilt ever
       attributionControl: false,
     });
 
-    map.addControl(new mapboxgl.NavigationControl({ showCompass: true }), 'top-left');
+    mapHasBeenOpenedBefore = true;
+
+    // Disable all rotation/tilt gestures so the map stays flat 2D
+    map.dragRotate.disable();
+    try { map.touchZoomRotate.disableRotation(); } catch { /* ignore */ }
+
+    // Show compass (for bearing reset) but not pitch control since we lock pitch=0
+    map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-left');
 
     mapRef.current = map;
+    const markers = markersRef.current;
+
+    // Remember wherever the user leaves the camera, so the next time this
+    // page mounts (even after a full teardown from route navigation) it can
+    // reopen there instead of restarting the intro animation.
+    const onMoveEnd = () => {
+      try {
+        const c = map.getCenter();
+        persistedMapCamera = {
+          lon: c.lng,
+          lat: c.lat,
+          zoom: map.getZoom(),
+          pitch: map.getPitch(),
+          bearing: map.getBearing(),
+        };
+      } catch {
+        // ignore
+      }
+    };
+    map.on('moveend', onMoveEnd);
 
     const onResize = () => {
       try {
@@ -205,9 +266,14 @@ function MapControlInner({ filtersHost }) {
 
     return () => {
       window.removeEventListener('resize', onResize);
+      try {
+        map.off('moveend', onMoveEnd);
+      } catch {
+        // ignore
+      }
 
       try {
-        markersRef.current.forEach((m) => {
+        markers.forEach((m) => {
           try {
             m?.marker?.remove?.();
           } catch {
@@ -218,7 +284,7 @@ function MapControlInner({ filtersHost }) {
         // ignore
       }
       try {
-        markersRef.current.clear();
+        markers.clear();
       } catch {
         // ignore
       }
@@ -259,18 +325,18 @@ function MapControlInner({ filtersHost }) {
     resetAll,
   } = useLocationFilters();
 
-  // Focus rules (strict)
+  // Focus rules — always flat top-down (pitch=0, bearing=0) for clean road visibility
   const focusTarget = useMemo(() => {
     if (selectedCampus) {
       return {
         type: 'CAMPUS',
         loc: { lat: selectedCampus.centerLat, lon: selectedCampus.centerLon },
-        pitch: 60,
-        bearing: -20,
+        pitch: 0,
+        bearing: 0,
       };
     }
-    if (selectedArea) return { type: 'AREA', loc: selectedArea, pitch: 55, bearing: -20 };
-    if (selectedCity) return { type: 'CITY', loc: selectedCity, pitch: 55, bearing: -20 };
+    if (selectedArea) return { type: 'AREA', loc: selectedArea, pitch: 0, bearing: 0 };
+    if (selectedCity) return { type: 'CITY', loc: selectedCity, pitch: 0, bearing: 0 };
     if (selectedState) return { type: 'STATE', loc: selectedState, pitch: 0, bearing: 0 };
     if (selectedCountry) return { type: 'COUNTRY', loc: selectedCountry, pitch: 0, bearing: 0 };
     return null;
@@ -282,16 +348,40 @@ function MapControlInner({ filtersHost }) {
     const wantStyleMode = campusId ? 'campus' : 'default';
     const isStyleAboutToSwitch = styleModeRef.current !== wantStyleMode;
 
-    // No filters selected: world view
+    // Returning visit: this first run just means "the map finished loading
+    // again" — it's already sitting at the restored camera (see the
+    // map-init effect), so don't replay the earth→area flyTo on top of it.
+    // Filter changes made *after* this point (user picks a new area while
+    // already on the page) still animate normally.
+    const skipAnimation = skipNextFlyToRef.current;
+    skipNextFlyToRef.current = false;
+
+    // No filters selected: world view — lift the zoom clamp so the
+    // programmatic flyTo(WORLD_ZOOM) below isn't fighting its own limit.
     if (!focusTarget) {
+      try { mapRef.current?.setMinZoom(0); } catch { /* ignore */ }
       const cam = { lon: WORLD_CENTER[0], lat: WORLD_CENTER[1], zoom: WORLD_ZOOM, pitch: 0, bearing: 0 };
       latestCameraRef.current = cam;
-      if (!isStyleAboutToSwitch) flyTo(cam);
+      if (!isStyleAboutToSwitch && !skipAnimation) flyTo(cam);
       return;
     }
 
     const { type, loc } = focusTarget;
     if (!hasCenter(loc)) return;
+
+    // Only clamp the zoom floor for the tight AREA/CAMPUS tracking view —
+    // COUNTRY/STATE/CITY targets sit at zoom 4.7-9.6, well below
+    // TRACKING_MIN_ZOOM (11). Clamping unconditionally forced flyTo's
+    // target up to 11 regardless of what the filter asked for, so picking
+    // e.g. a state flew the camera to zoom 11 on an arbitrary point instead
+    // of 6.7 — a huge batch of never-cached tiles at that zoom, hence the
+    // multi-second blank glitch before anything rendered.
+    const isTightTrackingView = type === 'AREA' || type === 'CAMPUS';
+    try {
+      mapRef.current?.setMinZoom(isTightTrackingView ? TRACKING_MIN_ZOOM : 0);
+    } catch {
+      // ignore
+    }
 
     const cam = {
       lon: loc.lon,
@@ -302,19 +392,21 @@ function MapControlInner({ filtersHost }) {
     };
 
     latestCameraRef.current = cam;
-    if (!isStyleAboutToSwitch) flyTo(cam);
-  }, [isMapLoaded, focusTarget, flyTo, campusId]);
+    if (!isStyleAboutToSwitch && !skipAnimation) flyTo(cam);
+  }, [isMapLoaded, focusTarget, flyTo, campusId, mapRef]);
 
-  // Campus view: switch to day 3D basemap (Mapbox Standard) with a smooth fade transition
+  // Always use the flat road style — 3D campus tilt makes markers misalign with roads.
+  // This effect is kept but immediately returns when no style change is needed.
   useEffect(() => {
     const map = mapRef?.current;
     if (!map) return;
 
-    const wantMode = campusId ? 'campus' : 'default';
+    // Always 'default' — never switch to tilted 3D campus style
+    const wantMode = 'default';
     if (styleModeRef.current === wantMode) return;
     styleModeRef.current = wantMode;
 
-    const nextStyle = wantMode === 'campus' ? CAMPUS_STYLE : MAP_STYLE;
+    const nextStyle = MAP_STYLE;
 
     const overlayEl = overlayRef.current;
     const canvasEl = canvasRef.current;
@@ -426,8 +518,15 @@ function MapControlInner({ filtersHost }) {
   // The location/campus filter drives the map viewport (flyTo); the global
   // robots list (from AppProvider) drives which markers are visible, so that
   // robots commissioned with a custom location still appear on the map.
-  useRobotStream({
+  // taskPathCacheRef holds route paths from TASK_ASSIGNED events — persists
+  // across page navigation so routes are drawn even if user wasn't on /map
+  // when the event fired.
+  const { recenter } = useRobotStream({
     robots: globalRobots,
+    taskPathCacheRef,
+    countryId,
+    stateId,
+    cityId,
     locationId: areaId,
     campusId,
     mapRef,
@@ -474,6 +573,19 @@ function MapControlInner({ filtersHost }) {
       <div ref={canvasRef} className="absolute inset-0">
         <div ref={mapContainerRef} className="w-full h-full" />
       </div>
+
+      {focusTarget && (
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={() => recenter?.()}
+          className="absolute bottom-6 right-4 z-10 shadow-lg"
+          title="Recenter on active robots and routes"
+        >
+          Recenter
+        </Button>
+      )}
 
       {filtersHost ? createPortal(filtersBar, filtersHost) : <div className="map-filters-overlay">{filtersBar}</div>}
     </div>

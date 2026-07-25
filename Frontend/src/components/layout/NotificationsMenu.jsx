@@ -2,7 +2,7 @@ import React from 'react';
 import { ChevronRight, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
-import { useAppActions, useAppState } from '../../context/appContext.js';
+import { useAppActions, useAppState } from '@/context/appContext.js';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,9 +10,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   DropdownMenuItem,
-} from '../ui/dropdown-menu.jsx';
-import { Button } from '../ui/button.jsx';
-import { cn } from '../../lib/utils.js';
+} from '@/components/ui/dropdown-menu.jsx';
+import { Button } from '@/components/ui/button.jsx';
+import { cn } from '@/lib/utils.js';
 
 function typeDotClass(type) {
   if (type === 'critical') return 'bg-destructive';

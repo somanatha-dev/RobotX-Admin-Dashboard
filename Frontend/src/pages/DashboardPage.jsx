@@ -1,12 +1,12 @@
 import React from 'react';
 import { ListTodo, Play, ShieldCheck, X } from 'lucide-react';
 import { motion } from 'framer-motion';
-import MetricCard from '../components/MetricCard.jsx';
-import { useAppState } from '../context/appContext.js';
-import { Badge } from '../components/ui/badge.jsx';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card.jsx';
-import BatteryPieChart from '../components/charts/BatteryPieChart.jsx';
-import { PIE_COLORS } from '../components/system/pieColors.ts';
+import MetricCard from '@/components/MetricCard.jsx';
+import { useAppState } from '@/context/appContext.js';
+import { Badge } from '@/components/ui/badge.jsx';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card.jsx';
+import BatteryPieChart from '@/components/charts/BatteryPieChart.jsx';
+import { PIE_COLORS } from '@/components/system/pieColors.js';
 
 export default function DashboardPage() {
   const { robots, tasks } = useAppState();
@@ -35,11 +35,6 @@ export default function DashboardPage() {
     { label: 'Moderate', value: batteryBuckets.moderate, color: PIE_COLORS[1] },
     { label: 'Low', value: batteryBuckets.low, color: PIE_COLORS[2] },
   ];
-
-  const pct = (value) => {
-    if (!totalRobots) return 0;
-    return Math.round((value / totalRobots) * 100);
-  };
 
   const batteryStatus = (battery) => {
     if (battery < 25) return { label: 'Low', variant: 'destructive' };

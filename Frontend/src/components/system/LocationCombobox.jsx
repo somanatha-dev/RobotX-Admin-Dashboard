@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * LocationCombobox
  *
@@ -16,33 +15,11 @@
 import * as React from "react";
 import { MapPin, Loader2 } from "lucide-react";
 
-export type LocationSuggestion = {
-  id: string;
-  place_name: string;
-  center: [number, number];
-  lat: number;
-  lon: number;
-};
-
-type Suggestion = {
-  mapbox_id: string;
-  name: string;
-  full_address: string;
-  place_formatted: string;
-};
-
 const PROXIMITY = "77.5155,12.9279"; // Bengaluru campus bias
 
 // ── Step 1: suggest ──────────────────────────────────────────────────────────
 
-async function fetchSuggestions(
-  q: string,
-  token: string,
-  sessionToken: string,
-  country: string | null | undefined,
-  limit: number,
-  signal: AbortSignal
-): Promise<Suggestion[]> {
+async function fetchSuggestions(q, token, sessionToken, country, limit, signal) {
   const url = new URL("https://api.mapbox.com/search/searchbox/v1/suggest");
   url.searchParams.set("q", q);
   url.searchParams.set("access_token", token);
@@ -56,7 +33,7 @@ async function fetchSuggestions(
   if (!res.ok) throw new Error(`Search failed (${res.status})`);
   const data = await res.json();
 
-  return (Array.isArray(data?.suggestions) ? data.suggestions : []).map((s: any) => ({
+  return (Array.isArray(data?.suggestions) ? data.suggestions : []).map((s) => ({
     mapbox_id: String(s.mapbox_id || ""),
     name: String(s.name || ""),
     full_address: String(s.full_address || s.place_formatted || s.name || ""),
@@ -66,11 +43,7 @@ async function fetchSuggestions(
 
 // ── Step 2: retrieve ─────────────────────────────────────────────────────────
 
-async function retrieveLocation(
-  mapboxId: string,
-  token: string,
-  sessionToken: string
-): Promise<LocationSuggestion | null> {
+async function retrieveLocation(mapboxId, token, sessionToken) {
   const url = new URL(
     `https://api.mapbox.com/search/searchbox/v1/retrieve/${encodeURIComponent(mapboxId)}`
   );
@@ -87,8 +60,8 @@ async function retrieveLocation(
   const coords = feature.geometry?.coordinates;
   if (!Array.isArray(coords) || coords.length < 2) return null;
 
-  const lon = coords[0] as number;
-  const lat = coords[1] as number;
+  const lon = coords[0];
+  const lat = coords[1];
   const props = feature.properties || {};
   const placeName =
     String(props.full_address || props.name || mapboxId);
@@ -104,25 +77,11 @@ async function retrieveLocation(
 
 // ── Suggestions hook ─────────────────────────────────────────────────────────
 
-function useSuggestions({
-  query,
-  debounceMs,
-  token,
-  sessionToken,
-  country,
-  limit,
-}: {
-  query: string;
-  debounceMs: number;
-  token?: string;
-  sessionToken: string;
-  country?: string | null;
-  limit: number;
-}) {
-  const [items, setItems] = React.useState<Suggestion[]>([]);
+function useSuggestions({ query, debounceMs, token, sessionToken, country, limit }) {
+  const [items, setItems] = React.useState([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState("");
-  const abortRef = React.useRef<AbortController | null>(null);
+  const abortRef = React.useRef(null);
 
   React.useEffect(() => {
     const q = query.trim();
@@ -161,7 +120,7 @@ function useSuggestions({
           controller.signal
         );
         setItems(results);
-      } catch (e: any) {
+      } catch (e) {
         if (e?.name === "AbortError") return;
         setItems([]);
         setError(e?.message || "Search failed");
@@ -181,18 +140,6 @@ function useSuggestions({
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export type LocationComboboxProps = {
-  value?: LocationSuggestion | null;
-  onChange?: (value: LocationSuggestion | null) => void;
-  inputValue?: string;
-  onInputValueChange?: (value: string) => void;
-  placeholder?: string;
-  disabled?: boolean;
-  debounceMs?: number;
-  country?: string | null;
-  limit?: number;
-};
-
 export function LocationCombobox({
   value = null,
   onChange,
@@ -203,14 +150,15 @@ export function LocationCombobox({
   debounceMs = 350,
   country = "IN",
   limit = 7,
-}: LocationComboboxProps) {
+  direction = "up",
+}) {
   const [internalQuery, setInternalQuery] = React.useState(
     value?.place_name ?? ""
   );
   const [open, setOpen] = React.useState(false);
   const [retrieving, setRetrieving] = React.useState(false);
-  const containerRef = React.useRef<HTMLDivElement>(null);
-  const inputRef = React.useRef<HTMLInputElement>(null);
+  const containerRef = React.useRef(null);
+  const inputRef = React.useRef(null);
 
   // One session token per search interaction — reset after selection.
   const sessionTokenRef = React.useRef(crypto.randomUUID());
@@ -218,15 +166,14 @@ export function LocationCombobox({
   const query = inputValue !== undefined ? inputValue : internalQuery;
 
   const setQuery = React.useCallback(
-    (next: string) => {
+    (next) => {
       if (onInputValueChange) onInputValueChange(next);
       else setInternalQuery(next);
     },
     [onInputValueChange]
   );
 
-  const token =
-    String((import.meta as any).env?.VITE_MAPBOX_TOKEN ?? "").trim() || undefined;
+  const token = String(import.meta.env?.VITE_MAPBOX_TOKEN ?? "").trim() || undefined;
 
   const { items, loading, error } = useSuggestions({
     query,
@@ -243,19 +190,19 @@ export function LocationCombobox({
   // Close on outside click.
   React.useEffect(() => {
     if (!open) return;
-    const handle = (e: MouseEvent) => {
-      if (!containerRef.current?.contains(e.target as Node)) setOpen(false);
+    const handle = (e) => {
+      if (!containerRef.current?.contains(e.target)) setOpen(false);
     };
     document.addEventListener("mousedown", handle);
     return () => document.removeEventListener("mousedown", handle);
   }, [open]);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleInputChange = (e) => {
     setQuery(e.target.value);
     setOpen(true);
   };
 
-  const handleSelect = async (item: Suggestion) => {
+  const handleSelect = async (item) => {
     if (!token) return;
     setOpen(false);
     setRetrieving(true);
@@ -274,7 +221,7 @@ export function LocationCombobox({
       if (loc) {
         // Prefer the full_address from the suggestion as the display name.
         const finalName = displayName || loc.place_name;
-        const result: LocationSuggestion = { ...loc, place_name: finalName };
+        const result = { ...loc, place_name: finalName };
         setQuery(finalName);
         onChange?.(result);
       }
@@ -288,7 +235,7 @@ export function LocationCombobox({
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = (e) => {
     if (e.key === "Escape") setOpen(false);
   };
 
@@ -350,19 +297,21 @@ export function LocationCombobox({
         )}
       </div>
 
-      {/* ── Dropdown — opens UPWARD ─────────────────────────────────────── */}
+      {/* ── Dropdown — direction controlled by prop ──────────────────────── */}
       {showDropdown && (
         <div
           style={{
             position: "absolute",
-            bottom: "calc(100% + 6px)", /* upward */
+            ...(direction === "down"
+              ? { top: "calc(100% + 6px)" }
+              : { bottom: "calc(100% + 6px)" }),
             left: 0,
             right: 0,
             zIndex: 9999,
             background: "hsl(var(--popover))",
             border: "1px solid hsl(var(--border))",
             borderRadius: "calc(var(--radius, 6px))",
-            boxShadow: "0 -4px 24px rgba(0,0,0,0.18)",
+            boxShadow: direction === "down" ? "0 4px 24px rgba(0,0,0,0.18)" : "0 -4px 24px rgba(0,0,0,0.18)",
             overflow: "hidden",
             maxHeight: 300,
             overflowY: "auto",
@@ -411,10 +360,10 @@ export function LocationCombobox({
                 color: "hsl(var(--foreground))",
               }}
               onMouseEnter={(e) => {
-                (e.currentTarget as HTMLElement).style.background = "hsl(var(--accent))";
+                e.currentTarget.style.background = "hsl(var(--accent))";
               }}
               onMouseLeave={(e) => {
-                (e.currentTarget as HTMLElement).style.background = "transparent";
+                e.currentTarget.style.background = "transparent";
               }}
             >
               <MapPin
@@ -451,7 +400,7 @@ export function LocationCombobox({
   );
 }
 
-function rowStyle(color: string): React.CSSProperties {
+function rowStyle(color) {
   return {
     display: "flex",
     alignItems: "center",
