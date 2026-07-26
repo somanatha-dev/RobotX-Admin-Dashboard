@@ -21,6 +21,16 @@ const TRANSITIONS = {
   OFFLINE:  new Set(["IDLE", "ACTIVE", "ERROR", "ISSUES", "PAUSED", "CHARGING"]),
 };
 
+// F10: dirty-state/time-based Postgres flush gate for the telemetry pipeline.
+// Per-process, in-memory (same pattern as sockets/rateLimit.js) — bounded by
+// fleet size (one entry per robotId ever seen live), not per-tick.
+//
+// The interval is shared with robot.handler.js's HEARTBEAT gate and paired
+// with the offline sweep's cutoff — see config/liveness.constants.js for the
+// invariant between them.
+const { DB_FLUSH_INTERVAL_MS } = require("../../config/liveness.constants");
+const lastDbFlushAt = new Map();
+
 function mapIncomingStatusToDb(status) {
   // RETURNING is displayed as ACTIVE in the DB (robot is in transit).
   if (status === "RETURNING") return "ACTIVE";
@@ -163,7 +173,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
       // Reject unknown robotId (must exist in DB).
       const existing = await prisma.robot.findUnique({
         where: { robotId },
-        select: { id: true, status: true, lat: true, lon: true, speed: true, battery: true },
+        select: { id: true, status: true, lat: true, lon: true, speed: true, battery: true, isOnline: true },
       });
       if (!existing) {
         io.emit("robot_unregistered", { robotId });
@@ -272,20 +282,50 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
         { ex: 15 }
       );
 
-      // 3) Update DB (light)
-      await prisma.robot.update({
-        where: { robotId },
-        data: {
-          ...(typeof fullState.lat === "number" ? { lat: fullState.lat } : {}),
-          ...(typeof fullState.lon === "number" ? { lon: fullState.lon } : {}),
-          ...(typeof fullState.battery === "number" ? { battery: fullState.battery } : {}),
-          lastSeenAt: now,
-          isOnline: true,
-          ...statusUpdate,
-        },
-      });
+      // 3) F10: Postgres is no longer written on every tick. Redis (steps 2/6/7 below)
+      // remains the live source for the dashboard, DTARO, and REST reads — the DB row
+      // only needs to be durable enough to survive a restart and to keep the DTARO
+      // candidate query (which filters on DB status/isOnline) correct. We flush when:
+      //   - status actually transitions (a DB-visible field DTARO's candidate query
+      //     filters on), or
+      //   - the robot just came back online (isOnline false->true), or
+      //   - a dirty-state battery swing (>=2%, matches BATTERY_THRESHOLD-adjacent
+      //     eligibility checks) happened since the last flush, or
+      //   - DB_FLUSH_INTERVAL_MS has elapsed since the last flush for this robot
+      //     (time-based catch-all so the row never goes stale by more than that).
+      // Note: movement alone does NOT force a flush — position live-ness is carried
+      // by Redis every tick regardless, so gating on distance-since-last-DB-write
+      // would defeat the point (a moving robot covers >10m almost every 2s tick).
+      // lastSeenAt-based offline detection is unaffected: robot.handler.js's HEARTBEAT
+      // path already updates lastSeenAt every ~2s independently of this write.
+      const statusChanged =
+        Object.prototype.hasOwnProperty.call(statusUpdate, "status") &&
+        statusUpdate.status !== String(existing.status || "");
+      const reconnected = existing.isOnline === false;
+      const batteryChanged =
+        typeof fullState.battery === "number" &&
+        typeof existing.battery === "number" &&
+        Math.abs(fullState.battery - existing.battery) >= 2;
+      const lastDbFlush = lastDbFlushAt.get(robotId) || 0;
+      const timeDue = nowMs - lastDbFlush >= DB_FLUSH_INTERVAL_MS;
 
-      // 4) Snapshot (optional: time OR movement OR battery delta)
+      if (statusChanged || reconnected || batteryChanged || timeDue) {
+        await prisma.robot.update({
+          where: { robotId },
+          data: {
+            ...(typeof fullState.lat === "number" ? { lat: fullState.lat } : {}),
+            ...(typeof fullState.lon === "number" ? { lon: fullState.lon } : {}),
+            ...(typeof fullState.battery === "number" ? { battery: fullState.battery } : {}),
+            lastSeenAt: now,
+            isOnline: true,
+            ...statusUpdate,
+          },
+        });
+        lastDbFlushAt.set(robotId, nowMs);
+      }
+
+      // 4) Snapshot (optional: time OR movement OR battery delta) — unchanged, still
+      // its own independent throttle for the Telemetry history table.
       if (
         await shouldStoreSnapshotSmart(
           kv,

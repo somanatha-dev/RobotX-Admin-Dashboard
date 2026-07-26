@@ -6,7 +6,13 @@ const { registerCommandHandlers } = require("./handlers/command.handler");
 const { registerDtaroHandlers } = require("./handlers/dtaro.handler");
 const { sweepExpired } = require("../services/ekb.service");
 const { seedDefaultZones } = require("../services/zoneManager.service");
+const { getManyRobotStates } = require("../services/robotRegistry.service");
 const { verifyUserToken } = require("../middlewares/auth_middleware");
+const {
+    OFFLINE_CUTOFF_MS,
+    OFFLINE_SWEEP_INTERVAL_MS,
+    OFFLINE_SWEEP_BATCH,
+} = require("../config/liveness.constants");
 
 let offlineSweepStarted = false;
 let dtaroSweepStarted = false;
@@ -33,29 +39,72 @@ function getDashboardToken(socket) {
     return typeof authToken === "string" && authToken ? authToken : null;
 }
 
-function startOfflineDetector(prisma, { logger } = {}) {
+// Backstop offline detector. The PRIMARY offline signal is the socket
+// `disconnect` handler (robot.handler.js), which marks a robot offline
+// immediately; this sweep only catches robots whose disconnect handler never
+// ran — a process kill, a half-open TCP connection, a lost network.
+//
+// It is Redis-aware by necessity: both TELEMETRY and HEARTBEAT throttle their
+// `Robot.lastSeenAt` writes to DB_FLUSH_INTERVAL_MS, so a stale DB column is
+// no longer sufficient evidence that a robot is gone. The registry's
+// `lastHeartbeat` (written on every beat) is consulted before any robot is
+// marked offline. With Redis unavailable the sweep degrades to the DB-only
+// behavior, which is safe: the flush interval is half the cutoff, so a live
+// robot's DB row never ages past it.
+function startOfflineDetector(prisma, kv, { logger } = {}) {
     if (offlineSweepStarted) return;
     offlineSweepStarted = true;
 
     const log = logger || console;
     setInterval(async () => {
         try {
-            const cutoff = new Date(Date.now() - 10_000);
-            // Efficiently mark stale robots offline.
-            await prisma.robot.updateMany({
-                where: {
-                    isOnline: true,
-                    lastSeenAt: { lt: cutoff },
-                },
-                data: {
-                    isOnline: false,
-                    status: "OFFLINE",
-                },
+            const nowMs = Date.now();
+            const cutoff = new Date(nowMs - OFFLINE_CUTOFF_MS);
+
+            // Only robots that already look stale are examined, so the sweep's
+            // cost scales with the number of suspect robots, not fleet size.
+            const stale = await prisma.robot.findMany({
+                where: { isOnline: true, lastSeenAt: { lt: cutoff } },
+                select: { robotId: true },
+                take: OFFLINE_SWEEP_BATCH,
             });
+            if (stale.length === 0) return;
+
+            const states = await getManyRobotStates(kv, stale.map((r) => r.robotId));
+            const liveThreshold = nowMs - OFFLINE_CUTOFF_MS;
+
+            const trulyOffline = [];
+            const stillAlive = [];
+            for (const { robotId } of stale) {
+                const beat = states.get(robotId)?.lastHeartbeat;
+                if (typeof beat === "number" && beat >= liveThreshold) stillAlive.push(robotId);
+                else trulyOffline.push(robotId);
+            }
+
+            if (trulyOffline.length > 0) {
+                await prisma.robot.updateMany({
+                    where: { robotId: { in: trulyOffline } },
+                    data: { isOnline: false, status: "OFFLINE" },
+                });
+            }
+
+            // Alive per Redis but stale in Postgres — reconcile the mirror
+            // rather than marking a running robot offline. Should be rare; a
+            // sustained non-zero count here means the flush gate is not
+            // keeping up and is worth alerting on.
+            if (stillAlive.length > 0) {
+                await prisma.robot.updateMany({
+                    where: { robotId: { in: stillAlive } },
+                    data: { lastSeenAt: new Date(nowMs) },
+                });
+                log.warn("offline sweep: robots live in registry but stale in DB", {
+                    count: stillAlive.length,
+                });
+            }
         } catch (e) {
             log.error("offline detector failed", e);
         }
-    }, 10_000);
+    }, OFFLINE_SWEEP_INTERVAL_MS);
 }
 
 function startDtaroSweep(prisma, kv, { logger } = {}) {
@@ -86,7 +135,7 @@ function startDtaroSweep(prisma, kv, { logger } = {}) {
 }
 
 function initSocketServer(io, { prisma, kv, logger }) {
-    startOfflineDetector(prisma, { logger });
+    startOfflineDetector(prisma, kv, { logger });
     startDtaroSweep(prisma, kv, { logger });
 
     const log = (logger || console);

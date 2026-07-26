@@ -2,6 +2,8 @@ const asyncHandler = require("../utils/asyncHandler");
 const { getPrisma } = require("../db/prisma");
 const taskService = require("../services/task.service");
 const { toStringOrNull } = require("../utils/parse");
+const { getRobotSocket } = require("../sockets/robotSockets");
+const { updateAssignedTask, updatePlannedPath } = require("../services/robotRegistry.service");
 
 // GET /api/tasks
 const listTasks = asyncHandler(async (req, res) => {
@@ -44,6 +46,8 @@ const assignTask = asyncHandler(async (req, res) => {
 // POST /api/tasks/:taskId/cancel
 const cancelTask = asyncHandler(async (req, res) => {
   const prisma = getPrisma();
+  const kv = req.app?.locals?.kv;
+  const io = req.app?.locals?.io;
   const taskId = toStringOrNull(req.params?.taskId);
   if (!taskId) {
     const err = new Error("taskId is required");
@@ -68,6 +72,12 @@ const cancelTask = asyncHandler(async (req, res) => {
     return;
   }
 
+  // Populated only if this task's robot was actually released (i.e. the robot's
+  // currentTaskId still pointed at this task at cancel time) — everything below
+  // that stops/cleans up the robot is gated on this, mirroring the same
+  // condition the DB release itself uses.
+  let releasedRobotCode = null;
+
   const updated = await prisma.$transaction(async (tx) => {
     const t = await tx.task.update({
       where: { taskId },
@@ -78,7 +88,7 @@ const cancelTask = asyncHandler(async (req, res) => {
     if (task.robotId) {
       const robot = await tx.robot.findUnique({
         where: { id: task.robotId },
-        select: { id: true, currentTaskId: true },
+        select: { id: true, robotId: true, currentTaskId: true },
       });
 
       if (robot?.currentTaskId === task.id) {
@@ -86,11 +96,51 @@ const cancelTask = asyncHandler(async (req, res) => {
           where: { id: robot.id },
           data: { currentTaskId: null, status: "IDLE" },
         });
+        releasedRobotCode = robot.robotId;
       }
     }
 
     return t;
   });
+
+  if (releasedRobotCode) {
+    // Stop the robot from continuing to execute the now-cancelled task.
+    try {
+      const socket = getRobotSocket(releasedRobotCode);
+      if (socket) socket.emit("STOP", { taskId, reason: "TASK_CANCELLED" });
+    } catch {
+      // non-critical — restart/reconnect recovery never re-dispatches a
+      // cancelled task (recovery only queries ASSIGNED/IN_PROGRESS tasks)
+    }
+
+    // Clear all runtime Redis state tied to this task/robot so nothing stale
+    // survives for the recovery path, the reroute path, or the next assignment.
+    if (kv) {
+      try {
+        await Promise.allSettled([
+          kv.del(`taskPath:${taskId}`),
+          kv.del(`task:${taskId}`),
+          kv.del(`robotTaskState:${releasedRobotCode}`),
+          kv.del(`robotTask:${releasedRobotCode}`),
+        ]);
+        await updateAssignedTask(kv, releasedRobotCode, null);
+        await updatePlannedPath(kv, releasedRobotCode, null);
+      } catch {
+        // non-critical — Redis state degrades gracefully, TTLs still expire it
+      }
+    }
+
+    try {
+      io?.to("dashboard")?.emit("TASK_UPDATED", {
+        taskId,
+        status: "CANCELLED",
+        robotId: releasedRobotCode,
+        timestamp: Date.now(),
+      });
+    } catch {
+      // ignore
+    }
+  }
 
   res.json({ ok: true, task: updated });
 });

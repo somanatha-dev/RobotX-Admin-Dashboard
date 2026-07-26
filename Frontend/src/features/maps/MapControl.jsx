@@ -264,8 +264,22 @@ function MapControlInner({ filtersHost }) {
 
     window.addEventListener('resize', onResize);
 
+    // The `window` resize event only fires for actual browser-window
+    // changes. The map container also changes size from purely CSS-driven
+    // layout shifts — the sidebar's `transition-[padding]` (see Layout.jsx),
+    // the fullscreen toggle, filter bar wrapping — none of which dispatch a
+    // window resize event. Without recalibrating on those too, the canvas's
+    // backing store goes stale relative to its CSS size and gets stretched,
+    // which reads as a blurry map. A ResizeObserver catches every case.
+    let resizeObserver = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(onResize);
+      resizeObserver.observe(mapContainerRef.current);
+    }
+
     return () => {
       window.removeEventListener('resize', onResize);
+      resizeObserver?.disconnect();
       try {
         map.off('moveend', onMoveEnd);
       } catch {
@@ -326,7 +340,31 @@ function MapControlInner({ filtersHost }) {
   } = useLocationFilters();
 
   // Focus rules — always flat top-down (pitch=0, bearing=0) for clean road visibility
+  //
+  // Persisted filters (country+state+city+area, restored from localStorage by
+  // useLocationFilters) are all set as ids on the very first render, but each
+  // level's option list loads from its own independent, unsynchronized fetch.
+  // Without the loading guards below, each list resolves at whatever moment
+  // its request completes, so `selected*` fills in one level at a time —
+  // country, then state, then city, then area — and each intermediate fill
+  // computed its own focusTarget, firing its own flyTo that interrupted the
+  // previous one mid-flight. That's what produced the black/glitchy tile
+  // flashes reported on first load: every interrupted flight abandons
+  // whatever tiles it had just started fetching, and the visible camera path
+  // jumps repeatedly instead of one clean world -> target flight.
+  //
+  // Fix: if a deeper id is set but its list is still loading, report
+  // `undefined` ("still resolving", handled by the effect below by doing
+  // nothing) instead of falling back to whatever shallower level happens to
+  // already be resolved. That collapses the whole hierarchy into a single
+  // flyTo once the deepest persisted level is known.
   const focusTarget = useMemo(() => {
+    if (campusId && !selectedCampus && loading.campuses) return undefined;
+    if (areaId && !selectedArea && loading.areas) return undefined;
+    if (cityId && !selectedCity && loading.cities) return undefined;
+    if (stateId && !selectedState && loading.states) return undefined;
+    if (countryId && !selectedCountry && loading.countries) return undefined;
+
     if (selectedCampus) {
       return {
         type: 'CAMPUS',
@@ -340,10 +378,29 @@ function MapControlInner({ filtersHost }) {
     if (selectedState) return { type: 'STATE', loc: selectedState, pitch: 0, bearing: 0 };
     if (selectedCountry) return { type: 'COUNTRY', loc: selectedCountry, pitch: 0, bearing: 0 };
     return null;
-  }, [selectedCampus, selectedCountry, selectedState, selectedCity, selectedArea]);
+  }, [
+    campusId,
+    areaId,
+    cityId,
+    stateId,
+    countryId,
+    selectedCampus,
+    selectedCountry,
+    selectedState,
+    selectedCity,
+    selectedArea,
+    loading.campuses,
+    loading.areas,
+    loading.cities,
+    loading.states,
+    loading.countries,
+  ]);
 
   useEffect(() => {
     if (!isMapLoaded) return;
+    // Still waiting on a deeper hierarchy level's list to load (see the
+    // focusTarget comment above) — don't touch the camera yet.
+    if (focusTarget === undefined) return;
 
     const wantStyleMode = campusId ? 'campus' : 'default';
     const isStyleAboutToSwitch = styleModeRef.current !== wantStyleMode;

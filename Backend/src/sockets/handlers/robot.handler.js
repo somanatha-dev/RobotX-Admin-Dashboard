@@ -8,8 +8,21 @@ const {
 } = require("../robotSockets");
 const crypto = require("crypto");
 const { z } = require("zod");
-const { markOnline, markOffline, getRobotState } = require("../../services/robotRegistry.service");
+const { markOnline, markOffline, getRobotState, setRobotState } = require("../../services/robotRegistry.service");
 const { assignRobotToZone } = require("../../services/zoneManager.service");
+const { DB_FLUSH_INTERVAL_MS } = require("../../config/liveness.constants");
+
+// Per-robot throttle for the HEARTBEAT path's Postgres write, mirroring the
+// same gate in telemetry.handler.js. Per-process and in-memory (same pattern
+// as sockets/rateLimit.js), bounded by fleet size rather than by tick rate.
+//
+// Without this gate, HEARTBEAT issued an unconditional `prisma.robot.update`
+// on every beat. Since VirtualRobot._tick() emits HEARTBEAT and TELEMETRY on
+// the SAME 2-second tick, that meant 30 full-row writes per robot per minute —
+// completely defeating the telemetry handler's flush gate, which had reduced
+// its own writes to ~4/min. Aggregate write volume to `Robot` was unchanged;
+// it had only moved handlers.
+const lastHeartbeatDbFlushAt = new Map();
 
 async function markRobotOnline(prisma, robotId, socketId) {
   return prisma.robot.update({
@@ -201,13 +214,43 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
     }
   });
 
-  // Heartbeat is lightweight; updates lastSeenAt for offline detection.
+  // Heartbeat is lightweight: the live liveness signal goes to Redis on every
+  // beat, while the durable `Robot.lastSeenAt` mirror is throttled to
+  // DB_FLUSH_INTERVAL_MS. The offline sweep (socket.server.js) reads the Redis
+  // signal first and only falls back to the throttled DB column, so detection
+  // stays accurate without a write per beat — see config/liveness.constants.js
+  // for the flush-interval/cutoff invariant this relies on.
   async function handleHeartbeat(eventName) {
     try {
       if (!allow(socket, eventName, { limit: 10, windowMs: 5_000, minIntervalMs: 100 })) return;
       const robotId = toStringOrNull(socket.data.robotId);
       if (!robotId) return;
-      await prisma.robot.update({ where: { robotId }, data: { lastSeenAt: new Date() } });
+
+      const nowMs = Date.now();
+
+      // Live signal — every beat, Redis only.
+      try {
+        await setRobotState(kv, robotId, { lastHeartbeat: nowMs, connected: true });
+      } catch {
+        // non-critical — the throttled DB write below is the durable fallback
+      }
+
+      const lastFlush = lastHeartbeatDbFlushAt.get(robotId) || 0;
+      if (nowMs - lastFlush < DB_FLUSH_INTERVAL_MS) return;
+
+      // Record the flush time before awaiting so concurrent beats for the same
+      // robot can't both slip past the gate while the write is in flight.
+      lastHeartbeatDbFlushAt.set(robotId, nowMs);
+
+      // Opportunistic cleanup so decommissioned robots don't accumulate
+      // forever (same pattern as sockets/rateLimit.js).
+      if (lastHeartbeatDbFlushAt.size > 50_000) {
+        for (const [id, ts] of lastHeartbeatDbFlushAt) {
+          if (nowMs - ts > DB_FLUSH_INTERVAL_MS * 10) lastHeartbeatDbFlushAt.delete(id);
+        }
+      }
+
+      await prisma.robot.update({ where: { robotId }, data: { lastSeenAt: new Date(nowMs) } });
     } catch {
       // ignore
     }

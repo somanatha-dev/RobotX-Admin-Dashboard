@@ -2,7 +2,9 @@
 
 > Technical record of the RobotX fleet-management platform as it actually exists in the repository today: architecture, data model, the DTARO robot-allocation system, Redis/Socket.IO usage, authentication (including WebAuthn), and known limitations.
 >
-> **Scope of this document**: everything under `Backend/` and `Frontend/`, branch `feature/dashboard`, reflecting the working tree exactly as it stands — including uncommitted changes on top of commit `e020db8`. This document describes ONLY what is currently implemented. For the audit trail of what changed, what was verified, and what remains open, see `PHASE1_VERIFICATION.md`. This file intentionally does not carry a flaw-by-flaw roadmap — see §16 for a concise current-limitations summary and `PHASE1_VERIFICATION.md` for the full prioritized list.
+> **Scope of this document**: everything under `Backend/` and `Frontend/`, branch `feature/dashboard`, reflecting the working tree exactly as it stands — including uncommitted changes on top of commit `fa1024f`. This document describes ONLY what is currently implemented. For the audit trail of what changed, what was verified, and what remains open, see `PHASE1_VERIFICATION.md`. For the proposed target architecture and migration plan, see `ARCHITECTURE_PROPOSAL.md`. This file intentionally does not carry a flaw-by-flaw roadmap — see §16 for a concise current-limitations summary.
+>
+> **Confidence note**: sections describing *behavior* (§6 allocation, §7 Redis, §9 telemetry) now have executable backing — `Backend/tests/` pins the claims that matter, and those tests re-run on every commit. Sections describing *structure* (§3 folder layout, §13 frontend) are still prose-only and drift silently. This repository has twice produced documentation that was confidently wrong within a day of being written; treat any behavioral claim here without a corresponding test as unverified.
 
 ---
 
@@ -59,6 +61,7 @@ This is fundamentally a **real-time systems problem** wrapped in a CRUD dashboar
 | Logging | Custom logger (`src/config/logger.js`) — colorized dev console, `pino` JSON in production, domain-specific formatters (`logger.dtaro`, `logger.simulation`, `logger.obstacle`) | |
 | Security headers | `helmet` | |
 | Rate limiting | Custom in-memory limiters — one for HTTP (`middlewares/rateLimitHttp.js`), one for Socket.IO (`sockets/rateLimit.js`) | Both are per-process, in-memory only (no Redis backing) — see §16 |
+| Testing | `jest` 30 + `supertest`, `Backend/tests/` | 17 suites / 137 tests. `tests/helpers/testKv.js` drives the **real** `kv` facade in fallback mode rather than a stand-in, so TTL/reservation/`mget` semantics are genuinely exercised (§17) |
 
 ### Frontend (`Frontend/`)
 | Layer | Choice | Notes |
@@ -75,12 +78,13 @@ This is fundamentally a **real-time systems problem** wrapped in a CRUD dashboar
 | Auth widget | `@react-oauth/google`, `@simplewebauthn/browser` (Passkey step-up) | |
 
 ### Infra / operational notes (current state)
+- **Automated tests exist** — `jest` 30, configured in `Backend/jest.config.js`, run via `npm test` (`jest --runInBand --forceExit`). **17 suites, 137 tests, all passing**; ~43% line coverage overall, concentrated on the allocation/auth/telemetry paths (§17).
 - **No Docker/Compose files** anywhere in the repo.
-- **No CI configuration** anywhere in the repo.
-- **No automated tests** — `Backend/package.json`'s `"test"` script is `"echo \"Error: no test specified\" && exit 1"`; zero `*.test.js`/`*.spec.js`/`__tests__` files exist in either app.
+- **No CI configuration** anywhere in the repo — the suite exists but nothing runs it automatically.
 - **No `.env.example`** in either `Backend/` or `Frontend/` — environment variables are inferred entirely from code (§15 is the only place they're documented together).
+- **No load test, and therefore no measured capacity ceiling.** Every performance statement about this system is currently an estimate.
 - Prisma migrations are checked in (`Backend/prisma/migrations/*`), including a Postgres-only recursive CTE (`$queryRaw` in `location.service.js`) — ties the project to PostgreSQL.
-- The working tree currently carries substantial **uncommitted** changes (two consecutive large rounds — see `PHASE1_VERIFICATION.md` §0). Nothing in this document depends on that being committed; it describes the tree as it stands.
+- The working tree currently carries substantial **uncommitted** changes (three consecutive rounds — see `PHASE1_VERIFICATION.md` §0). Nothing in this document depends on that being committed; it describes the tree as it stands.
 
 ---
 
@@ -90,6 +94,13 @@ This is fundamentally a **real-time systems problem** wrapped in a CRUD dashboar
 RobotX/
 ├── Backend/
 │   ├── server.js                     # entry point: boots Express + Socket.IO + Prisma + Redis + VirtualRobot simulator
+│   ├── jest.config.js                # test runner config (node env, silent-logger mapper, coverage)
+│   ├── tests/
+│   │   ├── helpers/                  # mockPrisma, fakeSocket/fakeIo, testKv (real kv facade), waitFor
+│   │   ├── mocks/silentLogger.js     # mapped over config/logger in every test
+│   │   ├── setup/env.js              # deterministic env: Redis/Mapbox unset, fixed JWT secret
+│   │   ├── unit/                     # auth/ dtaro/ redis/ tasks/ telemetry/
+│   │   └── integration/              # socketAuthGate.test.js
 │   ├── prisma/
 │   │   ├── schema.prisma             # data model (see §5)
 │   │   ├── migrations/               # checked-in, applied forward only
@@ -102,7 +113,8 @@ RobotX/
 │   └── src/
 │       ├── app.js                    # Express app, /health endpoint
 │       ├── cache/kv.js               # Redis facade + in-memory fallback (§7)
-│       ├── config/                   # env.js, cors.js, logger.js, dtaro.constants.js (shared battery thresholds)
+│       ├── config/                   # env.js, cors.js, logger.js, dtaro.constants.js (shared battery thresholds),
+│       │                             #   liveness.constants.js (flush/offline-sweep timings + their invariant)
 │       ├── controllers/              # auth_controller.js, webauthn_controller.js, robots.controller.js, tasks.controller.js, ...
 │       ├── db/prisma.js              # Prisma client + connect-with-retry
 │       ├── middlewares/              # auth_middleware.js (authUser, verifyUserToken), rateLimitHttp.js
@@ -119,9 +131,12 @@ RobotX/
 │       ├── components/               # modals/ (AuthChallengeModal, CreateTaskModal, DecisionRequiredModal), ui/ (Radix/shadcn primitives)
 │       ├── lib/                      # api/*.js (REST clients), socket.js (singleton), storage/userPreferencesStorage.js
 │       └── config/mapConfig.js       # MAP_STYLE only (dead demo config removed)
-├── system.md                         # this file
-├── PHASE1_REVIEW.md                  # prior production-readiness review (historical — see PHASE1_VERIFICATION.md for current status)
-└── PHASE1_VERIFICATION.md            # current verification of every finding against live code
+├── system.md                         # this file — current-state reference
+├── ARCHITECTURE_PROPOSAL.md          # target architecture + migration plan (forward-looking)
+├── FINAL_ARCHITECTURE_SUMMARY.md     # short-form current-state diagrams
+├── scale-architecture.md             # earlier scale exploration (superseded by ARCHITECTURE_PROPOSAL.md)
+├── PHASE1_REVIEW.md                  # prior production-readiness review (historical)
+└── PHASE1_VERIFICATION.md            # finding-by-finding audit trail, incl. corrections to its own earlier verdicts
 ```
 
 ---
@@ -288,11 +303,25 @@ Unchanged from prior behavior: automatic (`alertDissemination.service.js` → `r
 
 Unchanged: on boot, every `ASSIGNED`/`IN_PROGRESS` task gets its Redis path/state rebuilt from the DB plus a fresh Mapbox route from the robot's last-known position, and `server.js`'s startup re-hydration re-dispatches `TASK_ASSIGN` after a 5s grace window. No bounded-concurrency limit exists on this recovery loop (a restart with many active tasks issues many sequential Mapbox calls).
 
-### 6.7 Utilization is now live
+### 6.7 Utilization is live
 
 `robotRegistry.service.js:updateUtilization()` is called every telemetry tick (`telemetry.handler.js`, EMA α=0.05, `1` while `ACTIVE`/`0` otherwise) — previously dead code, now a genuinely functioning input to the cost function.
 
-### 6.8 What the cost function still does not account for
+### 6.8 Zone locality is live — and was not, until recently
+
+The `Z` term has been present in `costEvaluator.service.js` since the round that introduced it, but it was **inert in production** until the zone write path was added: `robotRegistry.updateZone()` was exported with **zero callers**, so neither `registry:{robotId}.zoneId` nor the `Robot.zoneId` column was ever written. `costEvaluator` therefore evaluated `c.zoneId && c.zoneId === pickupZoneId` against a permanently-`null` value, scoring `Z = 1` for every candidate — a constant offset with **no effect on ranking**.
+
+`zoneManager.assignRobotToZone()` now persists the resolved zone:
+- **Registry (Redis) — on every call.** Cheap, merge-semantics, and it refreshes the 30s registry TTL.
+- **Postgres `Robot.zoneId` — only on an actual change.** Zone crossings are rare by construction; the column exists solely as the durable fallback `taskAssignment.service.js:138` reads when the registry entry has expired.
+
+The registry write happens *before* the socket-room update and the `ZONE_UPDATED` emit, so a failure in either of those cannot leave the zone unrecorded and re-trigger the "changed" branch on the next tick.
+
+Pinned by `tests/unit/dtaro/zoneLocality.test.js`, which asserts a same-zone candidate scores strictly lower than an otherwise-identical out-of-zone one.
+
+> **Why this is called out at length**: the formula was correct, the plumbing was correct, `pickupZoneId` was resolved and threaded through correctly — and the feature still did nothing, because one write was missing. Reading the cost function verified everything except the thing that was broken. See `PHASE1_VERIFICATION.md` §7.
+
+### 6.9 What the cost function still does not account for
 
 - **No caching/circuit-breaking around Mapbox** — every assignment still makes 1 Matrix call and up to 2 Directions calls synchronously in the hot path, with no cross-request failure-rate tracking. A degraded (not fully down) Mapbox endpoint silently slows every assignment.
 - **No batch/global optimization across simultaneously-arriving tasks** — the reservation-and-retry mechanism (§6.2) fixes the specific "two tasks pick the same robot" race, but tasks are still assigned one at a time, independently; there is no joint optimization across a batch of pending tasks.
@@ -301,13 +330,35 @@ Unchanged: on boot, every `ASSIGNED`/`IN_PROGRESS` task gets its Redis path/stat
 
 ## 7. Redis Usage — Complete Key Map
 
-Redis is a fast, ephemeral, TTL-based live-state cache layered in front of PostgreSQL, plus the sole store for sessions, pairing codes/locks, WebAuthn challenges, and the EKB obstacle primary copy. `Backend/src/cache/kv.js` is a hand-written facade (`get/set/del/exists/sadd/srem/smembers/setManyEx/mget/reserveRobot/releaseReservation/incr/health`) that transparently falls back to an in-process `Map` if Redis is unreachable at startup or later — `disableRedis()` trips a flag and every subsequent call uses memory for the remainder of the process's life (there is currently no background reconnect probe — see §16).
+Redis is a fast, ephemeral, TTL-based live-state cache layered in front of PostgreSQL, plus the sole store for sessions, pairing codes/locks, WebAuthn challenges, and the EKB obstacle primary copy. `Backend/src/cache/kv.js` is a hand-written facade (`get/set/del/sadd/srem/smembers/setManyEx/mget/reserveRobot/releaseReservation/incr/health`).
+
+### Fallback policy — per-capability, not uniform
+
+The facade falls back to an in-process `Map` when Redis is unavailable, **with one deliberate exception**. The policy turns on operator intent:
+
+| Redis state | Cache reads/writes, counters, sets | `reserveRobot` (the allocation lock) |
+|---|---|---|
+| Available | Redis | Redis (`SET key val EX ttl NX`) |
+| **Not configured** (`REDIS_ENABLED=false`, or no `REDIS_URL`) | In-memory fallback | **In-memory fallback** — single-process operation is the operator's explicit intent, so a process-local lock is genuinely correct |
+| **Configured but unreachable** | In-memory fallback (degrade) | **Fails closed** — throws `503` with `code: "LOCK_UNAVAILABLE"` |
+
+The exception exists because an in-memory lock is only a lock *relative to its own process*. Two replicas that had both degraded to memory would each be granted the same robot, silently, reintroducing the exact double-assignment race the F4 reservation mechanism exists to prevent — and doing so precisely in the multi-instance deployment where it matters. Halting allocation is a recoverable business problem (the task is marked `FAILED` and can be retried); double-assigning a physical vehicle is not.
+
+`releaseReservation` is deliberately **lenient** — it runs inside a `finally` block, so throwing there would mask whatever error was already unwinding. A release that doesn't land is covered by the reservation's 30s TTL.
+
+Caches, counters, and rate limiters deliberately **fail open**: failing those closed would turn a brief Redis blip into a full outage.
+
+### Reconnect and health
+
+`disableRedis()` schedules a **background reconnect probe** with capped exponential backoff (1s → 30s), `unref()`d so it never holds the process open and cleared on `close()`. A transient outage no longer downgrades a process to in-memory mode for the remainder of its life.
+
+`kv.health()` returns `{ redis, configured, reconnecting }` — surfaced by `/health`. `reconnecting: true` means "configured, currently down, actively retrying", which is the state an operator needs to see and which was previously indistinguishable from normal operation.
 
 ### Key catalog
 
 | Key pattern | TTL | Written by | Read by | Purpose |
 |---|---|---|---|---|
-| `registry:{robotId}` | 30s | `robotRegistry.service.js` (`setRobotState`, called by `markOnline/markOffline/updateTelemetry/updateZone/updatePlannedPath/updateUtilization/updateETA/updateAssignedTask/updateHealthStatus`) | `costEvaluator`, `robotValidator`, `taskAssignment` (now via batched `getManyRobotStates`), `alertDissemination` | The DTARO live-state document — lat/lon/battery/status/speed/zoneId/utilization/plannedPath/healthStatus/authenticated/connected/assignedTaskId/etaSec/lastHeartbeat. Writes merge (`{...existing, ...update}`) rather than replace, so a field omitted from one tick's payload (e.g. `healthStatus` during routine telemetry) survives. |
+| `registry:{robotId}` | 30s | `robotRegistry.service.js` (`setRobotState`, called by `markOnline/markOffline/updateTelemetry/updateZone/updatePlannedPath/updateUtilization/updateAssignedTask/updateHealthStatus`); `updateZone` is called from `zoneManager.assignRobotToZone`, `lastHeartbeat` also written by the `HEARTBEAT` handler | `costEvaluator`, `robotValidator`, `taskAssignment` (via batched `getManyRobotStates`), `alertDissemination`, **the offline sweep** (`socket.server.js`) | The DTARO live-state document — lat/lon/battery/status/speed/zoneId/utilization/plannedPath/healthStatus/authenticated/connected/assignedTaskId/lastHeartbeat. Writes merge (`{...existing, ...update}`) rather than replace, so a field omitted from one tick's payload (e.g. `healthStatus` during routine telemetry) survives. **`zoneId` is genuinely written now** — it previously never was, which silently disabled the DTARO `Z` term (§6.8). **`lastHeartbeat` is now load-bearing**: it is the live liveness signal the offline sweep reads before marking a robot offline (§9). |
 | `robot:{robotId}` | 15s | `telemetry.handler.js` (every tick), `robots.controller.js` (on commission) | `task.service.js`, `taskRecovery.service.js`, `robots.controller.js` (now via `kv.mget()`, one pipelined call for `GET /api/robots*` instead of per-row `GET`s) | A second, differently-shaped live-state document for the same robot — still a distinct key from `registry:{robotId}`, still not consolidated (see §16). |
 | `robots:all` (Set) | none | commission paths, task recovery | `getAllRobotIds`, `metrics.service.js` | Index of every robot ID ever seen live. |
 | `session:{robotId}` | 7 days | `robot.handler.js` AUTH success, `VirtualRobot.commission()` | `robot.handler.js` AUTH (reconnect) | Bearer session token for robot reconnects. |
@@ -337,7 +388,13 @@ Two dedicated batching helpers now exist on top of `kv.mget()` (pipelined native
 
 ### Design pattern: multi-tier fallback
 
-Every Redis read follows: **Redis (fast, ephemeral) → Postgres (source of truth) → sane default**, and every Redis write is best-effort (try/catch, failure silently swallowed). The system is designed to run correctly with zero Redis. There is still no background reconnect probe once Redis is marked down for a process (§16), and no dashboard indicator surfaces degraded state to an operator.
+Every Redis read follows: **Redis (fast, ephemeral) → Postgres (source of truth) → sane default**, and every Redis *cache* write is best-effort (try/catch, failure silently swallowed). A process that loses Redis now retries in the background rather than latching into memory mode for its lifetime.
+
+Two qualifications to the old "the system runs correctly with zero Redis" claim, both important:
+- It holds when Redis is **deliberately** disabled — single-process operation is then the operator's stated intent.
+- It does **not** hold when Redis is configured but unreachable: allocation deliberately fails closed (see the fallback-policy table above), because a process-local allocation lock is not a lock at all across replicas.
+
+No dashboard indicator surfaces degraded state to an operator — `/health` exposes `{ redis, configured, reconnecting }` but nothing in the frontend polls it (§16).
 
 ---
 
@@ -347,7 +404,7 @@ One shared `io` instance (`Backend/src/sockets/socket.server.js`). Dashboards (b
 
 **A dashboard-candidate socket must now also present a valid admin-session JWT** (the same `token` HttpOnly cookie `authUser` verifies for REST, checked via the shared `verifyUserToken()` helper in `middlewares/auth_middleware.js`) before it is joined to the `dashboard` room. An invalid/missing token gets `socket.emit("UNAUTHORIZED", ...)` followed by `socket.disconnect(true)` — the socket never joins `dashboard`. Robot sockets are unaffected — they authenticate solely via their own `AUTH` event. `Frontend/src/lib/socket.js` sends `withCredentials: true` so the cookie reaches the handshake.
 
-The Socket.IO-level CORS no-Origin bypass (`cors.js:isOriginAllowed` returning `true` when no `Origin` header is present) is a separate, still-open gap — see §16.
+The Socket.IO-level CORS no-Origin bypass is closed: `cors.js:isOriginAllowed` now returns `false` when no `Origin` header is present (F29/F2, see §16).
 
 ### Rooms
 | Room | Who joins | Purpose |
@@ -362,7 +419,7 @@ The Socket.IO-level CORS no-Origin bypass (`cors.js:isOriginAllowed` returning `
 |---|---|---|---|
 | `AUTH` | `robot.handler.js` | 5/60s, min 100ms | Session-token reconnect or pairing-code first-time path. Pairing brute-force is now actually blocked after 5 failed attempts (`pairingLocked:{robotId}`, 1h), keyed by robot ID so reconnecting with a new socket does not reset the counter. Admin override: `POST /api/robots/:robotId/pairing/unlock`. |
 | `TELEMETRY` (+ legacy alias `telemetry`) | `telemetry.handler.js` | 50/5s, min 100ms | Requires `socket.data.isAuthed` unconditionally — no first-telemetry bind path exists. Unauthenticated frames get `AUTH_REQUIRED` and are dropped. |
-| `HEARTBEAT` (+ legacy `heartbeat`) | `robot.handler.js` | 10/5s, min 100ms | Bumps `lastSeenAt`. |
+| `HEARTBEAT` (+ legacy `heartbeat`) | `robot.handler.js` | 10/5s, min 100ms | Writes `lastHeartbeat` to the Redis registry on **every** beat (the live liveness signal), and bumps the durable `Robot.lastSeenAt` mirror **at most once per `DB_FLUSH_INTERVAL_MS`**. Previously this issued an unconditional `prisma.robot.update` per beat — 30 full-row writes/robot/minute at the simulator's 2s tick, which completely defeated the telemetry handler's own flush gate (§9). |
 | `OBSTACLE_REPORT` | `dtaro.handler.js` | 10/60s, min 500ms | Requires prior AUTH. Triggers the obstacle-dissemination pipeline (§11). |
 | `TASK_COMPLETE` | `dtaro.handler.js` | 5/30s, min 1000ms | Marks task `COMPLETED`, frees robot to `IDLE`, clears `robotTaskState`/`robotTask` Redis keys. |
 | `ROBOT_FAULT` | `dtaro.handler.js` | 5/60s, min 1000ms | Sets `status=ERROR` (DB), `healthStatus=FAULT` (registry), logs an `Event`, broadcasts `ROBOT_UPDATED`. **Now clearable**: `POST /api/robots/:robotId/clear-fault` transitions the robot back to `ACTIVE`/`IDLE` and resets `healthStatus` to `OK`, logging a corresponding `Event`. Telemetry writes no longer clobber `healthStatus` on ordinary ticks (merge semantics, not replace). |
@@ -400,15 +457,48 @@ Every 2 seconds, each connected robot emits `TELEMETRY`. `telemetry.handler.js` 
 7. One Redis read (`robot:{robotId}`) to merge with previous state.
 8. Distance-travelled accounting (VirtualRobots send it directly; real robots would accumulate from haversine deltas, 500m sanity cap).
 9. One Redis write (`robot:{robotId}`, 15s TTL) with merged state.
-10. **One Postgres write** (`prisma.robot.update`) — lat/lon/battery/lastSeenAt/isOnline/status, still unconditional on **every** tick, independent of the smart-snapshot throttle below (see §16 — this remains the largest identified scale risk in the system, unchanged).
+10. **One Postgres write** (`prisma.robot.update`) — lat/lon/battery/lastSeenAt/isOnline/status, **throttled by a dirty-state flush gate** (`DB_FLUSH_INTERVAL_MS`, shared from `config/liveness.constants.js`). It fires only when: status actually transitions (a field the DTARO candidate query filters on), the robot just came back online, battery moved ≥2% since the last flush, or the interval elapsed. **Movement deliberately does not force a flush** — Redis carries live position every tick regardless, so gating on distance would defeat the purpose (a moving robot covers >10m almost every tick).
 11. Smart-snapshot decision (`shouldStoreSnapshotSmart`) — a new `Telemetry` history row is only inserted if ≥15s elapsed, or the robot moved ≥~11m, or battery changed ≥2% since the last stored snapshot.
 12. Registry update (`updateTelemetry` → `registry:{robotId}` write, a second, differently-shaped Redis write from step 9's `robot:{robotId}` — both keys still exist independently, see §16). This write **omits `healthStatus`** from its payload; combined with `setRobotState`'s merge (not replace) semantics, a `FAULT` status set by `ROBOT_FAULT` now survives ordinary telemetry ticks instead of being silently reset.
 13. **Utilization EMA update** — `updateUtilization()` is called every tick (`α=0.05`, `1` if `status==="ACTIVE"` else `0`), feeding directly into the DTARO cost function's `U(r)` term (§6.1). This is new: previously dead code, now live.
-14. Zone-membership check + Socket.IO room join/leave on zone crossing, plus `ZONE_UPDATED` broadcast to `dashboard`.
+14. Zone-membership resolution → **persisted to the registry every tick** (§6.8), with Socket.IO room join/leave and a `ZONE_UPDATED` broadcast **only on an actual zone change**. Previously, because `zoneId` was never persisted, the change-check compared against a permanently-`null` previous value and fired on *every* tick — a `socket.join()` plus a `dashboard` broadcast twice a second per robot, indefinitely.
 15. Every ~120s: persist battery to `vr:battery:{robotId}`.
-16. `io.emit("robot:update", fullState)` — broadcast to every connected socket, not just `dashboard`.
+16. `io.emit("robot:update", fullState)` — broadcast to **every connected socket, robots included**, not just `dashboard`. See §16.
 
-**Per-tick cost, per active robot: 2 Postgres round-trips (1 read + 1 write) + 2–3 Redis round-trips, fully sequential, every 2 seconds.** No pipelining/parallelization was introduced in the most recent round of changes — this pipeline's structure (and its scaling ceiling) is unchanged from before.
+### Per-tick cost, per active robot
+
+| | Postgres reads | Postgres writes | Redis round-trips | Dashboard broadcasts |
+|---|---|---|---|---|
+| **Telemetry tick** | 1 (unconditional) | ~0.07 avg (1 per 15s flush interval) | ~8–10 | 0 (steady state) |
+| **Heartbeat, same 2s tick** | 0 | ~0.07 avg (same shared interval) | 1 | 0 |
+
+Still **fully sequential** — no pipelining or parallelization of the independent reads/writes has been introduced (§16, F12).
+
+**What changed and what didn't.** Postgres *write* volume dropped from ~30 full-row updates per robot per minute to ≤4: the flush gate above throttles the telemetry path, and `robot.handler.js`'s `HEARTBEAT` path — which previously issued an **unconditional** `prisma.robot.update` on every beat, and is emitted on the *same* 2-second tick by `VirtualRobot._tick()` — is now throttled by the same shared interval. Until that second path was fixed, the telemetry gate reduced nothing in aggregate; it only moved the writes to a different handler.
+
+The Postgres *read* (step 5) is still unconditional, once per robot per tick, and is now the dominant per-tick database cost.
+
+### Offline detection
+
+Two independent mechanisms, with clearly different roles:
+
+1. **Primary — the socket `disconnect` handler** (`robot.handler.js`). A robot that disconnects normally is marked offline *immediately*: the handler verifies this socket is still the robot's current one (guarding against a newer reconnect having replaced it), then sets `isOnline: false, status: OFFLINE`, clears the registry, and broadcasts `robot_offline`.
+
+2. **Backstop — the periodic sweep** (`socket.server.js:startOfflineDetector`). Catches only the cases where (1) never ran: a process kill, a half-open TCP connection, a lost network. Runs every `OFFLINE_SWEEP_INTERVAL_MS` (10s):
+   - Selects robots that are `isOnline` with `lastSeenAt` older than `OFFLINE_CUTOFF_MS` (30s), capped at `OFFLINE_SWEEP_BATCH` (500) per pass — so its cost scales with the number of *suspect* robots, not fleet size.
+   - Batch-reads their registry entries and consults `lastHeartbeat`. Only robots that Redis *also* considers stale are marked offline.
+   - Robots that are alive per Redis but stale in Postgres get their `lastSeenAt` reconciled instead of being downed, with a warning log. A sustained non-zero count here means the flush gate is not keeping up and is worth alerting on.
+   - With Redis unavailable this degrades to the DB-only behavior, which is safe: the flush interval is half the cutoff, so a live robot's row never ages past it.
+
+**The two timings are coupled and must stay that way.** `config/liveness.constants.js` holds both, and documents the invariant:
+
+```
+DB_FLUSH_INTERVAL_MS (15s)  <  OFFLINE_CUTOFF_MS (30s)
+```
+
+If the cutoff were ever ≤ the flush interval, a perfectly healthy robot would be marked `OFFLINE` in the gap between two throttled writes and would flap indefinitely. This is exactly why the pre-throttle heartbeat path had to write on *every* beat, and it is the reason throttling those writes required changing the sweep in the same change.
+
+The trade accepted here: backstop detection latency widened from ~10s to ~30s. That is acceptable precisely because the sweep is *not* the primary signal — normal disconnects are still detected instantly.
 
 ---
 
@@ -463,7 +553,7 @@ Both step-up mechanisms are now **real, server-verified controls**:
   - Registration (`ProfilePage.jsx` → `POST /api/auth/webauthn/register-options` → `POST /api/auth/webauthn/register`): the backend (`webauthn_controller.js`, using `@simplewebauthn/server`) issues a real challenge, stores it in Redis (`webauthn:regChallenge:{userId}`, 300s TTL), and requires the operator's PIN to be re-verified server-side before persisting a new credential (defense-in-depth — a stolen session cookie alone cannot mint a new authenticator). On a valid `verifyRegistrationResponse()`, the public key, credential ID, and initial counter are persisted to the new `WebAuthnCredential` table.
   - Authentication/step-up (`AuthChallengeModal.jsx` → `POST /api/auth/webauthn/auth-options` → `POST /api/auth/webauthn/verify`): the backend issues a fresh server-generated challenge, the frontend calls `@simplewebauthn/browser`'s `startAuthentication()`, and the backend calls `verifyAuthenticationResponse()` against the stored public key — a destructive action only proceeds if this call reports `verified: true`.
   - **Replay/clone protection**: the stored signature counter must strictly advance on each successful authentication (`newCounter > previousCounter`, with a documented exception only when both are exactly `0`, since some authenticators never implement a counter, which is spec-legal) — a non-advancing counter is rejected outright as a possible cloned authenticator.
-  - The RP ID / expected origin are derived from the request's `Origin` header, checked against the same CORS allowlist `authUser` trusts, with a stricter rule than CORS itself: a **missing** Origin header is rejected outright for WebAuthn endpoints (unlike CORS's own no-Origin bypass, §16).
+  - The RP ID / expected origin are derived from the request's `Origin` header, checked against the same CORS allowlist `authUser` trusts. A **missing** Origin header is rejected outright for WebAuthn endpoints — the same behavior `isOriginAllowed` itself now enforces generally (§16).
 
 ### Robot auth
 
@@ -473,7 +563,7 @@ Unchanged: session-token (post-pairing) or one-time 6-digit pairing code, both o
 
 Every operational REST route file (`robots.routes.js`, `tasks.routes.js`, `locations.routes.js`, `campuses.routes.js`, `simulator.routes.js`) is confirmed to apply `authUser` router-wide. Combined with the Socket.IO dashboard-room JWT gate (§8), there is no longer a REST or Socket.IO surface reachable without a valid admin session — the "anyone who can reach the port can commission/delete robots, assign/cancel tasks, and send fleet-wide STOP" gap described in earlier reviews of this system is closed.
 
-The one remaining gap in this area: `Backend/src/config/cors.js:isOriginAllowed()` still returns `true` unconditionally when a request carries no `Origin` header at all — a defense-in-depth gap for non-browser clients, though its practical impact is now bounded by the comprehensive `authUser`/JWT gating above (a request without a valid session JWT still fails regardless of CORS). See §16.
+`Backend/src/config/cors.js:isOriginAllowed()` now denies requests carrying no `Origin` header at all (F29/F2, closed) — non-browser callers (robot Socket.IO connections, curl/server-to-server) never depended on the CORS response headers this function drives, so closing the bypass has no effect on their admission, which is independently gated by JWT/`authUser`/robot `AUTH` regardless. See §16.
 
 ---
 
@@ -524,7 +614,7 @@ Unchanged: `AppSidebar.jsx`, `AppTopBar.jsx` (route titles via a separate lookup
 | Robots | `/robots` | Card grid with search + status/battery filter chips, slide-in detail panel (STOP/PAUSE/RETURN, Retire), no bulk actions. |
 | Robot Detail | `/robots/:id` | Single-robot deep view: battery/speed live state, unit info, command buttons. "Primary Vision" camera panel is a static placeholder — no camera stream integration exists. |
 | Commission | `/commission` | Form to register a unit (ID, name, chassis type — collected but not persisted anywhere in the schema, Mapbox-searched initial zone). |
-| Tasks | `/tasks` | Metric cards + task card grid with live ETA/remaining-distance, Create Task modal (Mapbox place search), Cancel action per task (cancel currently only updates Postgres — the robot is not told, §16). |
+| Tasks | `/tasks` | Metric cards + task card grid with live ETA/remaining-distance, Create Task modal (Mapbox place search), Cancel action per task — marks the task `CANCELLED`, emits `STOP` to the robot's socket, and clears its Redis routing state (`taskPath`, `robotTaskState`, `robotTask`, registry assigned-task and planned-path), all gated on the robot's `currentTaskId` still pointing at that task. |
 | Profile | `/profile` | Account settings, password/PIN change, and Passkey registration (now real server-verified WebAuthn, §12). |
 
 **Still absent** relative to a "complete" admin dashboard: no audit-log page (the `Event` table accumulates real server-side data that nothing in the UI reads back), no user/role management (single hardcoded `SUPER_ADMIN`), no zone/campus management UI (zones only auto-seed, never editable), no DTARO cost-weight configuration UI, no historical analytics (Telemetry/Command/Event/allocation-metrics data accumulates with no chart/report reading it back), no obstacle history view, no fleet-degraded-state indicator (Redis/Mapbox health is exposed at `/health` but nothing in the frontend polls it), no bulk robot operations beyond the global "Emergency Stop."
@@ -575,46 +665,76 @@ No `.env.example` exists in either app — this table remains the only place eve
 
 Current, factual state — not a roadmap. See `PHASE1_VERIFICATION.md` for the full prioritized punch list with severities and recommendations.
 
-**Security**
-- `cors.js:isOriginAllowed()` returns `true` for requests with no `Origin` header — a defense-in-depth gap for non-browser clients, though bounded in practice by comprehensive `authUser`/JWT gating on every operational route.
-- Debug scripts `check_password.js`/`check_users.js` have no `NODE_ENV` production guard and the latter still prints a 4-character password-hash prefix to stdout.
+**Scale — the binding constraints, in order**
+- **Socket.IO state is process-local.** No `@socket.io/redis-adapter`, and `sockets/robotSockets.js` is an in-memory `Map` of `robotId → socket` consulted by `commandDispatcher`, `robots.controller`, `tasks.controller`, and `robotValidator`. A second process cannot dispatch a command to a robot connected to the first. This is a **topology** limit, not a throughput one: the system runs on exactly one process regardless of headroom.
+- **`io.emit("robot:update", …)`** (`telemetry.handler.js`) broadcasts every telemetry frame to **every connected socket, robots included** — O(N²) message amplification. The lowest-effort/highest-return fix available in the system: scope it to the `dashboard` room.
+- **Obstacle dissemination is O(fleet) per obstacle.** `alertDissemination.processObstacleReport` reads *every* robot ID from `robots:all` (a Set that is never pruned) and fetches each one's registry document — which contains the full planned-path geometry — then runs a linear segment-intersection test against each.
+- One unconditional Postgres **read** per robot per telemetry tick (`prisma.robot.findUnique`) remains; it is now the dominant per-tick DB cost, the write side having been throttled.
+- The telemetry handler remains fully sequential (no `Promise.all` pipelining of the independent reads/writes).
+- Socket.IO rate limiting is a per-process in-memory `Map`, not Redis-backed.
+- No circuit breaker or result cache around Mapbox in the allocation hot path — a degraded (not down) endpoint silently slows every assignment, and `getRoutesWithDistance` can issue up to 6 Directions calls per assignment across its profile fallbacks.
+- `taskRecovery.recoverActiveTasks` has no bounded concurrency and runs *before* `server.listen()` — a restart with many active tasks issues that many sequential Mapbox calls before the process becomes healthy.
 
 **Task lifecycle**
-- Cancelling a task (`tasks.controller.js:cancelTask`) only updates Postgres — it does not emit `STOP` to the robot's socket and does not clear `taskPath:{taskId}`/`robotTaskState:{robotId}` in Redis. A robot mid-route to a cancelled task continues driving.
 - The `Decision` table has full schema support (`reason`, `imageUrl`, `action`, `resolvedAt`) but zero writers anywhere in the service layer — the obstacle-decision UI is entirely client-side ephemeral state; WAIT and CANCEL have no server-side effect.
-- Two independent, undismissed command-retry mechanisms exist for "reliably deliver a command to a robot" — `commandDispatcher.service.js` (TASK_ASSIGN/REROUTE_ALERT) and `robots.controller.js:scheduleReliabilityCheck` (STOP/PAUSE/RETURN/RESUME) — now documented as an intentional split via a code comment, but neither has restart-recovery parity with `taskRecovery.service.js`.
-- A legacy Socket.IO `assign_task` task-creation path remains registered in `socket.server.js`, parallel to and unused by the REST path the current frontend calls.
+- Two independent command-retry mechanisms exist for "reliably deliver a command to a robot" — `commandDispatcher.service.js` (TASK_ASSIGN/REROUTE_ALERT) and `robots.controller.js:scheduleReliabilityCheck` (STOP/PAUSE/RETURN/RESUME) — documented as an intentional split via a code comment, but neither survives a process restart, and neither has restart-recovery parity with `taskRecovery.service.js`.
+- **`PENDING` tasks are unrecoverable.** `assignTask` creates the row then does the real work in `setImmediate()`; a crash in that window strands the task permanently, because `taskRecovery` only queries `ASSIGNED`/`IN_PROGRESS`.
+- No idempotency keys anywhere — a client retry of `POST /api/tasks/assign` creates a duplicate task.
+- A legacy Socket.IO `assign_task` task-creation path remains registered in `socket.server.js:228`, parallel to and unused by the REST path the current frontend calls.
 
 **Data model**
-- `registry:{robotId}` and `robot:{robotId}` remain two independently-written Redis documents for the same robot's live state, with different TTLs and non-overlapping field sets.
-- `task:{taskId}` Redis key is written on every assignment/recovery and read nowhere. `robotTask:{robotId}` is written and now cleaned up on completion, but still never consulted for its value.
+- `registry:{robotId}` and `robot:{robotId}` remain two independently-written Redis documents for the same robot's live state, with different TTLs (30s / 15s), different shapes, and different write semantics (merge / replace).
+- `task:{taskId}` Redis key is written on every assignment/recovery and **read nowhere** (it is deleted on cancel, but never consulted). `robotTask:{robotId}` is written and cleaned up, but likewise never read for its value.
+- Robot status is modeled in two incompatible vocabularies: the `RobotStatus` Prisma enum (6 values) and the wider set accepted from robots (8, including `RETURNING` and `CHARGING`), with a lossy mapping (`CHARGING → PAUSED`, `RETURNING → ACTIVE`). A genuinely paused robot and a charging robot are therefore **indistinguishable at the database layer**; every consumer must re-derive intent from Redis.
 - `Robot.type`/chassis is collected on the Commission form and silently dropped — no corresponding schema column exists.
 - `ObstacleEvent.expiresAt` is indexed but nothing sweeps expired rows; the Postgres table grows unbounded.
+- No tenancy: the authorization model is `enum Role { SUPER_ADMIN }`. There is no organization, customer, or scoped-permission concept.
 
-**Scale**
-- Every telemetry tick (every 2s per robot) still triggers an unconditional `prisma.robot.update` — the single largest identified scale risk, unaddressed.
-- The telemetry handler remains fully sequential (no `Promise.all` pipelining of independent reads/writes).
-- No `@socket.io/redis-adapter` — Socket.IO room/robot-socket state is single-process only, structurally blocking horizontal scale-out.
-- Socket.IO rate limiting remains a per-process in-memory `Map`, not Redis-backed.
-- No circuit breaker around Mapbox calls in the allocation hot path — a degraded (not down) Mapbox endpoint silently slows every task assignment.
-- `kv.js` has no background Redis reconnect probe once disabled — a transient outage permanently downgrades a process to in-memory fallback until restart.
+**Security**
+- Debug scripts `check_password.js`/`check_users.js` have no `NODE_ENV` production guard and the latter still prints a 4-character password-hash prefix to stdout.
+- Step-up authorization (PIN/Passkey) is enforced **client-side only** — `requestAuth` wraps destructive actions in the SPA, but a direct API call to the same endpoint requires only the session cookie. Both ceremonies are genuinely server-verified (§12); what is not enforced server-side is the *requirement* to have performed one.
+- Dashboard-vs-robot socket classification is heuristic (`!!(origin || userAgent.includes("Mozilla"))`). A connection presenting neither is treated as a robot and skips the JWT gate — defensible today, since the robot `AUTH` event independently gates everything, but a fragile default.
+
+**Testing**
+- Coverage is ~43% overall and unevenly distributed. The **obstacle/reroute pipeline is effectively untested**: `routeIntersection` 4%, `routing.service` 8%, `ekb.service` 10%, `alertDissemination` 24%. That code is safety-adjacent and algorithmically the least trivial in the repository.
+- `robots.controller.js` (0%) and all route files (0%) are untested.
 
 **Operational**
 - No Dockerfile/Compose anywhere in the repo.
+- No CI — the test suite exists but nothing runs it automatically on push or PR.
 - No `.env.example` in either app.
-- Zero automated tests exist anywhere in the repository; `Backend/package.json`'s `"test"` script is a stub that exits non-zero.
-- The working tree currently carries two consecutive large uncommitted change rounds, verified only by manual/AI code review (including this document), with no CI or test suite to catch regressions automatically.
+- **No load test, so the system's actual capacity ceiling has never been measured.** Every performance claim in this document is an estimate.
+- The working tree carries three consecutive uncommitted change rounds.
 
 ---
 
 ## 17. Testing & Deployment
 
-**Testing**: None exists. No test framework is installed in either `package.json`, no `*.test.js`/`*.spec.js`/`__tests__` files exist anywhere outside `node_modules`, and the `Backend` `"test"` npm script is a placeholder that always fails. All verification of this system — including the audit backing this document — is currently manual code reading.
+**Testing**: `jest` 30 + `supertest`, configured in `Backend/jest.config.js`. Run with `npm test` (`jest --runInBand --forceExit`) or `npm run test:coverage`. **17 suites, 137 tests, all passing.**
 
-**Deployment**: No containerization, no CI/CD configuration, and no documented deployment procedure exist in the repository. Running the system today means starting `Backend/server.js` (Node) and a Vite build (`Frontend/`) directly against a Postgres instance (Neon, based on the connect-timeout tuning in `db/prisma.js`) and a Redis instance (optional — the system runs correctly, in a degraded mode, without one), with every required environment variable (§15) supplied by hand since no `.env.example` exists to reference.
+| Area | Suites | What is covered |
+|---|---|---|
+| `tests/unit/dtaro/` | costEvaluator, robotValidator, taskAssignment, reservationLocking, zoneLocality | The full allocation decision path: 5-term cost function, eligibility rules, candidate selection, reservation semantics, zone locality |
+| `tests/unit/tasks/` | taskService, taskRecovery, tasksControllerCancel, dtaroHandlerTaskComplete | Assignment finalization, restart recovery, cancel-and-stop, completion |
+| `tests/unit/telemetry/` | telemetryHandler, heartbeatDbWrites | Auth gating, status transitions, utilization EMA, both Postgres flush gates |
+| `tests/unit/redis/` | kv, lockFailClosed | TTL semantics, `mget`, `incr`, reservation locking, fail-closed policy, reconnect signalling |
+| `tests/unit/auth/` | authMiddleware, cors, webauthnController | JWT verification, origin policy, the WebAuthn ceremony incl. counter replay detection |
+| `tests/integration/` | socketAuthGate | Dashboard socket JWT gate end-to-end |
+
+**Coverage: ~42.9% lines overall**, deliberately concentrated rather than uniform. High where correctness is subtle and failure is expensive — `costEvaluator` 100%, `robotValidator` 100%, `telemetry.service` 100%, `auth_middleware` 100%, `taskRecovery` 97%, `taskAssignment` 92%, `webauthn_controller` 79%, `robotRegistry` 78%, `zoneManager` 70%. Near-zero on thin transport layers (all route files 0%, `robots.controller.js` 0%) — **and, less defensibly, on the obstacle/reroute pipeline** (`routeIntersection` 4%, `routing` 8%, `ekb` 10%), which is the most significant remaining gap (§16).
+
+Two conventions worth preserving: `tests/helpers/testKv.js` drives the **real** `kv` facade in fallback mode rather than a hand-rolled double, so the tests exercise actual TTL/reservation/`mget` logic; and suites that touch module-level state (the flush gates, the zone cache) call `jest.resetModules()` in `beforeEach` so timing state cannot leak between cases.
+
+**What the suite is for.** It is not a coverage target — it is a defect-detection tool, and it has already earned its place: on its first run against the existing codebase it surfaced three defects that two rounds of careful manual review had missed, one of which (the inert zone-locality term) manual review had affirmatively marked as *fixed*. See `PHASE1_VERIFICATION.md` §7.
+
+**Deployment**: No containerization, no CI/CD configuration, and no documented deployment procedure exist in the repository. Running the system today means starting `Backend/server.js` (Node) and a Vite build (`Frontend/`) directly against a Postgres instance (Neon, based on the connect-timeout tuning in `db/prisma.js`) and a Redis instance, with every required environment variable (§15) supplied by hand since no `.env.example` exists to reference.
+
+Note one deployment-relevant change: Redis is **optional only when it is explicitly disabled**. If `REDIS_URL` is set but the instance is unreachable, task allocation now fails closed rather than silently proceeding with a process-local lock (§7). A deployment that intends to run without Redis must say so explicitly (`REDIS_ENABLED=false` or no `REDIS_URL`) rather than relying on a failed connection to degrade gracefully.
 
 **Graceful shutdown**: `server.js`'s `SIGINT`/`SIGTERM` handlers stop the simulator, drain the HTTP server, close Socket.IO, close the `kv` client, and disconnect Prisma, in sequence, with a catch-all that exits non-zero on failure — this remains correctly implemented and unchanged.
 
 ---
 
-*This document reflects the working tree exactly as read during this audit. It carries no future roadmap and no historical implementation narrative by design — for prioritized next steps, see `PHASE1_VERIFICATION.md` §6. Re-verify this document against the code before trusting it if significant time has passed or further changes have landed; the codebase has demonstrated it can drift materially within a single day of active development.*
+*This document reflects the working tree exactly as read during this audit. It carries no future roadmap and no historical implementation narrative by design — for prioritized next steps see `PHASE1_VERIFICATION.md` §6, and for the target architecture see `ARCHITECTURE_PROPOSAL.md`.*
+
+*Re-verify before trusting this document if significant time has passed. The codebase has twice drifted materially within a single day of active development, and on both occasions the drift was invisible to careful reading — the behavioral sections here are now pinned by tests precisely because prose alone has repeatedly failed to stay true (`PHASE1_VERIFICATION.md` §7).*

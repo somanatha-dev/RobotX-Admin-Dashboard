@@ -11,7 +11,7 @@
 
 const { getRobotState } = require("./robotRegistry.service");
 const { getRobotSocket } = require("../sockets/robotSockets");
-const { BATTERY_THRESHOLD } = require("../config/dtaro.constants");
+const { BATTERY_THRESHOLD, CHARGING_INTERRUPT_BATTERY } = require("../config/dtaro.constants");
 
 /**
  * @typedef {object} ValidationResult
@@ -63,8 +63,12 @@ async function validateRobot(
     if (!allowCharging) {
       return { valid: false, reason: "Robot is charging" };
     }
-    // Charging robots need a higher battery reserve (task drain + 10% safety margin)
-    const chargingMinBattery = Math.max(batteryThreshold, BATTERY_THRESHOLD);
+    // Charging robots need a higher battery reserve (task drain + 10% safety margin).
+    // Enforce CHARGING_INTERRUPT_BATTERY as the floor regardless of the general
+    // `batteryThreshold` default, so callers that don't override it (the common
+    // case) still get the intended 30% charge-interrupt floor rather than the
+    // 20% general-eligibility floor.
+    const chargingMinBattery = Math.max(batteryThreshold, CHARGING_INTERRUPT_BATTERY);
     const battery =
       typeof live?.battery === "number"
         ? live.battery

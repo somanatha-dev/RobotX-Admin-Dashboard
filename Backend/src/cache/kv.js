@@ -8,6 +8,23 @@ async function initKv({ logger }) {
   let redisAvailable = false;
   let redisWarned = false;
 
+  // Whether the operator actually asked for Redis. This is the distinction the
+  // fallback policy below turns on:
+  //   - not configured (no REDIS_URL, or REDIS_ENABLED=false) → single-process
+  //     mode is intentional, so an in-memory lock is genuinely correct.
+  //   - configured but unreachable → the operator intended a SHARED lock across
+  //     instances. Falling back to memory would silently change that safety
+  //     property, so lock operations fail closed instead (see reserveRobot).
+  const redisConfigured = redisEnabled && Boolean(redisUrl);
+
+  // Background reconnect probe (F15/F39). Without this, a single transient
+  // blip trips `disableRedis()` and downgrades the process to in-memory mode
+  // for the rest of its life — permanently, silently, and with no way back
+  // short of a restart.
+  let reconnectTimer = null;
+  let reconnectAttempt = 0;
+  let closed = false;
+
   // In-memory fallback supports basic TTL semantics so higher-level code
   // can rely on expirations even when Redis is unavailable.
   const memoryKv = new Map();
@@ -92,6 +109,72 @@ async function initKv({ logger }) {
       }
     }
     redis = null;
+    scheduleReconnect();
+  }
+
+  /**
+   * Schedule the next reconnect attempt with capped exponential backoff.
+   * Only ever runs when Redis was configured — an intentionally-disabled Redis
+   * has nothing to reconnect to. The timer is `unref()`d so a process that is
+   * otherwise idle can still exit.
+   */
+  function scheduleReconnect() {
+    if (!redisConfigured || closed || reconnectTimer) return;
+
+    const backoffMs = Math.min(30_000, 1000 * 2 ** Math.min(reconnectAttempt, 5));
+    reconnectTimer = setTimeout(async () => {
+      reconnectTimer = null;
+      if (closed || redisAvailable) return;
+      reconnectAttempt += 1;
+      const connected = await connectRedis();
+      if (connected) {
+        reconnectAttempt = 0;
+        redisWarned = false;
+        (logger || console).info("Redis reconnected; leaving in-memory fallback mode");
+      } else {
+        scheduleReconnect();
+      }
+    }, backoffMs);
+
+    if (typeof reconnectTimer.unref === "function") reconnectTimer.unref();
+  }
+
+  /**
+   * Attempt a single connection. Returns true on success.
+   * Deliberately does NOT call disableRedis() on failure — the caller decides
+   * whether that failure should (re)start the backoff loop, so a failed probe
+   * can't recurse into scheduling itself twice.
+   */
+  async function connectRedis() {
+    const client = new Redis(redisUrl, {
+      lazyConnect: true,
+      enableOfflineQueue: false,
+      maxRetriesPerRequest: 1,
+      // Don't let ioredis run its own retry loop underneath ours — this
+      // facade owns the backoff so the two can't compound.
+      retryStrategy: () => null,
+      connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS || 5000),
+    });
+
+    client.on("connect", () => (logger || console).info("Redis connected"));
+    client.on("ready", () => (logger || console).info("Redis ready"));
+    client.on("error", (err) => {
+      const code = err && (err.code || err.errno);
+      if (!redisWarned) (logger || console).warn("Redis error", code || err);
+    });
+    client.on("close", () => {
+      if (!redisWarned) (logger || console).warn("Redis connection closed");
+    });
+
+    try {
+      await client.connect();
+      redis = client;
+      redisAvailable = true;
+      return true;
+    } catch {
+      try { client.disconnect(); } catch { /* ignore */ }
+      return false;
+    }
   }
 
   async function initRedis() {
@@ -104,28 +187,11 @@ async function initKv({ logger }) {
       return;
     }
 
-    redis = new Redis(redisUrl, {
-      lazyConnect: true,
-      enableOfflineQueue: false,
-      maxRetriesPerRequest: 1,
-      connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS || 5000),
-    });
-
-    redis.on("connect", () => (logger || console).info("Redis connected"));
-    redis.on("ready", () => (logger || console).info("Redis ready"));
-    redis.on("error", (err) => {
-      const code = err && (err.code || err.errno);
-      if (!redisWarned) (logger || console).warn("Redis error", code || err);
-    });
-    redis.on("close", () => {
-      if (!redisWarned) (logger || console).warn("Redis connection closed");
-    });
-
-    try {
-      await redis.connect();
-      redisAvailable = true;
-    } catch (e) {
-      disableRedis(e);
+    const connected = await connectRedis();
+    if (!connected) {
+      // Configured but unreachable at boot — warn, fall back for cache-style
+      // reads/writes, fail closed for locks, and keep probing.
+      disableRedis(new Error("initial connect failed"));
     }
   }
 
@@ -285,9 +351,22 @@ async function initKv({ logger }) {
 
     // Short-lived allocation reservation (F4): atomic "claim if free" so two
     // concurrent task assignments can't both pick the same robot. Backed by
-    // Redis SET NX EX; in-memory fallback checks for a live (non-expired)
-    // entry first since the fallback Map is only ever touched by one
-    // single-threaded Node process.
+    // Redis SET NX EX.
+    //
+    // FAIL-CLOSED POLICY (HR1) — this is the one capability on the facade that
+    // must NOT silently fall back to the in-memory Map when Redis is
+    // configured but unreachable. An in-memory lock is only a lock relative to
+    // its own process; two replicas that have both degraded would each be
+    // granted the same robot, with no error and no metric, reintroducing the
+    // exact double-assignment race F4 exists to prevent — and doing so
+    // precisely in the multi-instance deployment where it matters.
+    //
+    // Halting allocation is a recoverable business problem (orders queue and
+    // are retried). Double-assigning a physical vehicle is not.
+    //
+    // When Redis was never configured (no REDIS_URL, or REDIS_ENABLED=false)
+    // the deployment is explicitly single-process, so the memory-backed lock
+    // is genuinely correct and is still used.
     async reserveRobot(key, value, ttlSec) {
       const ex = typeof ttlSec === "number" && Number.isFinite(ttlSec) && ttlSec > 0 ? Math.floor(ttlSec) : 30;
 
@@ -297,7 +376,18 @@ async function initKv({ logger }) {
           return res === "OK";
         } catch (e) {
           disableRedis(e);
+          // Fall through to the fail-closed guard below rather than to memory.
         }
+      }
+
+      if (redisConfigured) {
+        const err = new Error(
+          "Reservation lock unavailable: Redis is configured but unreachable. " +
+          "Refusing to fall back to a process-local lock (would allow double-assignment across instances)."
+        );
+        err.status = 503;
+        err.code = "LOCK_UNAVAILABLE";
+        throw err;
       }
 
       if (memoryGet(key) !== null) return false;
@@ -308,14 +398,24 @@ async function initKv({ logger }) {
     // Release a reservation taken via reserveRobot. Plain delete — callers
     // only release keys they successfully reserved themselves, so there's no
     // "owned by someone else" case to guard against here.
+    //
+    // Deliberately lenient (no fail-closed guard): release runs in a `finally`
+    // block, so throwing here would mask whatever error was already unwinding.
+    // A release that doesn't land is covered by the reservation's TTL.
     async releaseReservation(key) {
       await kv.del(key);
     },
 
     // Best-effort health signal for monitoring endpoints.
+    //   redis        — a live connection is currently usable
+    //   configured   — the operator asked for Redis at all
+    //   reconnecting — configured, currently down, and actively being retried
+    //                  (i.e. degraded but not permanently latched)
     health() {
       return {
         redis: Boolean(redisAvailable && redis),
+        configured: redisConfigured,
+        reconnecting: Boolean(redisConfigured && !redisAvailable),
       };
     },
   };
@@ -325,6 +425,11 @@ async function initKv({ logger }) {
   return {
     kv,
     async close() {
+      closed = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       if (redis) {
         try {
           await redis.quit();

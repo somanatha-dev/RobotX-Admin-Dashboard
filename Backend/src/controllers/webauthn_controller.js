@@ -14,9 +14,9 @@ const CHALLENGE_TTL_SEC = 300;
 
 // WebAuthn ceremonies run in the browser at the frontend's origin, so the RP
 // ID / expected origin must reflect that origin, not the backend's own host.
-// Reuses the same allowlist `authUser`'s CORS check already trusts, but
-// additionally rejects a missing Origin header outright (unlike CORS's
-// no-Origin bypass) since these are sensitive step-up endpoints.
+// Reuses the same allowlist `authUser`'s CORS check already trusts. A missing
+// Origin header is rejected outright here (same as `isOriginAllowed` itself
+// now does) since these are sensitive step-up endpoints.
 function resolveRpIdAndOrigin(req) {
   const origin = req.headers.origin;
   if (!origin || !isOriginAllowed(origin)) return null;
