@@ -32,13 +32,41 @@ async function markRobotOffline(prisma, robotId) {
   });
 }
 
+// Brute-force lockout thresholds (F32): after this many failed pairing-code
+// attempts for a robotId (tracked across reconnects/sockets, since the
+// counter key is keyed by robotId not socket.id), reject all further pairing
+// attempts for that robotId until the lockout TTL elapses or an operator
+// clears it via the admin unlock endpoint.
+const PAIRING_LOCKOUT_THRESHOLD = 5;
+const PAIRING_LOCKOUT_TTL_SEC = 3600;
+
 function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
   const log = logger || console;
+
+  async function isPairingLocked(robotId) {
+    try {
+      return Boolean(await kv.get(`pairingLocked:${robotId}`));
+    } catch {
+      return false;
+    }
+  }
+
+  async function lockPairing(robotId) {
+    try {
+      await kv.set(`pairingLocked:${robotId}`, "1", { ex: PAIRING_LOCKOUT_TTL_SEC });
+    } catch {
+      // ignore
+    }
+  }
 
   async function recordPairingAttempt(robotId) {
     try {
       // kv.incr is atomic (Redis INCR) — safe under concurrent AUTH attempts.
-      return await kv.incr(`pairingAttempts:${robotId}`, { ex: 300 });
+      const attempts = await kv.incr(`pairingAttempts:${robotId}`, { ex: 300 });
+      if (attempts >= PAIRING_LOCKOUT_THRESHOLD) {
+        await lockPairing(robotId);
+      }
+      return attempts;
     } catch {
       return 0;
     }
@@ -90,11 +118,21 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
         // Refresh TTL on successful reconnect
         await kv.set(`session:${robotId}`, nextToken, { ex: 86400 });
       } else {
+        // Brute-force lockout (F32): reject immediately, before comparing codes,
+        // regardless of which socket is attempting.
+        if (await isPairingLocked(robotId)) {
+          log.warn("Pairing rejected — robot locked out after repeated failed attempts", {
+            robotId,
+            socketId: socket.id,
+          });
+          return socket.disconnect(true);
+        }
+
         // Fallback: pairing check
         if (!storedCode || !pairingCode || storedCode !== pairingCode) {
           const attempts = await recordPairingAttempt(robotId);
-          if (attempts >= 5) {
-            log.warn("Pairing brute-force limit hit", { robotId, socketId: socket.id, attempts });
+          if (attempts >= PAIRING_LOCKOUT_THRESHOLD) {
+            log.warn("Pairing brute-force limit hit — robot locked out", { robotId, socketId: socket.id, attempts });
           }
           return socket.disconnect(true);
         }

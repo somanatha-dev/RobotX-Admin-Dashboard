@@ -126,6 +126,14 @@ async function getRoutesWithDistance({ from, pickup, drop } = {}) {
   };
 }
 
+// F4: bounded retry against the next-best candidate when the top pick is
+// concurrently claimed by another in-flight assignment, plus the short TTL
+// on the Redis reservation itself — both back-stops against a reservation
+// ever being held forever (deadlock/orphan avoidance).
+const RESERVATION_TTL_SEC = 30;
+const MAX_RESERVATION_RETRIES = 2;
+const reservationKey = (robotId) => `robotReserve:${robotId}`;
+
 /**
  * Background worker — runs DTARO robot selection, route computation, and DB
  * finalisation after the PENDING task record has already been returned to the client.
@@ -133,15 +141,90 @@ async function getRoutesWithDistance({ from, pickup, drop } = {}) {
 async function _processAssignment(prisma, taskId, payload, { kv, io } = {}) {
   const { robotCodeIn, pickupLat, pickupLon, dropLat, dropLon, pickup, drop } = payload;
 
-  let robotCode = robotCodeIn;
+  let robotCode = null;
   let start = null;
+  let reservedRobotCode = null;
+  let allocationCost = null;
+  let allocationComponents = null;
+  let allocationLatencyMs = null;
 
-  if (!robotCode) {
-    const best = await selectNearestRobot({ prisma, kv, pickup: { lat: pickupLat, lon: pickupLon } });
-    robotCode = best.robotId;
-    start = best.start;
+  try {
+    if (robotCodeIn) {
+      // Manual assignment — reserve the explicitly requested robot. There's
+      // no "next candidate" to fall back to here, so a lost reservation race
+      // just fails the assignment (the caller asked for this exact robot).
+      if (kv) {
+        const ok = await kv.reserveRobot(reservationKey(robotCodeIn), taskId, RESERVATION_TTL_SEC);
+        if (!ok) {
+          const err = new Error(`Robot ${robotCodeIn} is currently being assigned to another task`);
+          err.status = 409;
+          throw err;
+        }
+        reservedRobotCode = robotCodeIn;
+      }
+      robotCode = robotCodeIn;
+    } else {
+      // DTARO auto-selection — if the winning candidate was just claimed by a
+      // concurrent assignment, retry selection excluding it and fall through
+      // to the next-best candidate instead of failing the task outright.
+      const excludeRobotIds = [];
+      const selectionStartedAt = Date.now();
+      for (let attempt = 0; attempt <= MAX_RESERVATION_RETRIES; attempt++) {
+        const best = await selectNearestRobot({
+          prisma, kv,
+          pickup: { lat: pickupLat, lon: pickupLon },
+          excludeRobotIds,
+        });
+
+        if (!kv) {
+          robotCode = best.robotId;
+          start = best.start;
+          allocationCost = best.cost ?? null;
+          allocationComponents = best.costComponents ?? null;
+          allocationLatencyMs = Date.now() - selectionStartedAt;
+          break;
+        }
+
+        const ok = await kv.reserveRobot(reservationKey(best.robotId), taskId, RESERVATION_TTL_SEC);
+        if (ok) {
+          robotCode = best.robotId;
+          start = best.start;
+          reservedRobotCode = best.robotId;
+          allocationCost = best.cost ?? null;
+          allocationComponents = best.costComponents ?? null;
+          allocationLatencyMs = Date.now() - selectionStartedAt;
+          break;
+        }
+
+        logger.warn("Robot reservation lost to a concurrent assignment — retrying next candidate", {
+          taskId, robotId: best.robotId, attempt,
+        });
+        excludeRobotIds.push(best.robotId);
+      }
+
+      if (!robotCode) {
+        const err = new Error("No robot could be reserved for assignment (all candidates claimed concurrently)");
+        err.status = 409;
+        throw err;
+      }
+    }
+
+    return await _finalizeAssignment(
+      prisma, taskId, robotCode, start,
+      { pickupLat, pickupLon, dropLat, dropLon },
+      { kv, io, cost: allocationCost, costComponents: allocationComponents, latencyMs: allocationLatencyMs }
+    );
+  } finally {
+    // Release on every path — success or failure — so a reservation never
+    // outlives the request that took it (the TTL is only the last-resort
+    // backstop, e.g. a process crash between reserve and release).
+    if (reservedRobotCode && kv) {
+      await kv.releaseReservation(reservationKey(reservedRobotCode));
+    }
   }
+}
 
+async function _finalizeAssignment(prisma, taskId, robotCode, start, { pickupLat, pickupLon, dropLat, dropLon }, { kv, io, cost = null, costComponents = null, latencyMs = null } = {}) {
   const robotRow = await prisma.robot.findUnique({
     where: { robotId: robotCode },
     select: { id: true, status: true, currentTaskId: true, lat: true, lon: true, isOnline: true },
@@ -234,7 +317,7 @@ async function _processAssignment(prisma, taskId, payload, { kv, io } = {}) {
     } catch { /* non-critical */ }
 
     try {
-      await recordAllocation(kv, { robotId: robotCode, taskId, cost: null, latencyMs: null });
+      await recordAllocation(kv, { robotId: robotCode, taskId, cost, costComponents, latencyMs });
     } catch { /* non-critical */ }
   }
 

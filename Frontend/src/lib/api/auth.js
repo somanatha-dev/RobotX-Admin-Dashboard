@@ -31,3 +31,38 @@ export async function pinAuth(pin) {
     errorMessage: 'PIN authorization failed',
   });
 }
+
+// ── WebAuthn / passkey (server-verified) ────────────────────────────────────
+export async function webauthnStatus() {
+  return requestJson('/api/auth/webauthn/status', { errorMessage: 'Could not check passkey status' });
+}
+
+export async function webauthnRegisterOptions() {
+  return requestJson('/api/auth/webauthn/register-options', {
+    method: 'POST',
+    errorMessage: 'Could not start passkey registration',
+  });
+}
+
+export async function webauthnRegister(pin, response) {
+  return requestJson('/api/auth/webauthn/register', {
+    method: 'POST',
+    body: { pin, response },
+    errorMessage: 'Passkey registration failed',
+  });
+}
+
+export async function webauthnAuthOptions() {
+  return requestJson('/api/auth/webauthn/auth-options', {
+    method: 'POST',
+    errorMessage: 'Could not start passkey authentication',
+  });
+}
+
+export async function webauthnVerify(response) {
+  return requestJson('/api/auth/webauthn/verify', {
+    method: 'POST',
+    body: { response },
+    errorMessage: 'Passkey authentication failed',
+  });
+}

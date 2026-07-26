@@ -22,6 +22,7 @@ The working tree already contains an **uncommitted cleanup pass** (30 files, +60
 - ✅ `telemetry.handler.js`'s smart-snapshot call was fixed from `{ moveMeters: 10 }` to `{ moveDegreesThreshold: 10 / 111320 }` — the old key name didn't match `shouldStoreSnapshotSmart`'s actual parameter, so the move-distance throttle condition was silently a no-op before this fix (confirmed by reading `telemetry.service.js`'s signature).
 - ✅ `Backend/package.json`'s `main` field fixed from a nonexistent `index.js` to `server.js`.
 - ✅ ~10 files had genuinely dead exports removed (`selectMinCostRobot`, `filterEligibleRobots`, `getObstaclesByZone`, `removeObstacle`, `getAllRobotStates`, `updateETA`, `disconnectExisting`, `dispatchStop`/`dispatchReturnToBase`/`broadcastToRoom`, `astar`/`planRoute` exports, `loadZones`/`updateSocketZoneRoom` exports, `kv.exists`, `lerp`). **Verified**: a repo-wide grep confirms no remaining caller references any of them — this cleanup did not break anything discoverable.
+- ✅ `Backend/prisma/seed-pin.js` (flaw #27 / F34, the hardcoded `931100` admin PIN) no longer contains a literal PIN — it now requires a `SEED_ADMIN_PIN` env var (4-10 digits, no fallback) and exits non-zero if unset/malformed.
 
 **Confirmed still open (do not assume fixed):**
 - ❌ `cors.js:isOriginAllowed()` still returns `true` unconditionally when no `Origin` header is present (flaw #2) — only the unused `getAllowedOrigins` export was trimmed, the bypass logic itself is untouched.
@@ -325,6 +326,7 @@ Schema (`Backend/prisma/schema.prisma`) was read directly for this pass — inde
 ## 6. Socket.IO Review
 
 #### F21. Most robot-facing security gaps are now narrower than `system.md` states, but two remain
+- **Status:** ✅ Fixed (dashboard-room half only) — `socket.server.js` now verifies the same admin-session JWT `authUser` checks (extracted into `middlewares/auth_middleware.js:verifyUserToken`, shared by both) before a browser-like connection is allowed to join the `dashboard` room; the token is read from the `token` cookie (`socket.handshake.headers.cookie`) or an `auth.token` handshake field, falling back through both like `authUser` does for cookie vs. bearer. A missing/invalid token gets an `UNAUTHORIZED` emit followed by `socket.disconnect(true)` — the socket never joins `dashboard` and is dropped. Robot sockets are untouched (they're never `isDashboard`, and still authenticate solely via their own `AUTH` event). `Frontend/src/lib/socket.js` now passes `withCredentials: true` so the existing HttpOnly `token` cookie (already sent on REST calls via `credentials: 'include'`) is also sent on the Socket.IO handshake. Verified live: an `Origin`+`Mozilla` UA socket with no cookie gets `UNAUTHORIZED` + disconnected; the same socket with a valid signed JWT cookie joins `dashboard` normally; `VirtualRobot` socket connections (no Origin header, non-browser UA) authenticate via `AUTH` exactly as before. **The companion CORS no-Origin bypass in `cors.js:isOriginAllowed` (line 28) is untouched** — this fix closes the "read every fleet-wide broadcast with zero auth" gap for Socket.IO specifically, per the F21 recommendation, but the broader CORS bypass finding remains open.
 - **Severity:** Critical (residual)
 - **Location:** `Backend/src/config/cors.js:isOriginAllowed`
 - **Current implementation:** Confirmed unchanged — `if (!origin) return true;` still executes before any allowlist check, meaning any non-browser HTTP/WebSocket client (curl, a script, a modified frontend build) bypasses the origin check entirely, for both the REST API *and* the Socket.IO handshake (`server.js` wires the same `isOriginAllowed` into `Server({cors: {origin: ...}})`).
@@ -392,6 +394,7 @@ Schema (`Backend/prisma/schema.prisma`) was read directly for this pass — inde
 - **Priority:** Tier 1 (cheap, closes a real inconsistency)
 
 #### F26. Unauthenticated legacy telemetry-bind path still exists (script relocated, vulnerability not fixed)
+- **Status:** ✅ Fixed — `telemetry.handler.js` now requires `socket.data.isAuthed` (set only by `robot.handler.js`'s AUTH success) before processing any `TELEMETRY`/`telemetry` frame; unauthenticated frames get `AUTH_REQUIRED` and are dropped. The first-telemetry bind path and the session/pairing-conditional checks it replaced were removed. `Backend/scripts/manual_telemetry_test.js` is now expected to fail (AUTH_REQUIRED loop), which is the intended outcome.
 - **Severity:** Critical
 - **Location:** `Backend/src/sockets/handlers/telemetry.handler.js`
 - **Current implementation:** A socket binds to whatever `robotId` its first valid `TELEMETRY`/`telemetry` payload names, with no `AUTH` required, as long as `session:{robotId}` doesn't yet exist in Redis (i.e., the robot has never been paired). `Backend/scripts/manual_telemetry_test.js` (renamed from `robot.js`, see §0) still demonstrates this working today, unchanged.
@@ -444,7 +447,7 @@ This section supersedes `system.md` §14's security list with current-state veri
 Cross-referenced above; listed here for completeness of the security section. **Severity: Critical. Priority: Tier 0.**
 
 #### F30. Unauthenticated telemetry injection — see F26
-Cross-referenced above. **Severity: Critical. Priority: Tier 0.**
+Cross-referenced above. **Severity: Critical. Priority: Tier 0. Status: ✅ Fixed (see F26).**
 
 #### F31. Passkey step-up is not cryptographically verified by anything
 - **Severity:** High
@@ -484,15 +487,16 @@ Cross-referenced above. **Severity: Critical. Priority: Tier 0.**
 - **Priority:** Tier 1
 
 #### F34. Hardcoded default admin PIN committed to the repository
+- **Status:** ✅ Fixed — `Backend/prisma/seed-pin.js` no longer contains the literal PIN. It now reads `process.env.SEED_ADMIN_PIN`, requires it to be present and match `/^\d{4,10}$/`, and `process.exit(1)`s with a clear message otherwise — there is no hardcoded fallback. The PIN-verification path (`auth_controller.js:verifyUserPin`) was checked and already fails safely (`403 "PIN not configured"`) when a user has no `AdminPinAuth` row, so no change was needed there. Documentation updated: `system.md` §2.1 (env var reference), §14 flaw #27, and §17 roadmap item 5.
 - **Severity:** High
 - **Location:** `Backend/prisma/seed-pin.js`
-- **Current implementation:** Confirmed unchanged — sets the literal PIN `931100` (bcrypt-hashed) on every `AdminPinAuth` row.
+- **Current implementation (as found):** Set the literal PIN `931100` (bcrypt-hashed) on every `AdminPinAuth` row.
 - **Attack scenario:** Anyone with read access to the repository (current or historical, including anyone who ever cloned it before a rotation) knows the PIN gating every `AuthChallengeModal`-protected destructive action, for any deployment where this script was ever run and the PIN never rotated per-account afterward.
 - **Impact:** Combined with F31 (Passkey isn't real), the PIN path is the *only* real step-up control — a known default PIN defeats it entirely.
 - **Recommended solution:** Remove the hardcoded literal; require a `SEED_ADMIN_PIN` env var with no fallback, or generate a random PIN at seed time and print it once (never store it in a script/file).
-- **Implementation steps:** 1) Rewrite `seed-pin.js` to read from `process.env.SEED_ADMIN_PIN` and throw if unset (or `crypto.randomInt` a fresh PIN and log it once, forcing the operator to note and rotate it). 2) Rotate the PIN on any environment where this script has already run with the old literal.
-- **Files affected:** `seed-pin.js`.
-- **Breaking changes:** No (script behavior change only).
+- **Implementation steps (completed):** 1) Rewrote `seed-pin.js` to read from `process.env.SEED_ADMIN_PIN` and exit non-zero if unset/empty/malformed. 2) **Migration instructions for existing deployments:** if `seed-pin.js` was ever run against a real environment with the old literal PIN (`931100`), that PIN must be treated as compromised — rotate it for every admin (via the profile PIN-change flow, or by re-running `SEED_ADMIN_PIN=<new-pin> node prisma/seed-pin.js` with a newly chosen, non-default value) before trusting PIN step-up in that environment again. No database migration/schema change is required — `AdminPinAuth.pinHash` is unchanged in shape, only how the seed script obtains the plaintext PIN before hashing it changed.
+- **Files affected:** `seed-pin.js`, `system.md` (documentation).
+- **Breaking changes:** No (script behavior change only) — operationally, `node prisma/seed-pin.js` without `SEED_ADMIN_PIN` set will now fail instead of silently seeding a known PIN; this is intentional (fail-safe).
 - **Estimated effort:** S (<1 hour).
 - **Priority:** Tier 0
 
@@ -676,9 +680,9 @@ Cross-referenced from F16 — same fix, listed here because it's as much an obse
 
 #### F50. Secrets management is env-var-only, consistent with a single-instance monolith — one gap
 - **Severity:** Low
-- **Location:** F34 (hardcoded seed PIN) is the one real secret-in-repo issue; otherwise `JWT_SECRET`/`MAPBOX_TOKEN`/`DATABASE_URL`/`GOOGLE_CLIENT_ID` are all correctly sourced from env vars with sensible fail-closed behavior (`JWT_SECRET` unset → 500, not a silent bypass).
-- **Recommended solution:** No architectural change needed (a secrets manager/vault would be disproportionate for this phase) — just close F34 and add the `.env.example` from F43 so required secrets are discoverable without reading source.
-- **Priority:** Tier 0 (via F34) / Tier 3.5 (via F43)
+- **Location:** F34 (hardcoded seed PIN) was the one real secret-in-repo issue — now fixed (see F34); otherwise `JWT_SECRET`/`MAPBOX_TOKEN`/`DATABASE_URL`/`GOOGLE_CLIENT_ID` are all correctly sourced from env vars with sensible fail-closed behavior (`JWT_SECRET` unset → 500, not a silent bypass).
+- **Recommended solution:** No architectural change needed (a secrets manager/vault would be disproportionate for this phase) — F34 is closed; add the `.env.example` from F43 so required secrets (including `SEED_ADMIN_PIN`) are discoverable without reading source.
+- **Priority:** ~~Tier 0 (via F34)~~ done / Tier 3.5 (via F43)
 
 ---
 
@@ -690,7 +694,7 @@ Reconciles this review's findings with `system.md` §17's existing tiers, update
 1. F26 — require AUTH before accepting any TELEMETRY frame (closes the still-live unauthenticated-telemetry-injection path).
 2. F21 — gate the Socket.IO `dashboard` room behind the same JWT used for REST (the CORS no-Origin bypass, F29/F2 in `system.md` terms, now matters most here since REST is largely gated).
 3. F31 — implement real server-side WebAuthn, or remove the Passkey option.
-4. F34 — remove the hardcoded seed PIN; rotate it on any environment where it was ever applied.
+4. ~~F34 — remove the hardcoded seed PIN~~ — **done**; remaining manual step is rotating the PIN on any environment where the old literal (`931100`) was ever applied.
 5. ~~Apply `authUser` to REST routes~~ — **done** (§0).
 
 **Tier 1 — allocation correctness + cheap high-value fixes:**

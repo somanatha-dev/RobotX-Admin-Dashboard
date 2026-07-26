@@ -233,6 +233,28 @@ async function initKv({ logger }) {
       }
     },
 
+    // Batch get using Redis MGET (a single pipelined round-trip instead of
+    // N individual GETs). Returns values in the same order as `keys`, with
+    // `null` for any key that is missing/expired — matching Redis MGET
+    // semantics so callers can zip `keys` with the result by index in both
+    // Redis and in-memory-fallback mode.
+    async mget(keys) {
+      if (!Array.isArray(keys) || keys.length === 0) return [];
+
+      if (redisAvailable && redis) {
+        try {
+          const values = await redis.mget(keys.map((k) => String(k)));
+          return Array.isArray(values) ? values : keys.map(() => null);
+        } catch (e) {
+          disableRedis(e);
+        }
+      }
+
+      // Fallback: sequential in-memory reads (no pipelining available, but
+      // preserves the same order/null semantics as Redis MGET).
+      return keys.map((key) => memoryGet(String(key)));
+    },
+
     /**
      * Atomically increment a counter and set/refresh its TTL.
      * Uses Redis INCR + EXPIRE for true atomicity; falls back to safe GET+SET.
@@ -259,6 +281,35 @@ async function initKv({ logger }) {
       const next = (raw !== null ? Number.parseInt(String(raw), 10) : 0) + 1;
       memorySet(key, String(next), { ex });
       return Number.isFinite(next) ? next : 1;
+    },
+
+    // Short-lived allocation reservation (F4): atomic "claim if free" so two
+    // concurrent task assignments can't both pick the same robot. Backed by
+    // Redis SET NX EX; in-memory fallback checks for a live (non-expired)
+    // entry first since the fallback Map is only ever touched by one
+    // single-threaded Node process.
+    async reserveRobot(key, value, ttlSec) {
+      const ex = typeof ttlSec === "number" && Number.isFinite(ttlSec) && ttlSec > 0 ? Math.floor(ttlSec) : 30;
+
+      if (redisAvailable && redis) {
+        try {
+          const res = await redis.set(key, value, "EX", ex, "NX");
+          return res === "OK";
+        } catch (e) {
+          disableRedis(e);
+        }
+      }
+
+      if (memoryGet(key) !== null) return false;
+      memorySet(key, value, { ex });
+      return true;
+    },
+
+    // Release a reservation taken via reserveRobot. Plain delete — callers
+    // only release keys they successfully reserved themselves, so there's no
+    // "owned by someone else" case to guard against here.
+    async releaseReservation(key) {
+      await kv.del(key);
     },
 
     // Best-effort health signal for monitoring endpoints.

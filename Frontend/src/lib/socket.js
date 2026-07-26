@@ -7,7 +7,10 @@ const GLOBAL_KEY = import.meta.env.VITE_SOCKET_GLOBAL_KEY || "__robotx_socket__"
 // Connected → Disconnected → Connected spam during development.
 const existing = globalThis[GLOBAL_KEY];
 
-export const socket = existing || io(SOCKET_URL);
+// withCredentials so the HttpOnly `token` auth cookie (already sent with
+// REST calls via credentials: 'include') is also sent on the socket
+// handshake — the backend now requires it to join the dashboard room.
+export const socket = existing || io(SOCKET_URL, { withCredentials: true });
 
 if (!existing) {
 	globalThis[GLOBAL_KEY] = socket;

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { startAuthentication, browserSupportsWebAuthn } from '@simplewebauthn/browser';
 import { Fingerprint, Lock, RefreshCw, ShieldCheck } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge.jsx';
@@ -6,34 +7,12 @@ import { Button } from '@/components/ui/button.jsx';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog.jsx';
 import { Input } from '@/components/ui/input.jsx';
 
-import { pinAuth } from '@/lib/api/auth.js';
-
-function base64UrlDecode(base64url) {
-  const base64 = base64url.replaceAll('-', '+').replaceAll('_', '/');
-  const padded = base64 + '==='.slice((base64.length + 3) % 4);
-  const binary = atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes.buffer;
-}
-
-function randomBytes(len) {
-  const bytes = new Uint8Array(len);
-  if (!globalThis.crypto?.getRandomValues) throw new Error('Secure random unavailable in this environment.');
-  globalThis.crypto.getRandomValues(bytes);
-  return bytes;
-}
-
-function getStoredCredentialId() {
-  try { return localStorage.getItem('robotx_passkey_cred'); } catch { return null; }
-}
+import { pinAuth, webauthnStatus, webauthnAuthOptions, webauthnVerify } from '@/lib/api/auth.js';
 
 function webAuthnErrorMessage(e) {
   if (!e) return 'Passkey authentication failed.';
   if (e.name === 'NotAllowedError') return 'Fingerprint authentication was cancelled or timed out. Try again.';
-  if (e.name === 'InvalidStateError') return 'No matching passkey found on this device. Re-register in Profile → Security.';
   if (e.name === 'SecurityError') return 'Security error — passkeys require HTTPS or localhost.';
-  if (e.name === 'AbortError') return 'Authentication aborted. Try again.';
   return e.message || 'Passkey authentication failed.';
 }
 
@@ -44,14 +23,19 @@ export default function AuthChallengeModal({ request, onClose }) {
   const [error, setError] = useState('');
   const inputRef = useRef(null);
 
-  // Read registration status once on mount — no need to re-check during the modal's lifetime.
-  const [hasRegisteredPasskey] = useState(() => !!getStoredCredentialId());
+  // Server-verified registration status (not trusted from localStorage — see
+  // Backend/src/controllers/webauthn_controller.js:status).
+  const [hasRegisteredPasskey, setHasRegisteredPasskey] = useState(false);
 
-  const supportsPasskey =
-    typeof window !== 'undefined' &&
-    typeof window.PublicKeyCredential !== 'undefined' &&
-    typeof navigator !== 'undefined' &&
-    !!navigator.credentials;
+  const supportsPasskey = typeof window !== 'undefined' && browserSupportsWebAuthn();
+
+  useEffect(() => {
+    let cancelled = false;
+    webauthnStatus()
+      .then((data) => { if (!cancelled) setHasRegisteredPasskey(!!data?.registered); })
+      .catch(() => { /* leave as unregistered */ });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     setError('');
@@ -64,21 +48,13 @@ export default function AuthChallengeModal({ request, onClose }) {
     try {
       if (!supportsPasskey) throw new Error('Passkeys are not supported in this browser. Switch to the PIN tab.');
       if (!window.isSecureContext) throw new Error('Passkeys require a secure context (HTTPS or localhost).');
+      if (!hasRegisteredPasskey) throw new Error('No fingerprint registered yet. Go to Profile → Security to register one first.');
 
-      const credId = getStoredCredentialId();
-      if (!credId) throw new Error('No fingerprint registered yet. Go to Profile → Security to register one first.');
-
-      const challenge = randomBytes(32);
-      const assertion = await navigator.credentials.get({
-        publicKey: {
-          challenge,
-          timeout: 60000,
-          userVerification: 'required',
-          allowCredentials: [{ type: 'public-key', id: new Uint8Array(base64UrlDecode(credId)) }],
-        },
-      });
-
-      if (!assertion) throw new Error('Passkey authentication was cancelled.');
+      const { options } = await webauthnAuthOptions();
+      const assertion = await startAuthentication(options);
+      // Signature is verified server-side against the stored public key —
+      // this call only succeeds if the backend's cryptographic check passes.
+      await webauthnVerify(assertion);
 
       await Promise.resolve(request.action());
       onClose();

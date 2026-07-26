@@ -10,6 +10,33 @@ function isUuid(value) {
   );
 }
 
+// Verifies a raw JWT and resolves it to the current user, or null if the
+// token is missing/invalid/expired/unknown. Shared by the HTTP `authUser`
+// middleware and the Socket.IO dashboard connection gate so both surfaces
+// enforce identical rules.
+async function verifyUserToken(token) {
+  if (!token || !process.env.JWT_SECRET) return null;
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (!decoded?.id || !isUuid(decoded.id)) return null;
+
+    const prisma = getPrisma();
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.id },
+      select: {
+        id: true,
+        email: true,
+        role: true
+      }
+    });
+
+    return user || null;
+  } catch {
+    return null;
+  }
+}
+
 async function authUser(req, res, next) {
   const cookieToken = req.cookies?.token;
   const header = req.headers.authorization;
@@ -27,38 +54,18 @@ async function authUser(req, res, next) {
     return res.status(500).json({ message: "Server misconfigured" });
   }
 
-  try {
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    if (!decoded?.id || !isUuid(decoded.id)) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
-
-    // Fetch user from DB
-    const prisma = getPrisma();
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.id },
-      select: {
-        id: true,
-        email: true,
-        role: true
-      }
-    });
-
-    if (!user) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
-
-    // Attach minimal data
-    req.user = user;
-
-    next();
-  } catch (err) {
+  const user = await verifyUserToken(token);
+  if (!user) {
     return res.status(401).json({ message: "Unauthorized" });
   }
+
+  // Attach minimal data
+  req.user = user;
+
+  next();
 }
 
 module.exports = {
-  authUser
+  authUser,
+  verifyUserToken
 };

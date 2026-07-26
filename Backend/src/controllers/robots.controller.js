@@ -4,6 +4,7 @@ const robotService = require("../services/robot.service");
 const { toStringOrNull } = require("../utils/parse");
 const crypto = require("crypto");
 const { getRobotSocket } = require("../sockets/robotSockets");
+const { getRobotState, updateHealthStatus } = require("../services/robotRegistry.service");
 const { z } = require("zod");
 
 async function writeRobotLiveState(kv, robot, { exSeconds = 15 } = {}) {
@@ -110,29 +111,34 @@ const listRobots = asyncHandler(async (req, res) => {
     return;
   }
 
-  const merged = await Promise.all(
-    robots.map(async (r) => {
-      let live = null;
-      try {
-        const raw = await kv.get(`robot:${r.robotId}`);
-        if (raw) live = JSON.parse(raw);
-      } catch {
-        live = null;
-      }
+  let rawStates = [];
+  try {
+    rawStates = await kv.mget(robots.map((r) => `robot:${r.robotId}`));
+  } catch {
+    rawStates = robots.map(() => null);
+  }
 
-      if (!live || typeof live !== "object") return r;
+  const merged = robots.map((r, i) => {
+    let live = null;
+    try {
+      const raw = rawStates[i];
+      if (raw) live = JSON.parse(raw);
+    } catch {
+      live = null;
+    }
 
-      return {
-        ...r,
-        ...(typeof live.lat === "number" ? { lat: live.lat } : {}),
-        ...(typeof live.lon === "number" ? { lon: live.lon } : {}),
-        ...(typeof live.speed === "number" ? { speed: live.speed } : {}),
-        ...(typeof live.battery === "number" ? { battery: live.battery } : {}),
-        ...(typeof live.status === "string" ? { status: live.status } : {}),
-        live,
-      };
-    })
-  );
+    if (!live || typeof live !== "object") return r;
+
+    return {
+      ...r,
+      ...(typeof live.lat === "number" ? { lat: live.lat } : {}),
+      ...(typeof live.lon === "number" ? { lon: live.lon } : {}),
+      ...(typeof live.speed === "number" ? { speed: live.speed } : {}),
+      ...(typeof live.battery === "number" ? { battery: live.battery } : {}),
+      ...(typeof live.status === "string" ? { status: live.status } : {}),
+      live,
+    };
+  });
 
   res.json({ ok: true, robots: merged });
 });
@@ -153,33 +159,38 @@ const getRobotsState = asyncHandler(async (req, res) => {
     return;
   }
 
-  const merged = await Promise.all(
-    robots.map(async (r) => {
-      let live = null;
-      try {
-        const raw = await kv.get(`robot:${r.robotId}`);
-        if (raw) live = JSON.parse(raw);
-      } catch {
-        live = null;
-      }
+  let rawStates = [];
+  try {
+    rawStates = await kv.mget(robots.map((r) => `robot:${r.robotId}`));
+  } catch {
+    rawStates = robots.map(() => null);
+  }
 
-      if (!live || typeof live !== "object") return r;
+  const merged = robots.map((r, i) => {
+    let live = null;
+    try {
+      const raw = rawStates[i];
+      if (raw) live = JSON.parse(raw);
+    } catch {
+      live = null;
+    }
 
-      // Overlay common live fields when available.
-      const next = {
-        ...r,
-        ...(typeof live.lat === "number" ? { lat: live.lat } : {}),
-        ...(typeof live.lon === "number" ? { lon: live.lon } : {}),
-        ...(typeof live.speed === "number" ? { speed: live.speed } : {}),
-        ...(typeof live.battery === "number" ? { battery: live.battery } : {}),
-        ...(typeof live.status === "string" ? { status: live.status } : {}),
-        // keep lastSeenAt as DB value; live.lastSeenAt is informational
-        live,
-      };
+    if (!live || typeof live !== "object") return r;
 
-      return next;
-    })
-  );
+    // Overlay common live fields when available.
+    const next = {
+      ...r,
+      ...(typeof live.lat === "number" ? { lat: live.lat } : {}),
+      ...(typeof live.lon === "number" ? { lon: live.lon } : {}),
+      ...(typeof live.speed === "number" ? { speed: live.speed } : {}),
+      ...(typeof live.battery === "number" ? { battery: live.battery } : {}),
+      ...(typeof live.status === "string" ? { status: live.status } : {}),
+      // keep lastSeenAt as DB value; live.lastSeenAt is informational
+      live,
+    };
+
+    return next;
+  });
 
   res.json({ ok: true, robots: merged });
 });
@@ -309,6 +320,99 @@ const commissionRobotWithPairing = asyncHandler(async (req, res) => {
   });
 
   res.json({ ok: true, robot, pairingCode: code, expiresIn: 300 });
+});
+
+// POST /api/robots/:robotId/pairing/unlock
+// Admin override for the F32 brute-force lockout: clears both the failed-attempt
+// counter and the lockout flag so a robot can be re-paired before the 1h TTL elapses.
+const unlockPairing = asyncHandler(async (req, res) => {
+  const kv = req.app?.locals?.kv;
+  const robotId = toStringOrNull(req.params?.robotId);
+  if (!robotId) {
+    const err = new Error("robotId is required");
+    err.status = 400;
+    throw err;
+  }
+  if (!kv) {
+    const err = new Error("KV store unavailable");
+    err.status = 503;
+    throw err;
+  }
+
+  await Promise.all([kv.del(`pairingLocked:${robotId}`), kv.del(`pairingAttempts:${robotId}`)]);
+
+  res.json({ ok: true, robotId });
+});
+
+// POST /api/robots/:robotId/clear-fault
+// F33: deliberate fault-recovery workflow. ROBOT_FAULT (dtaro.handler.js) sets
+// Robot.status = ERROR and registry.healthStatus = FAULT with no path back —
+// this is the only way either is cleared. Only allowed out of an actual fault
+// state (status ERROR or live healthStatus FAULT); anything else is rejected
+// as an invalid transition rather than silently no-op'd.
+const clearRobotFault = asyncHandler(async (req, res) => {
+  const prisma = getPrisma();
+  const kv = req.app?.locals?.kv;
+  const io = req.app?.locals?.io;
+  const robotCode = toStringOrNull(req.params?.robotId);
+
+  if (!robotCode) {
+    const err = new Error("robotId is required");
+    err.status = 400;
+    throw err;
+  }
+
+  const robot = await prisma.robot.findUnique({
+    where: { robotId: robotCode },
+    select: { id: true, status: true, currentTaskId: true },
+  });
+  if (!robot) {
+    const err = new Error("Unknown robotId");
+    err.status = 404;
+    throw err;
+  }
+
+  const live = await getRobotState(kv, robotCode);
+  const dbStatus = String(robot.status || "");
+  const inFault = dbStatus === "ERROR" || live?.healthStatus === "FAULT";
+
+  if (!inFault) {
+    const err = new Error(`Robot is not in a fault state (status=${dbStatus || "unknown"})`);
+    err.status = 409;
+    throw err;
+  }
+
+  // Recover to ACTIVE if the robot still has a task in flight, otherwise IDLE —
+  // avoids silently orphaning an in-progress task on recovery.
+  const nextStatus = robot.currentTaskId ? "ACTIVE" : "IDLE";
+
+  await prisma.robot.update({
+    where: { robotId: robotCode },
+    data: { status: nextStatus },
+  });
+
+  await updateHealthStatus(kv, robotCode, "OK");
+
+  try {
+    await prisma.event.create({
+      data: {
+        robotId: robot.id,
+        type: "INFO",
+        message: `Fault cleared via recovery workflow (status ${dbStatus} -> ${nextStatus})`,
+      },
+    });
+  } catch {
+    // ignore event log failure
+  }
+
+  io?.to("dashboard")?.emit("ROBOT_UPDATED", {
+    robotId: robotCode,
+    status: nextStatus,
+    healthStatus: "OK",
+    timestamp: Date.now(),
+  });
+
+  res.json({ ok: true, robotId: robotCode, status: nextStatus, healthStatus: "OK" });
 });
 
 // DELETE /api/robots/:robotId
@@ -476,6 +580,8 @@ module.exports = {
   getRobotsState,
   getRobotHistory,
   commissionRobotWithPairing,
+  unlockPairing,
   sendRobotCommand,
+  clearRobotFault,
   deleteRobot,
 };

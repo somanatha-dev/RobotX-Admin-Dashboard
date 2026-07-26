@@ -1,4 +1,5 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { startRegistration, browserSupportsWebAuthn } from '@simplewebauthn/browser';
 import {
   CheckCircle2,
   Fingerprint,
@@ -21,38 +22,19 @@ import {
   SelectValue,
 } from '@/components/ui/select.jsx';
 import { useAppActions, useAppState } from '@/context/appContext.js';
-import { pinAuth } from '@/lib/api/auth.js';
+import { pinAuth, webauthnStatus, webauthnRegisterOptions, webauthnRegister } from '@/lib/api/auth.js';
 
 // ── WebAuthn helpers ───────────────────────────────────────────────────────────
-function base64UrlEncode(arrayBuffer) {
-  const bytes = new Uint8Array(arrayBuffer);
-  let binary = '';
-  bytes.forEach((b) => { binary += String.fromCharCode(b); });
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
-}
-
-function randomBytes(len) {
-  const bytes = new Uint8Array(len);
-  if (!globalThis.crypto?.getRandomValues) throw new Error('Secure random unavailable.');
-  globalThis.crypto.getRandomValues(bytes);
-  return bytes;
-}
-
-function getStoredCredentialId() {
-  try { return localStorage.getItem('robotx_passkey_cred'); } catch { return null; }
-}
-
-function storeCredentialId(rawIdBuffer) {
-  try { localStorage.setItem('robotx_passkey_cred', base64UrlEncode(rawIdBuffer)); } catch { /* ignore */ }
-}
-
+// Registration/verification cryptography is handled entirely server-side
+// (see Backend/src/controllers/webauthn_controller.js) — this component only
+// drives the browser ceremony via @simplewebauthn/browser and relays the
+// signed result to the backend. Nothing about "is a passkey registered" is
+// trusted from localStorage; `fpRegistered` always reflects the server's
+// `GET /api/auth/webauthn/status` response.
 function webAuthnRegisterErrorMessage(e) {
   if (!e) return 'Registration failed.';
   if (e.name === 'NotAllowedError') return 'Fingerprint registration was cancelled or timed out. Try again.';
-  if (e.name === 'InvalidStateError') return 'This authenticator is already registered. Try re-registering.';
-  if (e.name === 'NotSupportedError') return 'Your device does not support platform biometrics.';
   if (e.name === 'SecurityError') return 'Security error — fingerprint registration requires HTTPS or localhost.';
-  if (e.name === 'AbortError') return 'Registration was aborted. Try again.';
   return e.message || 'Fingerprint registration failed.';
 }
 
@@ -75,17 +57,22 @@ function formatRole(role) {
 // ── FingerprintSection ────────────────────────────────────────────────────────
 // Step 1: verify PIN  →  Step 2: register fingerprint via WebAuthn
 function FingerprintSection() {
-  const supportsPasskey =
-    typeof window !== 'undefined' &&
-    typeof window.PublicKeyCredential !== 'undefined' &&
-    !!navigator?.credentials;
+  const supportsPasskey = typeof window !== 'undefined' && browserSupportsWebAuthn();
 
   // 'idle' | 'pin-entry' | 'verifying' | 'ready' | 'registering' | 'done'
   const [step, setStep] = useState('idle');
   const [fpPin, setFpPin] = useState('');
   const [fpError, setFpError] = useState('');
-  const [fpRegistered, setFpRegistered] = useState(() => !!getStoredCredentialId());
+  const [fpRegistered, setFpRegistered] = useState(false);
   const pinRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    webauthnStatus()
+      .then((data) => { if (!cancelled) setFpRegistered(!!data?.registered); })
+      .catch(() => { /* leave as unregistered; server is unreachable or not logged in */ });
+    return () => { cancelled = true; };
+  }, []);
 
   function startFlow() {
     setFpPin('');
@@ -128,36 +115,14 @@ function FingerprintSection() {
     setStep('registering');
     setFpError('');
     try {
-      const challenge = randomBytes(32);
-      const userId = randomBytes(16);
-      const rpId = window.location.hostname;
+      const { options } = await webauthnRegisterOptions();
+      const response = await startRegistration(options);
+      // The PIN was already verified once in step 1 to reach 'ready'; it's
+      // re-sent here so the backend can independently re-check it right
+      // before persisting the new credential (defense-in-depth — see
+      // webauthn_controller.js:register).
+      await webauthnRegister(fpPin, response);
 
-      const cred = await navigator.credentials.create({
-        publicKey: {
-          challenge,
-          rp: { name: 'RobotX Command Console', id: rpId },
-          user: {
-            id: userId,
-            name: 'commander@robotx.local',
-            displayName: 'Commander',
-          },
-          pubKeyCredParams: [
-            { type: 'public-key', alg: -7 },   // ES256
-            { type: 'public-key', alg: -257 },  // RS256
-          ],
-          timeout: 60000,
-          attestation: 'none',
-          authenticatorSelection: {
-            authenticatorAttachment: 'platform',
-            userVerification: 'required',
-            residentKey: 'preferred',
-          },
-        },
-      });
-
-      if (!cred) throw new Error('Registration was cancelled.');
-
-      storeCredentialId(cred.rawId);
       setFpRegistered(true);
       setStep('done');
     } catch (err) {

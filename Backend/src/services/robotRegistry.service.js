@@ -66,6 +66,41 @@ async function setRobotState(kv, robotId, update) {
 }
 
 /**
+ * Batch-get live state for many robots in one pipelined round-trip
+ * (via `kv.mget`), augmented with real-time socket connection status —
+ * same shape as `getRobotState`, just fetched once for the whole set
+ * instead of once per robot.
+ * @param {object} kv
+ * @param {string[]} robotIds
+ * @returns {Promise<Map<string, object|null>>}
+ */
+async function getManyRobotStates(kv, robotIds) {
+  const ids = Array.isArray(robotIds) ? robotIds.filter(Boolean) : [];
+  if (!kv || ids.length === 0) return new Map();
+  try {
+    const raws = await kv.mget(ids.map((id) => registryKey(id)));
+    const map = new Map();
+    for (let i = 0; i < ids.length; i++) {
+      const robotId = ids[i];
+      const state = safeJsonParse(raws[i]);
+      if (!state) {
+        map.set(robotId, null);
+        continue;
+      }
+      const socket = getRobotSocket(robotId);
+      map.set(robotId, {
+        ...state,
+        connected: !!socket,
+        socketId: socket?.id || state.socketId || null,
+      });
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+
+/**
  * Get all tracked robot IDs.
  * @param {object} kv
  * @returns {Promise<string[]>}
@@ -178,6 +213,7 @@ async function updateHealthStatus(kv, robotId, healthStatus) {
 
 module.exports = {
   getRobotState,
+  getManyRobotStates,
   setRobotState,
   getAllRobotIds,
   markOnline,

@@ -82,6 +82,7 @@ model User {
   googleId  String?  @unique
 
   pinAuth AdminPinAuth?
+  webauthnCredentials WebAuthnCredential[]
 
   createdAt DateTime @default(now())
 }
@@ -101,6 +102,37 @@ model AdminPinAuth {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
+}
+
+//////////////////////////////////////////////////////
+// 🔐 WEBAUTHN / PASSKEY CREDENTIALS (SERVER-VERIFIED)
+//////////////////////////////////////////////////////
+
+model WebAuthnCredential {
+  id           String   @id @default(uuid())
+
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Base64url authenticator credential ID — unique per authenticator.
+  credentialId String   @unique
+
+  // Base64url-encoded COSE public key returned at registration; used to
+  // verify every subsequent assertion signature. Never a secret by itself.
+  publicKey    String
+
+  // Signature counter reported by the authenticator; must be strictly
+  // increasing on each successful assertion (replay-clone detection).
+  counter      BigInt   @default(0)
+
+  transports   String?
+  deviceType   String?
+  backedUp     Boolean  @default(false)
+
+  createdAt    DateTime @default(now())
+  lastUsedAt   DateTime?
+
+  @@index([userId])
 }
 
 //////////////////////////////////////////////////////

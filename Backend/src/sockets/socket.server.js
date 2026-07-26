@@ -6,9 +6,32 @@ const { registerCommandHandlers } = require("./handlers/command.handler");
 const { registerDtaroHandlers } = require("./handlers/dtaro.handler");
 const { sweepExpired } = require("../services/ekb.service");
 const { seedDefaultZones } = require("../services/zoneManager.service");
+const { verifyUserToken } = require("../middlewares/auth_middleware");
 
 let offlineSweepStarted = false;
 let dtaroSweepStarted = false;
+
+// Extracts the admin session JWT from a dashboard socket's handshake — the
+// `token` cookie (same cookie REST auth uses), falling back to an explicit
+// `auth.token` for non-cookie clients. Robot sockets never hit this path.
+function getDashboardToken(socket) {
+    const cookieHeader = socket?.handshake?.headers?.cookie;
+    if (typeof cookieHeader === "string") {
+        for (const part of cookieHeader.split(";")) {
+            const idx = part.indexOf("=");
+            if (idx === -1) continue;
+            if (part.slice(0, idx).trim() === "token") {
+                try {
+                    return decodeURIComponent(part.slice(idx + 1).trim());
+                } catch {
+                    return part.slice(idx + 1).trim();
+                }
+            }
+        }
+    }
+    const authToken = socket?.handshake?.auth?.token;
+    return typeof authToken === "string" && authToken ? authToken : null;
+}
 
 function startOfflineDetector(prisma, { logger } = {}) {
     if (offlineSweepStarted) return;
@@ -68,7 +91,7 @@ function initSocketServer(io, { prisma, kv, logger }) {
 
     const log = (logger || console);
 
-    io.on("connection", (socket) => {
+    io.on("connection", async (socket) => {
         const origin = socket?.handshake?.headers?.origin;
         const ua     = socket?.handshake?.headers?.["user-agent"];
         const isDashboard = !!(origin || (typeof ua === "string" && ua.includes("Mozilla")));
@@ -80,6 +103,23 @@ function initSocketServer(io, { prisma, kv, logger }) {
         }
 
         if (isDashboard) {
+            // Dashboard sockets must present the same JWT REST auth uses —
+            // robot sockets are untouched, they authenticate via the AUTH event.
+            const token = getDashboardToken(socket);
+            const user = token ? await verifyUserToken(token).catch(() => null) : null;
+
+            if (!user) {
+                if (typeof log.socket === "function") {
+                    log.socket("reject", { socketId: socket.id, reason: "dashboard_unauthorized" });
+                } else {
+                    log.warn("Rejected unauthenticated dashboard socket", { socketId: socket.id });
+                }
+                socket.emit("UNAUTHORIZED", { message: "Authentication required" });
+                socket.disconnect(true);
+                return;
+            }
+
+            socket.data.userId = user.id;
             socket.join("dashboard");
             if (typeof log.socket === "function") {
                 log.socket("join", { socketId: socket.id, room: "dashboard" });

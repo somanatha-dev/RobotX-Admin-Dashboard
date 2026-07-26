@@ -19,7 +19,8 @@
 const { matrixDurationsToDestination } = require("./mapbox.service");
 const { validateRobot } = require("./robotValidator.service");
 const { computeCosts } = require("./costEvaluator.service");
-const { getRobotState } = require("./robotRegistry.service");
+const { getManyRobotStates } = require("./robotRegistry.service");
+const { getZoneForCoordinates } = require("./zoneManager.service");
 const { haversineMeters } = require("../utils/distance");
 const logger = require("../config/logger");
 
@@ -39,6 +40,8 @@ function chunk(arr, size) {
  * @param {{ lat: number, lon: number }} params.pickup
  * @param {number} [params.maxRobots]
  * @param {object} [params.costWeights] - Override DTARO cost weights
+ * @param {string[]} [params.excludeRobotIds] - Robot IDs to skip (e.g. already
+ *   tried and lost to a concurrent reservation — see F4 retry loop)
  * @returns {Promise<{
  *   robotId: string,
  *   durationSec: number|null,
@@ -48,7 +51,7 @@ function chunk(arr, size) {
  *   costComponents?: object
  * }>}
  */
-async function selectNearestRobot({ prisma, kv, pickup, maxRobots = 100, costWeights } = {}) {
+async function selectNearestRobot({ prisma, kv, pickup, maxRobots = 100, costWeights, excludeRobotIds } = {}) {
   if (!prisma) throw new Error("prisma is required");
   if (!kv) {
     const err = new Error("KV store unavailable");
@@ -64,14 +67,21 @@ async function selectNearestRobot({ prisma, kv, pickup, maxRobots = 100, costWei
     throw err;
   }
 
+  // Zone-locality (F6): resolve the pickup's zone once so candidates already
+  // operating in/near it can be preferred by the cost function below.
+  const pickupZone = await getZoneForCoordinates(prisma, kv, pickupLat, pickupLon);
+  const pickupZoneId = pickupZone?.id || null;
+
   // 1) Fetch IDLE robots + PAUSED robots (PAUSED covers CHARGING virtual robots)
+  const exclude = Array.isArray(excludeRobotIds) ? excludeRobotIds.filter(Boolean) : [];
   const dbCandidates = await prisma.robot.findMany({
     where: {
       status: { in: ["IDLE", "PAUSED"] },
       isOnline: true,
       currentTaskId: null,
+      ...(exclude.length > 0 ? { robotId: { notIn: exclude } } : {}),
     },
-    select: { robotId: true, lat: true, lon: true, battery: true, currentTaskId: true, isOnline: true, status: true },
+    select: { robotId: true, lat: true, lon: true, battery: true, currentTaskId: true, isOnline: true, status: true, zoneId: true },
     take: maxRobots,
   });
 
@@ -82,9 +92,17 @@ async function selectNearestRobot({ prisma, kv, pickup, maxRobots = 100, costWei
   }
 
   // 2) Validate candidates — collect rejection reasons for the DTARO log.
+  // Fetch every candidate's registry state in one pipelined MGET instead of
+  // one GET per candidate (validation + position overlay used to each fetch
+  // it separately — up to 2 round-trips per candidate).
+  const liveStates = await getManyRobotStates(kv, dbCandidates.map((r) => r.robotId));
+
   const validationResults = await Promise.all(
     dbCandidates.map(async (r) => {
-      const result = await validateRobot(kv, r, { allowCharging: true });
+      const result = await validateRobot(kv, r, {
+        allowCharging: true,
+        liveState: liveStates.get(r.robotId) ?? null,
+      });
       return { robotId: r.robotId, valid: result.valid, reason: result.reason };
     })
   );
@@ -105,7 +123,7 @@ async function selectNearestRobot({ prisma, kv, pickup, maxRobots = 100, costWei
     const robotId = r?.robotId;
     if (!robotId) continue;
 
-    const live = await getRobotState(kv, robotId);
+    const live = liveStates.get(robotId) || null;
     const lat =
       typeof live?.lat === "number" ? live.lat : typeof r.lat === "number" ? r.lat : null;
     const lon =
@@ -117,6 +135,7 @@ async function selectNearestRobot({ prisma, kv, pickup, maxRobots = 100, costWei
       lat,
       lon,
       battery: typeof live?.battery === "number" ? live.battery : r.battery,
+      zoneId: typeof live?.zoneId === "string" ? live.zoneId : (r.zoneId || null),
     });
   }
 
@@ -161,7 +180,7 @@ async function selectNearestRobot({ prisma, kv, pickup, maxRobots = 100, costWei
   }
 
   // 5) DTARO cost evaluation — select minimum cost robot
-  const costResults = await computeCosts(kv, candidates, costWeights);
+  const costResults = await computeCosts(kv, candidates, costWeights, pickupZoneId);
   const best = costResults.length > 0
     ? costResults.reduce((a, b) => (a.cost <= b.cost ? a : b))
     : null;

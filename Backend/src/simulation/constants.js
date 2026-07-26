@@ -1,3 +1,5 @@
+const { CHARGING_INTERRUPT_BATTERY } = require("../config/dtaro.constants");
+
 // ─── Tick timing ─────────────────────────────────────────────────────────────
 const TELEMETRY_INTERVAL_MS   = 2000;       // 2 s per tick
 
@@ -23,7 +25,7 @@ const BATTERY_WARN_THRESHOLD   = 20;         // %  → status → ISSUES
 const BATTERY_CRITICAL_THRESHOLD = 10;       // %  → enter CHARGING state
 const BATTERY_MIN              = 5;          // %  floor
 const CHARGING_RATE_PER_TICK   = 0.10;       // %/tick while CHARGING
-const CHARGING_INTERRUPT_BATTERY = 30;       // min battery to accept task while charging
+// CHARGING_INTERRUPT_BATTERY sourced from ../config/dtaro.constants (shared with robotValidator.service.js)
 
 // ─── Charging wait before current begins to flow ─────────────────────────────
 const CHARGING_WAIT_MS         = 30_000;     // 30 s docking delay

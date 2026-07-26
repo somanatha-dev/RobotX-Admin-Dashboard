@@ -2,7 +2,7 @@ const { toNumberOrNull, toStringOrNull } = require("../../utils/parse");
 const telemetryService = require("../../services/telemetry.service");
 const { allow } = require("../rateLimit");
 const { z } = require("zod");
-const { updateTelemetry, getRobotState } = require("../../services/robotRegistry.service");
+const { updateTelemetry, getRobotState, updateUtilization } = require("../../services/robotRegistry.service");
 const { assignRobotToZone } = require("../../services/zoneManager.service");
 const { haversineMeters } = require("../../utils/distance");
 
@@ -135,35 +135,16 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
       if (!parsed.success) return;
       const payload = parsed.data;
 
-      // Prefer authenticated robotId. Fall back to legacy payload robotId.
-      const robotId =
-        toStringOrNull(socket.data.robotId) ||
-        toStringOrNull(payload?.robotId);
-      if (!robotId) return;
-
-      const isAuthed = Boolean(socket.data.isAuthed);
-
-      // If a session exists for this robot, require AUTH to bind the socket.
-      if (!isAuthed) {
-        const session = await kv.get(`session:${robotId}`);
-        if (session) {
-          socket.emit("AUTH_REQUIRED", { robotId });
-          return;
-        }
-      }
-
-      // If this is a legacy robot client (no AUTH), bind the socket after first valid telemetry.
-      if (!socket.data.robotId) {
-        socket.data.robotId = robotId;
-        await kv.set(`socket:${socket.id}`, robotId, { ex: 3600 });
-      }
-
-      // If a pairing code is currently active for this robot, force AUTH first.
-      const pairingActive = await kv.get(`pairing:${robotId}`);
-      if (pairingActive && !isAuthed) {
-        socket.emit("AUTH_REQUIRED", { robotId });
+      // F26: every TELEMETRY frame requires a successful AUTH first. Only
+      // robot.handler.js's AUTH success path may bind socket.data.robotId —
+      // no first-telemetry binding, no unauthenticated fallback.
+      if (!socket.data.isAuthed || !socket.data.robotId) {
+        socket.emit("AUTH_REQUIRED", { robotId: toStringOrNull(payload?.robotId) });
         return;
       }
+
+      const robotId = toStringOrNull(socket.data.robotId);
+      if (!robotId) return;
 
       const nowMs = Date.now();
       const now = new Date(nowMs);
@@ -326,6 +307,20 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
           status: fullState.status,
           speed: fullState.speed,
         });
+      } catch {
+        // registry update is non-critical
+      }
+
+      // DTARO: update utilization ratio (EMA, α=0.05 — ACTIVE = busy, else idle).
+      // Recovered from the deleted simulation.service.js reference implementation
+      // (git show 3cc8e8b:Backend/src/services/simulation.service.js).
+      try {
+        const prevState = await getRobotState(kv, robotId);
+        const prevUtil = typeof prevState?.utilization === "number" ? prevState.utilization : 0;
+        const alpha = 0.05;
+        const isActive = fullState.status === "ACTIVE" ? 1 : 0;
+        const newUtil = prevUtil + alpha * (isActive - prevUtil);
+        await updateUtilization(kv, robotId, newUtil);
       } catch {
         // registry update is non-critical
       }

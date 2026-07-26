@@ -11,9 +11,7 @@
 
 const { getRobotState } = require("./robotRegistry.service");
 const { getRobotSocket } = require("../sockets/robotSockets");
-
-/** Minimum battery percentage required to accept a task. */
-const BATTERY_THRESHOLD = 20;
+const { BATTERY_THRESHOLD } = require("../config/dtaro.constants");
 
 /**
  * @typedef {object} ValidationResult
@@ -29,9 +27,16 @@ const BATTERY_THRESHOLD = 20;
  * @param {object} [options]
  * @param {number} [options.batteryThreshold]
  * @param {boolean} [options.allowCharging]  When true, CHARGING robots with sufficient battery are accepted.
+ * @param {object|null} [options.liveState]  Pre-fetched registry state (e.g. from a batched
+ *   `getManyRobotStates` call). When provided, skips the internal `getRobotState` lookup —
+ *   pass `undefined` (the default) to have this function fetch it itself.
  * @returns {Promise<ValidationResult>}
  */
-async function validateRobot(kv, robotRow, { batteryThreshold = BATTERY_THRESHOLD, allowCharging = false } = {}) {
+async function validateRobot(
+  kv,
+  robotRow,
+  { batteryThreshold = BATTERY_THRESHOLD, allowCharging = false, liveState } = {}
+) {
   if (!robotRow) return { valid: false, reason: "Robot not found" };
 
   const { robotId } = robotRow;
@@ -43,8 +48,9 @@ async function validateRobot(kv, robotRow, { batteryThreshold = BATTERY_THRESHOL
 
   const dbStatus = String(robotRow.status || "");
 
-  // Battery check — prefer Redis live value (may say "CHARGING") over DB stale value
-  const live = await getRobotState(kv, robotId);
+  // Battery check — prefer Redis live value (may say "CHARGING") over DB stale value.
+  // Use the pre-fetched state when the caller already batched it (F9); otherwise fetch it here.
+  const live = liveState !== undefined ? liveState : await getRobotState(kv, robotId);
   const liveStatus = typeof live?.status === "string" ? live.status : null;
 
   // Determine effective status: Redis live state is more accurate than DB
@@ -58,7 +64,7 @@ async function validateRobot(kv, robotRow, { batteryThreshold = BATTERY_THRESHOL
       return { valid: false, reason: "Robot is charging" };
     }
     // Charging robots need a higher battery reserve (task drain + 10% safety margin)
-    const chargingMinBattery = Math.max(batteryThreshold, 20);
+    const chargingMinBattery = Math.max(batteryThreshold, BATTERY_THRESHOLD);
     const battery =
       typeof live?.battery === "number"
         ? live.battery

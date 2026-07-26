@@ -246,7 +246,7 @@ rootLogger.dtaro = function logDtaro({ candidates = [], results = [], rejected =
     lines.push(
       `  ${c.bGreen("├")} ${c.bWhite(pad(r.robotId, 12))}` +
       `  cost=${c.bCyan(r.cost.toFixed(3))}` +
-      `  ${c.dim(`D=${(comp.D||0).toFixed(2)} B=${(comp.B||0).toFixed(2)} U=${(comp.U||0).toFixed(2)} T=${(comp.T||0).toFixed(2)}`)}` +
+      `  ${c.dim(`D=${(comp.D||0).toFixed(2)} B=${(comp.B||0).toFixed(2)} U=${(comp.U||0).toFixed(2)} T=${(comp.T||0).toFixed(2)} Z=${(comp.Z||0).toFixed(2)}`)}` +
       `  ${c.dim(bar)}`
     );
   }

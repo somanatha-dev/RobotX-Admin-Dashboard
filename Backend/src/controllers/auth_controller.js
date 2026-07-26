@@ -16,58 +16,70 @@ function getGoogleClient() {
 //////////////////////////////////////////////////
 // PIN AUTH
 //////////////////////////////////////////////////
+
+// Verifies a PIN for a given user. Shared by the pinAuth endpoint below and
+// by the WebAuthn registration endpoint (webauthn_controller.js), which
+// re-checks the PIN as a defense-in-depth gate before persisting a new
+// passkey credential. Returns { ok: true } or { ok: false, status, message }
+// so callers can propagate the exact same response shape pinAuth used to
+// return inline.
+async function verifyUserPin(prisma, userId, pin) {
+  const normalizedPin = String(pin ?? "").trim();
+
+  if (!normalizedPin) {
+    return { ok: false, status: 400, message: "PIN required" };
+  }
+
+  if (!userId) {
+    return { ok: false, status: 401, message: "Unauthorized" };
+  }
+
+  // fetch PIN for THIS user only
+  const authPin = await prisma.adminPinAuth.findUnique({
+    where: { userId },
+  });
+
+  if (!authPin) {
+    return { ok: false, status: 403, message: "PIN not configured" };
+  }
+
+  const stored = String(authPin.pinHash ?? "");
+  const looksBcrypt = stored.startsWith("$2a$") || stored.startsWith("$2b$") || stored.startsWith("$2y$");
+
+  // verify PIN (bcrypt preferred; allow legacy/plain pins and auto-migrate)
+  let isValid = false;
+  if (looksBcrypt) {
+    isValid = await bcrypt.compare(normalizedPin, stored);
+  } else {
+    const a = Buffer.from(normalizedPin, "utf8");
+    const b = Buffer.from(stored.trim(), "utf8");
+    isValid = a.length === b.length && crypto.timingSafeEqual(a, b);
+
+    // Auto-migrate plain-text PINs to bcrypt hash after first successful auth.
+    if (isValid) {
+      const nextHash = await bcrypt.hash(normalizedPin, 10);
+      await prisma.adminPinAuth.update({
+        where: { userId },
+        data: { pinHash: nextHash },
+      });
+    }
+  }
+
+  if (!isValid) {
+    return { ok: false, status: 401, message: "Invalid PIN" };
+  }
+
+  return { ok: true };
+}
+
 async function pinAuth(req, res) {
   try {
-    const { pin } = req.body || {};
-
-    const normalizedPin = String(pin ?? "").trim();
-
-    if (!normalizedPin) {
-      return res.status(400).json({ message: "PIN required" });
-    }
-
-    // user comes from existing JWT middleware
     const userId = req.user?.id;
-
-    if (!userId) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
-
     const prisma = getPrisma();
 
-    // fetch PIN for THIS user only
-    const authPin = await prisma.adminPinAuth.findUnique({
-      where: { userId },
-    });
-
-    if (!authPin) {
-      return res.status(403).json({ message: "PIN not configured" });
-    }
-
-    const stored = String(authPin.pinHash ?? "");
-    const looksBcrypt = stored.startsWith("$2a$") || stored.startsWith("$2b$") || stored.startsWith("$2y$");
-
-    // verify PIN (bcrypt preferred; allow legacy/plain pins and auto-migrate)
-    let isValid = false;
-    if (looksBcrypt) {
-      isValid = await bcrypt.compare(normalizedPin, stored);
-    } else {
-      const a = Buffer.from(normalizedPin, "utf8");
-      const b = Buffer.from(stored.trim(), "utf8");
-      isValid = a.length === b.length && crypto.timingSafeEqual(a, b);
-
-      // Auto-migrate plain-text PINs to bcrypt hash after first successful auth.
-      if (isValid) {
-        const nextHash = await bcrypt.hash(normalizedPin, 10);
-        await prisma.adminPinAuth.update({
-          where: { userId },
-          data: { pinHash: nextHash },
-        });
-      }
-    }
-
-    if (!isValid) {
-      return res.status(401).json({ message: "Invalid PIN" });
+    const result = await verifyUserPin(prisma, userId, req.body?.pin);
+    if (!result.ok) {
+      return res.status(result.status).json({ message: result.message });
     }
 
     // success — no new JWT
@@ -339,4 +351,5 @@ module.exports = {
   changePassword,
   logout,
   pinAuth,
+  verifyUserPin,
 };
