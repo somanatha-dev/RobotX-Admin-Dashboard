@@ -4,11 +4,9 @@
  * Unified point for sending commands to robot sockets.
  * Wraps the in-memory socket registry and provides typed dispatch helpers.
  *
- * Supported commands:
- *   TASK_ASSIGN      — assign a task to a robot
- *   REROUTE_ALERT    — instruct robot to follow a new path
- *   STOP             — immediate halt
- *   RETURN_TO_BASE   — navigate back to base station
+ * Typed helpers: dispatchTaskAssign, dispatchRerouteAlert.
+ * (STOP/RETURN_TO_BASE commands are dispatched directly via robots.controller.js's
+ * sendRobotCommand, not through this module.)
  *
  * Retry policy: at most MAX_RETRIES additional attempts with back-off.
  * If no socket is connected the payload is silently dropped (real robots
@@ -79,48 +77,8 @@ async function dispatchRerouteAlert(robotId, alertPayload) {
   return dispatch(robotId, "REROUTE_ALERT", { ...alertPayload, timestamp: Date.now() }, { retries: 1 });
 }
 
-/**
- * Dispatch STOP to a robot socket.
- *
- * @param {string} robotId
- * @param {object} [meta]
- */
-async function dispatchStop(robotId, meta = {}) {
-  return dispatch(robotId, "STOP", { ...meta, timestamp: Date.now() });
-}
-
-/**
- * Dispatch RETURN_TO_BASE to a robot socket.
- *
- * @param {string} robotId
- * @param {object} [meta] - optional { baseLocation: { lat, lon } }
- */
-async function dispatchReturnToBase(robotId, meta = {}) {
-  return dispatch(robotId, "RETURN_TO_BASE", { ...meta, timestamp: Date.now() });
-}
-
-/**
- * Broadcast an event to all sockets in an IO room (zone, dashboard, etc.).
- *
- * @param {object} io
- * @param {string} room
- * @param {string} event
- * @param {object} payload
- */
-function broadcastToRoom(io, room, event, payload) {
-  if (!io || !room) return;
-  try {
-    io.to(room).emit(event, payload);
-  } catch {
-    // ignore
-  }
-}
-
 module.exports = {
   dispatch,
   dispatchTaskAssign,
   dispatchRerouteAlert,
-  dispatchStop,
-  dispatchReturnToBase,
-  broadcastToRoom,
 };

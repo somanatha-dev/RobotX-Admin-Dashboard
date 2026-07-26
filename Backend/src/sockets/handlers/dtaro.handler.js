@@ -11,7 +11,7 @@
  * Each handler rate-limits, validates, and delegates to the appropriate service.
  */
 
-const { toStringOrNull, toNumberOrNull } = require("../../utils/parse");
+const { toStringOrNull } = require("../../utils/parse");
 const { allow } = require("../rateLimit");
 const { processObstacleReport } = require("../../services/alertDissemination.service");
 const { updateHealthStatus, updateAssignedTask } = require("../../services/robotRegistry.service");

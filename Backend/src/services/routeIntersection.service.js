@@ -86,30 +86,8 @@ function findAffectedRobots(robots, blockStart, blockEnd) {
     .map((r) => r.robotId);
 }
 
-/**
- * Fast bounding-box pre-check: is a point within `radiusDeg` of a segment's bounding box?
- * Use this before calling pathIntersectsSegment to skip obviously unaffected robots.
- *
- * @param {{ lat: number, lon: number }} point
- * @param {{ lat: number, lon: number }} segA
- * @param {{ lat: number, lon: number }} segB
- * @param {number} [radiusDeg] - default 0.002° ≈ 220 m
- * @returns {boolean}
- */
-function pointNearSegment(point, segA, segB, radiusDeg = 0.002) {
-  const minLat = Math.min(segA.lat, segB.lat) - radiusDeg;
-  const maxLat = Math.max(segA.lat, segB.lat) + radiusDeg;
-  const minLon = Math.min(segA.lon, segB.lon) - radiusDeg;
-  const maxLon = Math.max(segA.lon, segB.lon) + radiusDeg;
-  return (
-    point.lat >= minLat && point.lat <= maxLat &&
-    point.lon >= minLon && point.lon <= maxLon
-  );
-}
-
 module.exports = {
   segmentsIntersect,
   pathIntersectsSegment,
   findAffectedRobots,
-  pointNearSegment,
 };

@@ -1,55 +1,5 @@
-const { directionsWithDistance } = require("./mapbox.service");
 const { safeJsonParse } = require("../utils/json");
-const logger = require("../config/logger");
-
-function straightLineRoute({ from, to, points = 40 } = {}) {
-  if (!from || !to) return null;
-  const fromLat = typeof from.lat === "number" ? from.lat : null;
-  const fromLon = typeof from.lon === "number" ? from.lon : null;
-  const toLat = typeof to.lat === "number" ? to.lat : null;
-  const toLon = typeof to.lon === "number" ? to.lon : null;
-  if (fromLat === null || fromLon === null || toLat === null || toLon === null) return null;
-
-  const n = Math.max(2, Math.min(200, Math.floor(points)));
-  const out = [];
-  for (let i = 0; i < n; i += 1) {
-    const t = n === 1 ? 1 : i / (n - 1);
-    out.push({ lat: fromLat + (toLat - fromLat) * t, lon: fromLon + (toLon - fromLon) * t });
-  }
-  return out;
-}
-
-async function getRoutesWithFallback({ from, pickup, drop } = {}) {
-  const fallbackToPickup = straightLineRoute({ from, to: pickup, points: 100 });
-  const fallbackToDrop   = straightLineRoute({ from: pickup, to: drop, points: 100 });
-
-  // Try profiles in priority order — same as task.service.js
-  for (const profile of ["driving", "walking", "cycling"]) {
-    try {
-      const [r1, r2] = await Promise.all([
-        directionsWithDistance({ from, to: pickup, profile }),
-        directionsWithDistance({ from: pickup, to: drop, profile }),
-      ]);
-      // Stitch seam so toDrop[0] == toPickup[-1] (seamless visual join at pickup)
-      const stitchedToDrop = r2.points.slice();
-      if (r1.points.length > 0 && stitchedToDrop.length > 0) {
-        stitchedToDrop[0] = r1.points[r1.points.length - 1];
-      }
-      logger.info(`[TaskRecovery] ${profile} route OK — ${r1.points.length}+${stitchedToDrop.length} pts`);
-      return { toPickup: r1.points, toDrop: stitchedToDrop, usedFallback: false };
-    } catch (e) {
-      logger.warn(`[TaskRecovery] ${profile} failed — ${e?.message}`);
-    }
-  }
-
-  logger.warn("[TaskRecovery] All profiles failed — straight-line fallback");
-  if (!fallbackToPickup || !fallbackToDrop) {
-    const err = new Error("Failed to generate routes (Mapbox unavailable and fallback invalid)");
-    err.status = 502;
-    throw err;
-  }
-  return { toPickup: fallbackToPickup, toDrop: fallbackToDrop, usedFallback: true };
-}
+const { getRoutesWithDistance } = require("./task.service");
 
 async function seedRecoveredKeys(kv, { taskId, robotCode, toPickup, toDrop, pickup, drop, startedAtMs } = {}) {
   const ex = 86400;
@@ -121,7 +71,7 @@ async function recoverActiveTasks(prisma, kv, io, { logger: _log } = {}) {
 
     let routes;
     try {
-      routes = await getRoutesWithFallback({ from, pickup, drop });
+      routes = await getRoutesWithDistance({ from, pickup, drop });
     } catch (e) {
       log.error("task recovery: route generation failed", { taskId, robotCode, error: e?.message || e });
       continue;

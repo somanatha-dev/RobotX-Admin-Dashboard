@@ -21,18 +21,6 @@ function deleteRobotSocket(robotId, socket) {
   robotSockets.delete(key);
 }
 
-function disconnectExisting(robotId, { reason } = {}) {
-  const s = getRobotSocket(robotId);
-  if (!s) return;
-  try {
-    // Socket.io v4 disconnect(true) closes underlying transport.
-    s.disconnect(true);
-  } catch {
-    // ignore
-  }
-  robotSockets.delete(String(robotId));
-}
-
 function disconnectSocket(socket) {
   if (!socket) return;
   try {
@@ -43,10 +31,8 @@ function disconnectSocket(socket) {
 }
 
 module.exports = {
-  robotSockets,
   getRobotSocket,
   setRobotSocket,
   deleteRobotSocket,
-  disconnectExisting,
   disconnectSocket,
 };

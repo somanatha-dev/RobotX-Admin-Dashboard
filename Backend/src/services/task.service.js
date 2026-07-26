@@ -402,4 +402,4 @@ async function rerouteTask(prisma, taskId, { kv, io } = {}) {
   return { taskId, robotId, segment, points: newPoints.length };
 }
 
-module.exports = { assignTask, rerouteTask };
+module.exports = { assignTask, rerouteTask, straightLineRoute, getRoutesWithDistance };

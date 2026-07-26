@@ -103,15 +103,7 @@ async function listRobots(prisma, query) {
   });
 }
 
-async function markRobotOffline(prisma, robotCode) {
-  return prisma.robot.update({
-    where: { robotId: robotCode },
-    data: { isOnline: false },
-  });
-}
-
 module.exports = {
   commissionRobot,
   listRobots,
-  markRobotOffline,
 };

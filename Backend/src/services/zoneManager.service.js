@@ -210,10 +210,8 @@ async function seedDefaultZones(prisma, kv, campus) {
 }
 
 module.exports = {
-  loadZones,
   invalidateZoneCache,
   getZoneForCoordinates,
-  updateSocketZoneRoom,
   assignRobotToZone,
   seedDefaultZones,
 };

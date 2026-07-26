@@ -115,27 +115,6 @@ async function validateRobot(kv, robotRow, { batteryThreshold = BATTERY_THRESHOL
   return { valid: true, reason: null };
 }
 
-/**
- * Filter an array of robot rows to only those eligible for task allocation.
- *
- * @param {object} kv
- * @param {object[]} robotRows
- * @param {object} [options]
- * @param {boolean} [options.allowCharging]
- * @returns {Promise<object[]>}
- */
-async function filterEligibleRobots(kv, robotRows, options = {}) {
-  const results = await Promise.all(
-    robotRows.map(async (row) => {
-      const result = await validateRobot(kv, row, options);
-      return result.valid ? row : null;
-    })
-  );
-  return results.filter(Boolean);
-}
-
 module.exports = {
   validateRobot,
-  filterEligibleRobots,
-  BATTERY_THRESHOLD,
 };

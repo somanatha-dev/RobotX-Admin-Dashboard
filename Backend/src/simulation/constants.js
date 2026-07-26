@@ -5,7 +5,6 @@ const TELEMETRY_INTERVAL_MS   = 2000;       // 2 s per tick
 // At 20 km/h (5.56 m/s) with a 2-second tick the robot travels ~11 m per tick.
 // MOVE_STEP_METERS is a hard ceiling guard against GPS teleports.
 const MOVE_STEP_METERS         = 40;         // hard cap (generous for 20–30 km/h range)
-const ARRIVE_THRESHOLD_METERS  = 3;
 
 // Speed model — smooth EMA at delivery-bot speed (20–30 km/h / 5.6–8.3 m/s)
 const SPEED_BASE_MS            = 5.56;       // m/s ≈ 20 km/h  (minimum visible movement)
@@ -44,7 +43,6 @@ const RECONNECT_DELAY_MS       = 3_000;
 module.exports = {
   TELEMETRY_INTERVAL_MS,
   MOVE_STEP_METERS,
-  ARRIVE_THRESHOLD_METERS,
   SPEED_BASE_MS,
   SPEED_JITTER,
   SPEED_EMA_ALPHA,

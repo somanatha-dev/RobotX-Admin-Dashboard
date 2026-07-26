@@ -164,28 +164,20 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
   });
 
   // Heartbeat is lightweight; updates lastSeenAt for offline detection.
-  socket.on("HEARTBEAT", async () => {
+  async function handleHeartbeat(eventName) {
     try {
-      if (!allow(socket, "HEARTBEAT", { limit: 10, windowMs: 5_000, minIntervalMs: 100 })) return;
+      if (!allow(socket, eventName, { limit: 10, windowMs: 5_000, minIntervalMs: 100 })) return;
       const robotId = toStringOrNull(socket.data.robotId);
       if (!robotId) return;
       await prisma.robot.update({ where: { robotId }, data: { lastSeenAt: new Date() } });
     } catch {
       // ignore
     }
-  });
+  }
 
+  socket.on("HEARTBEAT", () => handleHeartbeat("HEARTBEAT"));
   // Backward compatible alias.
-  socket.on("heartbeat", async () => {
-    try {
-      if (!allow(socket, "heartbeat", { limit: 10, windowMs: 5_000, minIntervalMs: 100 })) return;
-      const robotId = toStringOrNull(socket.data.robotId);
-      if (!robotId) return;
-      await prisma.robot.update({ where: { robotId }, data: { lastSeenAt: new Date() } });
-    } catch {
-      // ignore
-    }
-  });
+  socket.on("heartbeat", () => handleHeartbeat("heartbeat"));
 
   socket.on("disconnect", () => {
     // Best-effort: mark offline only if this socket is still the active one.

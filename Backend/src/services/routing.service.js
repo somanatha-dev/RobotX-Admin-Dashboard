@@ -224,8 +224,6 @@ async function rerouteRobot(prisma, kv, io, robotId, { obstacleLocation }) {
 }
 
 module.exports = {
-  astar,
-  planRoute,
   replanRoute,
   rerouteRobot,
 };

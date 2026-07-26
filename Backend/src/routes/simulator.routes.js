@@ -1,7 +1,10 @@
 const express = require("express");
 const ctrl    = require("../controllers/simulator.controller");
+const { authUser } = require("../middlewares/auth_middleware");
 
 const router = express.Router();
+
+router.use(authUser);
 
 // GET  /api/simulator/status  — snapshot of all virtual robots
 router.get("/status", ctrl.getStatus);

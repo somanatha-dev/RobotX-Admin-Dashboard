@@ -43,5 +43,4 @@ function corsOriginDelegate(origin, callback) {
 module.exports = {
   corsOriginDelegate,
   isOriginAllowed,
-  getAllowedOrigins,
 };

@@ -23,12 +23,7 @@ function bearingDeg(aLat, aLon, bLat, bLon) {
   return (brng + 360) % 360;
 }
 
-function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-
 module.exports = {
   haversineMeters,
   bearingDeg,
-  lerp,
 };

@@ -310,7 +310,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
           kv,
           robotId,
           { lat: fullState.lat, lon: fullState.lon, battery: fullState.battery },
-          { maxSeconds: 15, moveMeters: 10, batteryDelta: 2 }
+          { maxSeconds: 15, moveDegreesThreshold: 10 / 111320, batteryDelta: 2 }
         )
       ) {
         await telemetryService.saveTelemetry(prisma, existing.id, { lat: fullState.lat, lon: fullState.lon, speed: fullState.speed, battery: fullState.battery }, now);

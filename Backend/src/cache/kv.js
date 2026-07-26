@@ -159,17 +159,6 @@ async function initKv({ logger }) {
       }
       return memoryGet(key);
     },
-    async exists(key) {
-      if (redisAvailable && redis) {
-        try {
-          const n = await redis.exists(key);
-          return Number(n) > 0;
-        } catch (e) {
-          disableRedis(e);
-        }
-      }
-      return memoryGet(key) !== null;
-    },
     async del(key) {
       if (redisAvailable && redis) {
         try {

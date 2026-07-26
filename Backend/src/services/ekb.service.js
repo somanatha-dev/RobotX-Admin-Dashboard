@@ -142,36 +142,6 @@ async function getActiveObstacles(kv) {
 }
 
 /**
- * Get active obstacles in a specific zone.
- *
- * @param {object} kv
- * @param {string} zoneId
- * @returns {Promise<object[]>}
- */
-async function getObstaclesByZone(kv, zoneId) {
-  const all = await getActiveObstacles(kv);
-  return all.filter((e) => e.zoneId === zoneId);
-}
-
-/**
- * Manually remove an obstacle event by ID.
- *
- * @param {object} kv
- * @param {string} obstacleId
- */
-async function removeObstacle(kv, obstacleId) {
-  if (kv) {
-    try {
-      await kv.del(obstacleKey(obstacleId));
-      if (typeof kv.srem === "function") await kv.srem(EKB_SET_KEY, obstacleId);
-    } catch {
-      // ignore
-    }
-  }
-  inMemoryStore.delete(obstacleId);
-}
-
-/**
  * Sweep expired obstacle IDs from the Redis tracking set.
  * Call periodically (e.g., every 60s) to keep the set clean.
  *
@@ -200,7 +170,5 @@ async function sweepExpired(kv) {
 module.exports = {
   storeObstacle,
   getActiveObstacles,
-  getObstaclesByZone,
-  removeObstacle,
   sweepExpired,
 };

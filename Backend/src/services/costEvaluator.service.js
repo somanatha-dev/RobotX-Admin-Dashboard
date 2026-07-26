@@ -117,23 +117,6 @@ async function computeCosts(kv, candidates, weights = DEFAULT_WEIGHTS) {
   });
 }
 
-/**
- * Select the minimum-cost robot from a candidate set.
- *
- * @param {object} kv
- * @param {Array<{robotId:string, distanceM:number, durationSec:number|null}>} candidates
- * @param {object} [weights]
- * @returns {Promise<{robotId:string, cost:number, components:object}|null>}
- */
-async function selectMinCostRobot(kv, candidates, weights = DEFAULT_WEIGHTS) {
-  const costs = await computeCosts(kv, candidates, weights);
-  if (costs.length === 0) return null;
-  return costs.reduce((best, c) => (c.cost < best.cost ? c : best));
-}
-
 module.exports = {
   computeCosts,
-  selectMinCostRobot,
-  normalize,
-  DEFAULT_WEIGHTS,
 };

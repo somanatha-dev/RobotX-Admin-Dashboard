@@ -81,17 +81,6 @@ async function getAllRobotIds(kv) {
 }
 
 /**
- * Get live states for all tracked robots.
- * @param {object} kv
- * @returns {Promise<object[]>}
- */
-async function getAllRobotStates(kv) {
-  const ids = await getAllRobotIds(kv);
-  const states = await Promise.all(ids.map((id) => getRobotState(kv, id)));
-  return states.filter(Boolean);
-}
-
-/**
  * Mark robot online after successful socket auth.
  * @param {object} kv
  * @param {string} robotId
@@ -167,16 +156,6 @@ async function updateUtilization(kv, robotId, utilization) {
 }
 
 /**
- * Update robot's ETA to current destination in seconds.
- * @param {object} kv
- * @param {string} robotId
- * @param {number|null} etaSec
- */
-async function updateETA(kv, robotId, etaSec) {
-  await setRobotState(kv, robotId, { etaSec: typeof etaSec === "number" ? etaSec : null });
-}
-
-/**
  * Update robot's assigned task ID.
  * @param {object} kv
  * @param {string} robotId
@@ -201,14 +180,12 @@ module.exports = {
   getRobotState,
   setRobotState,
   getAllRobotIds,
-  getAllRobotStates,
   markOnline,
   markOffline,
   updateTelemetry,
   updateZone,
   updatePlannedPath,
   updateUtilization,
-  updateETA,
   updateAssignedTask,
   updateHealthStatus,
 };

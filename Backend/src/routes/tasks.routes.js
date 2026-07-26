@@ -1,8 +1,11 @@
 const express = require("express");
 const tasksController = require("../controllers/tasks.controller");
 const { createRateLimiter } = require("../middlewares/rateLimitHttp");
+const { authUser } = require("../middlewares/auth_middleware");
 
 const router = express.Router();
+
+router.use(authUser);
 
 const assignLimiter  = createRateLimiter({ windowMs: 60_000, limit: 60,  keyPrefix: "task_assign" });
 const cancelLimiter  = createRateLimiter({ windowMs: 60_000, limit: 120, keyPrefix: "task_cancel" });

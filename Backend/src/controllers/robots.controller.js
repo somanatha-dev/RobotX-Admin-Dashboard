@@ -264,11 +264,21 @@ const commissionRobotWithPairing = asyncHandler(async (req, res) => {
   const existing = await prisma.robot.findUnique({ where: { robotId }, select: { id: true } });
   let robot = null;
   if (existing) {
-    // Optional: allow updating commissioning fields using the existing commissioning service.
-    // If the caller provides a locationId, keep behavior consistent with the legacy endpoint.
+    // Allow updating commissioning fields directly (robotService.commissionRobot() always
+    // rejects an existing robotId, so it can't be reused here for an in-place update).
     const hasLocation = toStringOrNull(parsed.data?.locationId);
     if (hasLocation) {
-      robot = await robotService.commissionRobot(prisma, parsed.data);
+      robot = await prisma.robot.update({
+        where: { robotId },
+        data: {
+          locationId: hasLocation,
+          ...(parsed.data.campusId !== undefined ? { campusId: parsed.data.campusId || null } : {}),
+          ...(typeof parsed.data.lat === "number" ? { lat: parsed.data.lat } : {}),
+          ...(typeof parsed.data.lon === "number" ? { lon: parsed.data.lon } : {}),
+          ...(toStringOrNull(parsed.data.name) ? { name: toStringOrNull(parsed.data.name) } : {}),
+        },
+        include: { location: true, campus: true, currentTask: true },
+      });
     } else {
       robot = await prisma.robot.findUnique({
         where: { robotId },
@@ -328,6 +338,17 @@ const deleteRobot = asyncHandler(async (req, res) => {
       if (typeof kv.srem === "function") await kv.srem("robots:all", robotCode);
     } catch {
       // ignore
+    }
+  }
+
+  // Stop the running VirtualRobot instance so it doesn't keep emitting
+  // telemetry for a robot that no longer exists in the DB.
+  const virtualSimulator = req.app?.locals?.virtualSimulator;
+  if (virtualSimulator && typeof virtualSimulator.removeRobot === "function") {
+    try {
+      virtualSimulator.removeRobot(robotCode);
+    } catch {
+      // non-fatal
     }
   }
 
