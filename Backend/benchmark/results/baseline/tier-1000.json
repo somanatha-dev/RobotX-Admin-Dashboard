@@ -1,0 +1,85 @@
+{
+  "tier": 1000,
+  "timestamp": "2026-07-26T17:31:28.200Z",
+  "connection": {
+    "targetCount": 1000,
+    "authedFinal": 438,
+    "authRatio": 0.438,
+    "rampUpMs": 48197
+  },
+  "duration": {
+    "warmupMs": 15000,
+    "measurementMs": 75000
+  },
+  "throughput": {
+    "restRequestsPerSec": 0.6,
+    "socketInboundMsgPerSec": 450.8,
+    "telemetryMsgPerSec": 225.4,
+    "heartbeatMsgPerSec": 225.4,
+    "dashboardBroadcastPerSec": 36.6
+  },
+  "latency": {
+    "assignmentEndToEndMs": {
+      "count": 0,
+      "avg": null,
+      "p50": null,
+      "p95": null,
+      "max": null
+    },
+    "assignRestResponseMs": {
+      "count": 13,
+      "avg": 3.15,
+      "p50": 3,
+      "p95": 4,
+      "max": 4
+    },
+    "telemetryToDashboardMs": {
+      "count": 36,
+      "avg": 816.22,
+      "p50": 769,
+      "p95": 1865,
+      "max": 1959
+    },
+    "robotsStateRestMs": {
+      "count": 0,
+      "avg": null,
+      "p50": null,
+      "p95": null,
+      "max": null
+    },
+    "healthRestMs": {
+      "count": 0,
+      "avg": null,
+      "p50": null,
+      "p95": null,
+      "max": null
+    }
+  },
+  "resources": {
+    "serverProcess": {
+      "cpuPercentAvg": 108.05,
+      "cpuPercentMax": 289,
+      "memoryMBAvg": 572,
+      "memoryMBMax": 616
+    },
+    "redis": {
+      "opsPerSecAvg": 497.3,
+      "opsPerSecMax": 3264.545002486325,
+      "instantaneousOpsPerSecAvg": 381.28
+    },
+    "postgres": {
+      "writesPerSecAvg": 81.17,
+      "writesPerSecMax": 536,
+      "xactPerSecAvg": 104.33,
+      "numBackendsAvg": 21
+    }
+  },
+  "counts": {
+    "telemetryReceivedTotal": 16905,
+    "heartbeatReceivedTotal": 16905,
+    "taskAssignAttempts": 24,
+    "taskAssignSucceeded": 0,
+    "taskAssignFailed": 13,
+    "taskAssignTimedOut": 0
+  }
+}

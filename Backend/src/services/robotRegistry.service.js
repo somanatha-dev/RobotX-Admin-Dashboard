@@ -66,6 +66,57 @@ async function setRobotState(kv, robotId, update) {
 }
 
 /**
+ * Single read-modify-write against the registry key — one GET, one SET.
+ *
+ * The telemetry hot path used to call setRobotState (GET+SET) for telemetry
+ * fields, then getRobotState (GET) to read utilization for its EMA calc,
+ * then setRobotState again (GET+SET) to write it, then assignRobotToZone's
+ * own setRobotState (GET+SET) for zone membership — 4 separate
+ * read-modify-write cycles against the exact same key on the exact same
+ * tick (~7 Redis round trips just for registry state, ~9 total per
+ * telemetry event measured in the 2026-07-26 benchmark). `computeFn`
+ * receives the one fetched `existing` object and returns the full patch
+ * (telemetry + utilization + zone together), collapsing all of that into a
+ * single GET and a single SET.
+ *
+ * @param {object} kv
+ * @param {string} robotId
+ * @param {(existing: object) => object} computeFn
+ * @returns {Promise<object|null>} the merged state that was written, or null on failure
+ */
+async function mergeRobotState(kv, robotId, computeFn) {
+  if (!kv || !robotId || typeof computeFn !== "function") return null;
+  try {
+    const key = registryKey(robotId);
+    const raw = await kv.get(key);
+    const next = buildMergedRegistryState(robotId, raw, computeFn);
+    await kv.set(key, JSON.stringify(next), { ex: REGISTRY_TTL });
+    return next;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pure computation half of mergeRobotState's read-modify-write, split out so
+ * a caller that already has the raw registry value from a batched read (the
+ * telemetry hot path — see telemetry.handler.js) can skip mergeRobotState's
+ * own internal GET and fold the write into its own batched SET instead.
+ * Does no I/O — same merge semantics as mergeRobotState, just without the
+ * kv.get()/kv.set() wrapped around it.
+ *
+ * @param {string} robotId
+ * @param {string|null} raw - the raw registry value (as returned by kv.get)
+ * @param {(existing: object) => object} computeFn
+ * @returns {object} the merged state, ready to JSON.stringify and SET
+ */
+function buildMergedRegistryState(robotId, raw, computeFn) {
+  const existing = safeJsonParse(raw) || {};
+  const patch = (typeof computeFn === "function" ? computeFn(existing) : null) || {};
+  return { ...existing, ...patch, robotId, updatedAt: Date.now() };
+}
+
+/**
  * Batch-get live state for many robots in one pipelined round-trip
  * (via `kv.mget`), augmented with real-time socket connection status —
  * same shape as `getRobotState`, just fetched once for the whole set
@@ -212,9 +263,13 @@ async function updateHealthStatus(kv, robotId, healthStatus) {
 }
 
 module.exports = {
+  REGISTRY_TTL,
+  registryKey,
   getRobotState,
   getManyRobotStates,
   setRobotState,
+  mergeRobotState,
+  buildMergedRegistryState,
   getAllRobotIds,
   markOnline,
   markOffline,

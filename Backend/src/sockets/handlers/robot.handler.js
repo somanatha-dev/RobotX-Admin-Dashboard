@@ -11,6 +11,7 @@ const { z } = require("zod");
 const { markOnline, markOffline, getRobotState, setRobotState } = require("../../services/robotRegistry.service");
 const { assignRobotToZone } = require("../../services/zoneManager.service");
 const { DB_FLUSH_INTERVAL_MS } = require("../../config/liveness.constants");
+const robotStateCache = require("../../cache/robotStateCache");
 
 // Per-robot throttle for the HEARTBEAT path's Postgres write, mirroring the
 // same gate in telemetry.handler.js. Per-process and in-memory (same pattern
@@ -25,7 +26,7 @@ const { DB_FLUSH_INTERVAL_MS } = require("../../config/liveness.constants");
 const lastHeartbeatDbFlushAt = new Map();
 
 async function markRobotOnline(prisma, robotId, socketId) {
-  return prisma.robot.update({
+  const row = await prisma.robot.update({
     where: { robotId },
     data: {
       isOnline: true,
@@ -33,16 +34,20 @@ async function markRobotOnline(prisma, robotId, socketId) {
       lastSeenAt: new Date(),
     },
   });
+  robotStateCache.set(robotId, { isOnline: true });
+  return row;
 }
 
 async function markRobotOffline(prisma, robotId) {
-  return prisma.robot.update({
+  const row = await prisma.robot.update({
     where: { robotId },
     data: {
       isOnline: false,
       status: "OFFLINE",
     },
   });
+  robotStateCache.set(robotId, { isOnline: false, status: "OFFLINE" });
+  return row;
 }
 
 // Brute-force lockout thresholds (F32): after this many failed pairing-code
@@ -114,9 +119,23 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
       const token = toStringOrNull(auth?.token);
       if (!robotId) return socket.disconnect(true);
 
-      // Reject unknown robots (must be commissioned in DB).
-      const robot = await prisma.robot.findUnique({ where: { robotId }, select: { id: true } });
+      // Reject unknown robots (must be commissioned in DB). This is the one
+      // DB read AUTH needs — its result seeds robotStateCache so the
+      // TELEMETRY hot path never needs its own per-tick read (see
+      // cache/robotStateCache.js for why).
+      const robot = await prisma.robot.findUnique({
+        where: { robotId },
+        select: { id: true, status: true, isOnline: true, lat: true, lon: true, battery: true },
+      });
       if (!robot) return socket.disconnect(true);
+      robotStateCache.set(robotId, {
+        id: robot.id,
+        status: robot.status,
+        isOnline: robot.isOnline,
+        lat: robot.lat,
+        lon: robot.lon,
+        battery: robot.battery,
+      });
 
       const [sessionToken, storedCode] = await Promise.all([
         kv.get(`session:${robotId}`),
@@ -179,7 +198,8 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
       socket.emit("AUTH_SUCCESS", { robotId, token: nextToken });
       // Backward compatible alias
       socket.emit("AUTH_OK", { robotId, token: nextToken });
-      io.emit("robot_online", { robotId });
+      // Dashboard-only UI event — scoped to the room instead of every socket.
+      io.to("dashboard").emit("robot_online", { robotId });
 
       // DTARO: join dedicated robot room for targeted commands
       socket.join(`robot:${robotId}`);
@@ -285,7 +305,8 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
         await markRobotOffline(prisma, boundRobotId);
         // DTARO: update registry offline state
         await markOffline(kv, boundRobotId);
-        io.emit("robot_offline", { robotId: boundRobotId });
+        // Dashboard-only UI event — scoped to the room instead of every socket.
+        io.to("dashboard").emit("robot_offline", { robotId: boundRobotId });
       } catch {
         // ignore
       }

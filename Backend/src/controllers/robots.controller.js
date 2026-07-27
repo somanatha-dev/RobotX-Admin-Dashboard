@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const { getRobotSocket } = require("../sockets/robotSockets");
 const { getRobotState, updateHealthStatus } = require("../services/robotRegistry.service");
 const { z } = require("zod");
+const robotStateCache = require("../cache/robotStateCache");
 
 async function writeRobotLiveState(kv, robot, { exSeconds = 15 } = {}) {
   if (!kv || !robot) return;
@@ -390,6 +391,7 @@ const clearRobotFault = asyncHandler(async (req, res) => {
     where: { robotId: robotCode },
     data: { status: nextStatus },
   });
+  robotStateCache.set(robotCode, { status: nextStatus });
 
   await updateHealthStatus(kv, robotCode, "OK");
 
@@ -435,6 +437,7 @@ const deleteRobot = asyncHandler(async (req, res) => {
   }
 
   await prisma.robot.delete({ where: { robotId: robotCode } });
+  robotStateCache.del(robotCode);
 
   if (kv) {
     try {

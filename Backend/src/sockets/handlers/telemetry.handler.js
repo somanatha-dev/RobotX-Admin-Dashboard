@@ -2,9 +2,10 @@ const { toNumberOrNull, toStringOrNull } = require("../../utils/parse");
 const telemetryService = require("../../services/telemetry.service");
 const { allow } = require("../rateLimit");
 const { z } = require("zod");
-const { updateTelemetry, getRobotState, updateUtilization } = require("../../services/robotRegistry.service");
-const { assignRobotToZone } = require("../../services/zoneManager.service");
+const { registryKey, buildMergedRegistryState, REGISTRY_TTL: REGISTRY_TTL_SEC } = require("../../services/robotRegistry.service");
+const { getZoneForCoordinates, applyZoneChangeSideEffects } = require("../../services/zoneManager.service");
 const { haversineMeters } = require("../../utils/distance");
+const robotStateCache = require("../../cache/robotStateCache");
 
 // DB-safe statuses (must map to the RobotStatus Prisma enum)
 const ROBOT_STATUS = new Set(["IDLE", "ACTIVE", "PAUSED", "OFFLINE", "ERROR", "ISSUES"]);
@@ -31,6 +32,13 @@ const TRANSITIONS = {
 const { DB_FLUSH_INTERVAL_MS } = require("../../config/liveness.constants");
 const lastDbFlushAt = new Map();
 
+// Per-robot sample throttle for the DEBUG-level telemetry log (same
+// per-process, bounded-by-fleet-size pattern as lastDbFlushAt above). Default
+// gives a once-per-10s-per-robot heartbeat when LOG_LEVEL=debug — enough to
+// eyeball the live stream without reproducing full per-tick log volume.
+const TELEMETRY_LOG_SAMPLE_MS = Number(process.env.TELEMETRY_LOG_SAMPLE_MS || 10_000);
+const lastTelemetryLogAt = new Map();
+
 function mapIncomingStatusToDb(status) {
   // RETURNING is displayed as ACTIVE in the DB (robot is in transit).
   if (status === "RETURNING") return "ACTIVE";
@@ -41,28 +49,29 @@ function mapIncomingStatusToDb(status) {
 }
 
 
-async function updateSnapshotState(kv, robotId, { lat, lon, battery }) {
-  const state = {
+// Pure — builds the value to SET under snapshotState:{robotId}. Split from
+// the write itself so the telemetry hot path can queue it into a batched
+// pipeline instead of awaiting its own round trip (see handleTelemetry).
+function buildSnapshotStateValue({ lat, lon, battery }) {
+  return {
     t: Date.now(),
     lat: typeof lat === "number" ? lat : null,
     lon: typeof lon === "number" ? lon : null,
     battery: typeof battery === "number" ? battery : null,
   };
-  await kv.set(`snapshotState:${robotId}`, JSON.stringify(state), { ex: 86400 });
 }
 
-async function shouldStoreSnapshotSmart(
-  kv,
-  robotId,
+// Pure — same decision logic as before, just fed the already-fetched raw
+// snapshotState value (from the batched read) instead of doing its own GET.
+function computeSnapshotDecision(
+  rawPrev,
   { lat, lon, battery },
   { maxSeconds = 15, moveDegreesThreshold = 0.0001, batteryDelta = 2 } = {}
 ) {
-  const key = `snapshotState:${robotId}`;
   const now = Date.now();
-  const raw = await kv.get(key);
   let prev = null;
   try {
-    prev = raw ? JSON.parse(raw) : null;
+    prev = rawPrev ? JSON.parse(rawPrev) : null;
   } catch {
     prev = null;
   }
@@ -170,14 +179,26 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
       const statusRaw = status && INCOMING_STATUS.has(status) ? status : null;
       const statusDb = statusRaw ? mapIncomingStatusToDb(statusRaw) : null;
 
-      // Reject unknown robotId (must exist in DB).
-      const existing = await prisma.robot.findUnique({
-        where: { robotId },
-        select: { id: true, status: true, lat: true, lon: true, speed: true, battery: true, isOnline: true },
-      });
+      // "existing" used to be a fresh `prisma.robot.findUnique` on every
+      // single TELEMETRY frame — the dominant per-tick DB cost (confirmed by
+      // benchmark: REST latency jumped 77ms -> 21s between 100 and 500
+      // concurrently-active robots, tracking Postgres pool contention from
+      // this exact read). It's now served from robotStateCache, seeded once
+      // at AUTH and kept in sync by every writer of Robot.status/isOnline
+      // (see cache/robotStateCache.js for the full list). Falls back to a
+      // one-time DB read only on a cache miss, which should be rare.
+      let existing = robotStateCache.get(robotId);
       if (!existing) {
-        io.emit("robot_unregistered", { robotId });
-        return;
+        const row = await prisma.robot.findUnique({
+          where: { robotId },
+          select: { id: true, status: true, lat: true, lon: true, speed: true, battery: true, isOnline: true },
+        });
+        if (!row) {
+          io.to("dashboard").emit("robot_unregistered", { robotId });
+          return;
+        }
+        existing = row;
+        robotStateCache.set(robotId, existing);
       }
 
       let statusUpdate = {};
@@ -192,10 +213,33 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
       }
 
       // 1) Build full state (enrich minimal payload)
+      //
+      // Every Redis read this handler needs — live state, snapshot-throttle
+      // state, registry state, battery-persist gate — is keyed only by
+      // robotId, with no dependency on each other, so they're fetched in one
+      // pipelined round trip instead of 4 sequential ones (was: ~4 GET + ~2
+      // SET = ~6 round trips/event; benchmark-profiled as ~17% of all CPU
+      // samples going into ioredis's per-command socket write). The writes
+      // below are similarly queued into one pipeline and flushed once at the
+      // end of the handler instead of individually awaited.
+      const robotKey = `robot:${robotId}`;
+      const snapshotKey = `snapshotState:${robotId}`;
+      const registryKeyStr = registryKey(robotId);
+      const batteryPersistKey = `vr:batteryPersistAt:${robotId}`;
+
+      const [rawPrevState, rawSnapshotPrev, rawRegistryExisting, rawLastPersist] = await kv
+        .pipeline()
+        .get(robotKey)
+        .get(snapshotKey)
+        .get(registryKeyStr)
+        .get(batteryPersistKey)
+        .exec();
+
+      const writes = kv.pipeline();
+
       let prevState = null;
       try {
-        const raw = await kv.get(`robot:${robotId}`);
-        if (raw) prevState = JSON.parse(raw);
+        if (rawPrevState) prevState = JSON.parse(rawPrevState);
       } catch {
         prevState = null;
       }
@@ -267,9 +311,10 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
 
       fullState.distanceTravelled = Math.round(distanceTravelled);
 
-      // 2) Store in Redis (final format)
-      await kv.set(
-        `robot:${robotId}`,
+      // 2) Store in Redis (final format) — queued, flushed with the rest of
+      // this tick's writes at the end of the handler (see `writes.exec()`).
+      writes.set(
+        robotKey,
         JSON.stringify({
           lat: fullState.lat,
           lon: fullState.lon,
@@ -310,98 +355,161 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
       const timeDue = nowMs - lastDbFlush >= DB_FLUSH_INTERVAL_MS;
 
       if (statusChanged || reconnected || batteryChanged || timeDue) {
-        await prisma.robot.update({
-          where: { robotId },
-          data: {
-            ...(typeof fullState.lat === "number" ? { lat: fullState.lat } : {}),
-            ...(typeof fullState.lon === "number" ? { lon: fullState.lon } : {}),
-            ...(typeof fullState.battery === "number" ? { battery: fullState.battery } : {}),
-            lastSeenAt: now,
+        try {
+          await prisma.robot.update({
+            where: { robotId },
+            data: {
+              ...(typeof fullState.lat === "number" ? { lat: fullState.lat } : {}),
+              ...(typeof fullState.lon === "number" ? { lon: fullState.lon } : {}),
+              ...(typeof fullState.battery === "number" ? { battery: fullState.battery } : {}),
+              lastSeenAt: now,
+              isOnline: true,
+              ...statusUpdate,
+            },
+          });
+          lastDbFlushAt.set(robotId, nowMs);
+          robotStateCache.set(robotId, {
+            status: statusUpdate.status || existing.status,
             isOnline: true,
-            ...statusUpdate,
-          },
-        });
-        lastDbFlushAt.set(robotId, nowMs);
+            lat: typeof fullState.lat === "number" ? fullState.lat : existing.lat,
+            lon: typeof fullState.lon === "number" ? fullState.lon : existing.lon,
+            battery: typeof fullState.battery === "number" ? fullState.battery : existing.battery,
+          });
+        } catch (e) {
+          if (e?.code === "P2025") {
+            // Robot was deleted from DB while still connected (admin
+            // decommission mid-session) — self-heal: same signal the old
+            // per-tick findUnique gave every tick, now surfaced on the
+            // write that actually discovers it instead.
+            robotStateCache.del(robotId);
+            io.to("dashboard").emit("robot_unregistered", { robotId });
+            return;
+          }
+          throw e;
+        }
       }
 
       // 4) Snapshot (optional: time OR movement OR battery delta) — unchanged, still
-      // its own independent throttle for the Telemetry history table.
-      if (
-        await shouldStoreSnapshotSmart(
-          kv,
-          robotId,
-          { lat: fullState.lat, lon: fullState.lon, battery: fullState.battery },
-          { maxSeconds: 15, moveDegreesThreshold: 10 / 111320, batteryDelta: 2 }
-        )
-      ) {
+      // its own independent throttle for the Telemetry history table. Decision
+      // uses the batched-read snapshotState value; the write (if due) is
+      // queued below instead of its own round trip.
+      const shouldSnapshot = computeSnapshotDecision(
+        rawSnapshotPrev,
+        { lat: fullState.lat, lon: fullState.lon, battery: fullState.battery },
+        { maxSeconds: 15, moveDegreesThreshold: 10 / 111320, batteryDelta: 2 }
+      );
+      if (shouldSnapshot) {
         await telemetryService.saveTelemetry(prisma, existing.id, { lat: fullState.lat, lon: fullState.lon, speed: fullState.speed, battery: fullState.battery }, now);
-        await updateSnapshotState(kv, robotId, { lat: fullState.lat, lon: fullState.lon, battery: fullState.battery });
+        writes.set(
+          snapshotKey,
+          JSON.stringify(buildSnapshotStateValue({ lat: fullState.lat, lon: fullState.lon, battery: fullState.battery })),
+          { ex: 86400 }
+        );
       }
 
-      // DTARO: update registry with live telemetry
+      // DTARO: telemetry fields + utilization EMA + zone membership, merged
+      // into a single registry read-modify-write — computed here (pure) from
+      // the batched-read registry value and queued into the same write
+      // pipeline as everything else this tick, instead of mergeRobotState's
+      // own independent GET+SET. Zone lookup itself (getZoneForCoordinates)
+      // is a separate, cheap, in-process-cached call — not a per-tick Redis
+      // hit (see zoneManager.service.js's 3-tier cache).
+      let zoneChangeInfo = null;
       try {
-        await updateTelemetry(kv, robotId, {
-          lat: fullState.lat,
-          lon: fullState.lon,
-          battery: fullState.battery,
-          status: fullState.status,
-          speed: fullState.speed,
+        const zone =
+          typeof fullState.lat === "number" && typeof fullState.lon === "number"
+            ? await getZoneForCoordinates(prisma, kv, fullState.lat, fullState.lon)
+            : null;
+        // undefined = "position unknown this tick, don't touch zoneId" —
+        // distinct from null, which means "known position, outside all zones".
+        const newZoneId = zone?.id ?? (zone === null && typeof fullState.lat === "number" ? null : undefined);
+
+        const mergedRegistry = buildMergedRegistryState(robotId, rawRegistryExisting, (existing) => {
+          const prevUtil = typeof existing.utilization === "number" ? existing.utilization : 0;
+          const alpha = 0.05;
+          const isActive = fullState.status === "ACTIVE" ? 1 : 0;
+          const nextUtil = Math.max(0, Math.min(1, prevUtil + alpha * (isActive - prevUtil)));
+
+          const prevZoneId = existing.zoneId ?? null;
+          const resolvedZoneId = newZoneId !== undefined ? newZoneId : prevZoneId;
+          if (newZoneId !== undefined && newZoneId !== prevZoneId) {
+            zoneChangeInfo = { oldZoneId: prevZoneId, newZoneId, zoneName: zone?.name || null };
+          }
+
+          return {
+            lat: fullState.lat,
+            lon: fullState.lon,
+            battery: fullState.battery,
+            status: fullState.status,
+            speed: fullState.speed,
+            lastHeartbeat: nowMs,
+            utilization: nextUtil,
+            zoneId: resolvedZoneId,
+          };
         });
+        writes.set(registryKeyStr, JSON.stringify(mergedRegistry), { ex: REGISTRY_TTL_SEC });
       } catch {
         // registry update is non-critical
       }
 
-      // DTARO: update utilization ratio (EMA, α=0.05 — ACTIVE = busy, else idle).
-      // Recovered from the deleted simulation.service.js reference implementation
-      // (git show 3cc8e8b:Backend/src/services/simulation.service.js).
-      try {
-        const prevState = await getRobotState(kv, robotId);
-        const prevUtil = typeof prevState?.utilization === "number" ? prevState.utilization : 0;
-        const alpha = 0.05;
-        const isActive = fullState.status === "ACTIVE" ? 1 : 0;
-        const newUtil = prevUtil + alpha * (isActive - prevUtil);
-        await updateUtilization(kv, robotId, newUtil);
-      } catch {
-        // registry update is non-critical
-      }
-
-      // DTARO: update zone membership if position changed
-      try {
-        const registryState = await getRobotState(kv, robotId);
-        const currentZoneId = registryState?.zoneId || null;
-        if (typeof fullState.lat === "number" && typeof fullState.lon === "number") {
-          await assignRobotToZone(prisma, kv, io, robotId, fullState.lat, fullState.lon, socket, currentZoneId);
+      if (zoneChangeInfo) {
+        try {
+          await applyZoneChangeSideEffects(
+            prisma, io, robotId,
+            zoneChangeInfo.oldZoneId, zoneChangeInfo.newZoneId, zoneChangeInfo.zoneName,
+            socket
+          );
+        } catch {
+          // zone side-effects are non-critical
         }
-      } catch {
-        // zone assignment is non-critical
       }
 
       // Persist battery level every ~2 minutes so real robots also survive
       // server restarts with correct battery (mirrors VirtualRobot behaviour).
-      // Only write when battery is a valid number and 120-second window elapsed.
+      // Only write when battery is a valid number and 120-second window
+      // elapsed. Gate check uses the batched-read value; writes (if due) are
+      // queued below instead of their own Promise.all round trip.
       try {
         if (typeof fullState.battery === "number" && Number.isFinite(fullState.battery)) {
           const persistKey = `vr:battery:${robotId}`;
-          const lastPersistKey = `vr:batteryPersistAt:${robotId}`;
-          const lastPersistRaw = await kv.get(lastPersistKey);
-          const lastPersist = lastPersistRaw ? Number(lastPersistRaw) : 0;
+          const lastPersist = rawLastPersist ? Number(rawLastPersist) : 0;
           if (nowMs - lastPersist >= 120_000) {
             const snap = Math.round(fullState.battery * 10) / 10;
-            await Promise.all([
-              kv.set(persistKey,     String(snap), { ex: 48 * 3600 }),
-              kv.set(lastPersistKey, String(nowMs), { ex: 48 * 3600 }),
-            ]);
+            writes.set(persistKey, String(snap), { ex: 48 * 3600 });
+            writes.set(batteryPersistKey, String(nowMs), { ex: 48 * 3600 });
           }
         }
       } catch { /* non-critical */ }
 
-      log.info(`[ROBOT ${robotId}] TELEMETRY`, { lat, lon, speed, battery, status });
+      // Flush this tick's Redis writes — robot:*, registry:*, and whichever
+      // of snapshotState:*/vr:battery* were queued above — as one pipelined
+      // round trip instead of up to 4 individually-awaited SETs.
+      try {
+        await writes.exec();
+      } catch { /* non-critical — same degrade-gracefully policy as before */ }
 
-      // 5) Emit live state to all connected clients.
+      // Sampled DEBUG-level telemetry log. Unconditional INFO-level logging
+      // here was measured (2026-07-26 CPU profile) to be a meaningful share
+      // of runtime cost for negligible operational value at fleet scale.
+      // debug level means it's silent by default in production
+      // (LOG_LEVEL=info); the once-per-robot-per-interval sample keeps a live
+      // heartbeat available for local debugging (LOG_LEVEL=debug) without
+      // reproducing full per-tick volume even then.
+      const lastLogAt = lastTelemetryLogAt.get(robotId) || 0;
+      if (nowMs - lastLogAt >= TELEMETRY_LOG_SAMPLE_MS) {
+        lastTelemetryLogAt.set(robotId, nowMs);
+        log.debug(`[ROBOT ${robotId}] TELEMETRY`, { lat, lon, speed, battery, status });
+      }
+
+      // 5) Emit live state to dashboard clients.
       // Single canonical event — frontend subscribes only to "robot:update".
       // "ROBOT_UPDATE" and "robot_update" were legacy aliases; removed to
       // eliminate 2 redundant socket emissions and 1 DB query per tick.
-      io.emit("robot:update", fullState);
+      // Was a global io.emit (every connected socket, including every OTHER
+      // robot, which have no use for this event) — an O(N²) fan-out pattern
+      // at fleet scale, flagged in system.md §16. Scoped to the dashboard
+      // room, which only browser dashboard clients join.
+      io.to("dashboard").emit("robot:update", fullState);
     } catch (e) {
       log.error("TELEMETRY handler failed", e);
     }

@@ -1,0 +1,98 @@
+{
+  "tier": 500,
+  "poolSize": 20,
+  "timestamp": "2026-07-26T20:00:36.879Z",
+  "connection": {
+    "targetCount": 500,
+    "authedFinal": 500,
+    "authRatio": 1,
+    "rampUpMs": 10022
+  },
+  "duration": {
+    "warmupMs": 15000,
+    "measurementMs": 75000
+  },
+  "throughput": {
+    "restRequestsPerSec": 0.69,
+    "socketInboundMsgPerSec": 501.25,
+    "telemetryMsgPerSec": 250.63,
+    "heartbeatMsgPerSec": 250.63,
+    "dashboardBroadcastPerSec": 249.09
+  },
+  "latency": {
+    "assignmentEndToEndMs": {
+      "count": 24,
+      "avg": 243.92,
+      "p50": 224,
+      "p95": 340,
+      "max": 346
+    },
+    "assignRestResponseMs": {
+      "count": 24,
+      "avg": 25.29,
+      "p50": 26,
+      "p95": 38,
+      "max": 40
+    },
+    "telemetryToDashboardMs": {
+      "count": 297,
+      "avg": 6.62,
+      "p50": 6,
+      "p95": 21,
+      "max": 34
+    },
+    "robotsStateRestMs": {
+      "count": 14,
+      "avg": 75.79,
+      "p50": 76,
+      "p95": 102,
+      "max": 102
+    },
+    "healthRestMs": {
+      "count": 14,
+      "avg": 26.07,
+      "p50": 21,
+      "p95": 60,
+      "max": 60
+    }
+  },
+  "resources": {
+    "serverProcess": {
+      "cpuPercentAvg": 48.82,
+      "cpuPercentMax": 140.6,
+      "memoryMBAvg": 268,
+      "memoryMBMax": 281
+    },
+    "redis": {
+      "opsPerSecAvg": 2188.09,
+      "opsPerSecMax": 8547.17923115327,
+      "instantaneousOpsPerSecAvg": 2028.03
+    },
+    "postgres": {
+      "writesPerSecAvg": 100.33,
+      "writesPerSecMax": 231.53692614770458,
+      "xactPerSecAvg": 105.04,
+      "numBackendsAvg": 21
+    },
+    "eventLoop": {
+      "p95MsAvg": 23.22,
+      "p95MsMax": 23.81,
+      "meanMsAvg": 20.86
+    },
+    "prismaPool": {
+      "connectionsOpenAvg": 20,
+      "connectionsBusyAvg": 0.91,
+      "connectionsBusyMax": 4,
+      "queriesWaitAvgMs": 0.02,
+      "queriesWaitMaxMs": 0.02
+    }
+  },
+  "counts": {
+    "telemetryReceivedTotal": 18797,
+    "heartbeatReceivedTotal": 18797,
+    "taskAssignAttempts": 24,
+    "taskAssignSucceeded": 24,
+    "taskAssignFailed": 0,
+    "taskAssignTimedOut": 0
+  }
+}

@@ -8,6 +8,7 @@ const { recordAllocation } = require("./metrics.service");
 const { safeJsonParse } = require("../utils/json");
 const { haversineMeters } = require("../utils/distance");
 const logger = require("../config/logger");
+const robotStateCache = require("../cache/robotStateCache");
 
 async function readRobotLive(kv, robotId) {
   if (!kv) return null;
@@ -270,6 +271,10 @@ async function _finalizeAssignment(prisma, taskId, robotCode, start, { pickupLat
     return t;
   });
 
+  // Keep the telemetry-hot-path cache in sync with the status/currentTaskId
+  // transition the transaction above just committed (see robotStateCache.js).
+  robotStateCache.set(robotCode, { status: "ACTIVE", isOnline: true });
+
   // Cache routes + state machine in Redis.
   if (kv) {
     await seedTaskKeys(kv, {
@@ -309,7 +314,7 @@ async function _finalizeAssignment(prisma, taskId, robotCode, start, { pickupLat
     } catch { /* non-critical */ }
 
     try {
-      await dispatchTaskAssign(robotCode, {
+      await dispatchTaskAssign(io, robotCode, {
         taskId,
         pickup: pickupCoord, drop: dropCoord,
         pathToPickup: routes.toPickup, pathToDrop: routes.toDrop,
@@ -474,7 +479,7 @@ async function rerouteTask(prisma, taskId, { kv, io } = {}) {
 
   // Send REROUTE_ALERT to the robot socket with the full new path
   try {
-    await dispatchRerouteAlert(robotId, {
+    await dispatchRerouteAlert(io, robotId, {
       taskId,
       segment,
       newPath: newPoints,

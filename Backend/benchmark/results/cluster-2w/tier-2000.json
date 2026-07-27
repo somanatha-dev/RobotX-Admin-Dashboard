@@ -1,0 +1,99 @@
+{
+  "tier": 2000,
+  "poolSize": 20,
+  "workers": 2,
+  "timestamp": "2026-07-26T20:58:12.094Z",
+  "connection": {
+    "targetCount": 2000,
+    "authedFinal": 1965,
+    "authRatio": 0.9825,
+    "rampUpMs": 13054
+  },
+  "duration": {
+    "warmupMs": 15000,
+    "measurementMs": 75000
+  },
+  "throughput": {
+    "restRequestsPerSec": 0.57,
+    "socketInboundMsgPerSec": 1937.95,
+    "telemetryMsgPerSec": 968.97,
+    "heartbeatMsgPerSec": 968.97,
+    "dashboardBroadcastPerSec": 298.03
+  },
+  "latency": {
+    "assignmentEndToEndMs": {
+      "count": 1,
+      "avg": 975,
+      "p50": 975,
+      "p95": 975,
+      "max": 975
+    },
+    "assignRestResponseMs": {
+      "count": 13,
+      "avg": 18234.77,
+      "p50": 20813,
+      "p95": 39693,
+      "max": 39693
+    },
+    "telemetryToDashboardMs": {
+      "count": 73,
+      "avg": 817.44,
+      "p50": 841,
+      "p95": 1996,
+      "max": 2318
+    },
+    "robotsStateRestMs": {
+      "count": 5,
+      "avg": 28278.8,
+      "p50": 29539,
+      "p95": 44172,
+      "max": 44172
+    },
+    "healthRestMs": {
+      "count": 1,
+      "avg": 3659,
+      "p50": 3659,
+      "p95": 3659,
+      "max": 3659
+    }
+  },
+  "resources": {
+    "serverProcess": {
+      "cpuPercentAvg": 106.57,
+      "cpuPercentMax": 206.2333333333333,
+      "memoryMBAvg": 1222,
+      "memoryMBMax": 1316
+    },
+    "redis": {
+      "opsPerSecAvg": 18995.91,
+      "opsPerSecMax": 92170.3187250996,
+      "instantaneousOpsPerSecAvg": 2182.14
+    },
+    "postgres": {
+      "writesPerSecAvg": 1373.98,
+      "writesPerSecMax": 4861.05577689243,
+      "xactPerSecAvg": 1398.47,
+      "numBackendsAvg": 41
+    },
+    "eventLoop": {
+      "p95MsAvg": 239.6,
+      "p95MsMax": 250.48,
+      "meanMsAvg": 60.55
+    },
+    "prismaPool": {
+      "connectionsOpenAvg": 20,
+      "connectionsBusyAvg": 20,
+      "connectionsBusyMax": 20,
+      "queriesWaitAvgMs": 3555.67,
+      "queriesWaitMaxMs": 3572.69
+    }
+  },
+  "counts": {
+    "telemetryReceivedTotal": 72673,
+    "heartbeatReceivedTotal": 72673,
+    "taskAssignAttempts": 24,
+    "taskAssignSucceeded": 1,
+    "taskAssignFailed": 1,
+    "taskAssignTimedOut": 8
+  }
+}

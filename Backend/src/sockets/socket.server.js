@@ -8,6 +8,7 @@ const { sweepExpired } = require("../services/ekb.service");
 const { seedDefaultZones } = require("../services/zoneManager.service");
 const { getManyRobotStates } = require("../services/robotRegistry.service");
 const { verifyUserToken } = require("../middlewares/auth_middleware");
+const robotStateCache = require("../cache/robotStateCache");
 const {
     OFFLINE_CUTOFF_MS,
     OFFLINE_SWEEP_INTERVAL_MS,
@@ -86,6 +87,9 @@ function startOfflineDetector(prisma, kv, { logger } = {}) {
                     where: { robotId: { in: trulyOffline } },
                     data: { isOnline: false, status: "OFFLINE" },
                 });
+                for (const robotId of trulyOffline) {
+                    robotStateCache.set(robotId, { isOnline: false, status: "OFFLINE" });
+                }
             }
 
             // Alive per Redis but stale in Postgres — reconcile the mirror

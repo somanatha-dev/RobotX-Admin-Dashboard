@@ -126,6 +126,19 @@ function pinoLog(level, module, msg, meta) {
   else pinoBase[level](obj, msg);
 }
 
+// ─── Dev-path level gating ─────────────────────────────────────────────────
+// The pino `level` option above only ever applied to the prod JSON path
+// (pinoLog) — the dev printLine path had no filtering at all, so .debug()
+// calls were indistinguishable from .info() in dev/benchmark runs regardless
+// of LOG_LEVEL. Same default as pino (debug in dev, info in prod) so default
+// local-dev behavior is unchanged; this only starts filtering when LOG_LEVEL
+// is explicitly raised.
+const LEVEL_RANK = { debug: 10, info: 20, warn: 30, error: 40 };
+const minDevLevel = LEVEL_RANK[process.env.LOG_LEVEL] ?? LEVEL_RANK[isProd ? "info" : "debug"];
+function devLevelEnabled(level) {
+  return (LEVEL_RANK[level] ?? LEVEL_RANK.info) >= minDevLevel;
+}
+
 // ─── Core logger factory ──────────────────────────────────────────────────────
 
 function makeLogger(module) {
@@ -138,6 +151,7 @@ function makeLogger(module) {
     }
 
     // Dev path
+    if (!devLevelEnabled(level)) return;
     try {
       if (typeof a === "string") {
         printLine(level, module, a, b && typeof b === "object" ? sanitise(b) : undefined);

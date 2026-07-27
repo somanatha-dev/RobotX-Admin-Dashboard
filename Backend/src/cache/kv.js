@@ -321,6 +321,55 @@ async function initKv({ logger }) {
       return keys.map((key) => memoryGet(String(key)));
     },
 
+    // Mixed get/set batch executed as one Redis pipeline (one network
+    // round-trip for N commands) instead of N individually-awaited calls.
+    // NOT a transaction (no MULTI) — commands can still partially apply on a
+    // connection error, same as today's independent calls; this only
+    // collapses round-trips, it doesn't add cross-key atomicity. Falls back
+    // to sequential in-memory ops (same graceful-degradation contract as the
+    // rest of this facade) when Redis is unavailable.
+    //
+    // Usage: const [a, b] = await kv.pipeline().get(k1).get(k2).exec();
+    //        await kv.pipeline().set(k1, v1, { ex: 30 }).set(k2, v2).exec();
+    pipeline() {
+      const ops = [];
+      const builder = {
+        get(key) {
+          ops.push({ type: "get", key });
+          return builder;
+        },
+        set(key, value, options) {
+          const ex = options && typeof options === "object" ? options.ex : undefined;
+          ops.push({ type: "set", key, value, ex });
+          return builder;
+        },
+        async exec() {
+          if (redisAvailable && redis) {
+            try {
+              const p = redis.pipeline();
+              for (const o of ops) {
+                if (o.type === "get") p.get(o.key);
+                else if (typeof o.ex === "number" && Number.isFinite(o.ex) && o.ex > 0) p.set(o.key, o.value, "EX", Math.floor(o.ex));
+                else p.set(o.key, o.value);
+              }
+              const results = await p.exec();
+              // ioredis pipeline results are [err, result] pairs in command order.
+              return results.map(([err, result]) => (err ? null : result));
+            } catch (e) {
+              disableRedis(e);
+            }
+          }
+          // Fallback: sequential in-memory, preserving get/set order.
+          return ops.map((o) => {
+            if (o.type === "get") return memoryGet(o.key);
+            memorySet(o.key, o.value, { ex: o.ex });
+            return undefined;
+          });
+        },
+      };
+      return builder;
+    },
+
     /**
      * Atomically increment a counter and set/refresh its TTL.
      * Uses Redis INCR + EXPIRE for true atomicity; falls back to safe GET+SET.

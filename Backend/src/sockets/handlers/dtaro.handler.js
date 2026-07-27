@@ -16,6 +16,7 @@ const { allow } = require("../rateLimit");
 const { processObstacleReport } = require("../../services/alertDissemination.service");
 const { updateHealthStatus, updateAssignedTask } = require("../../services/robotRegistry.service");
 const { z } = require("zod");
+const robotStateCache = require("../../cache/robotStateCache");
 
 const obstacleSchema = z.object({
   lat: z.number(),
@@ -108,6 +109,8 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger }) {
         });
       });
 
+      robotStateCache.set(robotId, { status: "IDLE" });
+
       // Clear Redis task state
       if (kv && taskId) {
         await Promise.allSettled([
@@ -152,6 +155,7 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger }) {
         where: { robotId },
         data: { status: "ERROR" },
       });
+      robotStateCache.set(robotId, { status: "ERROR" });
 
       // Update health status in registry
       await updateHealthStatus(kv, robotId, "FAULT");

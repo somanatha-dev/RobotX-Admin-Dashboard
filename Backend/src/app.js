@@ -5,6 +5,7 @@ const helmet = require("helmet");
 const logger = require("./config/logger");
 const { corsOriginDelegate } = require("./config/cors");
 const { getSystemMetrics } = require("./services/metrics.service");
+const eventLoopMonitor = require("./observability/eventLoopMonitor");
 
 const apiRoutes = require("./routes");
 
@@ -68,11 +69,36 @@ app.get("/health", async (req, res) => {
     // ignore
   }
 
+  // Prisma connection-pool + query-wait metrics (previewFeatures=["metrics"]).
+  // Direct visibility into pool contention — the thing scale-architecture.md
+  // and the first benchmark run could only infer indirectly from latency.
+  let prismaPool = null;
+  try {
+    const raw = await prisma?.$metrics?.json();
+    if (raw) {
+      const gauge = (name) => raw.gauges?.find((g) => g.key === name)?.value ?? null;
+      const waitHist = raw.histograms?.find((h) => h.key === "prisma_client_queries_wait_histogram_ms");
+      const waitCount = waitHist?.value?.count ?? 0;
+      const waitSum = waitHist?.value?.sum ?? 0;
+      prismaPool = {
+        connectionsOpen: gauge("prisma_pool_connections_open"),
+        connectionsBusy: gauge("prisma_pool_connections_busy"),
+        connectionsIdle: gauge("prisma_pool_connections_idle"),
+        queriesWaitAvgMs: waitCount > 0 ? Math.round((waitSum / waitCount) * 100) / 100 : 0,
+        queriesWaitCount: waitCount,
+      };
+    }
+  } catch {
+    // metrics preview feature unavailable — non-fatal
+  }
+
   res.json({
     server: "ok",
     redis: redisOk ? "ok" : "fail",
     db: dbOk ? "ok" : "fail",
     uptime: Math.floor(process.uptime()),
+    eventLoopDelay: eventLoopMonitor.snapshot(),
+    prismaPool,
     ...metrics,
   });
 });

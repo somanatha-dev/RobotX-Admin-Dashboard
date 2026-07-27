@@ -2,7 +2,15 @@
  * Command Dispatcher Service — DTARO
  *
  * Unified point for sending commands to robot sockets.
- * Wraps the in-memory socket registry and provides typed dispatch helpers.
+ * Dispatches via each robot's dedicated Socket.IO room ("robot:{robotId}",
+ * joined at AUTH — see robot.handler.js) instead of the local in-memory
+ * socket registry, so this works correctly whether the caller's REST request
+ * landed on the same worker process that holds the robot's live connection
+ * or not. That indirection is required, not optional, the moment this runs
+ * as more than one process behind a load balancer (io.to()/io.in() go
+ * through the Socket.IO adapter — see server.js's Redis adapter wiring —
+ * which fans requests out to whichever worker actually owns the socket;
+ * getRobotSocket()'s local Map has no visibility outside its own process).
  *
  * Typed helpers: dispatchTaskAssign, dispatchRerouteAlert.
  * (STOP/RETURN_TO_BASE commands are dispatched directly via robots.controller.js's
@@ -14,14 +22,17 @@
  * are handled by the simulation engine).
  */
 
-const { getRobotSocket } = require("../sockets/robotSockets");
-
 const MAX_RETRIES = 2;
 const RETRY_BASE_MS = 1000; // first retry after 1 s, second after 2 s
 
+function robotRoom(robotId) {
+  return `robot:${robotId}`;
+}
+
 /**
- * Low-level fire-and-forget emit with retry on missing socket.
+ * Low-level fire-and-forget emit with retry on an empty room.
  *
+ * @param {object} io - Socket.IO server instance
  * @param {string} robotId
  * @param {string} event
  * @param {object} payload
@@ -29,11 +40,20 @@ const RETRY_BASE_MS = 1000; // first retry after 1 s, second after 2 s
  * @param {number} [options.retries]
  * @returns {Promise<{ dispatched: boolean, socketId: string|null, attempts: number }>}
  */
-async function dispatch(robotId, event, payload, { retries = MAX_RETRIES } = {}) {
+async function dispatch(io, robotId, event, payload, { retries = MAX_RETRIES } = {}) {
+  const room = robotRoom(robotId);
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const socket = getRobotSocket(robotId);
+    // fetchSockets() is adapter-aware (works across worker processes via the
+    // Redis adapter, same as within one process) — the cross-worker
+    // equivalent of the old getRobotSocket() presence check.
+    let sockets = [];
+    try {
+      sockets = await io.in(room).fetchSockets();
+    } catch {
+      sockets = [];
+    }
 
-    if (!socket) {
+    if (!sockets.length) {
       // No socket connected — back off before retrying
       if (attempt < retries) {
         await new Promise((r) => setTimeout(r, RETRY_BASE_MS * (attempt + 1)));
@@ -43,8 +63,8 @@ async function dispatch(robotId, event, payload, { retries = MAX_RETRIES } = {})
     }
 
     try {
-      socket.emit(event, payload);
-      return { dispatched: true, socketId: socket.id, attempts: attempt + 1 };
+      io.to(room).emit(event, payload);
+      return { dispatched: true, socketId: sockets[0].id, attempts: attempt + 1 };
     } catch {
       if (attempt >= retries) {
         return { dispatched: false, socketId: null, attempts: attempt + 1 };
@@ -59,22 +79,24 @@ async function dispatch(robotId, event, payload, { retries = MAX_RETRIES } = {})
 /**
  * Dispatch TASK_ASSIGN to a robot socket.
  *
+ * @param {object} io - Socket.IO server instance
  * @param {string} robotId
  * @param {{ taskId: string, pickup: object, drop: object, pathToPickup: object[], pathToDrop: object[] }} taskPayload
  */
-async function dispatchTaskAssign(robotId, taskPayload) {
-  return dispatch(robotId, "TASK_ASSIGN", { ...taskPayload, timestamp: Date.now() });
+async function dispatchTaskAssign(io, robotId, taskPayload) {
+  return dispatch(io, robotId, "TASK_ASSIGN", { ...taskPayload, timestamp: Date.now() });
 }
 
 /**
  * Dispatch REROUTE_ALERT to a robot socket.
  *
+ * @param {object} io - Socket.IO server instance
  * @param {string} robotId
  * @param {{ obstacleId: string, lat: number, lon: number, zoneId?: string, severity?: string, newPath?: object[] }} alertPayload
  */
-async function dispatchRerouteAlert(robotId, alertPayload) {
+async function dispatchRerouteAlert(io, robotId, alertPayload) {
   // Single retry — rerouting is time-sensitive
-  return dispatch(robotId, "REROUTE_ALERT", { ...alertPayload, timestamp: Date.now() }, { retries: 1 });
+  return dispatch(io, robotId, "REROUTE_ALERT", { ...alertPayload, timestamp: Date.now() }, { retries: 1 });
 }
 
 module.exports = {

@@ -59,7 +59,10 @@ function registerCommandHandlers(io, socket, { prisma, kv, logger }) {
         // ignore
       }
 
-      io.emit("COMMAND_STATUS", { commandId, status: "ACK", responseTimeMs });
+      // Dashboard-only UI event — robots never listen for it. Was a global
+      // io.emit (every connected socket, robots included); scoping to the
+      // room avoids O(N) fan-out to sockets with no reason to receive it.
+      io.to("dashboard").emit("COMMAND_STATUS", { commandId, status: "ACK", responseTimeMs });
     } catch (e) {
       // If the command row doesn't exist (or belongs to another robot), ignore.
       log.error("COMMAND_ACK handler failed", e);

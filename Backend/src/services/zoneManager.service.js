@@ -163,32 +163,53 @@ async function assignRobotToZone(prisma, kv, io, robotId, lat, lon, socket, curr
   }
 
   if (changed) {
-    try {
-      await prisma?.robot?.update({
-        where: { robotId },
-        data: { zoneId: newZoneId },
-      });
-    } catch {
-      // Durable mirror only; the registry above is the authoritative live copy.
-    }
-
-    updateSocketZoneRoom(socket, currentZoneId, newZoneId);
-    if (io) {
-      try {
-        io.to("dashboard").emit("ZONE_UPDATED", {
-          robotId,
-          oldZoneId: currentZoneId,
-          newZoneId,
-          zoneName: zone?.name || null,
-          timestamp: Date.now(),
-        });
-      } catch {
-        // ignore emit failure
-      }
-    }
+    await applyZoneChangeSideEffects(prisma, io, robotId, currentZoneId, newZoneId, zone?.name || null, socket);
   }
 
   return newZoneId;
+}
+
+/**
+ * The "zone actually changed" branch of assignRobotToZone, split out so the
+ * telemetry hot path can compute its zone membership as part of a single
+ * merged registry read-modify-write (mergeRobotState) instead of paying
+ * assignRobotToZone's own separate GET+SET, then call this only on the rare
+ * tick where the zone crossed a boundary. Zone crossings are rare by
+ * construction (see assignRobotToZone's docstring), so this stays off the
+ * hot path in practice.
+ *
+ * @param {object} prisma
+ * @param {object|null} io
+ * @param {string} robotId
+ * @param {string|null} oldZoneId
+ * @param {string|null} newZoneId
+ * @param {string|null} zoneName
+ * @param {object|null} socket
+ */
+async function applyZoneChangeSideEffects(prisma, io, robotId, oldZoneId, newZoneId, zoneName, socket) {
+  try {
+    await prisma?.robot?.update({
+      where: { robotId },
+      data: { zoneId: newZoneId },
+    });
+  } catch {
+    // Durable mirror only; the registry is the authoritative live copy.
+  }
+
+  updateSocketZoneRoom(socket, oldZoneId, newZoneId);
+  if (io) {
+    try {
+      io.to("dashboard").emit("ZONE_UPDATED", {
+        robotId,
+        oldZoneId,
+        newZoneId,
+        zoneName,
+        timestamp: Date.now(),
+      });
+    } catch {
+      // ignore emit failure
+    }
+  }
 }
 
 /**
@@ -249,5 +270,6 @@ module.exports = {
   invalidateZoneCache,
   getZoneForCoordinates,
   assignRobotToZone,
+  applyZoneChangeSideEffects,
   seedDefaultZones,
 };

@@ -1,7 +1,10 @@
 const http = require("http");
 const { Server } = require("socket.io");
+const { createAdapter } = require("@socket.io/redis-adapter");
+const Redis = require("ioredis");
 
 require("./src/config/env");
+require("./src/observability/eventLoopMonitor").start();
 
 const app = require("./src/app");
 const logger = require("./src/config/logger");
@@ -28,6 +31,40 @@ async function start() {
 
   const prisma = await connectPrismaWithRetry({ logger });
   const { kv, close: closeKv } = await initKv({ logger });
+
+  // Socket.IO's default adapter only broadcasts within its own process — a
+  // room emit (io.to("dashboard").emit(...)) from a worker that handled some
+  // robot's telemetry would never reach a dashboard client connected to a
+  // *different* worker. Required for correctness the moment this runs as
+  // more than one process (clustering/horizontal scaling), not just a perf
+  // nicety. Mirrors kv.js's own "configured but unreachable" policy: warn and
+  // fall back to the default (single-process) adapter rather than crash —
+  // this is the one place where that fallback is a real behavior change
+  // (cross-worker broadcast silently stops working) rather than a
+  // transparent degrade, so it's logged loudly.
+  let redisAdapterClients = null;
+  const redisUrl = typeof process.env.REDIS_URL === "string" ? process.env.REDIS_URL.trim() : "";
+  const redisEnabled = String(process.env.REDIS_ENABLED || "").toLowerCase() !== "false";
+  if (redisEnabled && redisUrl) {
+    try {
+      const pubClient = new Redis(redisUrl, { connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS || 5000) });
+      const subClient = pubClient.duplicate();
+      await Promise.all([
+        new Promise((resolve, reject) => { pubClient.once("ready", resolve); pubClient.once("error", reject); }),
+        new Promise((resolve, reject) => { subClient.once("ready", resolve); subClient.once("error", reject); }),
+      ]);
+      io.adapter(createAdapter(pubClient, subClient));
+      redisAdapterClients = { pubClient, subClient };
+      logger.info("Socket.IO Redis adapter attached — broadcasts fan out across worker processes");
+    } catch (e) {
+      logger.warn(
+        "Socket.IO Redis adapter unavailable — falling back to the default single-process adapter. " +
+        "If this process is one of several workers behind a load balancer, dashboard broadcasts from " +
+        "other workers will NOT reach clients connected here.",
+        { message: e?.message }
+      );
+    }
+  }
 
   // Detect Redis availability for the startup banner.
   let redisLive = false;
@@ -80,6 +117,10 @@ async function start() {
       try { virtualSimulator?.stop?.(); } catch { /* ignore */ }
       await new Promise((resolve) => server.close(resolve));
       io.close();
+      if (redisAdapterClients) {
+        try { redisAdapterClients.pubClient.disconnect(); } catch { /* ignore */ }
+        try { redisAdapterClients.subClient.disconnect(); } catch { /* ignore */ }
+      }
       await closeKv();
       await disconnectPrisma();
       process.exit(0);
@@ -92,10 +133,30 @@ async function start() {
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 
+  // Benchmark harness sets this so an external load-generator is the sole
+  // source of robot traffic — otherwise every commissioned/seeded Robot row
+  // gets its own in-process VirtualRobot socket.io-client on every boot
+  // (below), which would compete with the server for CPU on the same
+  // process and invalidate capacity measurements. Default (unset) preserves
+  // existing behavior exactly.
+  const disableVirtualSimulator = String(process.env.DISABLE_VIRTUAL_SIMULATOR || "").toLowerCase() === "true";
+
   server.listen(port, host, () => {
     const serverUrl = `http://127.0.0.1:${port}`;
     virtualSimulator = createVirtualRobotSimulator({ prisma, kv, serverUrl, logger });
     app.locals.virtualSimulator = virtualSimulator;
+
+    if (disableVirtualSimulator) {
+      logger.startup({
+        env:       process.env.NODE_ENV || "development",
+        port,
+        db:        true,
+        redis:     redisLive,
+        simulator: "Disabled (DISABLE_VIRTUAL_SIMULATOR=true) — benchmark mode",
+      });
+      return;
+    }
+
     virtualSimulator.start();
 
     logger.startup({

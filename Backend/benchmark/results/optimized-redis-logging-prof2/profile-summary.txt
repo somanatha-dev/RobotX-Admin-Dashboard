@@ -1,0 +1,681 @@
+Statistical profiling result from benchmark/results/optimized-redis-logging-prof2/isolate-000002484E859000-26548-isolate-26548-v8.log, (9618 ticks, 33 unaccounted, 0 excluded).
+
+ [Shared libraries]:
+   ticks  total  nonlib   name
+   6750   70.2%          C:\WINDOWS\SYSTEM32\ntdll.dll
+   1717   17.9%          C:\Program Files\nodejs\node.exe
+     40    0.4%          C:\WINDOWS\System32\KERNELBASE.dll
+     32    0.3%          C:\WINDOWS\System32\KERNEL32.DLL
+     20    0.2%          C:\WINDOWS\System32\WS2_32.dll
+      7    0.1%          C:\WINDOWS\system32\mswsock.dll
+
+ [JavaScript]:
+   ticks  total  nonlib   name
+    103    1.1%    9.8%  Builtin: LoadIC
+     58    0.6%    5.5%  Builtin: KeyedLoadIC_Megamorphic
+     26    0.3%    2.5%  Builtin: CallFunction_ReceiverIsAny
+     23    0.2%    2.2%  Builtin: LoadIC_Megamorphic
+     23    0.2%    2.2%  Builtin: CallFunction_ReceiverIsNotNullOrUndefined
+     21    0.2%    2.0%  Builtin: BaselineOutOfLinePrologue
+     17    0.2%    1.6%  Builtin: CallFunction_ReceiverIsNullOrUndefined
+     16    0.2%    1.5%  JS: *sendCommand C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\Redis.js:327:16
+     16    0.2%    1.5%  Builtin: Call_ReceiverIsNotNullOrUndefined
+     15    0.2%    1.4%  JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\utils\Commander.js:74:21
+     13    0.1%    1.2%  JS: *exec C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:346:19
+     13    0.1%    1.2%  Builtin: StoreIC
+     13    0.1%    1.2%  Builtin: CreateTypedArray
+     12    0.1%    1.1%  JS: *allow C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\rateLimit.js:4:15
+     11    0.1%    1.0%  JS: *startLoop C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\receiver.js:149:12
+     11    0.1%    1.0%  JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+     11    0.1%    1.0%  JS: *_parse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:3208:11
+     11    0.1%    1.0%  Builtin: ResumeGeneratorTrampoline
+     11    0.1%    1.0%  Builtin: KeyedStoreIC_Megamorphic
+     11    0.1%    1.0%  Builtin: FindOrderedHashMapEntry
+     10    0.1%    1.0%  Builtin: RecordWriteSaveFP
+     10    0.1%    1.0%  Builtin: KeyedLoadIC
+     10    0.1%    1.0%  Builtin: CreateShallowObjectLiteral
+      9    0.1%    0.9%  Builtin: StringAdd_CheckNone
+      9    0.1%    0.9%  Builtin: LoadGlobalIC
+      9    0.1%    0.9%  Builtin: CreateDataProperty
+      9    0.1%    0.9%  Builtin: CompileLazy
+      9    0.1%    0.9%  Builtin: Call_ReceiverIsNullOrUndefined
+      8    0.1%    0.8%  JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      7    0.1%    0.7%  JS: *_parseSync C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:105:15
+      7    0.1%    0.7%  JS: *Socket._writeGeneric node:net:935:42
+      6    0.1%    0.6%  JS: *returnReply C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\DataHandler.js:20:26
+      6    0.1%    0.6%  JS: *onStreamRead node:internal/stream_base_commons:166:22
+      6    0.1%    0.6%  JS: *emit node:events:465:44
+      6    0.1%    0.6%  JS: *_parse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:1956:11
+      6    0.1%    0.6%  JS: *Writable.write node:internal/streams/writable:504:36
+      6    0.1%    0.6%  JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:37:35
+      6    0.1%    0.6%  Builtin: StoreIC_Megamorphic
+      6    0.1%    0.6%  Builtin: LoadICTrampoline_Megamorphic
+      6    0.1%    0.6%  Builtin: FlattenIntoArrayWithoutMapFn
+      6    0.1%    0.6%  Builtin: Call_ReceiverIsAny
+      5    0.1%    0.5%  JS: *setRobotState C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\robotRegistry.service.js:55:29
+      5    0.1%    0.5%  JS: *safeParse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:122:14
+      5    0.1%    0.5%  JS: *ondecoded C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\client.js:197:14
+      5    0.1%    0.5%  JS: *ondata C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\client.js:182:11
+      5    0.1%    0.5%  JS: *getInfo C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\receiver.js:185:10
+      5    0.1%    0.5%  JS: *_parse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:2291:11
+      5    0.1%    0.5%  Builtin: RunMicrotasks
+      5    0.1%    0.5%  Builtin: LoadICTrampoline
+      5    0.1%    0.5%  Builtin: KeyedLoadIC_PolymorphicName
+      5    0.1%    0.5%  Builtin: DefineNamedOwnIC
+      5    0.1%    0.5%  Builtin: CloneObjectIC
+      4    0.0%    0.4%  JS: ^processTimers node:internal/timers:508:25
+      4    0.0%    0.4%  JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      4    0.0%    0.4%  JS: *singleLoader C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:121:5631
+      4    0.0%    0.4%  JS: *sendCommand C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\Pipeline.js:183:16
+      4    0.0%    0.4%  JS: *send C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:59:9
+      4    0.0%    0.4%  JS: *processPromiseRejections node:internal/process/promises:439:34
+      4    0.0%    0.4%  JS: *handleHeartbeat C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:243:33
+      4    0.0%    0.4%  JS: *decodeString C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io-parser\build\cjs\index.js:179:17
+      4    0.0%    0.4%  JS: *_parse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:1080:11
+      4    0.0%    0.4%  JS: *Readable.read node:internal/streams/readable:647:35
+      4    0.0%    0.4%  JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\socket.js:692:30
+      4    0.0%    0.4%  Builtin: ToString
+      4    0.0%    0.4%  Builtin: ToBooleanForBaselineJump
+      4    0.0%    0.4%  Builtin: SuspendGeneratorBaseline
+      4    0.0%    0.4%  Builtin: LoadGlobalICTrampoline
+      4    0.0%    0.4%  Builtin: JSBuiltinsConstructStub
+      4    0.0%    0.4%  Builtin: FulfillPromise
+      4    0.0%    0.4%  Builtin: FastNewClosure
+      4    0.0%    0.4%  Builtin: FastCreateDataProperty
+      4    0.0%    0.4%  Builtin: Construct
+      4    0.0%    0.4%  Builtin: AsyncFunctionAwaitCaught
+      4    0.0%    0.4%  Builtin: ArrayPrototypePush
+      3    0.0%    0.3%  JS: *writeOrBuffer node:internal/streams/writable:548:23
+      3    0.0%    0.3%  JS: *toWritable C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\Command.js:110:15
+      3    0.0%    0.3%  JS: *nextTick node:internal/process/task_queues:113:18
+      3    0.0%    0.3%  JS: *get node:internal/bootstrap/node:474:8
+      3    0.0%    0.3%  JS: *get node:internal/bootstrap/node:436:8
+      3    0.0%    0.3%  JS: *get C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\utils\debug.js:75:16
+      3    0.0%    0.3%  JS: *get C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\debug\src\common.js:125:9
+      3    0.0%    0.3%  JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      3    0.0%    0.3%  JS: *addChunk node:internal/streams/readable:550:18
+      3    0.0%    0.3%  JS: *Socket._write node:net:977:35
+      3    0.0%    0.3%  JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\client.js:206:39
+      3    0.0%    0.3%  Builtin: StringToLowerCaseIntl
+      3    0.0%    0.3%  Builtin: StringAddConvertRight
+      3    0.0%    0.3%  Builtin: StrictEqual_Baseline
+      3    0.0%    0.3%  Builtin: SetConstructor
+      3    0.0%    0.3%  Builtin: ProxyGetProperty
+      3    0.0%    0.3%  Builtin: MapConstructor
+      3    0.0%    0.3%  Builtin: LoadIC_NoFeedback
+      3    0.0%    0.3%  Builtin: KeyedStoreIC
+      3    0.0%    0.3%  Builtin: JSEntry
+      3    0.0%    0.3%  Builtin: GetProperty
+      3    0.0%    0.3%  Builtin: FindOrderedHashSetEntry
+      3    0.0%    0.3%  Builtin: FindNonDefaultConstructorOrConstruct
+      3    0.0%    0.3%  Builtin: CopyDataProperties
+      2    0.0%    0.2%  JS: ^_parse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:2291:11
+      2    0.0%    0.2%  JS: *socketOnData C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\websocket.js:1354:22
+      2    0.0%    0.2%  JS: *sendPacket C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:356:15
+      2    0.0%    0.2%  JS: *remove node:internal/linkedlist:16:16
+      2    0.0%    0.2%  JS: *onwrite node:internal/streams/writable:615:17
+      2    0.0%    0.2%  JS: *onPacket C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:85:13
+      2    0.0%    0.2%  JS: *hasBinary C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io-parser\build\cjs\is-binary.js:28:19
+      2    0.0%    0.2%  JS: *get node:net:2446:6
+      2    0.0%    0.2%  JS: *frame C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:76:15
+      2    0.0%    0.2%  JS: *flush C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:385:10
+      2    0.0%    0.2%  JS: *fillResult C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\Pipeline.js:59:15
+      2    0.0%    0.2%  JS: *execute C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\redis-parser\lib\parser.js:491:11
+      2    0.0%    0.2%  JS: *emit C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\broadcast-operator.js:157:9
+      2    0.0%    0.2%  JS: *clearBuffer node:internal/streams/writable:744:21
+      2    0.0%    0.2%  JS: *_write node:internal/streams/writable:453:16
+      2    0.0%    0.2%  JS: *_parse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:487:11
+      2    0.0%    0.2%  JS: *Socket.read node:net:780:33
+      2    0.0%    0.2%  Builtin: ToName
+      2    0.0%    0.2%  Builtin: StringSubstring
+      2    0.0%    0.2%  Builtin: StringEqual
+      2    0.0%    0.2%  Builtin: StringConstructor
+      2    0.0%    0.2%  Builtin: StoreFastElementIC_InBounds
+      2    0.0%    0.2%  Builtin: SetPrototypeAdd
+      2    0.0%    0.2%  Builtin: ObjectPrototypeHasOwnProperty
+      2    0.0%    0.2%  Builtin: ObjectKeys
+      2    0.0%    0.2%  Builtin: NumberToString
+      2    0.0%    0.2%  Builtin: JSEntryTrampoline
+      2    0.0%    0.2%  Builtin: IterableToListWithSymbolLookup
+      2    0.0%    0.2%  Builtin: InterpreterEntryTrampoline
+      2    0.0%    0.2%  Builtin: FastNewObject
+      2    0.0%    0.2%  Builtin: EnqueueMicrotask
+      2    0.0%    0.2%  Builtin: ConstructFunction
+      2    0.0%    0.2%  Builtin: CloneObjectIC_Slow
+      2    0.0%    0.2%  Builtin: CloneFastJSArrayFillingHoles
+      2    0.0%    0.2%  Builtin: CallWithArrayLike
+      2    0.0%    0.2%  Builtin: CEntry_Return1_ArgvOnStack_BuiltinExit
+      2    0.0%    0.2%  Builtin: BitwiseAnd_Baseline
+      2    0.0%    0.2%  Builtin: AsyncFunctionEnter
+      2    0.0%    0.2%  Builtin: ArrayPrototypeShift
+      2    0.0%    0.2%  Builtin: ArrayIndexOfSmiOrObject
+      2    0.0%    0.2%  Builtin: ArrayIncludesSmiOrObject
+      2    0.0%    0.2%  Builtin: ArrayConstructor
+      2    0.0%    0.2%  Builtin: Add_Baseline
+      2    0.0%    0.2%  Builtin: AdaptorWithBuiltinExitFrame
+      1    0.0%    0.1%  JS: ~set C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:201:14
+      1    0.0%    0.1%  JS: ~createRedirectInterceptor node:internal/deps/undici/undici:7530:39
+      1    0.0%    0.1%  JS: ~<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\app.js:40:20
+      1    0.0%    0.1%  JS: ^yr C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:31:6157
+      1    0.0%    0.1%  JS: ^wrapModuleLoad node:internal/modules/cjs/loader:228:24
+      1    0.0%    0.1%  JS: ^unpack C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:121:7878
+      1    0.0%    0.1%  JS: ^subarray node:buffer:1177:46
+      1    0.0%    0.1%  JS: ^start C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:112:1970
+      1    0.0%    0.1%  JS: ^send C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:346:7
+      1    0.0%    0.1%  JS: ^resolveForCJSWithHooks node:internal/modules/cjs/loader:1038:32
+      1    0.0%    0.1%  JS: ^requestArgsToMiddlewareArgs C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:130:441
+      1    0.0%    0.1%  JS: ^request C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:121:6179
+      1    0.0%    0.1%  JS: ^reportModuleToWatchMode node:internal/modules/cjs/loader:295:33
+      1    0.0%    0.1%  JS: ^query C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\express\lib\request.js:217:42
+      1    0.0%    0.1%  JS: ^percolateDown node:internal/priority_queue:45:16
+      1    0.0%    0.1%  JS: ^nextTick node:internal/process/task_queues:113:18
+      1    0.0%    0.1%  JS: ^loadZones C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\zoneManager.service.js:31:25
+      1    0.0%    0.1%  JS: ^listOnTimeout node:internal/timers:528:25
+      1    0.0%    0.1%  JS: ^hasAsyncIdStack node:internal/async_hooks:533:25
+      1    0.0%    0.1%  JS: ^getHeaderValue C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\helmet\index.cjs:93:24
+      1    0.0%    0.1%  JS: ^getEncodingOps node:buffer:721:24
+      1    0.0%    0.1%  JS: ^get node:internal/streams/readable:132:8
+      1    0.0%    0.1%  JS: ^get C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:121:2365
+      1    0.0%    0.1%  JS: ^dispatch C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:498:11
+      1    0.0%    0.1%  JS: ^consume C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\receiver.js:104:10
+      1    0.0%    0.1%  JS: ^_parse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:1956:11
+      1    0.0%    0.1%  JS: ^Socket node:net:362:16
+      1    0.0%    0.1%  JS: ^AbortSignal node:internal/abort_controller:176:14
+      1    0.0%    0.1%  JS: ^<anonymous> node:internal/modules/cjs/loader:1876:37
+      1    0.0%    0.1%  JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:37:35
+      1    0.0%    0.1%  JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:139:59
+      1    0.0%    0.1%  JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:130:10182
+      1    0.0%    0.1%  JS: *yt C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:21:1007
+      1    0.0%    0.1%  JS: *toStringOrNull C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\utils\parse.js:7:24
+      1    0.0%    0.1%  JS: *then C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:121:1078
+      1    0.0%    0.1%  JS: *td C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:29:6432
+      1    0.0%    0.1%  JS: *stat node:internal/modules/cjs/loader:249:14
+      1    0.0%    0.1%  JS: *slice node:buffer:636:12
+      1    0.0%    0.1%  JS: *set C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:341:12
+      1    0.0%    0.1%  JS: *set C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:201:14
+      1    0.0%    0.1%  JS: *sa C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:29:7515
+      1    0.0%    0.1%  JS: *registryKey C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\robotRegistry.service.js:22:21
+      1    0.0%    0.1%  JS: *mergeObjectSync C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\helpers\parseUtil.cjs:90:27
+      1    0.0%    0.1%  JS: *ln C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:21:35573
+      1    0.0%    0.1%  JS: *isValid C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\helpers\parseUtil.cjs:121:17
+      1    0.0%    0.1%  JS: *getZoneForCoordinates C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\zoneManager.service.js:93:37
+      1    0.0%    0.1%  JS: *getPropertyValue C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:29:15958
+      1    0.0%    0.1%  JS: *getFlagMap C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\Command.js:85:22
+      1    0.0%    0.1%  JS: *get node:internal/bootstrap/node:100:8
+      1    0.0%    0.1%  JS: *get C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:29:16385
+      1    0.0%    0.1%  JS: *fromList node:internal/streams/readable:1582:18
+      1    0.0%    0.1%  JS: *exchange node:internal/async_context_frame:62:18
+      1    0.0%    0.1%  JS: *encode C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io-parser\build\cjs\index.js:55:11
+      1    0.0%    0.1%  JS: *emitBeforeScript node:internal/async_hooks:509:26
+      1    0.0%    0.1%  JS: *dataMessage C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\receiver.js:541:14
+      1    0.0%    0.1%  JS: *consume C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\receiver.js:104:10
+      1    0.0%    0.1%  JS: *addListener node:events:609:58
+      1    0.0%    0.1%  JS: *addCatch node:events:365:18
+      1    0.0%    0.1%  JS: *_unrefTimer node:net:520:52
+      1    0.0%    0.1%  JS: *_onpacket C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\socket.js:426:14
+      1    0.0%    0.1%  JS: *_getType C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:79:13
+      1    0.0%    0.1%  JS: *WebSocket._onSentLast C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:26:28
+      1    0.0%    0.1%  JS: *Pipeline.exec C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\Pipeline.js:233:36
+      1    0.0%    0.1%  JS: *ParseInputLazyPath C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:13:16
+      1    0.0%    0.1%  JS: *AsyncResource node:async_hooks:168:14
+      1    0.0%    0.1%  JS: *<anonymous> node:internal/validators:176:40
+      1    0.0%    0.1%  JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:427:87
+      1    0.0%    0.1%  Builtin: Typeof
+      1    0.0%    0.1%  Builtin: TypedArrayPrototypeLength
+      1    0.0%    0.1%  Builtin: ToObject
+      1    0.0%    0.1%  Builtin: SubString
+      1    0.0%    0.1%  Builtin: StringToNumber
+      1    0.0%    0.1%  Builtin: StringPrototypeTrim
+      1    0.0%    0.1%  Builtin: StringPrototypeCharCodeAt
+      1    0.0%    0.1%  Builtin: StrictEqual
+      1    0.0%    0.1%  Builtin: StoreInArrayLiteralIC
+      1    0.0%    0.1%  Builtin: StoreIC_NoFeedback
+      1    0.0%    0.1%  Builtin: StoreICTrampoline_Megamorphic
+      1    0.0%    0.1%  Builtin: SetPrototypeForEach
+      1    0.0%    0.1%  Builtin: ResolvePromise
+      1    0.0%    0.1%  Builtin: PromiseFulfillReactionJob
+      1    0.0%    0.1%  Builtin: PerformPromiseThen
+      1    0.0%    0.1%  Builtin: MapPrototypeSet
+      1    0.0%    0.1%  Builtin: MapIteratorPrototypeNext
+      1    0.0%    0.1%  Builtin: LoadIC_StringLength
+      1    0.0%    0.1%  Builtin: LoadICBaseline
+      1    0.0%    0.1%  Builtin: LoadGlobalICBaseline
+      1    0.0%    0.1%  Builtin: LessThan_Baseline
+      1    0.0%    0.1%  Builtin: KeyedLoadICTrampoline_Megamorphic
+      1    0.0%    0.1%  Builtin: KeyedLoadICBaseline
+      1    0.0%    0.1%  Builtin: KeyedHasIC_Megamorphic
+      1    0.0%    0.1%  Builtin: KeyedHasIC
+      1    0.0%    0.1%  Builtin: JSRunMicrotasksEntry
+      1    0.0%    0.1%  Builtin: JSConstructStubGeneric
+      1    0.0%    0.1%  Builtin: InstanceOf_Baseline
+      1    0.0%    0.1%  Builtin: HandleApiConstruct
+      1    0.0%    0.1%  Builtin: GrowFastSmiOrObjectElements
+      1    0.0%    0.1%  Builtin: GreaterThan_Baseline
+      1    0.0%    0.1%  Builtin: GreaterThanOrEqual_Baseline
+      1    0.0%    0.1%  Builtin: GetPropertyWithReceiver
+      1    0.0%    0.1%  Builtin: FunctionPrototypeHasInstance
+      1    0.0%    0.1%  Builtin: ForInEnumerate
+      1    0.0%    0.1%  Builtin: Equal_Baseline
+      1    0.0%    0.1%  Builtin: DefineKeyedOwnIC
+      1    0.0%    0.1%  Builtin: DateNow
+      1    0.0%    0.1%  Builtin: DateConstructor
+      1    0.0%    0.1%  Builtin: CreateEmptyLiteralObject
+      1    0.0%    0.1%  Builtin: CreateEmptyArrayLiteral
+      1    0.0%    0.1%  Builtin: CloneFastJSArray
+      1    0.0%    0.1%  Builtin: Call_ReceiverIsNullOrUndefined_Baseline_Compact
+      1    0.0%    0.1%  Builtin: Call_ReceiverIsNotNullOrUndefined_Baseline_Compact
+      1    0.0%    0.1%  Builtin: CallWithSpread_Baseline
+      1    0.0%    0.1%  Builtin: CallIteratorWithFeedback
+      1    0.0%    0.1%  Builtin: CallFunctionTemplate_Generic
+      1    0.0%    0.1%  Builtin: CallBoundFunction
+      1    0.0%    0.1%  Builtin: CallApiGetter
+      1    0.0%    0.1%  Builtin: CallApiCallbackOptimizedNoProfiling
+      1    0.0%    0.1%  Builtin: BaselineLeaveFrame
+      1    0.0%    0.1%  Builtin: ArraySingleArgumentConstructor_HoleySmi_DisableAllocationSites
+      1    0.0%    0.1%  Builtin: ArrayPrototypeSlice
+      1    0.0%    0.1%  Builtin: ArrayPrototypeFlat
+      1    0.0%    0.1%  Builtin: ArrayPrototypeFind
+      1    0.0%    0.1%  Builtin: ArrayIteratorPrototypeNext
+      1    0.0%    0.1%  Builtin: ArrayFilter
+
+ [C++]:
+   ticks  total  nonlib   name
+
+ [Summary]:
+   ticks  total  nonlib   name
+   1019   10.6%   96.9%  JavaScript
+      0    0.0%    0.0%  C++
+     79    0.8%    7.5%  GC
+   8566   89.1%          Shared libraries
+     33    0.3%          Unaccounted
+
+ [C++ entry points]:
+   ticks    cpp   total   name
+
+ [Bottom up (heavy) profile]:
+  Note: percentage shows a share of a particular caller in the total
+  amount of its parent calls.
+  Callers occupying less than 1.0% are not shown.
+
+   ticks parent  name
+   6750   70.2%  C:\WINDOWS\SYSTEM32\ntdll.dll
+    639    9.5%    C:\Program Files\nodejs\node.exe
+    550   86.1%      JS: *Socket._writeGeneric node:net:935:42
+    432   78.5%        JS: *Socket._write node:net:977:35
+    432  100.0%          JS: *writeOrBuffer node:internal/streams/writable:548:23
+    432  100.0%            JS: *Writable.write node:internal/streams/writable:504:36
+     93   16.9%        JS: *clearBuffer node:internal/streams/writable:744:21
+     72   77.4%          JS: *send C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:59:9
+     72  100.0%            JS: *flush C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:385:10
+     10   10.8%          JS: ^Writable.uncork node:internal/streams/writable:520:37
+      9   90.0%            JS: ^sendFrame C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:558:12
+      1   10.0%            JS: ^end node:_http_outgoing:1085:45
+      6    6.5%          JS: *send C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:346:7
+      6  100.0%            JS: *send C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:59:9
+      5    5.4%          JS: *sendFrame C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:558:12
+      4   80.0%            JS: ^dispatch C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:498:11
+      1   20.0%            JS: ^close C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:181:8
+     16    2.9%        JS: ^Socket._writev node:net:972:36
+     16  100.0%          JS: ^doWrite node:internal/streams/writable:587:17
+     16  100.0%            JS: ^clearBuffer node:internal/streams/writable:744:21
+      9    1.6%        JS: ^Socket._write node:net:977:35
+      7   77.8%          JS: *writeOrBuffer node:internal/streams/writable:548:23
+      7  100.0%            JS: *Writable.write node:internal/streams/writable:504:36
+      2   22.2%          JS: ^writeOrBuffer node:internal/streams/writable:548:23
+      2  100.0%            JS: *Writable.write node:internal/streams/writable:504:36
+      8    1.3%      JS: *stat node:internal/modules/cjs/loader:249:14
+      4   50.0%        JS: ^tryFile node:internal/modules/cjs/loader:538:17
+      2   50.0%          JS: ^tryPackage node:internal/modules/cjs/loader:496:20
+      2  100.0%            JS: ^<anonymous> node:internal/modules/cjs/loader:701:28
+      2   50.0%          JS: ^tryExtensions node:internal/modules/cjs/loader:553:23
+      2  100.0%            JS: ^<anonymous> node:internal/modules/cjs/loader:701:28
+      4   50.0%        JS: ^<anonymous> node:internal/modules/cjs/loader:701:28
+      4  100.0%          JS: ^<anonymous> node:internal/modules/cjs/loader:1318:35
+      4  100.0%            JS: ^defaultResolveImpl node:internal/modules/cjs/loader:1043:30
+      7    1.1%      JS: *writeGeneric node:internal/stream_base_commons:146:22
+      7  100.0%        JS: ^Socket._writeGeneric node:net:935:42
+      5   71.4%          JS: ^Socket._write node:net:977:35
+      5  100.0%            JS: ^writeOrBuffer node:internal/streams/writable:548:23
+      2   28.6%          JS: *Socket._write node:net:977:35
+      2  100.0%            JS: ^writeOrBuffer node:internal/streams/writable:548:23
+
+   1717   17.9%  C:\Program Files\nodejs\node.exe
+    630   36.7%    C:\Program Files\nodejs\node.exe
+     60    9.5%      JS: *Socket._writeGeneric node:net:935:42
+     44   73.3%        JS: *Socket._write node:net:977:35
+     44  100.0%          JS: *writeOrBuffer node:internal/streams/writable:548:23
+     44  100.0%            JS: *Writable.write node:internal/streams/writable:504:36
+     16   26.7%        JS: *clearBuffer node:internal/streams/writable:744:21
+     12   75.0%          JS: *send C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:59:9
+     12  100.0%            JS: *flush C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:385:10
+      2   12.5%          JS: *sendFrame C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:558:12
+      2  100.0%            JS: ^dispatch C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:498:11
+      1    6.3%          JS: ^Writable.uncork node:internal/streams/writable:520:37
+      1  100.0%            JS: ^sendFrame C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:558:12
+      1    6.3%          JS: *send C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:346:7
+      1  100.0%            JS: *send C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:59:9
+     43    6.8%      JS: *decodeString C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io-parser\build\cjs\index.js:179:17
+     43  100.0%        JS: *ondata C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\client.js:182:11
+     36   83.7%          JS: *emit node:events:465:44
+     33   91.7%            JS: *onPacket C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:85:13
+      3    8.3%            JS: ^onPacket C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:85:13
+      7   16.3%          JS: *onPacket C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:85:13
+      7  100.0%            JS: *emit node:events:465:44
+     40    6.3%      Builtin: ArrayPrototypeFlat
+     40  100.0%        JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\utils\Commander.js:74:21
+     18   45.0%          JS: *setRobotState C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\robotRegistry.service.js:55:29
+      9   50.0%            Builtin: AsyncFunctionAwaitResolveClosure
+      6   33.3%            JS: *handleHeartbeat C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:243:33
+      3   16.7%            JS: ^handleHeartbeat C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:243:33
+     18   45.0%          JS: *exec C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:346:19
+     10   55.6%            JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      8   44.4%            JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      2    5.0%          JS: ^set C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:201:14
+      2  100.0%            JS: ^setRobotState C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\robotRegistry.service.js:55:29
+      1    2.5%          JS: ^get C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:218:14
+      1  100.0%            JS: ^setRobotState C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\robotRegistry.service.js:55:29
+      1    2.5%          JS: ^del C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:228:14
+      1  100.0%            JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\dtaro.handler.js:82:30
+     36    5.7%      JS: *exec C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:346:19
+     18   50.0%        JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+     11   61.1%          JS: *emit node:events:465:44
+     10   90.9%            JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      1    9.1%            JS: ^emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      7   38.9%          Builtin: AsyncFunctionAwaitResolveClosure
+      5   71.4%            Builtin: CallApiCallbackOptimizedNoProfiling
+      1   14.3%            Builtin: CallApiCallbackGeneric
+     18   50.0%        JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+     15   83.3%          JS: *emit node:events:465:44
+     15  100.0%            JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      3   16.7%          Builtin: AsyncFunctionAwaitResolveClosure
+      1   33.3%            Builtin: CallApiCallbackOptimizedNoProfiling
+     35    5.6%      JS: ^ts C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\config\logger.js:91:12
+     22   62.9%        JS: ^printLine C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\config\logger.js:108:19
+     22  100.0%          JS: ^log C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\config\logger.js:145:15
+     22  100.0%            JS: ^info C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\config\logger.js:170:12
+     13   37.1%        JS: ^logSocket C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\config\logger.js:219:39
+      7   53.8%          JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\socket.server.js:211:33
+      4   57.1%            JS: *emit node:events:465:44
+      3   42.9%            JS: ^emit node:events:465:44
+      5   38.5%          JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\socket.server.js:147:25
+      5  100.0%            JS: *emit node:events:465:44
+      1    7.7%          JS: ~<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\socket.server.js:211:33
+      1  100.0%            JS: *emit node:events:465:44
+     34    5.4%      JS: *_parse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:3208:11
+     34  100.0%        JS: *_parse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:1956:11
+     34  100.0%          JS: *_parseSync C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:105:15
+     28   82.4%            JS: *safeParse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:122:14
+      6   17.6%            JS: ^safeParse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:122:14
+     28    4.4%      JS: *request C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:112:3464
+     27   96.4%        Builtin: AsyncFunctionAwaitResolveClosure
+      1    3.7%          Builtin: CallApiCallbackOptimizedNoProfiling
+      1  100.0%            JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+      1    3.6%        JS: *request C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:121:3318
+      1  100.0%          JS: *_executeRequest C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:130:9961
+      1  100.0%            JS: *Na C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:31:9860
+     28    4.4%      JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+     18   64.3%        Builtin: AsyncFunctionAwaitResolveClosure
+      8   44.4%          Builtin: CallApiCallbackOptimizedNoProfiling
+      8  100.0%            JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+      1    5.6%          Builtin: CallApiCallbackGeneric
+      1  100.0%            JS: ^processTicksAndRejections node:internal/process/task_queues:72:35
+     10   35.7%        JS: *emit node:events:465:44
+     10  100.0%          JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+     10  100.0%            JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\socket.js:692:30
+     26    4.1%      JS: *setRobotState C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\robotRegistry.service.js:55:29
+     26  100.0%        Builtin: AsyncFunctionAwaitResolveClosure
+     25   96.2%          Builtin: CallApiCallbackOptimizedNoProfiling
+     25  100.0%            JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+      1    3.8%          Builtin: CallApiCallbackGeneric
+      1  100.0%            JS: ^processTicksAndRejections node:internal/process/task_queues:72:35
+     17    2.7%      JS: ^send C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:346:7
+     12   70.6%        JS: ^send C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\websocket.js:448:7
+     12  100.0%          JS: ^WebSocket._doSendLast C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:18:28
+     12  100.0%            JS: ^encodePacket C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io-parser\build\cjs\encodePacket.js:6:22
+      5   29.4%        JS: *send C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:59:9
+      5  100.0%          JS: *flush C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:385:10
+      4   80.0%            JS: *sendPacket C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:356:15
+      1   20.0%            JS: ^sendPacket C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:356:15
+     17    2.7%      JS: *Ze C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:31:2433
+     12   70.6%        JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:31:4388
+      4   33.3%          JS: ^saveTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\telemetry.service.js:1:29
+      2   50.0%            JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      2   50.0%            JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      4   33.3%          JS: ^handleHeartbeat C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:243:33
+      4  100.0%            Builtin: AsyncFunctionAwaitResolveClosure
+      2   16.7%          JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      2  100.0%            Builtin: AsyncFunctionAwaitResolveClosure
+      1    8.3%          JS: ^markRobotOnline C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:28:31
+      1  100.0%            JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:109:21
+      1    8.3%          JS: *handleHeartbeat C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:243:33
+      1  100.0%            Builtin: AsyncFunctionAwaitResolveClosure
+      5   29.4%        JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:31:5686
+      5  100.0%          JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:31:4388
+      2   40.0%            JS: ^saveTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\telemetry.service.js:1:29
+      1   20.0%            JS: ^markRobotOnline C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:28:31
+      1   20.0%            JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      1   20.0%            JS: ^handleHeartbeat C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:243:33
+     16    2.5%      JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:31:4388
+      5   31.3%        JS: ^saveTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\telemetry.service.js:1:29
+      3   60.0%          JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      3  100.0%            Builtin: AsyncFunctionAwaitResolveClosure
+      2   40.0%          JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      2  100.0%            Builtin: AsyncFunctionAwaitResolveClosure
+      4   25.0%        JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      4  100.0%          Builtin: AsyncFunctionAwaitResolveClosure
+      4  100.0%            Builtin: CallApiCallbackOptimizedNoProfiling
+      3   18.8%        JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      3  100.0%          Builtin: AsyncFunctionAwaitResolveClosure
+      3  100.0%            Builtin: CallApiCallbackOptimizedNoProfiling
+      2   12.5%        JS: ^handleHeartbeat C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:243:33
+      2  100.0%          Builtin: AsyncFunctionAwaitResolveClosure
+      2  100.0%            Builtin: CallApiCallbackOptimizedNoProfiling
+      2   12.5%        JS: *handleHeartbeat C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:243:33
+      2  100.0%          Builtin: AsyncFunctionAwaitResolveClosure
+      2  100.0%            Builtin: CallApiCallbackOptimizedNoProfiling
+     11    1.7%      JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      8   72.7%        Builtin: AsyncFunctionAwaitResolveClosure
+      7   87.5%          Builtin: CallApiCallbackOptimizedNoProfiling
+      7  100.0%            JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+      3   27.3%        JS: *emit node:events:465:44
+      2   66.7%          JS: ^emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      2  100.0%            JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\socket.js:692:30
+      1   33.3%          JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      1  100.0%            JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\socket.js:692:30
+     11    1.7%      JS: *allow C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\rateLimit.js:4:15
+      3   27.3%        JS: ^handleHeartbeat C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:243:33
+      2   66.7%          JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:279:26
+      2  100.0%            JS: *emit node:events:465:44
+      1   33.3%          JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:279:26
+      1  100.0%            JS: *emit node:events:465:44
+      3   27.3%        JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      3  100.0%          JS: *emit node:events:465:44
+      3  100.0%            JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      3   27.3%        JS: *handleHeartbeat C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:243:33
+      3  100.0%          JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:279:26
+      3  100.0%            JS: *emit node:events:465:44
+      2   18.2%        JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      2  100.0%          JS: *emit node:events:465:44
+      2  100.0%            JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+     10    1.6%      JS: *encode C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io-parser\build\cjs\index.js:55:11
+      7   70.0%        JS: *emit C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\broadcast-operator.js:157:9
+      4   57.1%          JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      4  100.0%            Builtin: AsyncFunctionAwaitResolveClosure
+      3   42.9%          JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      3  100.0%            Builtin: AsyncFunctionAwaitResolveClosure
+      1   10.0%        JS: ^_encode C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io-adapter\dist\in-memory-adapter.js:167:12
+      1  100.0%          JS: ^broadcast C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io-adapter\dist\in-memory-adapter.js:112:14
+      1  100.0%            JS: ^emit C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\broadcast-operator.js:157:9
+      1   10.0%        JS: *broadcast C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io-adapter\dist\in-memory-adapter.js:112:14
+      1  100.0%          JS: ^emit C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\broadcast-operator.js:157:9
+      1  100.0%            JS: ~assignTask C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\task.service.js:336:26
+      1   10.0%        JS: *_encode C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io-adapter\dist\in-memory-adapter.js:167:12
+      1  100.0%          JS: ^broadcast C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io-adapter\dist\in-memory-adapter.js:112:14
+      1  100.0%            JS: ^emit C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\broadcast-operator.js:157:9
+      9    1.4%      JS: *yt C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:21:1007
+      5   55.6%        JS: *wt C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:21:34984
+      4   80.0%          JS: ^unpack C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:121:7878
+      4  100.0%            JS: ^mapQueryEngineResult C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:121:6447
+      1   20.0%          JS: *singleLoader C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:121:5631
+      1  100.0%            Builtin: AsyncFunctionAwaitResolveClosure
+      4   44.4%        JS: *singleLoader C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:121:5631
+      4  100.0%          Builtin: AsyncFunctionAwaitResolveClosure
+      8    1.3%      JS: ^tryParse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io-parser\build\cjs\index.js:249:13
+      8  100.0%        JS: ^decodeString C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io-parser\build\cjs\index.js:179:17
+      7   87.5%          JS: ^add C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io-parser\build\cjs\index.js:133:8
+      7  100.0%            JS: ^ondata C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\client.js:182:11
+      1   12.5%          JS: *ondata C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\client.js:182:11
+      1  100.0%            JS: *onPacket C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:85:13
+      8    1.3%      JS: ^setRobotState C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\robotRegistry.service.js:55:29
+      8  100.0%        Builtin: AsyncFunctionAwaitResolveClosure
+      8  100.0%          Builtin: CallApiCallbackOptimizedNoProfiling
+      8  100.0%            JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+      8    1.3%      JS: ^parseEngineResponse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:112:136
+      8  100.0%        JS: ^request C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\@prisma\client\runtime\library.js:112:3464
+      8  100.0%          Builtin: AsyncFunctionAwaitResolveClosure
+      8    1.3%      JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+      8    1.3%      JS: *buildMergedRegistryState C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\robotRegistry.service.js:113:34
+      8  100.0%        JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      8  100.0%          Builtin: AsyncFunctionAwaitResolveClosure
+      7   87.5%            Builtin: CallApiCallbackOptimizedNoProfiling
+      7    1.1%      JS: *safeJsonParse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\utils\json.js:10:23
+      5   71.4%        JS: ^buildMergedRegistryState C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\robotRegistry.service.js:113:34
+      5  100.0%          JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      5  100.0%            Builtin: AsyncFunctionAwaitResolveClosure
+      2   28.6%        JS: ^setRobotState C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\robotRegistry.service.js:55:29
+      2  100.0%          Builtin: AsyncFunctionAwaitResolveClosure
+      2  100.0%            Builtin: CallApiCallbackOptimizedNoProfiling
+      7    1.1%      JS: *createWriteWrap node:internal/stream_base_commons:108:25
+      7  100.0%        JS: *Socket._writeGeneric node:net:935:42
+      7  100.0%          JS: *clearBuffer node:internal/streams/writable:744:21
+      3   42.9%            JS: *send C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:59:9
+      2   28.6%            JS: ^Writable.uncork node:internal/streams/writable:520:37
+      2   28.6%            JS: *sendFrame C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\sender.js:558:12
+      7    1.1%      JS: *computeSnapshotDecision C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:66:33
+      7  100.0%        JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      7  100.0%          Builtin: AsyncFunctionAwaitResolveClosure
+      2   28.6%            Builtin: CallApiCallbackOptimizedNoProfiling
+     22    1.3%    JS: ^wrapSafe node:internal/modules/cjs/loader:1620:18
+     22  100.0%      JS: ^<anonymous> node:internal/modules/cjs/loader:1680:37
+     22  100.0%        JS: ^<anonymous> node:internal/modules/cjs/loader:1876:37
+     22  100.0%          JS: ^<anonymous> node:internal/modules/cjs/loader:1450:33
+     22  100.0%            JS: ^<anonymous> node:internal/modules/cjs/loader:1188:24
+
+    103    1.1%  Builtin: LoadIC
+     11   10.7%    JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\utils\Commander.js:74:21
+      7   63.6%      JS: *exec C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:346:19
+      5   71.4%        JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      3   60.0%          JS: *emit node:events:465:44
+      2   66.7%            JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      1   33.3%            JS: ^emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      2   40.0%          Builtin: AsyncFunctionAwaitResolveClosure
+      1   50.0%            Builtin: CallApiCallbackOptimizedNoProfiling
+      2   28.6%        JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      1   50.0%          JS: *emit node:events:465:44
+      1  100.0%            JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      1   50.0%          Builtin: AsyncFunctionAwaitResolveClosure
+      2   18.2%      JS: *setRobotState C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\robotRegistry.service.js:55:29
+      1   50.0%        JS: *handleHeartbeat C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:243:33
+      1  100.0%          JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:279:26
+      1  100.0%            JS: *emit node:events:465:44
+      1   50.0%        Builtin: AsyncFunctionAwaitResolveClosure
+      1  100.0%          Builtin: CallApiCallbackOptimizedNoProfiling
+      1  100.0%            JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+      1    9.1%      JS: ^set C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:201:14
+      1  100.0%        JS: ^setRobotState C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\robotRegistry.service.js:55:29
+      1  100.0%          Builtin: AsyncFunctionAwaitResolveClosure
+      1  100.0%            Builtin: CallApiCallbackOptimizedNoProfiling
+      1    9.1%      JS: ^del C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:228:14
+      1  100.0%        JS: ~<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:285:6
+      1  100.0%          JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:283:27
+      1  100.0%            JS: *emit node:events:465:44
+     10    9.7%    JS: *exec C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:346:19
+      6   60.0%      JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      5   83.3%        JS: *emit node:events:465:44
+      5  100.0%          JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      5  100.0%            JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\socket.js:692:30
+      1   16.7%        Builtin: AsyncFunctionAwaitResolveClosure
+      4   40.0%      JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      4  100.0%        JS: *emit node:events:465:44
+      4  100.0%          JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      4  100.0%            JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\socket.js:692:30
+      8    7.8%    JS: ^processTimers node:internal/timers:508:25
+      8    7.8%    JS: *sendCommand C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\Redis.js:327:16
+      6   75.0%      JS: *Pipeline.exec C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\Pipeline.js:233:36
+      6  100.0%        JS: *exec C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:346:19
+      4   66.7%          JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      3   75.0%            JS: *emit node:events:465:44
+      1   25.0%            Builtin: AsyncFunctionAwaitResolveClosure
+      2   33.3%          JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      1   50.0%            JS: *emit node:events:465:44
+      1   50.0%            Builtin: AsyncFunctionAwaitResolveClosure
+      2   25.0%      JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\utils\Commander.js:74:21
+      2  100.0%        JS: *setRobotState C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\services\robotRegistry.service.js:55:29
+      1   50.0%          JS: ^handleHeartbeat C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:243:33
+      1  100.0%            JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:279:26
+      1   50.0%          JS: *handleHeartbeat C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:243:33
+      1  100.0%            JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\robot.handler.js:279:26
+      5    4.9%    JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:37:35
+      5  100.0%      JS: *receiverOnMessage C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\websocket.js:1219:27
+      5  100.0%        JS: *dataMessage C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\receiver.js:541:14
+      5  100.0%          JS: *startLoop C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\receiver.js:149:12
+      4   80.0%            JS: *_write C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\receiver.js:89:9
+      1   20.0%            JS: ^_write C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\receiver.js:89:9
+      4    3.9%    JS: *get C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\debug\src\common.js:125:9
+      2   50.0%      JS: *debug C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\debug\src\common.js:66:17
+      2  100.0%        JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:139:59
+      2  100.0%          JS: ^listOnTimeout node:internal/timers:528:25
+      2  100.0%            JS: ^processTimers node:internal/timers:508:25
+      1   25.0%      JS: *get C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\utils\debug.js:75:16
+      1  100.0%        JS: *sendCommand C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\Redis.js:327:16
+      1  100.0%          JS: *Pipeline.exec C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\Pipeline.js:233:36
+      1  100.0%            JS: *exec C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:346:19
+      1   25.0%      JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:37:35
+      1  100.0%        JS: *receiverOnMessage C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\websocket.js:1219:27
+      1  100.0%          JS: *dataMessage C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\receiver.js:541:14
+      1  100.0%            JS: *startLoop C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\receiver.js:149:12
+      4    3.9%    JS: *fillResult C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\Pipeline.js:59:15
+      4  100.0%      JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\Pipeline.js:190:19
+      4  100.0%        Builtin: CallApiCallbackOptimizedNoProfiling
+      4  100.0%          JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+      3    2.9%    JS: *onPacket C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\socket.js:85:13
+      3  100.0%      JS: *emit node:events:465:44
+      3  100.0%        JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\engine.io\build\transports\websocket.js:37:35
+      3  100.0%          JS: *receiverOnMessage C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\websocket.js:1219:27
+      3  100.0%            JS: *dataMessage C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ws\lib\receiver.js:541:14
+      2    1.9%    JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+      2    1.9%    JS: *nextTick node:internal/process/task_queues:113:18
+      1   50.0%      JS: *addChunk node:internal/streams/readable:550:18
+      1  100.0%        JS: *onStreamRead node:internal/stream_base_commons:166:22
+      1   50.0%      JS: *_onpacket C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\socket.js:426:14
+      1  100.0%        JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\client.js:206:39
+      1  100.0%          JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+      2    1.9%    JS: *emit node:events:465:44
+      1   50.0%      JS: ^emitReserved C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:55:17
+      1  100.0%        JS: ^_doConnect C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\namespace.js:267:15
+      1  100.0%          JS: ^<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\namespace.js:222:30
+      1  100.0%            JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+      1   50.0%      JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      1  100.0%        JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\socket.js:692:30
+      1  100.0%          JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+      2    1.9%    JS: *_parseSync C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:105:15
+      2  100.0%      JS: *_parse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:3208:11
+      2  100.0%        JS: ^_parse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:1956:11
+      2  100.0%          JS: *_parseSync C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:105:15
+      2  100.0%            JS: ^safeParse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:122:14
+      2    1.9%    JS: *_parse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:3208:11
+      2  100.0%      JS: *_parse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:1956:11
+      2  100.0%        JS: *_parseSync C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:105:15
+      2  100.0%          JS: *safeParse C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\zod\v3\types.cjs:122:14
+      2  100.0%            JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      2    1.9%    JS: *Pipeline.exec C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\ioredis\built\Pipeline.js:233:36
+      2  100.0%      JS: *exec C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\cache\kv.js:346:19
+      1   50.0%        JS: ^handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      1  100.0%          JS: *emit node:events:465:44
+      1  100.0%            JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      1   50.0%        JS: *handleTelemetry C:\Users\soman\OneDrive\Desktop\RobotX\Backend\src\sockets\handlers\telemetry.handler.js:146:33
+      1  100.0%          JS: *emit node:events:465:44
+      1  100.0%            JS: *emitUntyped C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\typed-events.js:68:16
+      2    1.9%    JS: *<anonymous> C:\Users\soman\OneDrive\Desktop\RobotX\Backend\node_modules\socket.io\dist\client.js:206:39
+      2  100.0%      JS: *processTicksAndRejections node:internal/process/task_queues:72:35
+
