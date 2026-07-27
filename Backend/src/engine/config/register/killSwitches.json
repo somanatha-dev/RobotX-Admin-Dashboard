@@ -1,0 +1,222 @@
+{
+  "source": "Generated from src/engine/config/killSwitches.js — the §22.5 switch table. tests/engine/configKillSwitches.test.js asserts this file and that table agree in both directions, so the prose here cannot drift from the switch set the engine enforces.",
+  "note": "Kill-switch states are behavioural configuration like any other value (§22.1 rule 1), so they are register entries. They live in a file rather than being injected at load time so that tools/gates/checkParameterRegister.js — which reads only register/*.json — sees the complete register.",
+  "parameters": [
+    {
+      "name": "killswitch.reposition_injection",
+      "type": "boolean",
+      "unit": "thrown",
+      "default": true,
+      "range": null,
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "specScope": "region",
+      "changeClass": "SAFETY",
+      "owner": "SRE + Safety",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§17.3",
+      "description": "Kill switch for Repositioning. Thrown (true) disables the mechanism and degrades to: No reposition missions. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+    },
+    {
+      "name": "killswitch.preemption",
+      "type": "boolean",
+      "unit": "thrown",
+      "default": true,
+      "range": null,
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "specScope": "region",
+      "changeClass": "SAFETY",
+      "owner": "SRE + Safety",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§4.8",
+      "description": "Kill switch for Preemption, including victim disposition. Thrown (true) disables the mechanism and degrades to: Disabled entirely. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+    },
+    {
+      "name": "killswitch.deferral",
+      "type": "boolean",
+      "unit": "thrown",
+      "default": true,
+      "range": null,
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "specScope": "region",
+      "changeClass": "SAFETY",
+      "owner": "SRE + Safety",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§8.8",
+      "description": "Kill switch for Deferral as a priced arc. Thrown (true) disables the mechanism and degrades to: Immediate assignment when any feasible candidate exists. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+    },
+    {
+      "name": "killswitch.cross_region_candidacy",
+      "type": "boolean",
+      "unit": "thrown",
+      "default": true,
+      "range": null,
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "specScope": "region",
+      "changeClass": "SAFETY",
+      "owner": "SRE + Safety",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§19.6",
+      "description": "Kill switch for Cross-region candidacy. Thrown (true) disables the mechanism and degrades to: Region-local only. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+    },
+    {
+      "name": "killswitch.chaining",
+      "type": "boolean",
+      "unit": "thrown",
+      "default": true,
+      "range": null,
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "specScope": "region",
+      "changeClass": "SAFETY",
+      "owner": "SRE + Safety",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§13.3",
+      "description": "Kill switch for Chaining — queue depth > 1. Thrown (true) disables the mechanism and degrades to: capacity[agent_class] = 1; strict one-mission-per-agent. Independent of multi-Leg columns, because queue depth lives in plan feasibility while multi-Leg structure lives in column generation. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+    },
+    {
+      "name": "killswitch.multi_leg_columns",
+      "type": "boolean",
+      "unit": "thrown",
+      "default": true,
+      "range": null,
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "specScope": "region",
+      "changeClass": "SAFETY",
+      "owner": "SRE + Safety",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§9.3",
+      "description": "Kill switch for Multi-Leg columns (bundling and consolidation). Thrown (true) disables the mechanism and degrades to: Singleton columns only — which puts every round in the singleton regime, where the solve is a totally unimodular min-cost flow, integral and exact, and solver duals are exact marginal prices. This switch degrades to a *stronger* guarantee, not a weaker one. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+    },
+    {
+      "name": "killswitch.reliability_based_gating",
+      "type": "boolean",
+      "unit": "thrown",
+      "default": true,
+      "range": null,
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "specScope": "region",
+      "changeClass": "SAFETY",
+      "owner": "SRE + Safety",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§8.4, §16",
+      "description": "Kill switch for Reliability-priced risk. Thrown (true) disables the mechanism and degrades to: Cohort priors only. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+    },
+    {
+      "name": "killswitch.batch_solving",
+      "type": "boolean",
+      "unit": "thrown",
+      "default": true,
+      "range": null,
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "specScope": "region",
+      "changeClass": "SAFETY",
+      "owner": "SRE + Safety",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§9.1, §9.2",
+      "description": "Kill switch for Batch solving. Thrown (true) disables the mechanism and degrades to: The same round executed with a batch of one Leg. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+    },
+    {
+      "name": "killswitch.opportunity_cost_term",
+      "type": "boolean",
+      "unit": "thrown",
+      "default": true,
+      "range": null,
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "specScope": "region",
+      "changeClass": "SAFETY",
+      "owner": "SRE + Safety",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§8.3",
+      "description": "Kill switch for The opportunity-cost and terminal-value model. Thrown (true) disables the mechanism and degrades to: λ_zone from configured static per-zone, per-bucket priors; the derivation of §8.3 is unchanged, only its input source is. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+    },
+    {
+      "name": "killswitch.churn_pricing",
+      "type": "boolean",
+      "unit": "thrown",
+      "default": true,
+      "range": null,
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "specScope": "region",
+      "changeClass": "SAFETY",
+      "owner": "SRE + Safety",
+      "blastRadius": "region",
+      "calibrationStatus": "DERIVED",
+      "section": "§8.9",
+      "description": "Kill switch for Churn pricing. Thrown (true) disables the mechanism and degrades to: Reassignment priced without a churn term. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+    },
+    {
+      "name": "killswitch.local_search",
+      "type": "boolean",
+      "unit": "thrown",
+      "default": true,
+      "range": null,
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "specScope": "region",
+      "changeClass": "SAFETY",
+      "owner": "SRE + Safety",
+      "blastRadius": "region",
+      "calibrationStatus": "DERIVED",
+      "section": "§9.5",
+      "description": "Kill switch for Post-solve local search. Thrown (true) disables the mechanism and degrades to: The solver's own solution, reported with its own gap. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+    },
+    {
+      "name": "killswitch.duty_cycle_regulariser",
+      "type": "boolean",
+      "unit": "thrown",
+      "default": true,
+      "range": null,
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "specScope": "region",
+      "changeClass": "SAFETY",
+      "owner": "SRE + Safety",
+      "blastRadius": "region",
+      "calibrationStatus": "DERIVED",
+      "section": "§17.2",
+      "description": "Kill switch for The duty-cycle regulariser. Thrown (true) disables the mechanism and degrades to: Priced wear only (§17.1). Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+    }
+  ]
+}

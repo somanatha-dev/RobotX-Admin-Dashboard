@@ -2,6 +2,7 @@ const { createTestKv } = require("../../helpers/testKv");
 const { createFakeSocket, createFakeIo } = require("../../helpers/fakeSocket");
 const { createMockPrisma } = require("../../helpers/mockPrisma");
 const { waitFor } = require("../../helpers/waitFor");
+const silentLogger = require("../../mocks/silentLogger");
 
 // F6 — zone-locality is a real, live input to the DTARO cost function.
 //
@@ -39,7 +40,7 @@ function existingRobot(overrides = {}) {
 
 /** Every ZONE_UPDATED payload broadcast to the `dashboard` room. */
 function zoneUpdates(io) {
-  return (io._rooms.get("dashboard") || []).filter((m) => m.event === "ZONE_UPDATED");
+  return io.emittedTo("dashboard", "ZONE_UPDATED");
 }
 
 describe("DTARO zone-locality (F6) — registry persistence + change detection", () => {
@@ -64,7 +65,7 @@ describe("DTARO zone-locality (F6) — registry persistence + change detection",
     ({ kv } = await createTestKv());
     io = createFakeIo();
     socket = createFakeSocket();
-    registerTelemetryHandlers(io, socket, { prisma, kv, logger: { info() {}, warn() {}, error() {} } });
+    registerTelemetryHandlers(io, socket, { prisma, kv, logger: silentLogger });
 
     socket.data.isAuthed = true;
     socket.data.robotId = "R1";
@@ -74,7 +75,7 @@ describe("DTARO zone-locality (F6) — registry persistence + change detection",
     prisma.robot.findUnique.mockResolvedValue(existingRobot());
 
     socket.trigger("TELEMETRY", { ...IN_A, battery: 50, status: "ACTIVE" });
-    await waitFor(() => io.emit.mock.calls.some(([event]) => event === "robot:update"));
+    await waitFor(() => io.emittedTo("dashboard", "robot:update").length > 0);
 
     // Without this, `registry.zoneId` is undefined forever and the Z term
     // in the cost function can never discriminate between candidates.
@@ -128,13 +129,13 @@ describe("DTARO zone-locality (F6) — registry persistence + change detection",
         // faster is silently dropped rather than processed.
         if (i > 0) await new Promise((r) => setTimeout(r, 120));
         socket.trigger("TELEMETRY", { ...IN_A, battery: 50, status: "ACTIVE" });
-        await waitFor(() => io.emit.mock.calls.filter(([e]) => e === "robot:update").length >= i + 1);
+        await waitFor(() => io.emittedTo("dashboard", "robot:update").length >= i + 1);
       }
 
       // Give any trailing best-effort zone work a moment to land.
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(io.emit.mock.calls.filter(([e]) => e === "robot:update")).toHaveLength(TICKS);
+      expect(io.emittedTo("dashboard", "robot:update")).toHaveLength(TICKS);
       // The robot never left ZONE_A, so exactly one zone transition occurred
       // (null -> ZONE_A on the first tick). Pre-fix this is TICKS broadcasts.
       expect(zoneUpdates(io)).toHaveLength(1);
@@ -144,7 +145,7 @@ describe("DTARO zone-locality (F6) — registry persistence + change detection",
       prisma.robot.findUnique.mockResolvedValue(existingRobot());
 
       socket.trigger("TELEMETRY", { ...IN_A, battery: 50, status: "ACTIVE" });
-      await waitFor(() => io.emit.mock.calls.some(([e]) => e === "robot:update"));
+      await waitFor(() => io.emittedTo("dashboard", "robot:update").length > 0);
       await waitFor(() => zoneUpdates(io).length === 1);
 
       await new Promise((r) => setTimeout(r, 120));
@@ -153,7 +154,7 @@ describe("DTARO zone-locality (F6) — registry persistence + change detection",
       await waitFor(() => zoneUpdates(io).length === 2);
 
       const [, second] = zoneUpdates(io);
-      expect(second.payload).toMatchObject({
+      expect(second).toMatchObject({
         robotId: "R1",
         oldZoneId: ZONE_A.id,
         newZoneId: ZONE_B.id,

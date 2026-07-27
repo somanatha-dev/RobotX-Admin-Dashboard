@@ -1,0 +1,81 @@
+name: CI
+
+# Established by Phase 0 of the next-generation assignment engine programme.
+#
+# The build gates run FIRST and independently of the test suites. That ordering is
+# deliberate: a tier-dependency violation or an unregistered behavioural constant is
+# a structural defect that no amount of passing tests makes acceptable, and finding
+# it after a twenty-minute test run trains people to skim the log. Each gate is its
+# own step so the failing rule is named in the job summary rather than buried.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: Backend
+
+jobs:
+  gates:
+    name: Build gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: Backend/package-lock.json
+
+      - run: npm ci
+
+      # §1.8 rule 2 — no Tier 0 or Tier 1 module may depend on a Tier 2 mechanism.
+      - name: "Gate — tier dependencies (§1.8 rule 2)"
+        run: npm run gate:tiers
+
+      # §22, Appendix A — no behavioural constant outside the parameter register.
+      - name: "Gate — parameter register (§22)"
+        run: npm run gate:params
+
+      # §1.5 T1 and T6 — type separation, and no wall-clock read in the decision path.
+      - name: "Gate — design tenets (T1, T6)"
+        run: npm run gate:tenets
+
+      # A gate that has never failed is not known to work. These plant deliberate
+      # violations and assert each gate reports them.
+      - name: "Gate self-tests"
+        run: npm run test:gates
+
+  test:
+    name: Test suites
+    runs-on: ubuntu-latest
+    needs: gates
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: Backend/package-lock.json
+
+      - run: npm ci
+
+      # The legacy dispatcher's suite. It stays green through every phase until the
+      # Phase 15 cutover; a phase that reddens this lane has changed behaviour it
+      # was not asked to change.
+      - name: "Lane — legacy"
+        run: npm run test:legacy
+
+      # The new engine's own suite.
+      - name: "Lane — engine"
+        run: npm run test:engine

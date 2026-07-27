@@ -8,11 +8,21 @@ const { getSystemMetrics } = require("./services/metrics.service");
 const eventLoopMonitor = require("./observability/eventLoopMonitor");
 
 const apiRoutes = require("./routes");
+const configService = require("./engine/config/service");
 
 const notFound = require("./middlewares/notFound");
 const errorHandler = require("./middlewares/errorHandler");
 
 const app = express();
+
+// Config bootstrap (§22). The register defaults are available from module load, with
+// no database and no cache, so every parameter is resolvable before — and regardless
+// of whether — a version has been published. `server.js` replaces this with the
+// pinned published version at boot when one exists.
+//
+// This is what lets the legacy compatibility shims read the register without giving
+// the legacy dispatcher a startup dependency it never had.
+app.locals.config = configService.defaultSnapshot();
 
 // Security
 app.use(helmet());
@@ -92,10 +102,16 @@ app.get("/health", async (req, res) => {
     // metrics preview feature unavailable — non-fatal
   }
 
+  // Which configuration version this process is resolving against. Null means the
+  // register defaults — nothing published yet, which is the Phase 1 state.
+  const config = req.app?.locals?.config || null;
+
   res.json({
     server: "ok",
     redis: redisOk ? "ok" : "fail",
     db: dbOk ? "ok" : "fail",
+    configVersion: config ? config.version : null,
+    configRegisterDigest: config ? config.registerDigest : null,
     uptime: Math.floor(process.uptime()),
     eventLoopDelay: eventLoopMonitor.snapshot(),
     prismaPool,

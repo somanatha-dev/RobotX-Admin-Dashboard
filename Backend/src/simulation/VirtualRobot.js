@@ -196,20 +196,79 @@ class VirtualRobot {
     this.socket.on("TASK_ASSIGN", (payload) => this._onTaskAssign(payload));
     this.socket.on("REROUTE_ALERT", (payload) => this._onRerouteAlert(payload));
 
-    this.socket.on("STOP", () => {
-      if (this.status !== "CHARGING") this.status = "PAUSED";
-      this.speed = 0;
-      this.log.info(`[VR] ${this.robotId} STOP`);
-    });
+    // Operator commands. The server persists a Command row and dispatches
+    // "COMMAND" with the row's id; acknowledging it with COMMAND_ACK is what
+    // moves that row from SENT to ACK. Without this listener every operator
+    // command against a virtual robot went unanswered and was marked FAILED
+    // by the reliability scheduler ~15s later.
+    this.socket.on("COMMAND", (payload) => this._onCommand(payload));
 
-    this.socket.on("RETURN_TO_BASE", () => {
-      this._clearTask();
-      this._clearCharging();
-      this._pendingResume = null;
-      this.status = "IDLE";
-      this.speed  = 0;
-      this.log.info(`[VR] ${this.robotId} RETURN_TO_BASE`);
-    });
+    // Direct task-lifecycle stop (task cancellation) — not a tracked Command,
+    // no ACK expected.
+    this.socket.on("STOP", () => this._applyStop("STOP"));
+
+    // Retained for robots/tooling that still speak the older direct event.
+    this.socket.on("RETURN_TO_BASE", () => this._applyReturnToBase("RETURN_TO_BASE"));
+  }
+
+  // ── Operator commands ──────────────────────────────────────────────────────
+
+  /**
+   * Handle a COMMAND from the operator console and acknowledge it.
+   * Types mirror the Prisma CommandType enum: STOP | PAUSE | RETURN | RESUME.
+   */
+  _onCommand(payload) {
+    const commandId = payload?.commandId;
+    const type = typeof payload?.type === "string" ? payload.type.toUpperCase() : null;
+
+    switch (type) {
+      case "STOP":
+      case "PAUSE":
+        this._applyStop(type);
+        break;
+      case "RETURN":
+        this._applyReturnToBase(type);
+        break;
+      case "RESUME":
+        this._applyResume();
+        break;
+      default:
+        this.log.warn(`[VR] ${this.robotId} ignoring unknown COMMAND type ${type}`);
+        return; // unknown type — deliberately not acknowledged
+    }
+
+    if (commandId) {
+      try {
+        this.socket.emit("COMMAND_ACK", { commandId, robotId: this.robotId, timestamp: Date.now() });
+      } catch { /* ignore */ }
+    }
+  }
+
+  /** Halt movement. The task is retained so RESUME can pick it back up. */
+  _applyStop(label) {
+    if (this.status !== "CHARGING") this.status = "PAUSED";
+    this.speed = 0;
+    this.log.info(`[VR] ${this.robotId} ${label}`);
+  }
+
+  /** Abandon the current task entirely and go idle. */
+  _applyReturnToBase(label) {
+    this._clearTask();
+    this._clearCharging();
+    this._pendingResume = null;
+    this.status = "IDLE";
+    this.speed  = 0;
+    this.log.info(`[VR] ${this.robotId} ${label}`);
+  }
+
+  /** Resume a task halted by STOP/PAUSE; otherwise just return to IDLE. */
+  _applyResume() {
+    if (this.status === "CHARGING") {
+      this.log.info(`[VR] ${this.robotId} RESUME ignored — still charging`);
+      return;
+    }
+    this.status = this.task && this.phase ? "ACTIVE" : "IDLE";
+    this.log.info(`[VR] ${this.robotId} RESUME → ${this.status}`);
   }
 
   start() {

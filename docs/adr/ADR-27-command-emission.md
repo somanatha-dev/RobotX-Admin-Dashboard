@@ -1,0 +1,40 @@
+# ADR-27 — Command emission
+
+| Field | Value |
+|---|---|
+| **Status** | **Accepted — frozen** |
+| **Recorded** | 2026-07-28 (Phase 0, from Appendix C) |
+| **Specification** | `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` §4.1 rule 5, §12.4 |
+| **Decision area** | Command emission |
+
+## Context
+
+The architecture is frozen. This record is the durable, individually-citable form of
+the decision Appendix C of the specification records — see
+[`docs/adr/README.md`](README.md) for why the log exists and what "frozen" obliges.
+
+The authoritative statement of the decision, its motivation, and its consequences is
+§4.1 rule 5, §12.4 of the specification. This record does not restate, summarise, or
+reinterpret that section; it fixes the decision's identity so that code, tests, and
+review comments can cite `ADR-27` and mean exactly one thing.
+
+## Decision
+
+**Every external side effect emitted only via an outbox row written in the same transaction as the guarded write authorising it — for the reconciler and supervisor, not only for dispatch**
+
+## Rejected
+
+**Bumping a fence and separately issuing the command, which produces duplicate stand-downs and commands carrying authority that does not exist**
+
+## Consequences
+
+Binding on every phase of `IMPLEMENTATION_EXECUTION_PLAN.md`. An implementation that
+reintroduces the rejected alternative is a defect against §4.1 rule 5, §12.4, not a design
+variation, and is reverted rather than debated.
+
+## Changing this record
+
+This ADR is frozen. It is not amended, reworded, or reinterpreted by an implementing
+phase. It is superseded only by a new ADR that explicitly states which record it
+supersedes, and only after the architecture is deliberately unfrozen — a decision
+outside the authority of any implementation phase.

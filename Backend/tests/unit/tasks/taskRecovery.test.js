@@ -6,6 +6,7 @@ const { getRoutesWithDistance } = require("../../../src/services/task.service");
 const { recoverActiveTasks } = require("../../../src/services/taskRecovery.service");
 const { createMockPrisma } = require("../../helpers/mockPrisma");
 const { createTestKv } = require("../../helpers/testKv");
+const silentLogger = require("../../mocks/silentLogger");
 
 const ROUTE = { toPickup: [{ lat: 1, lon: 1 }], toDrop: [{ lat: 2, lon: 2 }], distanceMeters: 500, usedFallback: false };
 
@@ -86,7 +87,7 @@ describe("taskRecovery.service — recoverActiveTasks (restart recovery)", () =>
       .mockRejectedValueOnce(new Error("Mapbox + fallback both down"))
       .mockResolvedValueOnce(ROUTE);
 
-    const result = await recoverActiveTasks(prisma, kv, null, { logger: { info() {}, error() {}, warn() {} } });
+    const result = await recoverActiveTasks(prisma, kv, null, { logger: silentLogger });
     expect(result.recovered).toBe(1);
     expect(await kv.get("taskPath:TSK-FAIL")).toBeNull();
     expect(await kv.get("taskPath:TSK-OK")).not.toBeNull();

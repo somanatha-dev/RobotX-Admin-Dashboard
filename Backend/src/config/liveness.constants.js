@@ -1,48 +1,64 @@
 /**
- * Shared liveness/flush timing constants.
+ * Liveness/flush timing — **compatibility shim, retiring in Phase 5.**
  *
- * These four values are coupled — changing one without the others reintroduces
- * one of two failure modes, so they live in one file with the relationship
- * stated explicitly (same rationale as `dtaro.constants.js`, which centralized
- * the battery thresholds after they silently diverged across two files).
+ * These four values used to be declared here as compile-time constants. Phase 1
+ * (§22) moves every behavioural constant into the versioned parameter register, so
+ * this file resolves them through the Config Service and re-exports them under their
+ * existing names. `robot.handler.js`, `telemetry.handler.js`, and `socket.server.js`
+ * keep working unchanged until Phase 5 absorbs the offline sweep into the reconciler.
  *
- * The invariant that must hold:
+ * The values are unchanged.
+ *
+ * Register entries:
+ *   legacy.liveness.db_flush_interval_ms       (was DB_FLUSH_INTERVAL_MS)
+ *   legacy.liveness.offline_cutoff_ms          (was OFFLINE_CUTOFF_MS)
+ *   legacy.liveness.offline_sweep_interval_ms  (was OFFLINE_SWEEP_INTERVAL_MS)
+ *   legacy.liveness.offline_sweep_batch        (was OFFLINE_SWEEP_BATCH)
+ *
+ * ── The coupling, now enforced rather than described ────────────────────────
+ * The invariant this file used to state in prose:
  *
  *     DB_FLUSH_INTERVAL_MS  <  OFFLINE_CUTOFF_MS
  *
- * Both `telemetry.handler.js` (TELEMETRY) and `robot.handler.js` (HEARTBEAT)
- * throttle their `Robot.lastSeenAt` writes to DB_FLUSH_INTERVAL_MS. The offline
- * sweep in `socket.server.js` marks a robot OFFLINE once its DB `lastSeenAt`
- * is older than OFFLINE_CUTOFF_MS.
+ * is now publish-time validation A3 in `src/engine/config/validators.js`, so a
+ * configuration that breaks it is rejected instead of producing robots that flap
+ * online/offline forever in the gap between two throttled writes. That is the whole
+ * point of §22.1 rule 5: a cross-parameter identity documented in a comment is a
+ * comment, and the two values each look perfectly defensible alone.
  *
- *   - If the cutoff were <= the flush interval, a perfectly healthy robot
- *     would be marked OFFLINE in the gap between two throttled writes, and
- *     would flap online/offline forever — which is why the pre-throttle
- *     heartbeat path had to write on EVERY beat (30 writes/robot/minute at the
- *     simulator's 2s tick).
- *   - If the flush interval were raised toward the cutoff, the margin for a
- *     slow DB write or a delayed tick disappears.
- *
- * The current 2x margin (15s flush vs 30s cutoff) tolerates one entirely
- * missed flush before a live robot is ever at risk of being marked offline.
- *
- * Note that the sweep is a BACKSTOP, not the primary offline signal: a robot
- * disconnecting normally is marked offline immediately by the socket
- * `disconnect` handler. The sweep only catches cases where that never ran
- * (process kill, half-open connection), so its latency is not user-visible.
+ * The current 2× margin (15 s flush vs 30 s cutoff) tolerates one entirely missed
+ * flush before a live robot is ever at risk of being marked offline. The sweep is a
+ * BACKSTOP, not the primary offline signal: a robot disconnecting normally is marked
+ * offline immediately by the socket `disconnect` handler, so the sweep's latency is
+ * not user-visible.
  */
 
+const { defaultSnapshot } = require("../engine/config/service");
+
+const snapshot = defaultSnapshot();
+
+function required(name) {
+  const explanation = snapshot.explain(name);
+  if (explanation.value === null || explanation.value === undefined) {
+    throw new Error(
+      `legacy constant "${name}" did not resolve through the Config Service ` +
+        `(source: ${explanation.source}). Every behavioural constant is configuration (§22.1 rule 1).`,
+    );
+  }
+  return explanation.value;
+}
+
 /** Max age of a `Robot.lastSeenAt` DB write before the next tick flushes it. */
-const DB_FLUSH_INTERVAL_MS = 15_000;
+const DB_FLUSH_INTERVAL_MS = required("legacy.liveness.db_flush_interval_ms");
 
 /** How stale `lastSeenAt` must be before the sweep considers a robot offline. */
-const OFFLINE_CUTOFF_MS = 30_000;
+const OFFLINE_CUTOFF_MS = required("legacy.liveness.offline_cutoff_ms");
 
 /** How often the offline sweep runs. */
-const OFFLINE_SWEEP_INTERVAL_MS = 10_000;
+const OFFLINE_SWEEP_INTERVAL_MS = required("legacy.liveness.offline_sweep_interval_ms");
 
 /** Max robots examined per sweep pass — bounds the blast radius of one tick. */
-const OFFLINE_SWEEP_BATCH = 500;
+const OFFLINE_SWEEP_BATCH = required("legacy.liveness.offline_sweep_batch");
 
 module.exports = {
   DB_FLUSH_INTERVAL_MS,

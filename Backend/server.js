@@ -17,6 +17,7 @@ const { createVirtualRobotSimulator } = require("./src/simulation/SimulationEngi
 const { dispatchTaskAssign } = require("./src/services/commandDispatcher.service");
 const { safeJsonParse } = require("./src/utils/json");
 const { ensureAdminUser } = require("./src/services/adminBootstrap.service");
+const configService = require("./src/engine/config/service");
 
 async function start() {
   const server = http.createServer(app);
@@ -79,6 +80,15 @@ async function start() {
   app.locals.kv = kv;
   app.locals.prisma = prisma;
   app.locals.io = io;
+
+  // Load the pinned configuration version (§22.1 rule 4). Config is DB-authoritative
+  // and cache-read (§3.3): the pointer and the materialised set are mirrored in
+  // Redis, but a cache miss costs a query and never a wrong answer.
+  //
+  // While ENGINE_ENABLED is false this degrades to the register defaults with a log
+  // line. With it true, a process that cannot load its pinned version refuses to
+  // start rather than silently inventing one.
+  app.locals.config = await configService.bootstrap({ prisma, kv, logger });
 
   initSocketServer(io, { prisma, kv, logger });
 
@@ -213,7 +223,12 @@ async function start() {
               const path = safeJsonParse(pathRaw);
               if (!path?.toPickup || !path?.toDrop) continue;
 
-              const result = await dispatchTaskAssign(robotId, {
+              // NOTE: `io` is required — dispatchTaskAssign routes through the
+              // Socket.IO adapter (io.in(room)/io.to(room)) rather than a
+              // process-local socket map, so it works across worker processes.
+              // Omitting it silently bound the robotId to `io` and made every
+              // re-dispatch a no-op that still reported itself as attempted.
+              const result = await dispatchTaskAssign(io, robotId, {
                 taskId: task.taskId,
                 pickup: { lat: task.pickupLat, lon: task.pickupLon },
                 drop:   { lat: task.dropLat,   lon: task.dropLon   },

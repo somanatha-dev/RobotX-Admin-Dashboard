@@ -6,3 +6,10 @@ node_modules
 
 # Test coverage output
 /coverage
+
+# Build-gate self-test fixtures. The gates prove they can fail by generating a
+# tree with a planted violation, running against it, and deleting it. A fixture
+# left behind by an interrupted run must never be committed — it contains
+# deliberate §1.8 rule-2 violations and bare constants that would mislead a
+# reader into thinking real defects had been checked in.
+/tests/gates/.fixtures/

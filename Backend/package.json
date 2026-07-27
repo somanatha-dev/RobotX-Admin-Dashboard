@@ -7,7 +7,15 @@
     "dev": "node server.js",
     "test": "jest --runInBand --forceExit",
     "test:watch": "jest --runInBand --watch",
-    "test:coverage": "jest --runInBand --forceExit --coverage"
+    "test:coverage": "jest --runInBand --forceExit --coverage",
+    "test:legacy": "jest --runInBand --forceExit --selectProjects legacy",
+    "test:gates": "jest --runInBand --forceExit --selectProjects gates",
+    "test:engine": "jest --runInBand --forceExit --selectProjects engine",
+    "gate:tiers": "node tools/gates/checkTierDependencies.js",
+    "gate:params": "node tools/gates/checkParameterRegister.js",
+    "gate:tenets": "node src/engine/guards/tenets.js",
+    "gates": "npm run gate:tiers && npm run gate:params && npm run gate:tenets",
+    "verify": "npm run gates && npm test"
   },
   "keywords": [],
   "author": "",

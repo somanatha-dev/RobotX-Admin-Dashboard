@@ -4,6 +4,7 @@ const { createTestKv } = require("../../helpers/testKv");
 const { createFakeSocket, createFakeIo } = require("../../helpers/fakeSocket");
 const { createMockPrisma } = require("../../helpers/mockPrisma");
 const { waitFor } = require("../../helpers/waitFor");
+const silentLogger = require("../../mocks/silentLogger");
 
 describe("dtaro.handler — TASK_COMPLETE (task lifecycle: completion)", () => {
   let prisma;
@@ -17,7 +18,7 @@ describe("dtaro.handler — TASK_COMPLETE (task lifecycle: completion)", () => {
     io = createFakeIo();
     socket = createFakeSocket();
     socket.data.robotId = "R1";
-    registerDtaroHandlers(io, socket, { prisma, kv, logger: { info() {}, warn() {}, error() {} } });
+    registerDtaroHandlers(io, socket, { prisma, kv, logger: silentLogger });
   });
 
   test("ignores TASK_COMPLETE from an unauthenticated socket (no robotId bound)", async () => {

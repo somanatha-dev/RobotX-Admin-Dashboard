@@ -2,6 +2,7 @@ const { createTestKv } = require("../../helpers/testKv");
 const { createFakeSocket, createFakeIo } = require("../../helpers/fakeSocket");
 const { createMockPrisma } = require("../../helpers/mockPrisma");
 const { waitFor } = require("../../helpers/waitFor");
+const silentLogger = require("../../mocks/silentLogger");
 
 // F10 (completion) — the Postgres write throttle must cover EVERY path that
 // writes to the `Robot` row on the per-tick hot loop, not just the telemetry
@@ -36,7 +37,7 @@ describe("HEARTBEAT — Postgres write throttling (F10 completion)", () => {
     ({ kv } = await createTestKv());
     io = createFakeIo();
     socket = createFakeSocket();
-    registerRobotHandlers(io, socket, { prisma, kv, logger: { info() {}, warn() {}, error() {} } });
+    registerRobotHandlers(io, socket, { prisma, kv, logger: silentLogger });
 
     socket.data.isAuthed = true;
     socket.data.robotId = "R1";
@@ -73,7 +74,7 @@ describe("HEARTBEAT — Postgres write throttling (F10 completion)", () => {
 
   test("heartbeats for different robots are throttled independently", async () => {
     const socket2 = createFakeSocket();
-    registerRobotHandlers(io, socket2, { prisma, kv, logger: { info() {}, warn() {}, error() {} } });
+    registerRobotHandlers(io, socket2, { prisma, kv, logger: silentLogger });
     socket2.data.isAuthed = true;
     socket2.data.robotId = "R2";
 

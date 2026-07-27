@@ -1,4 +1,6 @@
 const { PrismaClient } = require("@prisma/client");
+const configService = require("../src/engine/config/service");
+
 const prisma = new PrismaClient();
 
 async function main() {
@@ -73,6 +75,22 @@ async function main() {
       centerLon: 77.5186
     }
   });
+
+  //////////////////////////////////////////////////
+  // 3. PARAMETER REGISTER (§22, Appendix A + §8.10) — Phase 1
+  //
+  // Mirrors src/engine/config/register/*.json into ParameterRegisterEntry rows so
+  // the register is queryable and the resolution-explain endpoint can report an
+  // entry's unit, owner, range, and calibration status. The JSON files remain the
+  // source of truth — the build gate reads them — and this upsert is idempotent, so
+  // re-seeding is safe.
+  //
+  // Seeding the register is NOT publishing a configuration version. A version is an
+  // explicit, approved, validated act (§22.1 rule 5, §22.3).
+  //////////////////////////////////////////////////
+
+  const { seeded } = await configService.seedRegister(prisma);
+  console.log(`🔧 Parameter register mirrored: ${seeded} entries`);
 
   console.log("✅ Minimal seeding completed");
 }

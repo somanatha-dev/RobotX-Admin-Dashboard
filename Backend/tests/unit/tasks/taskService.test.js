@@ -76,7 +76,7 @@ describe("task.service — assignTask (DTARO end-to-end assignment)", () => {
     await assignTask(prisma, { ...basePayload, taskId: "TSK-1" }, { kv, io });
 
     await waitFor(() => prisma.$transaction.mock.calls.length > 0);
-    expect(dispatchTaskAssign).toHaveBeenCalledWith("R1", expect.objectContaining({ taskId: "TSK-1" }));
+    expect(dispatchTaskAssign).toHaveBeenCalledWith(io, "R1", expect.objectContaining({ taskId: "TSK-1" }));
 
     // F8 — allocation metrics must carry the real computed cost, not null,
     // for an auto-assigned (DTARO-selected) task.
@@ -107,7 +107,7 @@ describe("task.service — assignTask (DTARO end-to-end assignment)", () => {
     await waitFor(() => prisma.$transaction.mock.calls.length > 0);
 
     expect(selectNearestRobot).toHaveBeenCalledTimes(2);
-    expect(dispatchTaskAssign).toHaveBeenCalledWith("R2", expect.anything());
+    expect(dispatchTaskAssign).toHaveBeenCalledWith(io, "R2", expect.anything());
   });
 
   test("marks the task FAILED when every DTARO candidate is claimed concurrently (all retries exhausted)", async () => {
@@ -136,7 +136,7 @@ describe("task.service — assignTask (DTARO end-to-end assignment)", () => {
     await waitFor(() => prisma.$transaction.mock.calls.length > 0);
 
     expect(selectNearestRobot).not.toHaveBeenCalled();
-    expect(dispatchTaskAssign).toHaveBeenCalledWith("R9", expect.anything());
+    expect(dispatchTaskAssign).toHaveBeenCalledWith(io, "R9", expect.anything());
 
     // A manual pick has no DTARO cost computation behind it — recorded as
     // null by design (not a bug), per PHASE1_VERIFICATION.md's F8 caveat.

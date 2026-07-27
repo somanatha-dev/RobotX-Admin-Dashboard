@@ -2,7 +2,6 @@ jest.mock("../../../src/db/prisma");
 
 const { getPrisma } = require("../../../src/db/prisma");
 const { cancelTask } = require("../../../src/controllers/tasks.controller");
-const { setRobotSocket, deleteRobotSocket } = require("../../../src/sockets/robotSockets");
 const { setRobotState, getRobotState } = require("../../../src/services/robotRegistry.service");
 const { createTestKv } = require("../../helpers/testKv");
 const { createFakeIo } = require("../../helpers/fakeSocket");
@@ -24,7 +23,6 @@ describe("tasks.controller — cancelTask (F27: cancel must stop the robot + cle
   let prisma;
   let kv;
   let io;
-  let fakeRobotSocket;
 
   beforeEach(async () => {
     prisma = {
@@ -35,11 +33,6 @@ describe("tasks.controller — cancelTask (F27: cancel must stop the robot + cle
     getPrisma.mockReturnValue(prisma);
     ({ kv } = await createTestKv());
     io = createFakeIo();
-    fakeRobotSocket = { id: "sock-1", emit: jest.fn() };
-  });
-
-  afterEach(() => {
-    deleteRobotSocket("R1", fakeRobotSocket);
   });
 
   test("400s when taskId param is missing", async () => {
@@ -74,7 +67,10 @@ describe("tasks.controller — cancelTask (F27: cancel must stop the robot + cle
   });
 
   test("cancels an ASSIGNED task: frees the robot, emits STOP to its socket, and clears Redis task state", async () => {
-    setRobotSocket("R1", fakeRobotSocket);
+    // Cancellation dispatches STOP through the robot's Socket.IO room (not a
+    // process-local socket map), so the room has to have a member for the
+    // dispatcher's presence check to pass.
+    io.joinRoom("robot:R1", { id: "sock-1" });
     await setRobotState(kv, "R1", { assignedTaskId: "TSK-1" });
     await kv.set("taskPath:TSK-1", JSON.stringify({ toPickup: [], toDrop: [] }), { ex: 86400 });
     await kv.set("robotTaskState:R1", JSON.stringify({ taskId: "TSK-1" }), { ex: 86400 });
@@ -94,8 +90,11 @@ describe("tasks.controller — cancelTask (F27: cancel must stop the robot + cle
       expect.objectContaining({ where: { id: "db-robot-1" }, data: { currentTaskId: null, status: "IDLE" } })
     );
 
-    // The robot's socket must be told to stop driving toward the cancelled task.
-    expect(fakeRobotSocket.emit).toHaveBeenCalledWith("STOP", expect.objectContaining({ taskId: "TSK-1", reason: "TASK_CANCELLED" }));
+    // The robot must be told to stop driving toward the cancelled task —
+    // via its room, so this still works when another worker owns the socket.
+    await waitFor(() => io.emittedTo("robot:R1", "STOP").length > 0);
+    const [stop] = io.emittedTo("robot:R1", "STOP");
+    expect(stop).toMatchObject({ taskId: "TSK-1", reason: "TASK_CANCELLED" });
 
     // Redis runtime state for this task/robot must not survive cancellation.
     await waitFor(async () => (await kv.get("taskPath:TSK-1")) === null);

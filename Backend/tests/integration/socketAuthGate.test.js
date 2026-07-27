@@ -8,6 +8,7 @@ const jwt = require("jsonwebtoken");
 const { getPrisma } = require("../../src/db/prisma");
 const initSocketServer = require("../../src/sockets/socket.server");
 const { createTestKv } = require("../helpers/testKv");
+const silentLogger = require("../mocks/silentLogger");
 
 const USER_ID = "33333333-3333-4333-8333-333333333333";
 const ADMIN_USER = { id: USER_ID, email: "admin@robotx.test", role: "SUPER_ADMIN" };
@@ -37,7 +38,7 @@ describe("Socket.IO dashboard-room JWT gate (F21)", () => {
 
     httpServer = http.createServer();
     io = new Server(httpServer, { cors: { origin: true, credentials: true } });
-    initSocketServer(io, { prisma, kv, logger: { info() {}, warn() {}, error() {}, socket() {}, socketIn() {}, socketOut() {} } });
+    initSocketServer(io, { prisma, kv, logger: silentLogger });
 
     await new Promise((resolve) => httpServer.listen(0, resolve));
     port = httpServer.address().port;

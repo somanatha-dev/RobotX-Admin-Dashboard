@@ -42,18 +42,48 @@ function createFakeSocket({ id, data } = {}) {
   return socket;
 }
 
+// Production code emits to rooms (io.to("dashboard").emit(...)), never
+// globally — a bare io.emit would fan out to every connected socket including
+// every other robot. `roomEmits`/`emittedTo` are the assertion surface for
+// that: reach for them rather than io.emit.mock.calls, which stays here only
+// to prove a global emit did NOT happen.
 function createFakeIo() {
-  const rooms = new Map();
+  const rooms = new Map();   // room -> [{ event, payload }] emitted to it
+  const members = new Map(); // room -> [socket-like] present in it
+
+  const target = (room) => ({
+    emit: jest.fn((event, payload) => {
+      const list = rooms.get(room) || [];
+      list.push({ event, payload });
+      rooms.set(room, list);
+    }),
+    // commandDispatcher checks presence with io.in(room).fetchSockets() before
+    // emitting, so a room with no members must genuinely refuse delivery here —
+    // otherwise the tests would not be able to tell "dispatched" from "dropped".
+    fetchSockets: async () => members.get(room) || [],
+  });
+
   const io = {
-    to: jest.fn((room) => ({
-      emit: jest.fn((event, payload) => {
-        const list = rooms.get(room) || [];
-        list.push({ event, payload });
-        rooms.set(room, list);
-      }),
-    })),
+    to: jest.fn(target),
+    in: jest.fn(target),
     emit: jest.fn(),
     _rooms: rooms,
+
+    /** Put a socket-like object in a room so fetchSockets() finds it. */
+    joinRoom(room, socket) {
+      const list = members.get(room) || [];
+      list.push(socket || { id: `fake-${room}` });
+      members.set(room, list);
+      return io;
+    },
+    /** Every {event, payload} emitted to `room`, in order. */
+    roomEmits(room) {
+      return rooms.get(room) || [];
+    },
+    /** Every payload emitted to `room` under `event`, in order. */
+    emittedTo(room, event) {
+      return (rooms.get(room) || []).filter((m) => m.event === event).map((m) => m.payload);
+    },
   };
   return io;
 }

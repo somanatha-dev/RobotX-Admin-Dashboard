@@ -85,11 +85,18 @@ function startOfflineDetector(prisma, kv, { logger } = {}) {
             if (trulyOffline.length > 0) {
                 await prisma.robot.updateMany({
                     where: { robotId: { in: trulyOffline } },
-                    data: { isOnline: false, status: "OFFLINE" },
+                    data: { isOnline: false, status: "OFFLINE", socketId: null },
                 });
                 for (const robotId of trulyOffline) {
                     robotStateCache.set(robotId, { isOnline: false, status: "OFFLINE" });
                 }
+                // Keep the live-robot index in step with the DB. The disconnect
+                // handler does this for a clean disconnect; this sweep exists
+                // precisely for the cases where that handler never ran, so it
+                // has to do the same cleanup or the index leaks those robots.
+                try {
+                    if (typeof kv?.srem === "function") await kv.srem("robots:all", ...trulyOffline);
+                } catch { /* index membership is best-effort */ }
             }
 
             // Alive per Redis but stale in Postgres — reconcile the mirror

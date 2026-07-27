@@ -429,3 +429,159 @@ model Decision {
   @@index([robotId])
   @@index([taskId])
 }
+//////////////////////////////////////////////////////
+// CONFIGURATION AND GOVERNANCE (§22) — Phase 1
+//
+// The Config Service's durable store. Config is DB-authoritative and cache-read
+// (§3.3): Redis mirrors the active-version pointer and the materialised resolved
+// set, but holds no correctness-critical sole copy.
+//
+// ConfigVersion and ConfigScopeBinding are immutable once written (§22.1 rule 3).
+// That is enforced by database triggers created in the migration, not only by
+// application code — a schema backstop, like the ones the commitment core will
+// carry in Phase 3.
+//////////////////////////////////////////////////////
+
+enum ConfigChangeClass {
+  HOT
+  TUNED
+  POLICY
+  SAFETY
+  STRUCTURAL
+  DERIVED
+  CONTRACTUAL
+}
+
+enum CalibrationStatus {
+  DERIVED
+  PROVISIONAL
+  UNCALIBRATED
+}
+
+enum OperatingRegimeState {
+  INACTIVE
+  PROPOSED_ENTRY
+  ACTIVE
+  PROPOSED_EXIT
+}
+
+model ConfigVersion {
+  id                 String   @id @default(uuid())
+
+  // Monotone. Referenced by version in every decision record (§22.1 rule 3).
+  version            Int      @unique
+
+  publishedAt        DateTime @default(now())
+  publishedBy        String
+
+  // Content hash over the canonical serialisation of `payload`. A replay checks it
+  // before trusting the version it loaded.
+  signature          String
+
+  // The complete resolved set: register digest, declared bindings, derived values,
+  // kill-switch state, regimes, spatial maps. Self-contained so a replay needs no
+  // other store (§9.6 requirement 6).
+  payload            Json
+
+  note               String?
+
+  // Two-person approval evidence for Safety-class changes (§22.3).
+  approvals          Json?
+  safetyClassChanges String[]
+
+  // §22.4 launch-gate findings recorded at publish, so the Phase 15 gate is a report
+  // rather than a discovery.
+  launchGateFindings Json?
+
+  bindings           ConfigScopeBinding[]
+
+  @@index([publishedAt])
+}
+
+model ConfigScopeBinding {
+  id              String   @id @default(uuid())
+
+  configVersionId String
+  configVersion   ConfigVersion @relation(fields: [configVersionId], references: [id], onDelete: Cascade)
+
+  // A §22.2 level: global | region | zone | site | agent_class | agent | tenant |
+  // sla_class | mission_class | time_window.
+  scopeLevel      String
+  scopeKey        String   @default("")
+
+  parameterName   String
+  value           Json
+
+  createdAt       DateTime @default(now())
+
+  @@unique([configVersionId, parameterName, scopeLevel, scopeKey])
+  @@index([parameterName])
+}
+
+// The pinned active version. A single row: configuration propagation is
+// pull-with-pin, and a round observes exactly one version (§22.1 rule 4).
+model ConfigActiveVersion {
+  id       String   @id
+  version  Int
+  pinnedAt DateTime @default(now())
+  pinnedBy String
+}
+
+model ParameterRegisterEntry {
+  name              String   @id
+
+  type              String
+  unit              String
+  defaultValue      Json?
+  range             Json?
+
+  // §22.2 levels at which this parameter may be bound.
+  scopes            String[]
+  // The Scope column exactly as Appendix A writes it, including `fleet` and `shard`.
+  specScope         String?
+
+  changeClass       ConfigChangeClass
+  owner             String
+  blastRadius       String?
+
+  calibrationStatus CalibrationStatus
+  // The data a PROVISIONAL or UNCALIBRATED entry awaits (§22.4).
+  awaits            String?
+
+  section           String?
+  description       String?
+  derivation        Json?
+  registerFile      String?
+
+  updatedAt         DateTime @updatedAt
+
+  @@index([changeClass])
+  @@index([calibrationStatus])
+}
+
+model OperatingRegime {
+  id                String   @id @default(uuid())
+  name              String   @unique
+  description       String?
+
+  triggerCondition  Json
+  parameterDeltas   Json
+  entryCriteria     String
+  exitCriteria      String
+  owner             String
+
+  state             OperatingRegimeState @default(INACTIVE)
+  // Calibration is per regime: a coefficient set fitted across a mixed year is wrong
+  // in both regimes (§22.4).
+  calibrationStatus CalibrationStatus    @default(UNCALIBRATED)
+
+  proposedAt        DateTime?
+  confirmedBy       String?
+  confirmedAt       DateTime?
+  exitedAt          DateTime?
+  history           Json?
+
+  createdAt         DateTime @default(now())
+
+  @@index([state])
+}

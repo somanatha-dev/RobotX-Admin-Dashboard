@@ -11,3 +11,12 @@ delete process.env.MAPBOX_ACCESS_TOKEN;
 process.env.NODE_ENV = "test";
 process.env.JWT_SECRET = "test-jwt-secret-do-not-use-in-prod";
 process.env.FRONTEND_URL = "https://app.robotx.test";
+
+// Next-generation assignment engine master switch (Phase 0).
+//
+// The engine under `src/engine/**` is built alongside the legacy dispatcher and is
+// inert until the Phase 15 cutover: while this is false no round runs, no
+// commitment is written, and no command is emitted. Tests that exercise the engine
+// opt in explicitly rather than inheriting a default-on switch, so a phase can
+// never accidentally take the legacy suite down a new code path.
+process.env.ENGINE_ENABLED = "false";

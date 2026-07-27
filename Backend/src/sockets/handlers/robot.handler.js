@@ -44,6 +44,9 @@ async function markRobotOffline(prisma, robotId) {
     data: {
       isOnline: false,
       status: "OFFLINE",
+      // Clear the socket binding too — leaving a dead socket id on the row
+      // makes it look like a live handle to anything reading the column.
+      socketId: null,
     },
   });
   robotStateCache.set(robotId, { isOnline: false, status: "OFFLINE" });
@@ -207,6 +210,18 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
       // DTARO: update registry with online + auth state
       await markOnline(kv, robotId, socket);
 
+      // Join the live-robot index. This is the ONLY place a robot enters it as
+      // a consequence of actually being connected — commissioning and task
+      // recovery also add members, but a robot that authenticates by any other
+      // route (a real unit reconnecting, a fleet re-added after a Redis flush)
+      // was previously absent from the set for its entire session. That made
+      // /health's online count wrong and, more seriously, made
+      // alertDissemination's obstacle fan-out skip the robot entirely — so a
+      // robot driving straight at an obstacle was never rerouted.
+      try {
+        if (typeof kv.sadd === "function") await kv.sadd("robots:all", robotId);
+      } catch { /* index membership is best-effort */ }
+
       // DTARO: assign robot to zone based on last known position
       try {
         const liveState = await getRobotState(kv, robotId);
@@ -305,6 +320,13 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
         await markRobotOffline(prisma, boundRobotId);
         // DTARO: update registry offline state
         await markOffline(kv, boundRobotId);
+
+        // Leave the live-robot index. Previously members were only ever
+        // removed on decommission, so the set monotonically over-counted and
+        // obstacle dissemination kept fanning out to long-gone robots.
+        try {
+          if (typeof kv.srem === "function") await kv.srem("robots:all", boundRobotId);
+        } catch { /* index membership is best-effort */ }
         // Dashboard-only UI event — scoped to the room instead of every socket.
         io.to("dashboard").emit("robot_offline", { robotId: boundRobotId });
       } catch {

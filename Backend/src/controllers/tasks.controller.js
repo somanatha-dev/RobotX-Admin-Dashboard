@@ -2,7 +2,7 @@ const asyncHandler = require("../utils/asyncHandler");
 const { getPrisma } = require("../db/prisma");
 const taskService = require("../services/task.service");
 const { toStringOrNull } = require("../utils/parse");
-const { getRobotSocket } = require("../sockets/robotSockets");
+const { dispatchStop } = require("../services/commandDispatcher.service");
 const { updateAssignedTask, updatePlannedPath } = require("../services/robotRegistry.service");
 
 // GET /api/tasks
@@ -105,9 +105,11 @@ const cancelTask = asyncHandler(async (req, res) => {
 
   if (releasedRobotCode) {
     // Stop the robot from continuing to execute the now-cancelled task.
+    // Room-based so it reaches the robot regardless of which worker owns its
+    // connection; a local socket-map lookup would silently no-op under
+    // clustering and leave a cancelled task's robot still driving.
     try {
-      const socket = getRobotSocket(releasedRobotCode);
-      if (socket) socket.emit("STOP", { taskId, reason: "TASK_CANCELLED" });
+      await dispatchStop(io, releasedRobotCode, { taskId, reason: "TASK_CANCELLED" });
     } catch {
       // non-critical — restart/reconnect recovery never re-dispatches a
       // cancelled task (recovery only queries ASSIGNED/IN_PROGRESS tasks)

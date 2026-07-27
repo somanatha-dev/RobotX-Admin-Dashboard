@@ -3,7 +3,7 @@ const { getPrisma } = require("../db/prisma");
 const robotService = require("../services/robot.service");
 const { toStringOrNull } = require("../utils/parse");
 const crypto = require("crypto");
-const { getRobotSocket } = require("../sockets/robotSockets");
+const { dispatchCommand } = require("../services/commandDispatcher.service");
 const { getRobotState, updateHealthStatus } = require("../services/robotRegistry.service");
 const { z } = require("zod");
 const robotStateCache = require("../cache/robotStateCache");
@@ -467,6 +467,7 @@ const deleteRobot = asyncHandler(async (req, res) => {
 const sendRobotCommand = asyncHandler(async (req, res) => {
   const prisma = getPrisma();
   const kv = req.app?.locals?.kv;
+  const io = req.app?.locals?.io;
   const robotCode = toStringOrNull(req.params?.robotId);
 
   const bodyParsed = z
@@ -549,10 +550,7 @@ const sendRobotCommand = asyncHandler(async (req, res) => {
           const next = retries + 1;
           await setRetryCount(command.id, next);
 
-          const s = getRobotSocket(robotCode);
-          if (s) {
-            s.emit("COMMAND", { commandId: command.id, type });
-          }
+          await dispatchCommand(io, robotCode, { commandId: command.id, type });
 
           await scheduleReliabilityCheck({ attempt: next });
           return;
@@ -565,16 +563,17 @@ const sendRobotCommand = asyncHandler(async (req, res) => {
     }, 5000);
   }
 
-  const socket = getRobotSocket(robotCode);
-  if (socket) {
-    socket.emit("COMMAND", { commandId: command.id, type });
-  }
+  // Dispatched through the robot's Socket.IO room rather than this process's
+  // local socket Map, so a command still reaches a robot whose connection is
+  // owned by a different worker. `delivered` now reflects adapter-wide
+  // presence rather than local presence.
+  const delivery = await dispatchCommand(io, robotCode, { commandId: command.id, type });
 
   // Reliability: retry up to 2 times before FAILED.
   if (kv) await setRetryCount(command.id, 0);
   scheduleReliabilityCheck({ attempt: 0 });
 
-  res.json({ ok: true, command, delivered: Boolean(socket) });
+  res.json({ ok: true, command, delivered: Boolean(delivery?.dispatched) });
 });
 
 module.exports = {
