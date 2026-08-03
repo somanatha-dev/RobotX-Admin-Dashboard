@@ -131,6 +131,27 @@ async function getRoutesWithDistance({ from, pickup, drop } = {}) {
 // concurrently claimed by another in-flight assignment, plus the short TTL
 // on the Redis reservation itself — both back-stops against a reservation
 // ever being held forever (deadlock/orphan avoidance).
+//
+// ── PHASE 3 note: this is no longer the system's only exclusivity mechanism ──
+//
+// `src/engine/commitment/commit.js` now provides the durable one the frozen
+// architecture specifies (§10.3.2): a SERIALIZABLE transaction with `FOR UPDATE`
+// row locks on both the agent and the Leg, guards G1–G6, a per-commitment fencing
+// token, a lease, and two schema backstops that hold even when application logic is
+// defective.
+//
+// This path is deliberately left intact and unchanged. The plan keeps the legacy
+// dispatcher live and untouched until the Phase 15 cutover, and `ENGINE_ENABLED` is
+// false in every environment, so for now this reservation remains the *only*
+// protection this code path has — which is why `kv.reserveRobot` keeps its
+// fail-closed behaviour for callers that do not opt into §10.4's advisory
+// semantics. See the policy note in `src/cache/kv.js`.
+//
+// §10.2 records why this mechanism is insufficient on its own and must not be
+// relied on once the durable path is live: the TTL can expire during a long
+// finalisation while the holder continues to act as though it holds the lock;
+// release performs no ownership check; and the transaction runs at READ COMMITTED,
+// which does not serialise the conflicting pair.
 const RESERVATION_TTL_SEC = 30;
 const MAX_RESERVATION_RETRIES = 2;
 const reservationKey = (robotId) => `robotReserve:${robotId}`;

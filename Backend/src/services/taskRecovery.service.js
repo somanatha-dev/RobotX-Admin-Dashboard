@@ -1,3 +1,32 @@
+/**
+ * ── PHASE 5: absorbed into the reconciler's orphan scan; retires at Phase 15 ──
+ *
+ * The execution plan records this file as "**absorbed** into reconciler orphan scan; file
+ * retires at Phase 15". What it does — find work that is in flight, notice that the
+ * process-local state supporting it is gone, and rebuild it — is §12.4 row 3 ("Leg
+ * non-terminal with no commitment and no queue entry") restricted to exactly one trigger:
+ * a process restart.
+ *
+ * §12.1 is explicit about why that restriction is the defect rather than the design:
+ *
+ * > They have different triggers but one shared root cause: **no component is responsible
+ * > for noticing that a state has stopped progressing.** Patching each trigger
+ * > individually leaves the seventh undiscovered.
+ *
+ * `reconciler.scanOrphanLegs` is the trigger-independent version. It runs continuously
+ * rather than at boot, it repairs by conditional write rather than by rebuilding a cache,
+ * it counts every repair against a per-category rate (§12.4), and it distinguishes a
+ * `PLANNED` orphan after a coordinator failover — expected — from a `QUEUED` or
+ * `ACCEPTED` one, which is a defect.
+ *
+ * **This file is not deleted in Phase 5 and its behaviour is unchanged.** It rebuilds
+ * *Redis* state for the *legacy* dispatcher, which is still the production path and which
+ * the reconciler deliberately does not touch: the engine reasons about Legs and
+ * Commitments, not about `robotTaskState:` keys. Deleting it now would break task
+ * recovery for the running system in exchange for a mechanism that Phase 15 has not yet
+ * switched on. Phase 15 removes it together with the legacy path it serves.
+ */
+
 const { safeJsonParse } = require("../utils/json");
 const { getRoutesWithDistance } = require("./task.service");
 

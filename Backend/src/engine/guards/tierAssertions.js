@@ -115,6 +115,11 @@ const MECHANISMS = Object.freeze([
       "src/engine/commitment/model.js",
       "src/engine/commitment/idempotency.js",
       "src/engine/commitment/clock.js",
+      // The lease granted at commit (§12.2). Absent from this list until Phase 4; the
+      // path-prefix rule always classified it Tier 0, so the gate was never wrong —
+      // but the human-readable inventory was incomplete, which is what the Phase 3
+      // independent verification found.
+      "src/engine/commitment/leases.js",
     ],
     invariants: ["I1", "I16", "I18"],
   },
@@ -165,6 +170,11 @@ const MECHANISMS = Object.freeze([
     modules: [
       "src/engine/dispatch/outbox.js",
       "src/engine/dispatch/sequence.js",
+      // §11.2's offer semantics and §11.4's escalation ladder are what the outbox is
+      // *for*: a durable dispatch obligation with no disposition and no ladder is a
+      // queue, not the mechanism §11.1 specifies.
+      "src/engine/dispatch/offers.js",
+      "src/engine/dispatch/escalation.js",
       "src/workers/outbox.worker.js",
     ],
     invariants: ["I16"],

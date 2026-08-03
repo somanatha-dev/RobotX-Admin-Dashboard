@@ -21,13 +21,36 @@ enum RobotStatus {
   ISSUES
 }
 
+// The Task state machine of §4.2, plus the legacy vocabulary this enum has always
+// carried. Phase 2 extends it; it removes nothing, because every legacy row and every
+// legacy read path still uses PENDING / ASSIGNED / IN_PROGRESS and will until the
+// Phase 15 cutover.
+//
+// `IMPLEMENTATION_EXECUTION_PLAN.md` §3 names five additions (AT_RISK, SUSPENDED,
+// VERIFYING, PLANNABLE, RECEIVED) while §4.2 tabulates eleven states, three of which
+// — REJECTED, WAITING, IN_EXECUTION — the plan's parenthetical omits. The plan states
+// its own precedence ("where this plan and the specification appear to disagree, the
+// specification wins and this plan is defective"), so all eight §4.2 states absent
+// from the legacy enum are added. Adding an enum value is additive; omitting one §4.2
+// requires would be a defect the Task machine (Phase 5) could not express.
 enum TaskStatus {
+  // Legacy vocabulary — retained until Phase 15.
   PENDING
   ASSIGNED
   IN_PROGRESS
   COMPLETED
   FAILED
   CANCELLED
+
+  // §4.2.
+  RECEIVED
+  REJECTED
+  PLANNABLE
+  WAITING
+  IN_EXECUTION
+  AT_RISK
+  SUSPENDED
+  VERIFYING
 }
 
 enum CommandType {
@@ -215,6 +238,10 @@ model Robot {
   commands      Command[]
   decisions     Decision[]
 
+  // Phase 2 (§2.1): the domain-side Agent this Robot projects to. A back-relation
+  // only — no column is added to Robot, and no legacy read path observes it.
+  agent         Agent?
+
   createdAt     DateTime @default(now())
 
   //////////////////////////////////////////////////
@@ -247,7 +274,30 @@ model Zone {
   robots    Robot[]
   obstacles ObstacleEvent[]
 
+  //////////////////////////////////////////////////
+  // PHASE 2 (§3.6) — the zone as the pricing and coverage unit
+  //
+  // A zone is contained in exactly one region and MUST NOT straddle a region
+  // boundary: were it permitted to, λ_zone would be estimated from demand served by
+  // two independent shards and Ω_terminal would no longer bound anything the shard
+  // can reach. The Config Service rejects a zone definition spanning regions at
+  // publish time (validators.js V8, already shipped in Phase 1).
+  //
+  // Nullable: existing zones carry no region until a region map is published, and a
+  // non-null default would fabricate containment that nobody assigned.
+  //////////////////////////////////////////////////
+
+  regionId  String?
+  region    Region?  @relation(fields: [regionId], references: [id], onDelete: SetNull)
+
+  // The zone's cell set. Containment is by published assignment, never by
+  // query-time geometry (§3.6) — the bounding box above is legacy DTARO state and is
+  // not what the engine resolves containment from.
+  cells     CellAssignment[]
+
   createdAt DateTime @default(now())
+
+  @@index([regionId])
 }
 
 //////////////////////////////////////////////////////
@@ -325,11 +375,60 @@ model Task {
 
   status      TaskStatus @default(PENDING)
 
+  /// PHASE 5 (§4.1 rule 2) — the optimistic-concurrency counter every Task
+  /// transition is a conditional write on, and what §4.5 keys the Task's durable
+  /// timers to.
+  ///
+  /// The execution plan's Phase 5 migration list names three tables and no column.
+  /// It is nonetheless required, and the plan states its own precedence ("where this
+  /// plan and the specification appear to disagree, the specification wins and this
+  /// plan is defective"): §4.1 rule 2 admits no unconditional state write, and §4.5
+  /// keys every timer on "the supervised entity's own version". A Task machine with
+  /// no version column could satisfy neither — its writes would be the unconditional
+  /// ones that produced the baseline's silent cancellation reversion, and its timers
+  /// would have to borrow some other entity's counter, which §4.5 names as a
+  /// correctness defect rather than a shortcut.
+  ///
+  /// Additive and defaulted, so every existing row is valid and no legacy write path
+  /// acquires a new requirement. Same treatment as Phase 2's additive Task columns.
+  version     Int      @default(0)
+
   startedAt   DateTime?
   completedAt DateTime?
 
   events      Event[]
   decisions   Decision[]
+
+  //////////////////////////////////////////////////
+  // PHASE 2 (§2.4) — the Task as the unit of customer-visible work
+  //
+  // The terminology map records that today's Task collapses four architectural
+  // entities. §2.4's Task is this row, extended: it "carries origin, destination,
+  // payload specification, requirement set, time windows, SLA class, tenant, and
+  // business priority". Origin and destination are the pickup/drop columns above.
+  // The rest is added here, every field nullable, so no existing row changes and no
+  // legacy write path acquires a new requirement.
+  //
+  // The RequirementSet (§2.3) is a JSON document rather than a table: §2.8 names it
+  // as a Task attribute, and the plan's migration list names no entity for it.
+  // Typed matching against a CapabilityBundle lives in `domain/capability.js`.
+  //////////////////////////////////////////////////
+
+  tenantId       String?
+  slaClass       String?
+  businessPriority Int?
+  requirements   Json?
+
+  windowStart    DateTime?
+  windowEnd      DateTime?
+
+  payloadSpecId  String?
+  payloadSpec    PayloadSpec? @relation(fields: [payloadSpecId], references: [id], onDelete: SetNull)
+
+  // §2.8: `Task >──< Mission` — a Mission may discharge several Tasks and a Task may
+  // span several Legs. The relation is many-to-many exactly as the specification
+  // draws it; Prisma's implicit join table carries it, so no entity is invented.
+  missions       Mission[]
 
   createdAt   DateTime @default(now())
 
@@ -339,6 +438,8 @@ model Task {
 
   @@index([robotId])
   @@index([status])
+  @@index([tenantId])
+  @@index([payloadSpecId])
 }
 
 //////////////////////////////////////////////////////
@@ -584,4 +685,1231 @@ model OperatingRegime {
   createdAt         DateTime @default(now())
 
   @@index([state])
+}
+
+//////////////////////////////////////////////////////
+// DOMAIN MODEL (§2), SPATIAL HIERARCHY (§3.6), AND THE §4.2/§4.3
+// STATE VOCABULARIES — Phase 2
+//
+// Every object below is new. Nothing above is dropped, renamed, or altered except
+// for the additive columns marked "PHASE 2" on `Zone` and `Task` and the additive
+// values on `TaskStatus`. The legacy dispatcher reads and writes exactly what it
+// read and wrote before this migration.
+//
+// ── Naming ──────────────────────────────────────────────────────────────────
+// The specification writes `authority_epoch` and `fence_counter` in snake_case
+// (§2.6, §10.3). This schema is camelCase throughout, so those become
+// `authorityEpoch` and `fenceCounter`. Recorded here rather than left to a reader
+// to infer, because "do not silently rename schema objects" is a programme rule and
+// this mapping must not be silent.
+//////////////////////////////////////////////////////
+
+/// §2.1 — lifecycle state, deliberately separate from operational status.
+/// The baseline overloads one status enum, producing the ambiguity where PAUSED
+/// means either "paused" or "charging" depending on a Redis key that may have
+/// expired. Orthogonal concerns get orthogonal fields: lifecycle (is this agent in
+/// service at all) never encodes activity, connectivity, commitment, or health.
+enum LifecycleState {
+  COMMISSIONED
+  ACTIVE
+  QUARANTINED
+  MAINTENANCE
+  DECOMMISSIONED
+}
+
+/// §2.4 — why a Leg exists. Set at creation and never mutated.
+/// `custodial_purposes` = {RECOVERY, TRANSFER} and
+/// `speculative_purposes` = {REPOSITION, EXERCISE} are defined once in
+/// `src/engine/domain/purpose.js` and derived from this enum, never re-listed.
+enum LegPurpose {
+  PRIMARY
+  RECOVERY
+  TRANSFER
+  REPOSITION
+  EXERCISE
+  MAINTENANCE_TRANSIT
+}
+
+/// §4.3 — the Leg state machine, the one that carries operational weight.
+/// STRANDED_SAFE and STRANDED_OBSTRUCTING are first-class states, not errors: some
+/// situations are genuinely unrecoverable by software, and representing that
+/// honestly with an operations SLA attached is strictly better than representing it
+/// as ASSIGNED forever.
+enum LegState {
+  QUEUED
+  DEFERRED
+  PLANNED
+  OFFERED
+  ACCEPTED
+  EN_ROUTE_PICKUP
+  AT_PICKUP
+  LOADED
+  EN_ROUTE_DROP
+  AT_DROP
+  RELEASED
+  SETTLED
+  ABORTING
+  STRANDED_SAFE
+  STRANDED_OBSTRUCTING
+  REASSIGNING
+  WITHDRAWN
+  CANCELLED
+  FAILED
+}
+
+/// §2.5 — custody is possession of physical goods. A failure before custody is a
+/// scheduling problem; a failure after custody is a physical logistics problem, and
+/// no amount of database repair moves the goods.
+enum CustodyState {
+  NONE
+  PENDING_TRANSFER
+  HELD
+  RELEASED
+  DISPUTED
+}
+
+/// §4.3 — the obstruction class of a stopping location, supplied by the Map service
+/// (§5.2), which is what derives STRANDED_SAFE from STRANDED_OBSTRUCTING.
+/// INDETERMINATE is a real outcome, not an absence: where the class is unavailable
+/// or stale beyond its budget it resolves to STRANDED_OBSTRUCTING under DENY
+/// semantics (T2, §7.3).
+enum ObstructionClass {
+  CLEAR
+  RESTRICTIVE
+  BLOCKING_CRITICAL
+  INDETERMINATE
+}
+
+//////////////////////////////////////////////////////
+// (f) SPATIAL HIERARCHY (§3.6)
+//////////////////////////////////////////////////////
+
+/// §3.6 OperatingRegion — the shard boundary. Every Agent and every Leg belongs to
+/// exactly one at a time; region determines the assignment shard (§19.2).
+model Region {
+  id          String   @id @default(uuid())
+  regionId    String   @unique
+  name        String
+  description String?
+
+  zones       Zone[]
+  sites       Site[]
+  agents      Agent[]
+  missions    Mission[]
+  cells       CellAssignment[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// §3.6 Site — a bounded place with its own access rules and service-time
+/// behaviour. Sites and zones are orthogonal and deliberately so: site is where
+/// service behaviour is learned, zone is where supply is priced.
+model Site {
+  id           String   @id @default(uuid())
+  siteId       String   @unique
+  name         String
+
+  regionId     String
+  region       Region   @relation(fields: [regionId], references: [id], onDelete: Restrict)
+
+  // Access rules (lift, door code, dock, gate) and, for indoor or multi-level
+  // sites, the graph zones §6.2 uses in place of geodesic cells.
+  accessRules  Json?
+  graphZones   Json?
+
+  cells        CellAssignment[]
+  stops        Stop[]
+  homedAgents  Agent[]  @relation("AgentHomeDepot")
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([regionId])
+}
+
+/// §3.6 Cell — the index and cache unit. **Containment is by assignment, not by
+/// geometry**: deriving a cell's zone from polygon intersection at query time makes
+/// it depend on floating-point geometry evaluated per round, which is both slow and
+/// non-deterministic (T6).
+///
+/// This table is the durable mirror of the published cell→zone and cell→site maps.
+/// The authoritative copy is the configuration payload the round pins (§9.6), which
+/// the Config Service validates at publish (V8, Phase 1).
+///
+/// `resolution` is a string rather than an enum because the plan's migration group
+/// (i) enumerates exactly five new enums and this is not one of them; the permitted
+/// values are enforced in `src/engine/spatial/cells.js`.
+model CellAssignment {
+  id         String   @id @default(uuid())
+
+  cellId     String
+  resolution String
+
+  regionId   String
+  region     Region   @relation(fields: [regionId], references: [id], onDelete: Restrict)
+
+  zoneId     String?
+  zone       Zone?    @relation(fields: [zoneId], references: [id], onDelete: SetNull)
+
+  siteId     String?
+  site       Site?    @relation(fields: [siteId], references: [id], onDelete: SetNull)
+
+  // The ConfigVersion that published this assignment. Not a foreign key: the mirror
+  // must be seedable before any configuration version is published, and the pinned
+  // payload — not this row — is what a round resolves against.
+  mapVersion Int      @default(0)
+
+  createdAt  DateTime @default(now())
+
+  @@unique([cellId, mapVersion])
+  @@index([regionId])
+  @@index([zoneId])
+  @@index([siteId])
+  @@index([resolution])
+}
+
+//////////////////////////////////////////////////////
+// (b) AGENT CLASS AND ITS MODELS (§2.1, §2.2, §2.3, §15.2)
+//////////////////////////////////////////////////////
+
+/// §2.2 — the MobilityModel makes heterogeneous locomotion a parameter rather than
+/// a special case. The Routing Service is queried *with* a MobilityModel reference,
+/// so a loaded stair-capable indoor robot and a drone over the same origin and
+/// destination are different queries against different networks — not the same
+/// query with a fudge factor.
+model MobilityModel {
+  id                  String   @id @default(uuid())
+  modelId             String   @unique
+  name                String
+
+  traversalDomain     String
+  permissionSet       Json?
+  speedModel          Json?
+  kinematicLimits     Json?
+  envelopeConstraints Json?
+  dimensionalFootprint Json?
+
+  agentClasses        AgentClass[]
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+/// §2.1 / §14 — the class-level energy model. Phase 7 adds the fitted per-class
+/// β coefficients (`EnergyModelParams`) and the per-agent `BatteryState`; this row
+/// is the declarative model those attach to.
+model EnergyModel {
+  id                    String   @id @default(uuid())
+  modelId               String   @unique
+  name                  String
+
+  packNominalWh         Float?
+  chemistry             String?
+  consumptionCoefficients Json?
+  thermalDeratingCurve  Json?
+  chargePowerCurve      Json?
+
+  agentClasses          AgentClass[]
+
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+/// §15.2 — a capacity scalar is insufficient: a 20 kg limit tells you nothing about
+/// whether two 40 cm boxes fit through a 30 cm hatch.
+model ContainerModel {
+  id                   String   @id @default(uuid())
+  modelId              String   @unique
+  name                 String
+
+  totalMassLimitKg     Float?
+  totalVolumeLitres    Float?
+  axleMassDistribution Json?
+  cogEnvelope          Json?
+  accessConstraints    Json?
+  loadingInterface     String?
+  cleanlinessClass     String?
+
+  compartments         Compartment[]
+  agentClasses         AgentClass[]
+
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+/// §15.2 — the **aperture** is modelled separately from the internal dimension
+/// because it is a distinct and frequently binding constraint that a volume-based
+/// model misses entirely.
+model Compartment {
+  id                String   @id @default(uuid())
+
+  containerModelId  String
+  containerModel    ContainerModel @relation(fields: [containerModelId], references: [id], onDelete: Cascade)
+
+  // Position in the container's ordered compartment list (§15.2).
+  ordinal           Int
+
+  internalLengthMm  Float?
+  internalWidthMm   Float?
+  internalHeightMm  Float?
+
+  apertureWidthMm   Float?
+  apertureHeightMm  Float?
+
+  maxMassKg         Float?
+  thermalClass      String?
+  activeThermal     Boolean  @default(false)
+  lockClass         String?
+  tamperSensing     Boolean  @default(false)
+  accessSide        String?
+
+  createdAt         DateTime @default(now())
+
+  @@unique([containerModelId, ordinal])
+  @@index([containerModelId])
+}
+
+/// §2.3 — capabilities are typed, not string tags, because untyped tags cannot
+/// express thresholds and degrade into a taxonomy nobody maintains.
+model CapabilityBundle {
+  id           String   @id @default(uuid())
+  bundleId     String   @unique
+  name         String
+
+  capabilities Capability[]
+  agentClasses AgentClass[]
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+/// §2.3 — one typed capability. `kind` is one of the five representations
+/// (BOOLEAN, GRADED, QUANTITATIVE, ENUMERATED, CERTIFIED); the permitted set and
+/// the matching algebra live in `src/engine/domain/capability.js`.
+///
+/// **Capabilities are attested, never self-declared at runtime** (§2.1, §23.5). A
+/// capability claim arriving via telemetry is untrusted input. Phase 14 adds the
+/// signed attestation this row records the result of.
+model Capability {
+  id         String   @id @default(uuid())
+
+  bundleId   String
+  bundle     CapabilityBundle @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+
+  name       String
+  kind       String
+  value      Json?
+  unit       String?
+
+  // Certified capabilities carry a validity window and an issuer, and MUST be
+  // checked against *mission end time*, not decision time (§2.3).
+  issuer     String?
+  validFrom  DateTime?
+  validUntil DateTime?
+
+  source     String?
+
+  createdAt  DateTime @default(now())
+
+  @@unique([bundleId, name])
+  @@index([bundleId])
+}
+
+/// §2.1 — the agent class keys every model-specific parameter set.
+model AgentClass {
+  id                 String   @id @default(uuid())
+  classId            String   @unique
+  name               String
+
+  hardwareRevision   String?
+  firmwareVersionSet Json?
+
+  mobilityModelId    String?
+  mobilityModel      MobilityModel? @relation(fields: [mobilityModelId], references: [id], onDelete: SetNull)
+
+  energyModelId      String?
+  energyModel        EnergyModel? @relation(fields: [energyModelId], references: [id], onDelete: SetNull)
+
+  containerModelId   String?
+  containerModel     ContainerModel? @relation(fields: [containerModelId], references: [id], onDelete: SetNull)
+
+  capabilityBundleId String?
+  capabilityBundle   CapabilityBundle? @relation(fields: [capabilityBundleId], references: [id], onDelete: SetNull)
+
+  agents             Agent[]
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+//////////////////////////////////////////////////////
+// (a) AGENT (§2.1)
+//////////////////////////////////////////////////////
+
+/// §2.1 — Agent replaces "robot" as the primary abstraction so that ground robots,
+/// drones, vehicles, and human couriers are representable without a structural
+/// change (§25). An Agent is the unit of commitment: exactly one commitment stack,
+/// exactly one physical identity.
+///
+/// The plan's migration group (a) reads "`Agent` (extends Robot: …)", in contrast
+/// with group (f)'s "`Zone` (extend: …)" for an in-place column addition. Agent is
+/// therefore a new table that *extends* Robot through a 1:1 link, not a set of
+/// columns bolted onto Robot: Robot stays byte-for-byte authoritative for the legacy
+/// dispatcher, and the backfill genuinely converts Robot rows into Agent rows.
+model Agent {
+  id             String   @id @default(uuid())
+
+  // The stable agent id (§2.1 Identity). Seeded from `Robot.robotId` by the
+  // backfill, which is what makes the mapping deterministic and re-runnable.
+  agentId        String   @unique
+
+  // The legacy Robot this Agent projects. Nullable because §25 admits agents with
+  // no Robot row (drones, human couriers); unique because the projection is 1:1.
+  robotDbId      String?  @unique
+  robot          Robot?   @relation(fields: [robotDbId], references: [id], onDelete: Cascade)
+
+  fleetId        String?
+  tenantId       String?
+
+  agentClassId   String?
+  agentClass     AgentClass? @relation(fields: [agentClassId], references: [id], onDelete: SetNull)
+
+  regionId       String?
+  region         Region?  @relation(fields: [regionId], references: [id], onDelete: SetNull)
+
+  homeDepotId    String?
+  homeDepot      Site?    @relation("AgentHomeDepot", fields: [homeDepotId], references: [id], onDelete: SetNull)
+
+  /// §2.1 — lifecycle, distinct from operational status.
+  lifecycleState LifecycleState @default(COMMISSIONED)
+
+  /// §10.3.1 — the **agent-scope** fencing token. Advanced on agent-level authority
+  /// changes (quarantine, session rekey, shard migration), never on an ordinary
+  /// commit, so several commitments may be created against one agent in one round
+  /// without invalidating each other.
+  authorityEpoch BigInt   @default(0)
+
+  /// §2.6 — the monotone source of **commitment-scope** fences. Each commitment
+  /// draws its own fence from this counter and is compared *per commitment id*,
+  /// never as a single maximum across the agent's concurrent commitments.
+  fenceCounter   BigInt   @default(0)
+
+  /// §2.1 — the per-agent `capacity` override. Recorded durably here; the engine
+  /// resolves `capacity[agent_class]` through the Config Service (§22.2), which
+  /// remains the authority. This column is the durable record an `agent`-scope
+  /// binding is published from, never a second source of truth read at decision
+  /// time.
+  capacityOverride Int?
+
+  commitments    Commitment[]
+  observations   Observation[]
+
+  /// PHASE 4 — §11.1 / §11.5. Back-relations only; neither adds a column here.
+  outbox         Outbox[]
+  dedupState     AgentDedupState?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([regionId])
+  @@index([agentClassId])
+  @@index([lifecycleState])
+  @@index([homeDepotId])
+}
+
+//////////////////////////////////////////////////////
+// (e) PAYLOAD (§15.1, §15.6)
+//////////////////////////////////////////////////////
+
+/// §15.1 — the task-side payload specification. Mass is specified with a
+/// **tolerance**, because declared masses are frequently wrong: feasibility uses the
+/// upper bound of the tolerance and energy estimation uses the expectation.
+model PayloadSpec {
+  id                  String   @id @default(uuid())
+  specId              String   @unique
+
+  massKg              Float?
+  massToleranceKg     Float?
+
+  lengthMm            Float?
+  widthMm             Float?
+  heightMm            Float?
+  shapeClass          String?
+  volumeLitres        Float?
+
+  orientationConstraints Json?
+  stackable           Boolean  @default(true)
+  loadBearingLimitKg  Float?
+  fragilityClass      String?
+
+  thermalMinC         Float?
+  thermalMaxC         Float?
+  thermalMaxExcursionSeconds Int?
+
+  securityClass       String?
+  hazardClasses       String[]
+  segregationRules    Json?
+
+  declaredValue       Float?
+  regulatoryClass     String?
+
+  itemCount           Int?
+  divisible           Boolean  @default(false)
+
+  tasks               Task[]
+  manifests           PayloadManifest[]
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+/// §15.6 — the payload manifest is reconciled at every custody event. A mass delta
+/// inconsistent with the manifest is a discrepancy event, not a rounding error.
+model PayloadManifest {
+  id            String   @id @default(uuid())
+  manifestId    String   @unique
+
+  legId         String?
+  leg           Leg?     @relation(fields: [legId], references: [id], onDelete: Cascade)
+
+  payloadSpecId String?
+  payloadSpec   PayloadSpec? @relation(fields: [payloadSpecId], references: [id], onDelete: SetNull)
+
+  // The loading plan (§15.3 tier 2) and the item rows it places.
+  items         Json?
+  loadingPlan   Json?
+
+  declaredMassKg Float?
+  observedMassKg Float?
+
+  // OPEN until custody is discharged. An agent MUST NOT be returned to the
+  // available pool while any compartment is non-empty against an open manifest
+  // (§15.6, invariant I7).
+  state         String   @default("OPEN")
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([legId])
+  @@index([payloadSpecId])
+  @@index([state])
+}
+
+//////////////////////////////////////////////////////
+// (c) WORK: MISSION, LEG, STOP (§2.4)
+//////////////////////////////////////////////////////
+
+/// §2.4 — the ordered set of Legs that discharges one or more Tasks, joined at
+/// transfer points where custody passes between agents.
+model Mission {
+  id        String   @id @default(uuid())
+  missionId String   @unique
+
+  regionId  String?
+  region    Region?  @relation(fields: [regionId], references: [id], onDelete: SetNull)
+
+  tasks     Task[]
+  legs      Leg[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([regionId])
+}
+
+/// §2.4 — a contiguous sequence of Stops executed by **one** agent under **one**
+/// commitment. The Leg is the unit of assignment and the decision index of the
+/// objective (§1.4).
+model Leg {
+  id           String   @id @default(uuid())
+  legId        String   @unique
+
+  missionId    String
+  mission      Mission  @relation(fields: [missionId], references: [id], onDelete: Cascade)
+
+  // Position within the Mission's ordered Leg list.
+  sequence     Int      @default(0)
+
+  /// §2.4 — set at creation and **never mutated**. It exists because several
+  /// mechanisms need to distinguish *why* a Leg exists, and leaving that implicit
+  /// forces each of them to invent its own test, inconsistently.
+  purpose      LegPurpose
+
+  /// §4.3.
+  state        LegState @default(QUEUED)
+
+  /// §2.5.
+  custodyState CustodyState @default(NONE)
+
+  /// §4.1 rule 2 / §4.4 — the optimistic-concurrency counter every Leg transition
+  /// is a conditional write on. Also what §4.5 keys the Leg's durable timers on:
+  /// the supervised entity's *own* version, never the agent's epoch.
+  version      Int      @default(0)
+
+  /// §4.6 / §10.3.2 guard G5 — `cancel_requested_at IS NULL OR purpose ∈
+  /// custodial_purposes`. A cancellation request is recorded here rather than
+  /// applied unconditionally, because the unqualified guard blocks its own mandated
+  /// recovery path.
+  cancelRequestedAt DateTime?
+  cancelReason      String?
+
+  /// §4.3 — the obstruction class of the stopping location, which is what derives
+  /// STRANDED_SAFE from STRANDED_OBSTRUCTING. Derived automatically from the Map
+  /// service, never operator-entered.
+  obstructionClass  ObstructionClass?
+
+  // §4.3 DEFERRED / §11.2 DEFER: the earliest time this Leg may re-enter a round.
+  startNotBefore DateTime?
+  slaDeadline    DateTime?
+
+  stops        Stop[]
+  commitments  Commitment[]
+  manifests    PayloadManifest[]
+
+  /// PHASE 5 — §12.5's graded completion verification. A back-relation only.
+  verifications VerificationEvidence[]
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([missionId, sequence])
+  @@index([state])
+  @@index([purpose])
+  @@index([custodyState])
+  @@index([missionId])
+}
+
+/// §2.4 — a located, time-windowed action at a place. `stopType` is a string
+/// rather than an enum because the plan's migration group (i) enumerates exactly
+/// five new enums and StopType is not among them; the permitted set (PICKUP, DROP,
+/// WAIT, CHARGE, INSPECT, TRANSFER, REPOSITION) is enforced in
+/// `src/engine/domain/work.js`.
+model Stop {
+  id                  String   @id @default(uuid())
+  stopId              String   @unique
+
+  legId               String
+  leg                 Leg      @relation(fields: [legId], references: [id], onDelete: Cascade)
+
+  sequence            Int
+
+  stopType            String
+
+  label               String?
+  lat                 Float?
+  lon                 Float?
+
+  siteId              String?
+  site                Site?    @relation(fields: [siteId], references: [id], onDelete: SetNull)
+
+  // §13.2 — the learned service-time model this stop is priced against.
+  serviceTimeModelRef String?
+
+  windowStart         DateTime?
+  windowEnd           DateTime?
+
+  // §2.4 — access constraints (lift, door code, dock, gate) and the payload delta
+  // this Stop applies. §15.4 evaluates load state per stop, not once.
+  accessConstraints   Json?
+  payloadDelta        Json?
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([legId, sequence])
+  @@index([legId])
+  @@index([siteId])
+  @@index([stopType])
+}
+
+//////////////////////////////////////////////////////
+// (d) COMMITMENT (§2.6, §10.3)
+//////////////////////////////////////////////////////
+
+/// §2.6 — the durable contract binding an Agent to a Leg.
+///
+/// **Only HARD commitments exist in the Commitment Store.** A SOFT reservation is
+/// round-local coordinator state and MUST NOT be written here; there is no third
+/// case. The `kind = 'HARD'` CHECK in the migration is the schema backstop for
+/// invariant I18, so the rule holds independently of application logic.
+///
+/// Phase 2 lands the table. Phase 3 lands the commit transaction, guards G1–G6, and
+/// the partial unique index that enforces ≤ `capacity[agent_class]` active
+/// commitments per agent (I1). Nothing writes this table in Phase 2.
+model Commitment {
+  id              String   @id @default(uuid())
+
+  /// §2.6 — the idempotency and correlation key across every subsystem.
+  commitmentId    String   @unique
+
+  agentId         String
+  // Restrict, not Cascade: a durable contract must not be silently destroyed by the
+  // deletion of the row it binds. In Phase 2 no commitment rows exist, so no legacy
+  // decommissioning path changes behaviour.
+  agent           Agent    @relation(fields: [agentId], references: [id], onDelete: Restrict)
+
+  legId           String
+  leg             Leg      @relation(fields: [legId], references: [id], onDelete: Restrict)
+
+  kind            String   @default("HARD")
+
+  /// §10.3 — the commitment-scope fencing token, drawn from the agent's
+  /// `fenceCounter` and compared *per commitment id*.
+  fence           BigInt
+
+  /// §12.2 — absolute time after which the commitment is presumed lost unless
+  /// renewed on commitment-scoped positive evidence.
+  leaseExpiry     DateTime
+
+  custodyState    CustodyState @default(NONE)
+
+  /// §2.6 — the stop sequence, route references, and predicted timeline committed.
+  planSnapshotRef String?
+
+  /// §21.2 — pointer to the decision record that produced this commitment.
+  decisionRef     String?
+
+  /// §2.6 — optimistic-concurrency counter for conditional writes.
+  version         Int      @default(0)
+
+  grantedAt       DateTime @default(now())
+
+  // Null while the commitment is active. Phase 3's partial unique index enforcing
+  // the capacity constraint (I1) is predicated on this column.
+  releasedAt      DateTime?
+
+  /// PHASE 3 — §10.3.2 / invariant I1. The capacity slot this commitment occupies
+  /// on its agent: an integer in `[0, capacity[agent_class])`, allocated as the
+  /// lowest free slot at commit.
+  ///
+  /// It exists so that the schema backstop §10.3.2 mandates can be **a partial
+  /// unique index** — `UNIQUE (agentId, capacitySlot) WHERE releasedAt IS NULL` —
+  /// rather than a counting trigger. The distinction is not stylistic: a unique
+  /// index is immune to the interleaving in which two transactions each count zero
+  /// active commitments and both insert, which is precisely the class of defect the
+  /// backstop exists to catch in a *defective code path* that failed to take the
+  /// agent row lock. A count-based trigger would inherit the very hazard it guards.
+  ///
+  /// A bare `UNIQUE (agentId) WHERE releasedAt IS NULL` would express I1 only at
+  /// `capacity = 1` and would have to be migrated away at Phase 16e, which the plan
+  /// records as requiring no migrations. The slot generalises to any capacity; the
+  /// upper bound on the slot is enforced by the `commitment_capacity_slot_in_bounds`
+  /// trigger against the durable per-agent capacity.
+  ///
+  /// The index itself is hand-written SQL in the Phase 3 migration: Prisma cannot
+  /// express a partial index, and the predicate `WHERE releasedAt IS NULL` is the
+  /// whole point of it. Same treatment as Phase 1's and Phase 2's CHECK constraints
+  /// and triggers, which live in migration SQL for the same reason.
+  capacitySlot    Int      @default(0)
+
+  /// PHASE 4 — §11.1. The dispatch obligations written in this commitment's own
+  /// transaction. A back-relation only; it adds no column.
+  outbox          Outbox[]
+
+  @@index([agentId, releasedAt])
+  @@index([legId])
+  @@index([leaseExpiry])
+}
+
+//////////////////////////////////////////////////////
+// PHASE 3 — COMMITMENT CORE (§10, §19.3, §19.5, §26 I6)
+//////////////////////////////////////////////////////
+
+/// §19.3, §19.5 — the shard's leadership record, and the fence guard **G1** reads
+/// inside the commit transaction.
+///
+/// > Recording a fence that is never checked documents a decision without enforcing
+/// > it; the guard is what converts leadership from a coordinator's belief into a
+/// > database-enforced property.
+///
+/// Phase 3 ships this table with a **single static row and a manually-advanced
+/// fence** — the plan's stated resolution of the near-circular dependency C1
+/// between guard G1 (Phase 3) and leader election (Phase 13). Phase 13 replaces the
+/// row's *management* with real consensus-backed election. **G1's code does not
+/// change**, so there is no window in which leadership is unenforced.
+model ShardLeadership {
+  id               String   @id @default(uuid())
+
+  /// The shard this record governs. One row per shard.
+  shardId          String   @unique
+
+  /// §19.5 — monotonic, advanced on **each leadership change**. Advancing it does
+  /// **not** advance any agent's `authority_epoch`: leadership change concerns which
+  /// coordinator may write, not which authority the agents operate under, and the
+  /// two scopes are kept orthogonal on purpose (§10.3.1).
+  leadershipFence  BigInt   @default(0)
+
+  /// The current holder's identity, or null when the shard is unheld.
+  holder           String?
+
+  /// Absolute expiry from the store's clock (§10.6). A coordinator MUST stop
+  /// committing before this instant, leaving `time.max_clock_skew` plus the store's
+  /// round-trip budget of margin — but stopping early only *narrows* the window;
+  /// G1 is what closes it.
+  leaseExpiry      DateTime?
+
+  /// Recorded so Phase 13's failover can distinguish a fence advanced by election
+  /// from one advanced manually during the Phase 3 → Phase 13 window.
+  lastAdvancedBy   String?
+  lastAdvancedAt   DateTime?
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([leaseExpiry])
+}
+
+/// §26 invariant I6 — "an agent's `fence_counter` and `authority_epoch` are each
+/// strictly monotonic", *verified by a windowed monotonicity audit against a
+/// **persisted high-water mark** per agent*.
+///
+/// The high-water mark lives here rather than being read back off `Agent`, because
+/// an audit that reads the same row the enforcer writes cannot detect the one defect
+/// it exists to detect: a counter that went backwards. Two rows that disagree are
+/// evidence; one row that agrees with itself is not.
+///
+/// Phase 3 writes this table inside the commit transaction. Phase 12's independent
+/// Invariant Checker reads it.
+model AgentFenceAudit {
+  id                 String   @id @default(uuid())
+
+  agentId            String   @unique
+
+  /// The highest `fence_counter` ever observed for this agent.
+  fenceHighWater     BigInt   @default(0)
+
+  /// The highest `authority_epoch` ever observed for this agent. Phase 3 never
+  /// advances `authority_epoch` (§10.3.2 step 4), so this column moves only when a
+  /// later phase's agent-scope authority change does.
+  epochHighWater     BigInt   @default(0)
+
+  /// The commitment whose allocation last advanced `fenceHighWater`, so a
+  /// non-monotone observation names the transaction that should have prevented it.
+  lastFenceSource    String?
+
+  observedAt         DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([observedAt])
+}
+
+//////////////////////////////////////////////////////
+// PHASE 4 — DISPATCH AND THE AGENT PROTOCOL (§11, §23.3, §26 I21)
+//////////////////////////////////////////////////////
+
+/// §11.1 — the **transactional outbox**.
+///
+/// > The commit transaction writes the Commitment and an **outbox row** atomically
+/// > (§10.3 step 5). Either both exist or neither does. There is no window in which a
+/// > commitment exists without a pending dispatch obligation.
+///
+/// This table is what makes §4.1 rule 5 — "no external side effect precedes the
+/// guarded write that authorises it" — a structural property rather than a
+/// convention. Every server→agent command is a row here first; the drain worker is
+/// the only thing that turns a row into a message.
+///
+/// The two fence scopes of §10.3.1 are carried in separate columns rather than one
+/// polymorphic "fence", because they are compared differently by the agent (mission
+/// at `≤`, per commitment id; agent at `<`, against a single high-water value) and a
+/// single column would invite a single comparison — which is precisely the defect
+/// §10.3.1 was revised to remove. A CHECK constraint enforces that a row carries the
+/// columns its own scope requires and not the other scope's.
+model Outbox {
+  id             String   @id @default(uuid())
+
+  /// §10.5 — the idempotency key of this command, in one of the **two disjoint
+  /// namespaces**: `(commitment_id, sequence, fence)` for a mission command,
+  /// `(agent_id, sequence, authority_epoch)` for an agent command. Unique, so a
+  /// retried enqueue of the same command cannot produce a second row.
+  idempotencyKey String   @unique
+
+  /// The agent this command is addressed to. Delivery is by agent identity through a
+  /// session registry (§11.3), so every row names an agent — including a mission
+  /// command, which additionally names its commitment.
+  agentId        String
+  agent          Agent    @relation(fields: [agentId], references: [id], onDelete: Restrict)
+
+  /// Null for an agent-scope command. Set for every mission-scope command.
+  commitmentId   String?
+  commitment     Commitment? @relation(fields: [commitmentId], references: [commitmentId], onDelete: Restrict)
+
+  /// §10.3.1's normative table: MISSION | AGENT. Queries are side-effect-free and
+  /// are never enqueued, so QUERY never appears here.
+  commandClass   String
+
+  /// The command itself — `OFFER`, `RECALL`, `QUARANTINE`, and so on.
+  command        String
+
+  /// COMMITMENT | AGENT, from the same normative table. Stored rather than derived
+  /// so a row is self-describing to the drain worker and to an auditor.
+  fenceScope     String
+
+  /// §10.3.1 — the commitment-scope fence. Mission rows only.
+  fence          BigInt?
+
+  /// §10.3.1 — the agent-scope epoch. Agent rows only.
+  authorityEpoch BigInt?
+
+  /// §10.3.1's interaction rule: *"Every agent-scope command carries, in addition to
+  /// `authority_epoch`, the agent's current `fence_counter` value as `fence_floor`."*
+  /// Agent rows only.
+  fenceFloor     BigInt?
+
+  /// §11.3 — the per-commitment (or per-agent) ordering counter. The agent applies
+  /// commands in sequence order and holds a command with a gap below it, which is
+  /// what makes "RECALL is never applied before its OFFER" a protocol property
+  /// rather than a transport hope.
+  sequence       Int
+
+  payload        Json
+
+  /// §23.3 — *"The `not_valid_after` field is the defence against a delayed-delivery
+  /// attack — and equally against an innocent delayed queue."*
+  notValidAfter  DateTime
+
+  /// §23.3 — a signature over the whole payload including the agent id.
+  signature      String
+
+  /// PENDING | CLAIMED | DELIVERED | ACKED | UNACKNOWLEDGED | EXPIRED | SUPPRESSED |
+  /// FAILED. Constrained by a CHECK in the migration so an unknown state cannot be
+  /// written by any path.
+  state          String   @default("PENDING")
+
+  attempts       Int      @default(0)
+
+  claimedBy      String?
+  claimedAt      DateTime?
+
+  /// A claim is a lease. Without an expiry, a worker that dies mid-delivery strands
+  /// its claimed rows forever — the same "stuck with no owner" class §12.1 exists to
+  /// eliminate. Reclaim is conditional on this instant having passed.
+  claimExpiresAt DateTime?
+
+  deliveredAt    DateTime?
+  ackedAt        DateTime?
+
+  /// The last transport or agent-side rejection, for the escalation ladder and for
+  /// the dispatch SLIs. Never a silent discard (§11.3).
+  lastError      String?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  /// The plan's named index: the drain worker's claim query and the expiry sweep.
+  @@index([state, notValidAfter])
+  @@index([agentId, state])
+  @@index([commitmentId])
+  @@index([createdAt])
+}
+
+/// §11.5 — the agent's **durable** deduplication state, as the server records it at
+/// session establishment.
+///
+/// > At-least-once delivery combined with **non-durable** deduplication state is not
+/// > exactly-once in practice, whatever the protocol intends. […] **Requirement:
+/// > agent-side deduplication state MUST be durable across restart.**
+///
+/// The state itself lives on the agent. What lives here is the high-water mark the
+/// agent reported at its last session establishment, which is what lets the server
+/// detect a reset: a `dedupStateGeneration` that advanced between two sessions is the
+/// only signal that an agent's assertion "I have not applied this command" has become
+/// untrustworthy. Without this row the reset is invisible, and a fleet with broken
+/// dedup persistence behaves perfectly until the first redelivery.
+model AgentDedupState {
+  id                   String   @id @default(uuid())
+
+  agentId              String   @unique
+  agent                Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  /// §11.5 — *"a monotonic counter persisted alongside the state and incremented
+  /// whenever the state is created, cleared, or found corrupt. This is what makes a
+  /// state loss detectable rather than silent."*
+  dedupStateGeneration BigInt   @default(0)
+
+  /// The agent's own view of the two §10.3.1 scopes at its last handshake.
+  authorityEpoch       BigInt   @default(0)
+  fenceFloor           BigInt   @default(0)
+
+  reportedAt           DateTime @default(now())
+
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([reportedAt])
+}
+
+//////////////////////////////////////////////////////
+// PHASE 5 — SUPERVISION AND RECONCILIATION (§4.5, §12, §26 I3, I4, I7, I8, I12, I13)
+//////////////////////////////////////////////////////
+
+/// §3.3 / §4.5 — the **durable timer store**.
+///
+/// > Every deadline in §4.2 and §4.3 MUST be registered in the durable timer store at
+/// > the moment the state is entered, and cancelled atomically with the state exit.
+///
+/// This table is what makes "stuck forever" structurally impossible, which the audit
+/// records as its largest single class of defect. It is **DB-authoritative**: Redis
+/// holds no supervision state at all (§3.3's cache-authority rule), because a timer
+/// that could be lost with a cache is a deadline nobody owns.
+///
+/// ── The keying is the correctness requirement ────────────────────────────────
+/// > **Timers are keyed on the supervised entity's own version, never on the agent's
+/// > authority epoch.** […] Keying timers on the agent's epoch would mean that
+/// > committing or releasing *any unrelated Leg on the same agent* invalidates every
+/// > timer for every other Leg that agent is carrying — silently removing supervision
+/// > from missions that are executing normally.
+///
+/// `entityVersion` therefore holds `Leg.version` for a Leg timer and `Commitment.fence`
+/// for a commitment timer, and never `Agent.authorityEpoch`. A timer whose version no
+/// longer matches its own entity is **discarded on fire**, which is what makes
+/// late-firing timers harmless without requiring reliable cancellation.
+model Timer {
+  id            String   @id @default(uuid())
+
+  /// The §4.5 key, serialised: `entityType:entityId:state:entityVersion:handler`.
+  /// Unique, so registering the same deadline twice — a retried transition, a
+  /// reconciler repair racing a timer handler — yields one timer rather than two.
+  timerKey      String   @unique
+
+  /// LEG | TASK | COMMITMENT. A string rather than an enum for the same reason the
+  /// Phase 2 models give: the plan's enum list is closed and this is not on it.
+  entityType    String
+  entityId      String
+
+  /// The §4.2 or §4.3 state whose deadline this is.
+  state         String
+
+  /// The supervised entity's **own** version. Never an agent-level counter; the
+  /// `Timer_entity_version_non_negative` CHECK is the schema's half of that, and
+  /// `supervision/timers.js` refuses an agent-scope key outright.
+  entityVersion BigInt
+
+  dueAt         DateTime
+
+  /// The idempotent handler that runs on fire. Handlers *attempt* a transition; a
+  /// timer never forces one (§4.5).
+  handler       String
+  payload       Json?
+
+  /// PENDING | FIRED | CANCELLED | DISCARDED. Constrained by a CHECK, so a timer
+  /// cannot reach a state no sweep matches.
+  timerState    String   @default("PENDING")
+
+  attempts      Int      @default(0)
+  firedAt       DateTime?
+  resolvedAt    DateTime?
+  lastOutcome   String?
+
+  shardId       String?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  /// The plan's named index — the timer worker's due query.
+  @@index([dueAt])
+  @@index([timerState, dueAt])
+  @@index([entityType, entityId, timerState])
+}
+
+/// §12.4 — *"Every repair is counted and alerted on."*
+///
+/// > The reconciler's repair rate is a defect signal: a healthy system's reconciler is
+/// > nearly idle, so a rising rate means a bug elsewhere, and burying it in a safety
+/// > net converts a visible outage into invisible chronic loss. The release gate MUST
+/// > include a maximum acceptable repair rate per category.
+///
+/// One row per repair, categorised by the §12.4 divergence class, so the rate is
+/// per-category and a release gate can name a threshold for each.
+model ReconcilerRepair {
+  id         String   @id @default(uuid())
+
+  /// One of the nine §12.4 divergence classes, by its enumerated name.
+  category   String
+
+  entityType String
+  entityId   String
+
+  /// What the reconciler did about it.
+  action     String
+
+  detail     Json?
+
+  /// §12.4's "Escalate when" column. A repair that escalated is a different event from
+  /// one that did not, and the two must not be summed into one rate.
+  escalated  Boolean  @default(false)
+
+  shardId    String?
+
+  at         DateTime @default(now())
+
+  @@index([category, at])
+  @@index([entityType, entityId])
+  @@index([at])
+}
+
+/// §12.5 — the graded completion verification, and the evidence it was graded on.
+///
+/// > The audit notes the baseline accepts completion purely on the agent's assertion,
+/// > with no geometric or evidentiary check. Trust in a report should be proportional
+/// > to the consequence of its being wrong, so verification is graded per mission class.
+///
+/// The three track-plausibility measurements are stored as their computed values rather
+/// than as a verdict, because §12.5's thresholds are configuration: a record holding
+/// only "failed" could not be re-evaluated when a threshold is re-derived, and a
+/// verification record that cannot be re-evaluated is not evidence.
+model VerificationEvidence {
+  id                String   @id @default(uuid())
+  evidenceId        String   @unique
+
+  legId             String
+  leg               Leg      @relation(fields: [legId], references: [id], onDelete: Cascade)
+
+  /// The Task whose contract this completion discharges, where one is known.
+  taskId            String?
+
+  /// L0 | L1 | L2 | L3 — what the mission class required.
+  requiredLevel     String
+  /// The highest level the evidence actually supports.
+  achievedLevel     String
+
+  /// SUFFICIENT | INSUFFICIENT. Insufficient sends the Task to `VERIFYING` with an
+  /// operator queue — "not to `COMPLETED`, and not to `FAILED`. Both of those are lies
+  /// about the physical state."
+  outcome           String
+
+  /// The named tests that failed, so the operator queue shows *why* rather than "no".
+  failures          String[]
+
+  /// L1's geometric check.
+  arrivalDistanceM  Float?
+
+  /// §12.5's three plausibility measurements, as measured.
+  trackFixCount     Int?
+  legDurationSeconds Float?
+  fixRatePerMinute  Float?
+  corridorFraction  Float?
+  maxGapSeconds     Float?
+  maxImpliedSpeedMs Float?
+
+  /// L2's physical event and L3's external attestation, as supplied.
+  physicalEvidence  Json?
+  attestation       Json?
+
+  /// §12.5 / §23.5 — *"a completion claim from a position the agent could not
+  /// physically have reached […] is rejected and raises a security event."*
+  securityEvent     Boolean  @default(false)
+
+  observedAt        DateTime
+  createdAt         DateTime @default(now())
+
+  @@index([legId])
+  @@index([outcome])
+  @@index([createdAt])
+}
+
+//////////////////////////////////////////////////////
+// (g) OBSERVATION (§2.7)
+//////////////////////////////////////////////////////
+
+/// §2.7 — **every fact about the physical world is an Observation, never a bare
+/// value.** Every consumer declares a staleness budget; exceeding it makes the value
+/// INDETERMINATE, which is a distinct outcome from "absent" and from "present"
+/// (§7.3). This eliminates by construction the baseline's registry-expiry cliff, in
+/// which several inputs simultaneously degraded to their *most permissive* defaults
+/// precisely when an agent had stopped reporting.
+///
+/// Append-only: a BEFORE UPDATE trigger in the migration refuses mutation, so a
+/// recorded observation cannot be rewritten by any path.
+model Observation {
+  id                String   @id @default(uuid())
+
+  agentId           String
+  agent             Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  // What was measured — position, soc, velocity, localisation_confidence,
+  // link_quality, and so on. A string rather than an enum: the plan's group (i)
+  // enumerates five new enums and this is not one of them.
+  kind              String
+
+  value             Json
+
+  /// When the **agent** measured it — not when the server stored it.
+  observedAt        DateTime
+
+  /// When the server accepted it — used for link-latency measurement.
+  receivedAt        DateTime @default(now())
+
+  /// Sensor, agent report, inferred, operator-entered, forecast.
+  source            String
+
+  confidence        Float?
+  variance          Float?
+
+  /// Per-agent monotonic, for ordering and replay detection.
+  sequence          BigInt?
+
+  /// §2.7 — positions carry dead-reckoning provenance: a position extrapolated from
+  /// the last fix and a velocity is marked as such, with a growing uncertainty
+  /// radius. Extrapolation is permitted for cost estimation and **prohibited for
+  /// safety constraints**.
+  deadReckoned      Boolean  @default(false)
+  uncertaintyRadiusM Float?
+
+  @@index([agentId, kind, observedAt])
+  @@index([observedAt])
+  @@index([agentId, sequence])
+}
+
+//////////////////////////////////////////////////////
+// (h) DECISION RECORD — TIER A SKELETON (§21.2)
+//////////////////////////////////////////////////////
+
+/// §21.2 — one immutable record per decision round, per Leg. Tier A is always
+/// written and always retained in full; it is `O(1)` in candidate count, not
+/// `O(k · predicates)`, which is what makes explainability (T8) affordable.
+///
+/// Phase 2 lands the skeleton with §21.2's sections as columns. Phase 11 completes
+/// the writer, the sampler, Tier B, the input snapshots, and the Explanation API.
+/// Nothing writes this table in Phase 2.
+model DecisionRecordA {
+  id                  String   @id @default(uuid())
+  decisionId          String   @unique
+
+  // Identity.
+  roundId             String
+  shardId             String
+  leadershipFence     BigInt?
+  coordinatorInstance String?
+  decisionTime        DateTime
+
+  // Versions: code, config, active regime, model artefacts, map, routing graph,
+  // charger-availability projection.
+  versions            Json?
+
+  // New arrival, re-plan, recovery, preemption, escalation step.
+  trigger             String?
+
+  // Immutable references to the agent-state, price, forecast, weather, and
+  // projection snapshots — the inputs replay consumes.
+  inputSnapshotRefs   Json?
+
+  legId               String?
+  legSummary          Json?
+
+  outcome             Json?
+  runnerUpAndTopN     Json?
+  costTotals          Json?
+  rejectionSummary    Json?
+  searchAndSolveBounds Json?
+  degradation         Json?
+  deferral            Json?
+  overrides           Json?
+  predictions         Json?
+
+  createdAt           DateTime @default(now())
+
+  @@index([roundId])
+  @@index([shardId, decisionTime])
+  @@index([legId])
 }

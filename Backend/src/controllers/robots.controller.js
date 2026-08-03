@@ -301,6 +301,30 @@ const commissionRobotWithPairing = asyncHandler(async (req, res) => {
     robot = await robotService.commissionRobot(prisma, parsed.data);
   }
 
+  // Phase 2 (§2.1): both branches above obtain a Robot row *without* going through
+  // `robotService.commissionRobot`, which is the only other place the domain Agent
+  // is created. Without this call a robot commissioned through the pairing flow —
+  // or one commissioned before Phase 2 and re-paired afterwards — would carry no
+  // Agent, which is exactly the orphan the phase's completion criterion forbids.
+  //
+  // Idempotent, and it changes no part of the response: `robot` is returned
+  // untouched below.
+  //
+  // Best-effort here, transactional in `commissionRobot`. The asymmetry is
+  // deliberate: there both writes are new, so atomicity costs nothing; here the
+  // Robot row is already committed, and failing an existing pairing endpoint over a
+  // projection write would be the behaviour change this phase is required not to
+  // make. The backfill is re-runnable, which is what makes best-effort recoverable
+  // rather than a silent loss.
+  try {
+    await robotService.ensureAgentForRobot(prisma, robot);
+  } catch (e) {
+    (req.app?.locals?.logger || console).warn(
+      `[commission] Agent projection failed for ${robot?.robotId}: ${e?.message}. ` +
+        "Re-runnable via tools/migrate/backfillDomain.js"
+    );
+  }
+
   const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
   await kv.set(`pairing:${robotId}`, code, { ex: 300 });
 

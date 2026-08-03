@@ -78,12 +78,19 @@ describe("the engine module tree", () => {
     expect(fs.statSync(path.join(BACKEND_ROOT, "src", "workers")).isDirectory()).toBe(true);
   });
 
-  // Phase 0 asserted the engine held *no* runtime code. Phase 1 legitimately adds
-  // the first of it, so the assertion narrows rather than disappears: runtime code
-  // may exist only in the directories Phase 1 owns. A module appearing under
-  // `commitment/`, `feasibility/`, `dispatch/` or anywhere else still fails this
-  // test, which is the property worth keeping — a later phase's work leaking into an
-  // earlier one is caught mechanically rather than in review.
+  // Phase 0 asserted the engine held *no* runtime code. Each landed phase widens
+  // the assertion by exactly what it owns, rather than removing it. A module
+  // appearing under `commitment/`, `feasibility/`, `dispatch/` or anywhere else
+  // still fails this test, which is the property worth keeping — a later phase's
+  // work leaking into an earlier one is caught mechanically rather than in review.
+  //
+  // Phase 2's additions are the §2 domain model, its legacy mappers, and the §3.6
+  // spatial hierarchy. Phase 3's are the §10 commitment core and the minimal §19.5
+  // leadership record guard G1 reads. Phase 4's are the §11 dispatch surface and the
+  // §23.3 command envelope. Phase 5's are §4.5's durable timers, §12's supervision and
+  // reconciliation, and the §4.2/§4.3/§4.4 lifecycle. Everything else remains forbidden
+  // — a module under `feasibility/`, `solve/`, or `cost/` beyond Phase 1's two files
+  // still fails this test.
   const PHASE_1_OWNED = [
     "config/",
     "cost/units.js",
@@ -91,7 +98,35 @@ describe("the engine module tree", () => {
     "determinism/",
   ];
 
-  test("holds runtime code only where Phase 1 owns it", () => {
+  const PHASE_2_OWNED = [
+    "domain/",
+    "spatial/",
+  ];
+
+  const PHASE_3_OWNED = [
+    "commitment/",
+    "shard/leadership.js",
+  ];
+
+  const PHASE_4_OWNED = [
+    "dispatch/",
+    "security/commandSigning.js",
+  ];
+
+  const PHASE_5_OWNED = [
+    "supervision/",
+    "lifecycle/",
+  ];
+
+  const LANDED_PHASE_OWNED = [
+    ...PHASE_1_OWNED,
+    ...PHASE_2_OWNED,
+    ...PHASE_3_OWNED,
+    ...PHASE_4_OWNED,
+    ...PHASE_5_OWNED,
+  ];
+
+  test("holds runtime code only where a landed phase owns it", () => {
     const runtimeModules = [];
     const walk = (absolute, relative) => {
       for (const entry of fs.readdirSync(absolute, { withFileTypes: true })) {
@@ -104,7 +139,7 @@ describe("the engine module tree", () => {
     };
     walk(ENGINE_ROOT, "");
     const unexpected = runtimeModules.filter(
-      (module) => !PHASE_1_OWNED.some((owned) => module === owned || module.startsWith(owned)),
+      (module) => !LANDED_PHASE_OWNED.some((owned) => module === owned || module.startsWith(owned)),
     );
     expect(unexpected).toEqual([]);
   });
@@ -126,6 +161,100 @@ describe("the engine module tree", () => {
     ]) {
       expect({ module, exists: fs.existsSync(path.join(ENGINE_ROOT, module)) }).toEqual({ module, exists: true });
     }
+  });
+
+  test("Phase 2's own modules are all present", () => {
+    for (const module of [
+      "domain/agent.js",
+      "domain/mobilityModel.js",
+      "domain/capability.js",
+      "domain/work.js",
+      "domain/purpose.js",
+      "domain/custody.js",
+      "domain/observation.js",
+      "domain/mappers/legacyRobot.js",
+      "domain/mappers/legacyTask.js",
+      "spatial/hierarchy.js",
+      "spatial/cells.js",
+    ]) {
+      expect({ module, exists: fs.existsSync(path.join(ENGINE_ROOT, module)) }).toEqual({ module, exists: true });
+    }
+  });
+
+  test("Phase 2's backfill tool is present", () => {
+    expect(fs.existsSync(path.join(BACKEND_ROOT, "tools", "migrate", "backfillDomain.js"))).toBe(true);
+  });
+
+  test("Phase 3's own modules are all present", () => {
+    for (const module of [
+      "commitment/model.js",
+      "commitment/fencing.js",
+      "commitment/guards.js",
+      "commitment/commit.js",
+      "commitment/leases.js",
+      "commitment/idempotency.js",
+      "commitment/clock.js",
+      "shard/leadership.js",
+    ]) {
+      expect({ module, exists: fs.existsSync(path.join(ENGINE_ROOT, module)) }).toEqual({ module, exists: true });
+    }
+  });
+
+  test("Phase 3's formal model is present", () => {
+    expect(fs.existsSync(path.join(REPO_ROOT, "formal", "commitment.tla"))).toBe(true);
+  });
+
+  test("Phase 4's own modules are all present", () => {
+    for (const module of [
+      "dispatch/outbox.js",
+      "dispatch/sequence.js",
+      "dispatch/offers.js",
+      "dispatch/escalation.js",
+      "dispatch/dedupHandshake.js",
+      "security/commandSigning.js",
+    ]) {
+      expect({ module, exists: fs.existsSync(path.join(ENGINE_ROOT, module)) }).toEqual({ module, exists: true });
+    }
+  });
+
+  test("Phase 4's worker and socket handler are present", () => {
+    expect(fs.existsSync(path.join(BACKEND_ROOT, "src", "workers", "outbox.worker.js"))).toBe(true);
+    expect(fs.existsSync(path.join(BACKEND_ROOT, "src", "sockets", "handlers", "offer.handler.js"))).toBe(true);
+  });
+
+  test("Phase 5's own modules are all present", () => {
+    for (const module of [
+      "supervision/timers.js",
+      "supervision/leases.js",
+      "supervision/progress.js",
+      "supervision/reconciler.js",
+      "supervision/verification.js",
+      "lifecycle/legMachine.js",
+      "lifecycle/taskMachine.js",
+      "lifecycle/transitions.js",
+      "lifecycle/settlement.js",
+      "lifecycle/cancellation.js",
+      "lifecycle/reassignment.js",
+    ]) {
+      expect({ module, exists: fs.existsSync(path.join(ENGINE_ROOT, module)) }).toEqual({ module, exists: true });
+    }
+  });
+
+  test("Phase 5's workers and its operator-visibility route are present", () => {
+    expect(fs.existsSync(path.join(BACKEND_ROOT, "src", "workers", "timer.worker.js"))).toBe(true);
+    expect(fs.existsSync(path.join(BACKEND_ROOT, "src", "workers", "reconciler.worker.js"))).toBe(true);
+    expect(fs.existsSync(path.join(BACKEND_ROOT, "src", "routes", "legs.routes.js"))).toBe(true);
+    expect(fs.existsSync(path.join(BACKEND_ROOT, "src", "controllers", "legs.controller.js"))).toBe(true);
+  });
+
+  test("no engine worker is started from server.js — Phase 15 owns that", () => {
+    // §15's "All engine workers move from shadow to production scheduling". A worker
+    // wired into the bootstrap would be an engine write path reachable with
+    // ENGINE_ENABLED false, which is the one thing the master switch exists to prevent.
+    const server = fs.readFileSync(path.join(BACKEND_ROOT, "server.js"), "utf8");
+    expect(server).not.toMatch(/workers\/outbox\.worker/);
+    expect(server).not.toMatch(/workers\/timer\.worker/);
+    expect(server).not.toMatch(/workers\/reconciler\.worker/);
   });
 });
 

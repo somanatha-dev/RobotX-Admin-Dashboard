@@ -167,10 +167,96 @@ async function dispatchStop(io, robotId, payload) {
   return dispatch(io, robotId, "STOP", { ...payload, timestamp: Date.now() }, { retries: 0 });
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// PHASE 4 — the outbox's delivery arm (§11.1 item 2, §11.3).
+//
+// §4.1 rule 5 states the constraint this section exists to satisfy:
+//
+//   > Every command to an agent — offer, withdrawal, recall, reroute, stand-down — is
+//   > emitted **only** by draining the outbox, and its outbox row is written in the
+//   > *same transaction* as the state transition and fence advance that authorise it.
+//   > **No component may send a command by any other path.**
+//
+// The typed helpers above (dispatchTaskAssign / dispatchRerouteAlert /
+// dispatchCommand / dispatchStop) are the **legacy** path's events, and they stay
+// exactly as they are until the Phase 15 cutover removes the legacy decision path
+// from the build. They are not engine commands: none of them carries a fence, a
+// sequence, an expiry, or a signature, and no §10.3.1 command name is among them.
+//
+// `deliverOutboxCommand` is the only route by which a §10.3.1 command reaches an
+// agent. It deliberately does **not** retry: retry is the drain worker's loop, bounded
+// by the escalation ladder (§11.4), and a second, local retry loop underneath it would
+// make the ladder's timings a fiction. It reports the outcome instead of discarding
+// it — the discarded dispatch result being, precisely, the baseline defect §11.1
+// opens by naming.
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Deliver one outbox envelope to its agent.
+ *
+ * Routing is by agent identity through the room the agent joins at AUTH, which is
+ * adapter-aware and therefore correct across worker processes — §11.3's "cluster-safe
+ * by construction", and the reason nothing here consults the process-local socket map.
+ *
+ * @param {object} io Socket.IO server instance
+ * @param {string} agentSocketId the identity the agent authenticated with (its robot id)
+ * @param {object} envelope from `workers/outbox.worker.js`'s `envelopeOf`
+ * @returns {Promise<{ delivered: boolean, detail: string|null, socketId: string|null }>}
+ */
+async function deliverOutboxCommand(io, agentSocketId, envelope) {
+  if (!assertIoServer(io, `deliverOutboxCommand(${envelope?.command})`)) {
+    return { delivered: false, detail: "NO_IO_SERVER", socketId: null };
+  }
+  if (!agentSocketId) {
+    return { delivered: false, detail: "NO_AGENT_IDENTITY", socketId: null };
+  }
+  if (!envelope || typeof envelope.command !== "string") {
+    return { delivered: false, detail: "MALFORMED_ENVELOPE", socketId: null };
+  }
+
+  const room = robotRoom(agentSocketId);
+
+  let sockets = [];
+  try {
+    sockets = await io.in(room).fetchSockets();
+  } catch (e) {
+    return { delivered: false, detail: `PRESENCE_CHECK_FAILED:${e?.message || "unknown"}`, socketId: null };
+  }
+
+  if (!sockets.length) {
+    // Not a failure to be logged and forgotten: the row stays PENDING, the worker
+    // retries with backoff, and the escalation ladder is what eventually withdraws the
+    // offer (§11.4 step 2). "No socket connected" is a state, not a discard.
+    return { delivered: false, detail: "AGENT_NOT_CONNECTED", socketId: null };
+  }
+
+  try {
+    // The event name is the command itself, so every §10.3.1 command is a distinct
+    // wire event the agent subscribes to individually — rather than a single opaque
+    // envelope whose type is a payload field an agent could forget to switch on.
+    io.to(room).emit(envelope.command, envelope);
+    return { delivered: true, detail: null, socketId: sockets[0].id };
+  } catch (e) {
+    return { delivered: false, detail: `EMIT_FAILED:${e?.message || "unknown"}`, socketId: null };
+  }
+}
+
+/**
+ * The delivery function shape `workers/outbox.worker.js` expects, bound to one `io`.
+ *
+ * @param {object} io
+ * @returns {(agentSocketId: string, envelope: object) => Promise<{ delivered: boolean, detail: string|null }>}
+ */
+function outboxDeliveryArm(io) {
+  return (agentSocketId, envelope) => deliverOutboxCommand(io, agentSocketId, envelope);
+}
+
 module.exports = {
   dispatch,
   dispatchTaskAssign,
   dispatchRerouteAlert,
   dispatchCommand,
   dispatchStop,
+  deliverOutboxCommand,
+  outboxDeliveryArm,
 };

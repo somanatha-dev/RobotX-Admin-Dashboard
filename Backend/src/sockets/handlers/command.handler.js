@@ -2,6 +2,71 @@ const { toStringOrNull } = require("../../utils/parse");
 const { allow } = require("../rateLimit");
 const { z } = require("zod");
 
+const clockModule = require("../../engine/commitment/clock");
+const outbox = require("../../engine/dispatch/outbox");
+
+// PHASE 4 — §11.1 item 2: "Dispatcher workers claim outbox rows, deliver, and mark
+// them delivered." The mark that closes the loop is the agent's acknowledgement, and
+// without it every delivered row sits in `DELIVERED` until the escalation ladder
+// withdraws it — which is the correct behaviour for an agent that genuinely said
+// nothing and the wrong behaviour for one that answered.
+//
+// The event is shared with the legacy operator-command path deliberately: §11.2 lists
+// `COMMAND_ACK (extended)` rather than a new event, so an agent implements one
+// acknowledgement. The two are told apart by which key the payload carries —
+// `commandId` for a legacy `Command` row, `outboxId` for an engine command — and a
+// payload carrying both acknowledges both, which is the honest reading of an agent
+// that applied both.
+const outboxAckSchema = z
+  .object({
+    outboxId: z.string().min(1),
+    // The agent echoes the fence it applied the command under, so an acknowledgement
+    // generated under a superseded authority cannot close a row that superseded it.
+    fence: z.union([z.string(), z.number()]).optional().nullable(),
+    authorityEpoch: z.union([z.string(), z.number()]).optional().nullable(),
+  })
+  .passthrough();
+
+/**
+ * Acknowledge one outbox row.
+ *
+ * Conditional on the row still naming this agent and still being non-terminal, so a
+ * late acknowledgement of a row the ladder already withdrew is counted and ignored
+ * rather than resurrecting a withdrawn offer.
+ *
+ * @param {object} prisma
+ * @param {string} robotId
+ * @param {object} data
+ * @returns {Promise<{ acked: boolean, reason: string|null }>}
+ */
+async function acknowledgeOutboxRow(prisma, robotId, data) {
+  const agent = await prisma.agent.findUnique({ where: { agentId: robotId } });
+  if (!agent) return { acked: false, reason: "NO_AGENT_PROJECTION" };
+
+  const row = await prisma.outbox.findUnique({ where: { id: data.outboxId } });
+  if (!row) return { acked: false, reason: "UNKNOWN_OUTBOX_ROW" };
+  if (row.agentId !== agent.id) return { acked: false, reason: "ACK_FROM_ANOTHER_AGENT" };
+  if (outbox.isTerminal(row.state)) return { acked: false, reason: `ALREADY_${row.state}` };
+
+  if (data.fence !== undefined && data.fence !== null && row.fence !== null && row.fence !== undefined) {
+    if (BigInt(data.fence) !== BigInt(row.fence)) return { acked: false, reason: "ACK_CARRIES_A_DIFFERENT_FENCE" };
+  }
+  if (
+    data.authorityEpoch !== undefined &&
+    data.authorityEpoch !== null &&
+    row.authorityEpoch !== null &&
+    row.authorityEpoch !== undefined
+  ) {
+    if (BigInt(data.authorityEpoch) !== BigInt(row.authorityEpoch)) {
+      return { acked: false, reason: "ACK_CARRIES_A_DIFFERENT_AUTHORITY_EPOCH" };
+    }
+  }
+
+  const storeTime = await clockModule.readStoreTime(prisma);
+  const count = await outbox.settleRow(prisma, { id: row.id, state: outbox.OUTBOX_STATE.ACKED, storeTime });
+  return { acked: count === 1, reason: count === 1 ? null : "ROW_MOVED" };
+}
+
 function registerCommandHandlers(io, socket, { prisma, kv, logger }) {
   const log = logger || console;
 
@@ -10,6 +75,22 @@ function registerCommandHandlers(io, socket, { prisma, kv, logger }) {
   socket.on("COMMAND_ACK", async (payload) => {
     try {
       if (!allow(socket, "COMMAND_ACK", { limit: 20, windowMs: 60_000, minIntervalMs: 100 })) return;
+
+      // The engine half, when the payload names an outbox row. Gated on the master
+      // switch for the same reason the offer handler is: no engine write path is
+      // reachable before the Phase 15 cutover.
+      if (process.env.ENGINE_ENABLED === "true" && socket.data?.isAuthed) {
+        const engineAck = outboxAckSchema.safeParse(payload || {});
+        if (engineAck.success) {
+          const robotId = toStringOrNull(socket.data.robotId);
+          const result = await acknowledgeOutboxRow(prisma, robotId, engineAck.data).catch((e) => ({
+            acked: false,
+            reason: e?.message || "ACK_FAILED",
+          }));
+          log.info("COMMAND_ACK (outbox)", { robotId, outboxId: engineAck.data.outboxId, ...result });
+        }
+      }
+
       const parsed = ackSchema.safeParse(payload || {});
       if (!parsed.success) return;
 
@@ -72,4 +153,5 @@ function registerCommandHandlers(io, socket, { prisma, kv, logger }) {
 
 module.exports = {
   registerCommandHandlers,
+  acknowledgeOutboxRow,
 };

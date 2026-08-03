@@ -7,6 +7,8 @@ const campusesRoutes  = require("./campuses.routes");
 const tasksRoutes     = require("./tasks.routes");
 const simulatorRoutes = require("./simulator.routes");
 const configRoutes    = require("./config.routes");
+// PHASE 5 — §4.5 operator visibility: current state, deadline, owning timer.
+const legsRoutes      = require("./legs.routes");
 
 const router = express.Router();
 
@@ -17,5 +19,6 @@ router.use("/campuses",  campusesRoutes);
 router.use("/tasks",     tasksRoutes);
 router.use("/simulator", simulatorRoutes);
 router.use("/config",    configRoutes);
+router.use("/legs",      legsRoutes);
 
 module.exports = router;

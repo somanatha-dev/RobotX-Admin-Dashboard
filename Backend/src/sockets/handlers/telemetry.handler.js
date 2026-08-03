@@ -6,6 +6,8 @@ const { registryKey, buildMergedRegistryState, REGISTRY_TTL: REGISTRY_TTL_SEC } 
 const { getZoneForCoordinates, applyZoneChangeSideEffects } = require("../../services/zoneManager.service");
 const { haversineMeters } = require("../../utils/distance");
 const robotStateCache = require("../../cache/robotStateCache");
+// PHASE 5 (§12.3) — progress supervision. The handler *feeds* it; it does not act on it.
+const progress = require("../../engine/supervision/progress");
 
 // DB-safe statuses (must map to the RobotStatus Prisma enum)
 const ROBOT_STATUS = new Set(["IDLE", "ACTIVE", "PAUSED", "OFFLINE", "ERROR", "ISSUES"]);
@@ -510,6 +512,22 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
       // at fleet scale, flagged in system.md §16. Scoped to the dashboard
       // room, which only browser dashboard clients join.
       io.to("dashboard").emit("robot:update", fullState);
+
+      // PHASE 5 (§12.3) — feed progress supervision.
+      //
+      // > Lease renewal proves liveness; it does not prove *progress*. An agent can
+      // > heartbeat happily while stationary behind an obstacle.
+      //
+      // The telemetry stream is where the five §12.3 signals get their inputs, so this
+      // is where they are measured. It is deliberately a *measurement*: the responses
+      // §12.3 prescribes — probe, re-project, divert, quarantine — are transitions, and
+      // transitions belong to the timer handlers and the reconciler, which take them
+      // under the §4.4 guards and the conditional-write discipline. A socket handler
+      // that acted directly would be a second, unguarded supervisor.
+      //
+      // Inert while `ENGINE_ENABLED` is false, and cheap when it is: `assessAll` is pure
+      // and allocates one small object per tick.
+      feedProgressSupervision({ robotId, log, io, state: fullState, nowMs });
     } catch (e) {
       log.error("TELEMETRY handler failed", e);
     }
@@ -520,6 +538,106 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
   socket.on("telemetry", handleTelemetry);
 }
 
+/**
+ * PHASE 5 (§12.3) — the progress-supervision feed.
+ *
+ * Per-process, bounded-by-fleet-size, exactly like `lastDbFlushAt` above: one entry per
+ * robot ever seen live. It holds the last position and the instant at which route
+ * progress was last observed, which is what §12.3 row 1 measures against
+ * `supervise.stall_time`.
+ *
+ * ── What is measured here, and what is not ──────────────────────────────────
+ * Row 1 (stall) is measurable from the telemetry stream alone. Rows 2, 3 and 5 need the
+ * *committed plan* — a projected ETA, a predicted Wh figure, a route corridor — which
+ * the engine holds and the legacy telemetry path does not. Those are assessed by the
+ * supervisor against the commitment, using the same pure functions; feeding them a
+ * fabricated projection here would produce a signal about a plan nobody made.
+ *
+ * So this measures what it can see and says so, rather than inventing the rest. The
+ * alternative — a partial signal presented as the whole — is worse than an explicit gap,
+ * because it looks like coverage.
+ */
+const lastRouteProgressAt = new Map();
+const lastKnownPosition = new Map();
+
+/** @structural the movement below which a position report is not route progress, in metres */
+const PROGRESS_EPSILON_M = 1;
+
+function engineEnabled() {
+  return process.env.ENGINE_ENABLED === "true";
+}
+
+/**
+ * @param {object} input
+ * @param {string} input.robotId
+ * @param {object} input.log
+ * @param {object} input.io
+ * @param {object} input.state the merged live state this tick
+ * @param {number} input.nowMs
+ * @returns {object|null} the assessment, or null when the engine is off
+ */
+function feedProgressSupervision({ robotId, log, io, state, nowMs }) {
+  if (!engineEnabled()) return null;
+
+  try {
+    const previous = lastKnownPosition.get(robotId);
+    const lat = typeof state?.lat === "number" ? state.lat : null;
+    const lon = typeof state?.lon === "number" ? state.lon : null;
+
+    if (lat === null || lon === null) return null;
+
+    const movedMetres = previous ? haversineMeters(previous.lat, previous.lon, lat, lon) : Infinity;
+    if (movedMetres > PROGRESS_EPSILON_M) {
+      lastRouteProgressAt.set(robotId, nowMs);
+      lastKnownPosition.set(robotId, { lat, lon });
+    } else if (!lastRouteProgressAt.has(robotId)) {
+      lastRouteProgressAt.set(robotId, nowMs);
+    }
+
+    const stallTimeSeconds = Number(process.env.SUPERVISE_STALL_TIME_SECONDS);
+    // No resolved configuration, no assessment. §22.1: a threshold that is not resolved
+    // from the register is not a threshold, and defaulting one here would put a
+    // behavioural constant outside the register.
+    if (!Number.isFinite(stallTimeSeconds) || stallTimeSeconds <= 0) return null;
+
+    const assessment = progress.assessStall({
+      secondsSinceRouteProgress: (nowMs - (lastRouteProgressAt.get(robotId) || nowMs)) / 1000,
+      stallTimeSeconds,
+    });
+
+    if (assessment.fired) {
+      // Reported, not acted on. The response belongs to the supervisor.
+      log.warn("progress supervision: stall signal", {
+        robotId,
+        signal: assessment.signal,
+        reason: assessment.reason,
+        response: assessment.response,
+        measured: assessment.measured,
+      });
+      io.to("dashboard").emit("SUPERVISION_SIGNAL", {
+        robotId,
+        signal: assessment.signal,
+        response: assessment.response,
+        at: nowMs,
+      });
+    }
+
+    return assessment;
+  } catch {
+    // Supervision is a safety net; a defect in the net must not take down the telemetry
+    // pipeline it hangs under.
+    return null;
+  }
+}
+
+/** Test seam — the two per-process maps are module state, and a test needs them clean. */
+function resetProgressSupervisionState() {
+  lastRouteProgressAt.clear();
+  lastKnownPosition.clear();
+}
+
 module.exports = {
   registerTelemetryHandlers,
+  feedProgressSupervision,
+  resetProgressSupervisionState,
 };

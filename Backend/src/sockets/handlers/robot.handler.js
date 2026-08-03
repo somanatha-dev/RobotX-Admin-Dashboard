@@ -61,6 +61,83 @@ async function markRobotOffline(prisma, robotId) {
 const PAIRING_LOCKOUT_THRESHOLD = 5;
 const PAIRING_LOCKOUT_TTL_SEC = 3600;
 
+// PHASE 4 — §11.5's session-establishment handshake.
+//
+//   > On every session establishment the agent reports its **deduplication high-water
+//   > mark**: `dedup_state_generation`, `authority_epoch`, `fence_floor`, and the
+//   > per-commitment high-water pairs for every commitment it believes it holds. The
+//   > server compares this against the Commitment Store and takes one of three paths.
+//
+// Two conditions gate it, and both are deliberate:
+//
+//   1. `ENGINE_ENABLED`. The handshake's third path *writes* — it suppresses outbox
+//      rows and advances an agent's `authority_epoch` — and the Phase 0 master switch
+//      exists so that no engine write path is reachable before the Phase 15 cutover.
+//   2. The agent actually reporting a dedup state. Its absence means "this agent does
+//      not speak the protocol", which is the legacy fleet, and legacy AUTH must remain
+//      byte-for-byte what it was. A *malformed* report is different and is logged: an
+//      agent that speaks the protocol and got it wrong is a defect to surface.
+//
+// A robot with no projected `Agent` row is also a no-op: Phase 2's backfill is what
+// creates the projection, and inventing one here would be a second backfill.
+const clockModule = require("../../engine/commitment/clock");
+const dedupHandshake = require("../../engine/dispatch/dedupHandshake");
+
+async function runDedupHandshake(prisma, robotId, reportedDedupState, log) {
+  if (process.env.ENGINE_ENABLED !== "true") return null;
+  if (reportedDedupState === undefined || reportedDedupState === null) return null;
+
+  const parsed = dedupHandshake.parseReport(reportedDedupState);
+  if (!parsed.ok) {
+    log.warn("AUTH dedup report rejected", { robotId, reason: parsed.reason });
+    return { path: null, error: parsed.reason };
+  }
+
+  try {
+    const agent = await prisma.agent.findUnique({ where: { agentId: robotId } });
+    if (!agent) return null;
+
+    const applied = await prisma.$transaction(async (tx) => {
+      const storeTime = await clockModule.readStoreTime(tx);
+      const stored = await tx.agentDedupState.findUnique({ where: { agentId: agent.id } });
+      const activeCommitments = await tx.commitment.findMany({
+        where: { agentId: agent.id, releasedAt: null },
+      });
+
+      const classification = dedupHandshake.classify({
+        reported: parsed.value,
+        stored,
+        activeCommitments,
+      });
+
+      const result = await dedupHandshake.apply(tx, {
+        agent,
+        reported: parsed.value,
+        classification,
+        storeTime,
+      });
+
+      return { result, classification };
+    });
+
+    if (dedupHandshake.isGenerationAdvance(applied.classification)) {
+      // §11.5's monitoring requirement: "a rising rate across a class indicates
+      // non-volatile storage that is not actually durable — a defect that is invisible
+      // in every other signal."
+      log.warn("agent dedup_state_generation advanced", {
+        robotId,
+        path: applied.classification.path,
+        suppressedRows: applied.result.suppressedRows,
+      });
+    }
+
+    return dedupHandshake.acknowledgement(applied.result);
+  } catch (e) {
+    log.error("AUTH dedup handshake failed", { robotId, message: e?.message });
+    return { path: null, error: "HANDSHAKE_FAILED" };
+  }
+}
+
 function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
   const log = logger || console;
 
@@ -106,6 +183,12 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
       robotId: z.string().min(1),
       token: z.union([z.string(), z.number()]).optional().nullable().transform((v) => (v === null || v === undefined ? v : String(v))),
       pairingCode: z.union([z.string(), z.number()]).optional().nullable().transform((v) => (v === null || v === undefined ? v : String(v))),
+      // PHASE 4 — §11.5's session-establishment handshake. Optional, and its absence
+      // is the legacy path: an agent that does not speak the protocol authenticates
+      // exactly as before. `passthrough()` already admitted unknown keys, so declaring
+      // it here narrows nothing; it documents the field and keeps the shape in one
+      // place.
+      dedupState: z.unknown().optional().nullable(),
     })
     .passthrough();
 
@@ -198,9 +281,18 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
         await clearPairingAttempts(robotId);
       }
 
-      socket.emit("AUTH_SUCCESS", { robotId, token: nextToken });
+      // PHASE 4 — §11.5's deduplication handshake, before AUTH_SUCCESS.
+      //
+      // Before, because §11.5's third path *suppresses redelivery* and advances the
+      // agent's authority epoch, and an agent told "you are authenticated" before that
+      // has landed could begin acting on state the server is about to invalidate. The
+      // handshake result rides on AUTH_SUCCESS so the agent adopts the new epoch and
+      // fence floor in the same message that admits it.
+      const dedupOutcome = await runDedupHandshake(prisma, robotId, auth.dedupState, log);
+
+      socket.emit("AUTH_SUCCESS", { robotId, token: nextToken, dedup: dedupOutcome });
       // Backward compatible alias
-      socket.emit("AUTH_OK", { robotId, token: nextToken });
+      socket.emit("AUTH_OK", { robotId, token: nextToken, dedup: dedupOutcome });
       // Dashboard-only UI event — scoped to the room instead of every socket.
       io.to("dashboard").emit("robot_online", { robotId });
 

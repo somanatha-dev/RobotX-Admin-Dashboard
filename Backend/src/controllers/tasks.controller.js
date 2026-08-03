@@ -66,7 +66,17 @@ const cancelTask = asyncHandler(async (req, res) => {
     throw err;
   }
 
-  const terminal = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
+  // Read-compatibility with the §4.2 Task state machine (Phase 2).
+  //
+  // `TaskStatus` now carries both vocabularies: the six legacy values and the
+  // eleven §4.2 states. §4.2 names four terminal states — REJECTED, COMPLETED,
+  // CANCELLED, FAILED — and REJECTED ("failed validation or admission") is the one
+  // with no legacy equivalent. Without it here, a cancel request against a REJECTED
+  // task would write CANCELLED over a terminal state, which is precisely the
+  // unconditional write §4.1 rule 2 exists to prohibit.
+  //
+  // Behaviour for every value this controller could previously see is unchanged.
+  const terminal = new Set(["COMPLETED", "FAILED", "CANCELLED", "REJECTED"]);
   if (terminal.has(task.status)) {
     res.json({ ok: true, task: await prisma.task.findUnique({ where: { taskId }, include: { robot: { select: { robotId: true } } } }) });
     return;

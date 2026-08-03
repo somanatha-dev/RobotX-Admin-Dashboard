@@ -17,6 +17,8 @@ const { processObstacleReport } = require("../../services/alertDissemination.ser
 const { updateHealthStatus, updateAssignedTask } = require("../../services/robotRegistry.service");
 const { z } = require("zod");
 const robotStateCache = require("../../cache/robotStateCache");
+// PHASE 5 (§12.5) — graded completion verification.
+const verification = require("../../engine/supervision/verification");
 
 const obstacleSchema = z.object({
   lat: z.number(),
@@ -88,6 +90,33 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger }) {
 
       const taskId = toStringOrNull(payload?.taskId);
       log.info("TASK_COMPLETE received", { robotId, taskId });
+
+      // PHASE 5 (§12.5) — the verification pipeline.
+      //
+      // > The audit notes the baseline accepts completion purely on the agent's
+      // > assertion, with no geometric or evidentiary check.
+      //
+      // The legacy path below **is** that assertion, and it stays exactly as it was
+      // until the Phase 15 cutover — a legacy Task completed by a legacy robot must
+      // still complete. What is added is the graded check running alongside it: with
+      // `ENGINE_ENABLED` false it does nothing, and with it true a completion claim is
+      // graded, its evidence archived, and an insufficient one sends the Task to
+      // `VERIFYING` rather than to `COMPLETED`.
+      const verdict = await verifyCompletionClaim({ prisma, log, robotId, taskId, payload });
+      if (verdict && verdict.outcome === verification.OUTCOME.INSUFFICIENT) {
+        // "Insufficient evidence sends the Task to `VERIFYING` with an operator queue —
+        // not to `COMPLETED`, and not to `FAILED`. Both of those are lies about the
+        // physical state." So the legacy completion below is *not* performed.
+        io.to("dashboard").emit("TASK_UPDATED", {
+          robotId,
+          taskId,
+          status: "VERIFYING",
+          verification: { failures: verdict.failures, achievedLevel: verdict.achievedLevel },
+          timestamp: Date.now(),
+        });
+        socket.emit("TASK_COMPLETE_ACK", { taskId, verifying: true, timestamp: Date.now() });
+        return;
+      }
 
       await prisma.$transaction(async (tx) => {
         // Mark task COMPLETED if it belongs to this robot and isn't already done
@@ -192,4 +221,173 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger }) {
   });
 }
 
-module.exports = { registerDtaroHandlers };
+/**
+ * PHASE 5 (§12.5) — grade one completion claim and archive its evidence.
+ *
+ * ── Why the claim is graded even when the evidence is thin ──────────────────
+ * §12.5 grades verification *per mission class*, and L1 — "Default for all customer
+ * work" — needs a position, a stop, and a telemetry track. A real agent reporting
+ * `TASK_COMPLETE` supplies the first; the second comes from the Leg's Stop; the third
+ * from the Observation stream. Where the engine has no Leg for this Task — every legacy
+ * Task, until Phase 15 — there is nothing to verify **against**, and the honest answer is
+ * to verify nothing rather than to grade a claim against a plan that does not exist.
+ * That case returns null and the legacy path proceeds unchanged.
+ *
+ * ── The evidence row is written whatever the outcome ────────────────────────
+ * Both outcomes are archived. A `SUFFICIENT` verification with no record would leave the
+ * L2 and L3 audit trail — "goods of material value", "regulated, contested" — as an
+ * assertion that a check happened, which is the thing §12.5 exists to replace.
+ *
+ * @param {object} input
+ * @returns {Promise<object|null>}
+ */
+async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload }) {
+  if (process.env.ENGINE_ENABLED !== "true") return null;
+
+  try {
+    const agent = await prisma.agent.findUnique({ where: { agentId: robotId } });
+    if (!agent) return null;
+
+    // The Leg this claim discharges: the one this agent holds an active commitment for.
+    const commitment = await prisma.commitment.findFirst({
+      where: { agentId: agent.id, releasedAt: null },
+      orderBy: { grantedAt: "desc" },
+    });
+    if (!commitment) return null;
+
+    const leg = await prisma.leg.findUnique({ where: { id: commitment.legId } });
+    if (!leg) return null;
+
+    const stops = await prisma.stop.findMany({ where: { legId: leg.id }, orderBy: { sequence: "desc" }, take: 1 });
+    const finalStop = stops[0] || null;
+
+    // §12.5's inputs. Thresholds are the caller's to resolve from the register (§22.1);
+    // absent them the graded check cannot run, and running it against invented numbers
+    // would be exactly the reactive tuning §12.5 warns about.
+    const thresholds = readVerificationThresholds();
+    if (!thresholds) return null;
+
+    const track = await readAcceptedTrack(prisma, agent.id, commitment.grantedAt);
+
+    const result = verification.verify({
+      requiredLevel: verification.requiredLevelFor(leg.purpose, thresholds.levelsByMissionClass),
+      completionClaimed: true,
+      claimedPosition:
+        typeof payload?.lat === "number" && typeof payload?.lon === "number"
+          ? { lat: payload.lat, lon: payload.lon }
+          : track.length > 0
+            ? { lat: track[track.length - 1].lat, lon: track[track.length - 1].lon }
+            : null,
+      stopPosition: finalStop && finalStop.lat !== null ? { lat: finalStop.lat, lon: finalStop.lon } : null,
+      arrivalRadiusM: thresholds.arrivalRadiusM,
+      physicalEvidence: payload?.physicalEvidence || null,
+      attestation: payload?.attestation || null,
+      track: {
+        track,
+        legDurationSeconds: (Date.now() - new Date(commitment.grantedAt).getTime()) / 1000,
+        minFixRatePerMinute: thresholds.minFixRatePerMinute,
+        corridor: Array.isArray(payload?.plannedCorridor) ? payload.plannedCorridor : [],
+        reportedCorridors: Array.isArray(payload?.reportedCorridors) ? payload.reportedCorridors : [],
+        corridorHalfWidthM: thresholds.corridorHalfWidthM,
+        minCorridorFraction: thresholds.minCorridorFraction,
+        maxGapSeconds: thresholds.maxGapSeconds,
+        maxSpeedMs: thresholds.maxSpeedMs,
+        mappedDeadZoneWindows: Array.isArray(payload?.deadZoneWindows) ? payload.deadZoneWindows : [],
+      },
+    });
+
+    await prisma.verificationEvidence.create({
+      data: {
+        evidenceId: `${leg.legId}-${commitment.commitmentId}-${Date.now()}`,
+        legId: leg.id,
+        taskId: taskId || null,
+        requiredLevel: result.requiredLevel,
+        achievedLevel: result.achievedLevel,
+        outcome: result.outcome,
+        failures: [...result.failures],
+        arrivalDistanceM: result.measured.arrivalDistanceM ?? null,
+        trackFixCount: result.measured.fixCount ?? null,
+        legDurationSeconds: result.measured.legDurationSeconds ?? null,
+        fixRatePerMinute: result.measured.fixRatePerMinute ?? null,
+        corridorFraction: result.measured.corridorFraction ?? null,
+        maxGapSeconds: result.measured.maxGapSeconds ?? null,
+        maxImpliedSpeedMs: result.measured.maxImpliedSpeedMs ?? null,
+        physicalEvidence: payload?.physicalEvidence || null,
+        attestation: payload?.attestation || null,
+        securityEvent: result.securityEvent === true,
+        observedAt: new Date(),
+      },
+    });
+
+    if (result.securityEvent) {
+      // §12.5 / §23.5 — a claim from a position the agent could not physically have
+      // reached is not a telemetry problem. Repetition on one agent is a security signal.
+      log.error("completion claim is kinematically impossible", {
+        robotId,
+        legId: leg.legId,
+        measured: result.measured,
+      });
+    }
+
+    return result;
+  } catch (e) {
+    // A defect in verification must not make a completion unreportable. It must,
+    // however, be loud: a silent verification failure is indistinguishable from a pass,
+    // which is the property §12.5 exists to remove.
+    log.error("completion verification failed", { robotId, taskId, message: e?.message });
+    return null;
+  }
+}
+
+/**
+ * §12.5's thresholds, resolved from the environment the Phase 15 bootstrap will populate
+ * from the Config Service.
+ *
+ * All-or-nothing on purpose. A partially resolved threshold set would grade a claim
+ * against some real thresholds and some invented ones, and the resulting verdict would
+ * be neither.
+ *
+ * @returns {object|null}
+ */
+function readVerificationThresholds() {
+  const numbers = {
+    arrivalRadiusM: Number(process.env.VERIFY_ARRIVAL_RADIUS_M),
+    minFixRatePerMinute: Number(process.env.VERIFY_TRACK_MIN_FIX_RATE),
+    minCorridorFraction: Number(process.env.VERIFY_TRACK_MIN_CORRIDOR_FRACTION),
+    maxGapSeconds: Number(process.env.VERIFY_TRACK_MAX_GAP_SECONDS),
+    corridorHalfWidthM: Number(process.env.VERIFY_CORRIDOR_HALF_WIDTH_M),
+    maxSpeedMs: Number(process.env.VERIFY_MAX_SPEED_MS),
+  };
+
+  for (const value of Object.values(numbers)) {
+    if (!Number.isFinite(value) || value <= 0) return null;
+  }
+
+  return { ...numbers, levelsByMissionClass: {} };
+}
+
+/**
+ * The accepted position fixes for this mission, from §2.7's append-only Observation
+ * record.
+ *
+ * "Accepted" is the operative word in §12.5's coverage test: a fix the server rejected —
+ * stale, dead-reckoned beyond its budget, or failing its own plausibility — is not
+ * evidence of travel, so dead-reckoned observations are excluded here rather than
+ * counted and then discounted.
+ */
+async function readAcceptedTrack(prisma, agentRowId, since) {
+  const observations = await prisma.observation.findMany({
+    where: { agentId: agentRowId, kind: "position", observedAt: { gte: since }, deadReckoned: false },
+    orderBy: { observedAt: "asc" },
+  });
+
+  return observations
+    .map((observation) => ({
+      at: observation.observedAt,
+      lat: observation.value?.lat,
+      lon: observation.value?.lon,
+    }))
+    .filter((fix) => typeof fix.lat === "number" && typeof fix.lon === "number");
+}
+
+module.exports = { registerDtaroHandlers, verifyCompletionClaim };

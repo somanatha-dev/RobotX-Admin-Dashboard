@@ -4,6 +4,7 @@ const { registerRobotHandlers } = require("./handlers/robot.handler");
 const { registerTelemetryHandlers } = require("./handlers/telemetry.handler");
 const { registerCommandHandlers } = require("./handlers/command.handler");
 const { registerDtaroHandlers } = require("./handlers/dtaro.handler");
+const { registerOfferHandlers } = require("./handlers/offer.handler");
 const { sweepExpired } = require("../services/ekb.service");
 const { seedDefaultZones } = require("../services/zoneManager.service");
 const { getManyRobotStates } = require("../services/robotRegistry.service");
@@ -40,6 +41,25 @@ function getDashboardToken(socket) {
     return typeof authToken === "string" && authToken ? authToken : null;
 }
 
+// ── PHASE 5: absorbed into the reconciler, retiring at the Phase 15 cutover ──
+//
+// The execution plan retires this standalone `setInterval` into
+// `workers/reconciler.worker.js`: it is §12.4 row 9 ("Agent absent from the availability
+// index but healthy and idle") seen from the liveness side, and §12.1's argument applies
+// to it directly — *"no component is responsible for noticing that a state has stopped
+// progressing"* is fixed by one control loop, not by a second one running beside it.
+// Two independent loops over one fact is how the two come to disagree.
+//
+// It is **not deleted here**, and that is deliberate. The reconciler is built and not
+// started (`ENGINE_ENABLED` is false; Phase 15 owns production scheduling), so deleting
+// this sweep now would leave the legacy dispatcher — still the production path — with no
+// offline detection at all between this phase and the cutover. What Phase 5 changes is
+// that the engine's supervision no longer depends on it: `reconciler.scanAvailabilityIndex`
+// covers the same divergence, counts it per §12.4, and does not consult this loop.
+//
+// `startOfflineDetector` is therefore gated below: when the engine is on, the reconciler
+// owns this and the legacy sweep stands down, so the two can never both act.
+//
 // Backstop offline detector. The PRIMARY offline signal is the socket
 // `disconnect` handler (robot.handler.js), which marks a robot offline
 // immediately; this sweep only catches robots whose disconnect handler never
@@ -145,8 +165,16 @@ function startDtaroSweep(prisma, kv, { logger } = {}) {
     if (typeof ekbSweep.unref === "function") ekbSweep.unref();
 }
 
-function initSocketServer(io, { prisma, kv, logger }) {
-    startOfflineDetector(prisma, kv, { logger });
+function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig } = {}) {
+    // PHASE 5 — exactly one loop owns this fact. With the engine on, it is the
+    // reconciler (§12.4 row 9); with it off, it is the legacy sweep above. Never both:
+    // a divergence repaired twice, by two loops with different notions of "stale", is
+    // the disagreement §12.1's control-loop model exists to remove.
+    if (process.env.ENGINE_ENABLED !== "true") {
+        startOfflineDetector(prisma, kv, { logger });
+    } else if (logger && typeof logger.info === "function") {
+        logger.info("offline sweep stood down — the reconciler owns §12.4 row 9 while the engine is enabled");
+    }
     startDtaroSweep(prisma, kv, { logger });
 
     const log = (logger || console);
@@ -234,6 +262,18 @@ function initSocketServer(io, { prisma, kv, logger }) {
 
         // DTARO: obstacle reports, task completion, fault reporting
         registerDtaroHandlers(io, socket, { prisma, kv, logger });
+
+        // PHASE 4 — §11.2 offer responses (OFFER_ACCEPT / OFFER_REJECT / OFFER_DEFER).
+        //
+        // Registered unconditionally and inert by construction: these events only ever
+        // answer an OFFER, an OFFER only ever exists as an outbox row written by a
+        // commit, and no commit runs while ENGINE_ENABLED is false. The handler checks
+        // the switch as well, so the inertness is enforced rather than argued.
+        //
+        // The two durations it needs are resolved through the Config Service by the
+        // caller that turns the engine on (Phase 15); until then they are undefined and
+        // the handler never reaches the code that would use them.
+        registerOfferHandlers(io, socket, { prisma, kv, logger, config: engineDispatchConfig });
 
         // ADMIN CREATES TASK (via socket — legacy path)
         socket.on("assign_task", async (task) => {

@@ -63,6 +63,36 @@
       "calibrationStatus": "DERIVED", "section": "§14.3",
       "derivation": { "formula": "combined nominal × ∏ of every energy-domain degradation multiplier a mode can activate",
         "inputs": ["energy.combined_nominal_conservatism", "route.degraded_reserve_factor"] },
-      "description": "The combined degraded energy conservatism. Also capped at publish by energy.max_combined_conservatism — the two products are validated together." }
+      "description": "The combined degraded energy conservatism. Also capped at publish by energy.max_combined_conservatism — the two products are validated together." },
+
+    { "name": "intake.validation_budget", "type": "integer", "unit": "s", "default": 30, "range": { "min": 1, "max": 3600 },
+      "specScope": "global", "scopes": ["global", "tenant", "sla_class"], "changeClass": "POLICY", "owner": "Ops", "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL", "awaits": "measured intake validation latency", "section": "§4.2",
+      "requiredBy": "the §4.5 durable timer registered on Task state RECEIVED",
+      "description": "The exit deadline of Task state RECEIVED — how long a Task may sit accepted-but-not-yet-validated. §4.2 names it; Appendix A does not tabulate it. §4.5 makes every §4.2 deadline a registered timer, so a state whose deadline has no parameter is a state whose timer cannot be registered." },
+
+    { "name": "sla.assignment_deadline", "type": "integer", "unit": "s", "default": 900, "range": { "min": 30, "max": 86400 },
+      "specScope": "sla_class", "scopes": ["global", "sla_class", "mission_class", "tenant"], "changeClass": "CONTRACTUAL", "owner": "Product", "blastRadius": "sla_class",
+      "calibrationStatus": "PROVISIONAL", "awaits": "the contracted assignment targets per SLA class", "section": "§4.2, §4.3",
+      "requiredBy": "the §4.5 timers on Task state WAITING and Leg state QUEUED",
+      "description": "How long work may remain unassigned before the §17.4 anti-starvation ladder is invoked. It is the exit deadline of both Task WAITING and Leg QUEUED, which is why one parameter carries both — a Task is waiting exactly while one of its Legs is queued, and two independently tunable deadlines for one fact would be two answers to one question. CONTRACTUAL because it is the customer-visible promise, not an operational tuning knob." },
+
+    { "name": "stop.service_time_limit", "type": "integer", "unit": "s", "default": 600, "range": { "min": 30, "max": 7200 },
+      "specScope": "site", "scopes": ["global", "site", "mission_class"], "changeClass": "POLICY", "owner": "Ops", "blastRadius": "site",
+      "calibrationStatus": "PROVISIONAL", "awaits": "the site's learned service-time distribution (§13.2)", "section": "§4.3",
+      "requiredBy": "the §4.5 timers on Leg states AT_PICKUP and AT_DROP",
+      "description": "How long an agent may be servicing a Stop before an operator alert. Scoped to the site because §3.6 makes the site the place service behaviour is learned; §13.2's learned model is what a calibrated value will come from, and until then this is a ceiling rather than an expectation." },
+
+    { "name": "recover.abort_budget", "type": "integer", "unit": "s", "default": 300, "range": { "min": 30, "max": 3600 },
+      "specScope": "mission_class", "scopes": ["global", "mission_class"], "changeClass": "POLICY", "owner": "Ops", "blastRadius": "mission_class",
+      "calibrationStatus": "PROVISIONAL", "awaits": "observed abort-to-safe-stop durations", "section": "§4.3, §4.6",
+      "requiredBy": "the §4.5 timer on Leg state ABORTING",
+      "description": "How long recovery may run before the Leg is forced to the applicable STRANDED_* state. The expiry action is deliberately not 'try harder': §4.3 forces the state, because an abort that has not completed within its budget is a physical situation, and representing it honestly with an operations SLA attached is what §4.3 argues for." },
+
+    { "name": "recover.reassign_budget", "type": "integer", "unit": "s", "default": 300, "range": { "min": 30, "max": 3600 },
+      "specScope": "mission_class", "scopes": ["global", "mission_class"], "changeClass": "POLICY", "owner": "Ops", "blastRadius": "mission_class",
+      "calibrationStatus": "PROVISIONAL", "awaits": "observed reassignment round-trip durations", "section": "§4.3, §4.7",
+      "requiredBy": "the §4.5 timer on Leg state REASSIGNING",
+      "description": "How long a Leg may sit in REASSIGNING before escalation. Distinct from recover.max_reassignments_per_leg, which bounds the *number* of reassignments: this bounds how long one of them may take, and a chain that is short but stalled is the case the count alone would miss." }
   ]
 }

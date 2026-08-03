@@ -402,22 +402,62 @@ async function initKv({ logger }) {
     // concurrent task assignments can't both pick the same robot. Backed by
     // Redis SET NX EX.
     //
-    // FAIL-CLOSED POLICY (HR1) — this is the one capability on the facade that
-    // must NOT silently fall back to the in-memory Map when Redis is
-    // configured but unreachable. An in-memory lock is only a lock relative to
-    // its own process; two replicas that have both degraded would each be
-    // granted the same robot, with no error and no metric, reintroducing the
-    // exact double-assignment race F4 exists to prevent — and doing so
-    // precisely in the multi-instance deployment where it matters.
+    // ── PHASE 3 (§10.4): this lock is being demoted to ADVISORY ──────────────
     //
-    // Halting allocation is a recoverable business problem (orders queue and
-    // are retried). Double-assigning a physical vehicle is not.
+    // The frozen architecture is explicit about what this lock is for once the
+    // durable commitment core exists:
     //
-    // When Redis was never configured (no REDIS_URL, or REDIS_ENABLED=false)
-    // the deployment is explicitly single-process, so the memory-backed lock
-    // is genuinely correct and is still used.
-    async reserveRobot(key, value, ttlSec) {
+    //   > A short-lived cache lock per agent is retained, with a changed purpose:
+    //   > it prevents *wasted work*, not incorrect outcomes. Two coordinators
+    //   > evaluating the same agent will have one back off early rather than both
+    //   > reach the transaction and have one abort. It is therefore permitted to
+    //   > be lossy, and its loss degrades throughput only. Because it is advisory,
+    //   > cache unavailability MUST NOT halt commitment.
+    //
+    // §10.2 states why it was never sufficient on its own: a lock with a timeout
+    // cannot provide mutual exclusion across a process pause, because a paused
+    // holder cannot know it was preempted. The remedy is a fencing token, not a
+    // longer TTL — which is what `src/engine/commitment/` now supplies.
+    //
+    // ── Why the fail-closed throw is still here ─────────────────────────────
+    //
+    // The execution plan conditions the removal, and the condition is not yet met:
+    //
+    //   > `reserveRobot` demoted to advisory; remove the fail-closed *throw* only
+    //   > after the durable path is live — see Risk.
+    //   > Demote `kv.reserveRobot` to advisory (§10.4) — **only after** the durable
+    //   > path passes its gate.
+    //
+    // `ENGINE_ENABLED` is false in every environment and the legacy dispatcher in
+    // `task.service.js` is still the only writer of assignments. For that caller
+    // this lock remains the *sole* exclusivity mechanism, and removing the throw
+    // today would delete the only protection the live path has, months before the
+    // Phase 15 cutover replaces it. The demotion is therefore expressed as an
+    // explicit opt-in: engine callers pass `{ advisory: true }` and get §10.4
+    // semantics (loss degrades throughput, never correctness); legacy callers pass
+    // nothing and get exactly the behaviour they had before this phase.
+    //
+    // The default flips at Phase 15, when the legacy path is removed from the
+    // build rather than merely bypassed.
+    //
+    // ── The retained legacy policy, unchanged ───────────────────────────────
+    // FAIL-CLOSED POLICY (HR1) — for a non-advisory caller this must NOT silently
+    // fall back to the in-memory Map when Redis is configured but unreachable. An
+    // in-memory lock is only a lock relative to its own process; two replicas that
+    // have both degraded would each be granted the same robot, with no error and
+    // no metric, reintroducing the exact double-assignment race F4 exists to
+    // prevent — and doing so precisely in the multi-instance deployment where it
+    // matters.
+    //
+    // Halting allocation is a recoverable business problem (orders queue and are
+    // retried). Double-assigning a physical vehicle is not.
+    //
+    // When Redis was never configured (no REDIS_URL, or REDIS_ENABLED=false) the
+    // deployment is explicitly single-process, so the memory-backed lock is
+    // genuinely correct and is still used.
+    async reserveRobot(key, value, ttlSec, options) {
       const ex = typeof ttlSec === "number" && Number.isFinite(ttlSec) && ttlSec > 0 ? Math.floor(ttlSec) : 30;
+      const advisory = Boolean(options && options.advisory);
 
       if (redisAvailable && redis) {
         try {
@@ -425,8 +465,18 @@ async function initKv({ logger }) {
           return res === "OK";
         } catch (e) {
           disableRedis(e);
-          // Fall through to the fail-closed guard below rather than to memory.
+          // Fall through: to the advisory grant for an engine caller, or to the
+          // fail-closed guard below for a legacy one.
         }
+      }
+
+      if (advisory) {
+        // §10.4: "cache unavailability MUST NOT halt commitment". The caller is
+        // told it holds the advisory lock; the durable commit transaction is what
+        // decides the outcome, and it takes no cache dependency at all. Returning
+        // false here would be worse than returning true — it would halt the round
+        // on a cache outage, which is the baseline behaviour §10.4 removes.
+        return true;
       }
 
       if (redisConfigured) {
