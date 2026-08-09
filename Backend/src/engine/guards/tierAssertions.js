@@ -87,6 +87,27 @@ const MECHANISMS = Object.freeze([
       "src/engine/routing/chargerReachabilityCache.js",
       "src/engine/feasibility/predicates/f34.js",
       "src/engine/feasibility/predicates/f35.js",
+      // Absent from this list until Phase 7. The path-prefix rule always classified
+      // `src/engine/energy/` Tier 0, so the gate was never wrong — but the
+      // human-readable inventory was incomplete, which is the finding Phase 3's
+      // independent verification made about `commitment/leases.js`. Each of these three
+      // is part of the §14.5 mechanism rather than a neighbour of it:
+      //   · chargeCurve.js  — §14.6's t_charge is what makes an inserted charging stop
+      //     a plan F34 can evaluate (§13.4), and §14.6's interruption conditions are
+      //     stated in terms of F34–F35 themselves.
+      //   · midMission.js   — §14.8's rows are "the same tiers as the F34 feasibility
+      //     constraint", and counting them against those budgets is what makes I17
+      //     verifiable from operational data rather than only in simulation.
+      //   · chargingSchedulerClient.js — publishes the pinned projection §14.5 breaks
+      //     the E_return circularity with, and resolves the target SoC §14.6 forbids the
+      //     engine to compute.
+      // `src/engine/energy/wear.js` is deliberately **not** listed: §14.4 charges wear
+      // into `C_lifecycle`, a Tier 1 cost term, and §1.8 names no Tier 0 mechanism it
+      // belongs to. Its Tier 0 classification comes from the path prefix, which is
+      // convention 1's conservative default and can only over-constrain the gate.
+      "src/engine/energy/chargeCurve.js",
+      "src/engine/energy/midMission.js",
+      "src/engine/energy/chargingSchedulerClient.js",
     ],
     invariants: ["I17"],
   },

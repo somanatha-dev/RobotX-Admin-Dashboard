@@ -83,6 +83,164 @@ const PAIRING_LOCKOUT_TTL_SEC = 3600;
 const clockModule = require("../../engine/commitment/clock");
 const dedupHandshake = require("../../engine/dispatch/dedupHandshake");
 
+// PHASE 14 — §23.2's mutual TLS, certificate-bound sessions, and capability attestation.
+const sessionBinding = require("../../engine/security/sessionBinding");
+const attestation = require("../../engine/security/attestation");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 14 — §23.2. The agent handshake becomes certificate-bound.
+//
+//   > Mutual TLS with per-device certificates, private keys in a secure element where the
+//   > hardware provides one, automated rotation, and revocation checked at session
+//   > establishment **and** periodically during long sessions.
+//
+//   > Session establishment binds `(agent_id, certificate, session_id)`; a session cannot
+//   > act for another agent.
+//
+// ── Why this is additive rather than a replacement, today ───────────────────
+// The plan's own risk note for this phase is "changes the agent handshake; requires
+// coordinated firmware rollout", and the implementation rule for every phase is that
+// backwards compatibility is maintained. A server that could only speak the new handshake
+// would disconnect every un-updated device at the moment of deploy — including the
+// simulated fleet, which is the substrate every other phase's tests run on.
+//
+// So there are three states, and which one applies is a deployment decision, not a code
+// change:
+//
+//   1. **No certificate presented, `AGENT_MTLS_REQUIRED` unset.** Legacy pairing and
+//      session-token AUTH, byte-for-byte as before. This is what the simulator uses.
+//   2. **A certificate is presented.** It is validated and bound whether or not mTLS is
+//      required. A device that speaks the new protocol gets the new guarantees
+//      immediately; there is no window in which a real certificate is ignored.
+//   3. **`AGENT_MTLS_REQUIRED=true`.** An absent or invalid certificate is refused. This
+//      is the end state, staged per deployment once the fleet has rotated.
+//
+// ── Pairing is retained *only* as a commissioning bootstrap ─────────────────
+// The plan's row says exactly that. In state 3 the pairing branch is unreachable for a
+// steady-state connection: `refusePairingUnderMtls()` refuses it by name rather than by
+// falling through, because a bootstrap path that silently still works is not a bootstrap
+// path — it is a second authentication scheme nobody is monitoring.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * How long a `SESSION_REKEY` command stays valid (§23.3's `not_valid_after`).
+ *
+ * Short by design. A rekey that surfaced twenty minutes late would rotate a binding the
+ * server has already replaced, and §23.3's whole argument for expiry is that "the world
+ * has moved on" — which is more true of a session command than of a mission offer.
+ */
+const REKEY_VALIDITY_MS = 60_000;
+
+/** Is mutual TLS mandatory for agent sessions in this deployment? */
+function mtlsRequired() {
+  return String(process.env.AGENT_MTLS_REQUIRED || "").toLowerCase() === "true";
+}
+
+/**
+ * The peer certificate the TLS terminator validated, however it reached us.
+ *
+ * Three shapes, because three deployments are normal: Node terminating TLS itself
+ * (`getPeerCertificate()`), a reverse proxy forwarding the PEM in a header, and a test
+ * or simulator supplying one through the Socket.IO auth payload.
+ *
+ * A proxy-forwarded header is trusted **only** because the proxy is inside the trust
+ * boundary and strips any client-supplied copy — the same assumption `X-Forwarded-For`
+ * already rests on in `rateLimitHttp.js`. A deployment whose proxy does not strip it has
+ * a misconfiguration this code cannot detect, which is why state 3 exists and why the
+ * header name is explicit rather than a wildcard scan.
+ *
+ * @param {object} socket
+ * @param {object} [auth] the AUTH payload
+ * @returns {*} something `sessionBinding.fingerprint()` understands, or null
+ */
+function peerCertificateOf(socket, auth) {
+  const raw = socket?.request?.socket;
+  if (raw && typeof raw.getPeerCertificate === "function") {
+    const certificate = raw.getPeerCertificate();
+    if (certificate && (certificate.raw || certificate.fingerprint256)) return certificate;
+  }
+
+  const forwarded = socket?.handshake?.headers?.["x-client-cert"];
+  if (typeof forwarded === "string" && forwarded.includes("BEGIN CERTIFICATE")) {
+    return decodeURIComponent(forwarded.replace(/\\n/g, "\n"));
+  }
+
+  const supplied = socket?.handshake?.auth?.certificate ?? (auth && auth.certificate);
+  return supplied || null;
+}
+
+/**
+ * Establish the `(agent_id, certificate, session_id)` binding, or decide that this
+ * connection is a legacy one.
+ *
+ * @param {object} deps `{ prisma, kv, config, log }`
+ * @param {object} input `{ socket, robotId, auth, now }`
+ * @returns {Promise<{ mode: "MTLS"|"LEGACY", ok: boolean, refusal: string|null,
+ *                     detail: string|null, binding: object|null }>}
+ */
+async function establishCertificateSession(deps, input) {
+  const source = input || {};
+  const certificate = peerCertificateOf(source.socket, source.auth);
+
+  if (!certificate && !mtlsRequired()) {
+    return { mode: "LEGACY", ok: true, refusal: null, detail: null, binding: null };
+  }
+
+  const now = source.now instanceof Date ? source.now : new Date();
+  const established = await sessionBinding.establish(deps, {
+    agentId: source.robotId,
+    certificate,
+    sessionId: source.socket.id,
+    now,
+    recheckIntervalSeconds: configNumber(deps.config, "security.certificate_revocation_recheck_interval"),
+    sessionMaxAgeSeconds: configNumber(deps.config, "security.session_max_age"),
+  });
+
+  return { mode: "MTLS", ...established };
+}
+
+/**
+ * Read a numeric configuration value from the process's pinned snapshot.
+ *
+ * @param {object} config
+ * @param {string} name
+ * @returns {number|undefined}
+ */
+function configNumber(config, name) {
+  const values = config?.values;
+  const value = values instanceof Map ? values.get(name) : values?.[name];
+  return Number.isFinite(value) ? Number(value) : undefined;
+}
+
+/**
+ * §23.2 / §23.5 — a capability claim arriving on the agent's own data plane is rejected
+ * entirely, and the rejection is a security event.
+ *
+ * The AUTH payload is a `passthrough()` schema, which is exactly the gap such a claim
+ * would arrive through: an agent that added `capabilities: ["hazmat_certified"]` to its
+ * AUTH would, before this phase, have had the field silently ignored — which is safe
+ * today only because nothing read it, and would stop being safe the first time something
+ * did.
+ *
+ * @param {object} payload
+ * @param {string} robotId
+ * @param {object} log
+ * @returns {Array<object>} the claims found, for the caller to count
+ */
+function rejectCapabilityClaims(payload, robotId, log) {
+  const claims = attestation.findCapabilityClaims(payload);
+  if (claims.length === 0) return claims;
+
+  log.warn?.("capability claim arriving via the agent data plane — rejected entirely (§23.2)", {
+    robotId,
+    paths: claims.map((claim) => claim.path),
+    detail:
+      "capabilities derive from the commissioning record plus a signed firmware/hardware attestation. A compromised " +
+      "agent claiming hazmat_certified must not thereby become eligible for hazmat work.",
+  });
+  return claims;
+}
+
 async function runDedupHandshake(prisma, robotId, reportedDedupState, log) {
   if (process.env.ENGINE_ENABLED !== "true") return null;
   if (reportedDedupState === undefined || reportedDedupState === null) return null;
@@ -189,6 +347,11 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
       // it here narrows nothing; it documents the field and keeps the shape in one
       // place.
       dedupState: z.unknown().optional().nullable(),
+      // PHASE 14 — §23.2. Declared for the same reason `dedupState` is: `passthrough()`
+      // already admitted it, so naming it narrows nothing and keeps the shape in one
+      // place. In a real deployment the certificate arrives from the TLS layer, not from
+      // the payload; this accepts the simulator's and a test's.
+      certificate: z.unknown().optional().nullable(),
     })
     .passthrough();
 
@@ -223,19 +386,72 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
         battery: robot.battery,
       });
 
-      const [sessionToken, storedCode] = await Promise.all([
-        kv.get(`session:${robotId}`),
-        kv.get(`pairing:${robotId}`),
-      ]);
+      // PHASE 14 — §23.2 / §23.5. A capability claim on the AUTH payload is rejected
+      // entirely, before anything else is done with the payload.
+      rejectCapabilityClaims(payload, robotId, log);
+
+      // PHASE 14 — §23.2's certificate-bound session. Runs before the pairing and
+      // session-token branches so that a presented certificate is never ignored in favour
+      // of a weaker credential that happens to also be present.
+      const certificateSession = await establishCertificateSession(
+        { prisma, kv, config: io?.engine?.config || socket?.request?.app?.locals?.config, log },
+        { socket, robotId, auth, now: new Date() },
+      );
+
+      if (!certificateSession.ok) {
+        log.warn("Agent session refused by §23.2", {
+          robotId,
+          socketId: socket.id,
+          refusal: certificateSession.refusal,
+          detail: certificateSession.detail,
+        });
+        return socket.disconnect(true);
+      }
+
+      if (certificateSession.mode === "MTLS") {
+        // The `session:` namespace is retained and its *contents* replaced: it held a
+        // bearer token that was on its own sufficient to authenticate, and now holds a
+        // binding that is meaningless without the certificate whose fingerprint it names.
+        // Reusing the namespace rather than minting a second one means a deployment
+        // cannot end up with both schemes alive at once.
+        await kv.set(sessionBinding.sessionKey(robotId), JSON.stringify(certificateSession.binding), {
+          ex: Math.max(1, Math.round((certificateSession.binding.expiresAtMs - certificateSession.binding.establishedAtMs) / 1000)) || 86400,
+        });
+        socket.data.certificateBinding = certificateSession.binding;
+      }
+
+      const [sessionToken, storedCode] = certificateSession.mode === "MTLS"
+        ? [null, null]
+        : await Promise.all([kv.get(`session:${robotId}`), kv.get(`pairing:${robotId}`)]);
 
       let nextToken = null;
 
-      // Reconnect path: valid existing session token.
-      if (sessionToken && token && token === sessionToken) {
+      // An mTLS session is authenticated by the certificate and skips both weaker
+      // branches entirely — §23.2's "a session cannot act for another agent" is the
+      // binding's property, and re-deriving it from a bearer token would reintroduce the
+      // credential the binding replaces.
+      if (certificateSession.mode === "MTLS") {
+        // Nothing to do: the binding above is the authentication.
+      } else if (sessionToken && token && token === sessionToken) {
+        // Reconnect path: valid existing session token.
         nextToken = sessionToken;
         // Refresh TTL on successful reconnect
         await kv.set(`session:${robotId}`, nextToken, { ex: 86400 });
       } else {
+        // PHASE 14 — §23.2: "Pairing and commissioning are privileged control-plane
+        // operations." Where mTLS is required, pairing is a commissioning bootstrap and
+        // nothing else, so a steady-state connection reaching this branch is refused **by
+        // name** rather than by falling through to a code comparison. A bootstrap path
+        // that silently still authenticates is not a bootstrap path; it is a second
+        // authentication scheme nobody is monitoring.
+        if (mtlsRequired()) {
+          log.warn("Pairing refused — AGENT_MTLS_REQUIRED is set and pairing is a commissioning bootstrap only (§23.2)", {
+            robotId,
+            socketId: socket.id,
+          });
+          return socket.disconnect(true);
+        }
+
         // Brute-force lockout (F32): reject immediately, before comparing codes,
         // regardless of which socket is attempting.
         if (await isPairingLocked(robotId)) {
@@ -290,9 +506,24 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
       // fence floor in the same message that admits it.
       const dedupOutcome = await runDedupHandshake(prisma, robotId, auth.dedupState, log);
 
-      socket.emit("AUTH_SUCCESS", { robotId, token: nextToken, dedup: dedupOutcome });
+      // PHASE 14 — the session's own description travels with the admission. An agent
+      // must be able to tell which scheme authenticated it: a device that believes it is
+      // certificate-bound while the server admitted it on a pairing code is a device
+      // whose operator cannot answer a security question about it.
+      const sessionDescriptor =
+        certificateSession.mode === "MTLS"
+          ? {
+              mode: "MTLS",
+              sessionId: certificateSession.binding.sessionId,
+              fingerprint: certificateSession.binding.fingerprint,
+              keyStorage: certificateSession.binding.keyStorage,
+              expiresAt: certificateSession.binding.expiresAtMs ? new Date(certificateSession.binding.expiresAtMs).toISOString() : null,
+            }
+          : { mode: "LEGACY", sessionId: socket.id, fingerprint: null, keyStorage: null, expiresAt: null };
+
+      socket.emit("AUTH_SUCCESS", { robotId, token: nextToken, dedup: dedupOutcome, session: sessionDescriptor });
       // Backward compatible alias
-      socket.emit("AUTH_OK", { robotId, token: nextToken, dedup: dedupOutcome });
+      socket.emit("AUTH_OK", { robotId, token: nextToken, dedup: dedupOutcome, session: sessionDescriptor });
       // Dashboard-only UI event — scoped to the room instead of every socket.
       io.to("dashboard").emit("robot_online", { robotId });
 
@@ -355,6 +586,13 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
 
       const nowMs = Date.now();
 
+      // PHASE 14 — §23.2's periodic revocation check and session rekey. Rides the
+      // heartbeat because the heartbeat is the one event that proves the socket is alive;
+      // it is a no-op for a legacy session, which holds no binding.
+      if (socket.data.certificateBinding) {
+        maybeRekeySession().catch((e) => log.warn?.("session revocation check failed", { message: e?.message }));
+      }
+
       // Live signal — every beat, Redis only.
       try {
         await setRobotState(kv, robotId, { lastHeartbeat: nowMs, connected: true });
@@ -386,6 +624,100 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
   socket.on("HEARTBEAT", () => handleHeartbeat("HEARTBEAT"));
   // Backward compatible alias.
   socket.on("heartbeat", () => handleHeartbeat("heartbeat"));
+
+  // ── PHASE 14 — §23.2: `SESSION_REKEY` becomes operational ──────────────────
+  //
+  // The command has existed in §10.3.1's agent-scope table since Phase 3 and `VirtualRobot`
+  // has accepted it since Phase 4, but nothing issued one. Two triggers do now, and both
+  // are conditions the *server* observes:
+  //
+  //   1. The binding has passed `security.session_max_age`.
+  //   2. The periodic revocation re-check is due and the certificate still passes — a
+  //      rekey is the cheapest way to refresh a binding whose evidence has been renewed.
+  //
+  // It rides on the heartbeat rather than a timer: the heartbeat is the one event that
+  // proves the socket is alive, and issuing a rekey to a socket that has silently died
+  // would rotate a binding nothing will ever acknowledge.
+  //
+  // The command envelope is built and signed by the dispatch layer (`dispatch/offers.js`
+  // for the mission scope, `shard/membership.js` for the agent scope); what this handler
+  // owns is *when* a rekey is warranted and what the new binding becomes once the agent
+  // acknowledges. Splitting it that way is what keeps one envelope shape in the system.
+  async function maybeRekeySession() {
+    const binding = socket.data.certificateBinding;
+    if (!binding) return;
+
+    const now = new Date();
+    const expired = Number.isFinite(binding.expiresAtMs) && binding.expiresAtMs !== null && now.getTime() >= binding.expiresAtMs;
+    if (!expired && !sessionBinding.dueForRecheck(binding, now)) return;
+
+    const config = socket?.request?.app?.locals?.config;
+    const rechecked = await sessionBinding.recheck({ prisma }, binding, {
+      now,
+      recheckIntervalSeconds: configNumber(config, "security.certificate_revocation_recheck_interval"),
+    });
+
+    if (rechecked.action === "TERMINATE") {
+      // §23.2's periodic half, at the moment it bites. A revoked certificate inside a
+      // live session ends the session; it does not wait for the next reconnect.
+      log.warn("Agent session terminated by periodic revocation check (§23.2)", {
+        robotId: socket.data.robotId,
+        refusal: rechecked.refusal,
+      });
+      try { await kv.del(sessionBinding.sessionKey(socket.data.robotId)); } catch { /* best effort */ }
+      socket.disconnect(true);
+      return;
+    }
+
+    socket.data.certificateBinding = rechecked.binding;
+
+    if (!expired) {
+      // The certificate is still good and the check window has simply rolled over. Persist
+      // the refreshed binding and say nothing to the agent: a rekey the agent did not need
+      // is an authority-epoch churn nobody asked for.
+      try {
+        await kv.set(sessionBinding.sessionKey(socket.data.robotId), JSON.stringify(rechecked.binding), { ex: 86400 });
+      } catch { /* the DB remains authoritative for the certificate */ }
+      return;
+    }
+
+    socket.emit("SESSION_REKEY", sessionBinding.rekeyCommandPayload({
+      sessionId: socket.id,
+      reason: "SESSION_MAX_AGE",
+      notValidAfter: new Date(now.getTime() + REKEY_VALIDITY_MS),
+    }));
+  }
+
+  socket.on("SESSION_REKEY_ACK", async (payload) => {
+    try {
+      if (!allow(socket, "SESSION_REKEY_ACK", { limit: 10, windowMs: 60_000, minIntervalMs: 100 })) return;
+      const binding = socket.data.certificateBinding;
+      if (!binding) return;
+
+      const config = socket?.request?.app?.locals?.config;
+      const rotated = await sessionBinding.rekey({ prisma }, binding, {
+        // The agent proposes a session id; the **agent id is not a parameter**, so a rekey
+        // cannot change which agent this session speaks for. That would be a privilege
+        // escalation wearing the name of a maintenance operation.
+        sessionId: toStringOrNull(payload?.sessionId) || socket.id,
+        now: new Date(),
+        recheckIntervalSeconds: configNumber(config, "security.certificate_revocation_recheck_interval"),
+        sessionMaxAgeSeconds: configNumber(config, "security.session_max_age"),
+      });
+
+      if (!rotated.ok) {
+        log.warn("SESSION_REKEY refused", { robotId: socket.data.robotId, refusal: rotated.refusal });
+        socket.disconnect(true);
+        return;
+      }
+
+      socket.data.certificateBinding = rotated.binding;
+      await kv.set(sessionBinding.sessionKey(socket.data.robotId), JSON.stringify(rotated.binding), { ex: 86400 });
+      log.info("Agent session rekeyed", { robotId: socket.data.robotId, sessionId: rotated.binding.sessionId });
+    } catch (e) {
+      log.error?.("SESSION_REKEY_ACK failed", { message: e?.message });
+    }
+  });
 
   socket.on("disconnect", () => {
     // Best-effort: mark offline only if this socket is still the active one.

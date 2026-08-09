@@ -19,6 +19,10 @@ const { z } = require("zod");
 const robotStateCache = require("../../cache/robotStateCache");
 // PHASE 5 (§12.5) — graded completion verification.
 const verification = require("../../engine/supervision/verification");
+// PHASE 12 (§18.2) — the agent failure catalogue. A fault report becomes a *classified*
+// failure with a defined response and escalation, rather than a status change and a log line.
+const agentFailures = require("../../engine/failure/agentFailures");
+const catalogue = require("../../engine/failure/catalogue");
 
 const obstacleSchema = z.object({
   lat: z.number(),
@@ -30,6 +34,10 @@ const faultSchema = z.object({
   code: z.string().optional(),
   message: z.string().optional(),
   sensor: z.string().optional(),
+  // PHASE 12 (§18.2) — the one bit that separates A5 from A6. Optional, and its *absence*
+  // classifies as blocking: §18.2's two rows differ in whether the mission continues, and
+  // an agent that does not say resolves to the row that stops it (§7.3's DENY reading).
+  blocking: z.boolean().optional(),
 });
 
 /**
@@ -177,7 +185,43 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger }) {
       const faultData = parsed.success ? parsed.data : {};
       const { code = "UNKNOWN", message = "Unspecified fault", sensor = null } = faultData;
 
-      log.warn("ROBOT_FAULT received", { robotId, code, message, sensor });
+      // PHASE 12 (§18.2) — classify the fault against the catalogue before anything else.
+      //
+      // > 2. **Every failure has a defined automatic response and a defined escalation.**
+      // >    Undefined behaviour under failure is a design defect, not an operational
+      // >    surprise.
+      //
+      // The legacy handling below is unchanged and still runs: a real robot reporting a
+      // fault must still reach ERROR, still raise its Event row, and still reach the
+      // dashboard, exactly as it did before, until the Phase 15 cutover. What is added is
+      // the classification alongside it — the fault is placed on an A-row, and that row's
+      // response, escalation, and custody-awareness are carried in the log and out to the
+      // dashboard rather than being re-derived by whoever reads the alert.
+      //
+      // Blocking versus non-blocking is the one distinction the catalogue makes that the
+      // payload can carry: §18.2 A5 is a fault that stops the mission and A6 is a
+      // degradation that does not. An unspecified fault classifies as **A5**, the blocking
+      // one, under the same DENY reading §7.3 gives an unknown: the cost of treating a
+      // degradation as blocking is an unnecessary maintenance ticket, and the cost of the
+      // reverse is a mission continued on a robot that cannot finish it.
+      const faultRowId = faultData.blocking === false ? "A6" : "A5";
+      const faultRow = catalogue.lookup(faultRowId);
+      const classification = {
+        failureId: faultRowId,
+        failure: faultRow.failure,
+        detection: faultRow.detection,
+        // Custody is a Leg-level fact the legacy path does not carry, so the response is
+        // reported for both sides rather than guessed. §18.1 principle 3 splits A5's
+        // response exactly there, and picking the wrong half is what §2.5 exists to prevent.
+        response: {
+          preCustody: agentFailures.responseFor(faultRowId, agentFailures.CUSTODY_PHASE.PRE_CUSTODY).response,
+          postCustody: agentFailures.responseFor(faultRowId, agentFailures.CUSTODY_PHASE.POST_CUSTODY).response,
+        },
+        escalation: catalogue.alertingFor(faultRowId),
+        autoQuarantine: faultRow.autoQuarantine === true,
+      };
+
+      log.warn("ROBOT_FAULT received", { robotId, code, message, sensor, classification });
 
       // Update robot status to ERROR in DB
       await prisma.robot.update({
@@ -211,6 +255,11 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger }) {
         status: "ERROR",
         healthStatus: "FAULT",
         fault: { code, message, sensor },
+        // Additive: every field the pre-Phase-12 payload carried is unchanged, and the
+        // classification sits beside them. An operator seeing "ERROR" learns that
+        // something is wrong; one seeing "A5, blocking hardware fault, pre-custody abort
+        // and reassign, maintenance ticket and auto-quarantine" learns what happens next.
+        classification,
         timestamp: Date.now(),
       });
 

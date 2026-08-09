@@ -185,6 +185,8 @@ function baseValues(entries, bindingIndex) {
  * @param {Record<string, boolean>} [options.killSwitchState]
  * @param {object[]} [options.regimes]
  * @param {object} [options.spatial]
+ * @param {object[]} [options.shards] PHASE 13 — the §3.5 shard definitions this publish
+ *   declares, validated per shard by V4 against that region's measured mission rate
  * @param {Map<string, object>} [options.entries] register override, used by tests
  * @returns {object} snapshot
  */
@@ -219,6 +221,11 @@ function buildSnapshot(options) {
     regimes: settings.regimes || [],
     activeRegime: activeRegime ? activeRegime.name : null,
     spatial: settings.spatial || null,
+    // PHASE 13 — §3.5's shard definitions travel with the version for the same reason the
+    // spatial maps do: the sizing inequality is evaluated per region, so the definitions
+    // are an input to publish-time validation rather than a separate control-plane object
+    // that could be changed without re-running V4.
+    shards: settings.shards || null,
     registerDigest: registerDigest(entries),
   };
 
@@ -258,6 +265,7 @@ function validateCandidate(options) {
     derivedValues: snapshot.derivedValues,
     derivationEvidence: snapshot.derivationEvidence,
     spatial: snapshot.spatial,
+    shards: snapshot.shards,
     enforceLaunchGate: Boolean(options && options.enforceLaunchGate),
   });
   return { snapshot, result };
@@ -384,6 +392,7 @@ function publishPayload(snapshot) {
     regimes: snapshot.regimes,
     activeRegime: snapshot.activeRegime,
     spatial: snapshot.spatial,
+    shards: snapshot.shards,
   };
 }
 
@@ -398,6 +407,7 @@ function publishPayload(snapshot) {
  * @param {Record<string, boolean>} [request.killSwitchState]
  * @param {object[]} [request.regimes]
  * @param {object} [request.spatial]
+ * @param {object[]} [request.shards] PHASE 13 — §3.5 shard definitions
  * @param {string} [request.note]
  * @param {boolean} [request.automated]
  * @param {boolean} [request.enforceLaunchGate] set for a production publish, where
@@ -551,6 +561,7 @@ async function loadPinnedSnapshot(options) {
     killSwitchState: payload.killSwitchState,
     regimes: payload.regimes || [],
     spatial: payload.spatial || null,
+    shards: payload.shards || null,
   });
 
   snapshot.signature = row.signature;

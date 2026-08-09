@@ -54,7 +54,7 @@ machine at all.
 |---|---|---|---|---|
 | T0-01 | Feasibility gate as a boolean pre-cost gate, structurally incapable of being bypassed, with its class I and R predicates | §7.1, §7.5, T1 | `src/engine/feasibility/evaluate.js`<br>`src/engine/feasibility/register.js`<br>`src/engine/feasibility/predicates/` | I9, I14 |
 | T0-02 | Three-valued evaluation with DENY on indeterminate for every class I and R predicate, and the systemic-indeterminacy guard | §7.3, §7.4 | `src/engine/feasibility/threeValued.js`<br>`src/engine/feasibility/systemicGuard.js` | I9 |
-| T0-03 | Energy feasibility at all three shortfall tiers, and charger reachability from the mission end — F34, F35 | §14.5 | `src/engine/energy/consumption.js`<br>`src/engine/energy/usable.js`<br>`src/engine/energy/reserves.js`<br>`src/engine/energy/tiers.js`<br>`src/engine/energy/eReturn.js`<br>`src/engine/routing/chargerReachabilityCache.js`<br>`src/engine/feasibility/predicates/f34.js`<br>`src/engine/feasibility/predicates/f35.js` | I17 |
+| T0-03 | Energy feasibility at all three shortfall tiers, and charger reachability from the mission end — F34, F35 | §14.5 | `src/engine/energy/consumption.js`<br>`src/engine/energy/usable.js`<br>`src/engine/energy/reserves.js`<br>`src/engine/energy/tiers.js`<br>`src/engine/energy/eReturn.js`<br>`src/engine/routing/chargerReachabilityCache.js`<br>`src/engine/feasibility/predicates/f34.js`<br>`src/engine/feasibility/predicates/f35.js`<br>`src/engine/energy/chargeCurve.js`<br>`src/engine/energy/midMission.js`<br>`src/engine/energy/chargingSchedulerClient.js` | I17 |
 | T0-04 | Payload, capability, and route-permission predicates — F21–F31 | §7.5, §15 | `src/engine/payload/spec.js`<br>`src/engine/payload/container.js`<br>`src/engine/payload/packing.js`<br>`src/engine/payload/loadState.js`<br>`src/engine/domain/capability.js` | I9 |
 | T0-05 | Exclusivity: the serialised conditional commit with guards G1–G6 and its schema backstops | §10.3.2 | `src/engine/commitment/commit.js`<br>`src/engine/commitment/guards.js`<br>`src/engine/commitment/model.js`<br>`src/engine/commitment/idempotency.js`<br>`src/engine/commitment/clock.js`<br>`src/engine/commitment/leases.js` | I1, I16, I18 |
 | T0-06 | Two-scope fencing and durable agent-side deduplication | §10.3.1, §11.5 | `src/engine/commitment/fencing.js`<br>`src/engine/dispatch/dedupHandshake.js` | I5, I19, I21 |
@@ -190,6 +190,14 @@ The table the dependency gate reads. **Longest prefix wins.**
 | `src/engine/shard/crossRegion.js` | Tier 2 — Allocation quality |
 | `src/engine/` | Tier 1 — Operational integrity |
 | `src/workers/` | Tier 1 — Operational integrity |
+
+> **Not every module under a Tier 0 prefix is named in the mechanism inventory above.**
+> `src/engine/energy/wear.js` is the standing example: §14.4 charges battery wear into
+> `C_lifecycle`, which is a Tier 1 cost term, and §1.8 names no Tier 0 mechanism it
+> belongs to. Its Tier 0 classification comes from the path prefix — convention 1's
+> conservative default — and over-constraining the rule-2 gate is the only effect that
+> has. The inventory enumerates the mechanisms §1.8 names; the prefix table is what the
+> gate reads.
 
 Two conventions, stated so a reviewer can check them against §1.8:
 

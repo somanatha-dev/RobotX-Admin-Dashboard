@@ -20,3 +20,13 @@ process.env.FRONTEND_URL = "https://app.robotx.test";
 // opt in explicitly rather than inheriting a default-on switch, so a phase can
 // never accidentally take the legacy suite down a new code path.
 process.env.ENGINE_ENABLED = "false";
+
+// Agent mutual-TLS posture (Phase 14, §23.2).
+//
+// Set explicitly rather than left unset, because "unset" and "false" read identically in
+// code and very differently in an incident review. False is the staged posture the Phase
+// 15 cutover ends: a presented client certificate is still validated and bound, and
+// pairing remains available as the commissioning bootstrap. With it true, an agent
+// session without a valid, unrevoked certificate is refused — which is the end state, and
+// which the simulated fleet does not yet satisfy.
+process.env.AGENT_MTLS_REQUIRED = "false";

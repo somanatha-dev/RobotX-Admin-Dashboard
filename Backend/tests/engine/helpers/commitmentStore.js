@@ -53,6 +53,19 @@ const TABLES = Object.freeze([
   "verificationEvidence",
   "task",
   "stop",
+  // PHASE 13 — §3.5's shard model and its transactional membership handoff. The four
+  // CHECK constraints and the partial unique index the Phase 13 migration adds are
+  // evaluated at apply time in the same way Phases 3, 4 and 5's are, so a migration that
+  // writes two current memberships for one agent fails here exactly as it would at the
+  // database.
+  //
+  // `mission` and `workQueue` come with them, unconstrained: §19.5's failover scopes a
+  // shard's Legs by the `WorkQueue` row that records the routing decision intake made, and
+  // by the mission's region where none survives.
+  "shard",
+  "shardMembership",
+  "mission",
+  "workQueue",
 ]);
 
 const TABLE_OF_SQL_NAME = Object.freeze({
@@ -69,6 +82,10 @@ const TABLE_OF_SQL_NAME = Object.freeze({
   VerificationEvidence: "verificationEvidence",
   Task: "task",
   Stop: "stop",
+  Shard: "shard",
+  ShardMembership: "shardMembership",
+  Mission: "mission",
+  WorkQueue: "workQueue",
 });
 
 function clone(row) {
@@ -333,6 +350,62 @@ function createCommitmentStore(seed) {
     return error;
   }
 
+  /* ── Phase 13's backstops, exactly as its migration writes them ──────────── */
+
+  const SHARD_STATES = ["ACTIVE", "REBALANCING", "DRAINING", "RETIRED"];
+  const BINDING_BOUNDS = ["ROUND_WALL_CLOCK", "SERIAL_COMMIT", "NEITHER_EVALUATED"];
+  const MEMBERSHIP_REASONS = ["COMMISSIONING", "REBALANCE_SPLIT", "REBALANCE_MERGE", "REDISTRICTING", "OPERATOR"];
+
+  function assertShardConstraints(row) {
+    if (row.state !== undefined && !SHARD_STATES.includes(String(row.state))) {
+      throw checkViolation("Shard", "Shard_state_known", row.state);
+    }
+    if (row.bindingBound !== undefined && row.bindingBound !== null && !BINDING_BOUNDS.includes(String(row.bindingBound))) {
+      throw checkViolation("Shard", "Shard_binding_bound_known", row.bindingBound);
+    }
+    if (typeof row.agentCount === "number" && row.agentCount < 0) {
+      throw checkViolation("Shard", "Shard_agent_count_non_negative", row.agentCount);
+    }
+    const draining = String(row.state) === "DRAINING";
+    const timed = row.drainingSince !== null && row.drainingSince !== undefined;
+    if (row.state !== undefined && draining !== timed) {
+      throw checkViolation("Shard", "Shard_draining_is_timed", row.state);
+    }
+  }
+
+  function assertMembershipConstraints(row, view) {
+    if (!MEMBERSHIP_REASONS.includes(String(row.reason))) {
+      throw checkViolation("ShardMembership", "ShardMembership_reason_known", row.reason);
+    }
+    const before = BigInt(row.authorityEpochBefore ?? 0);
+    const after = BigInt(row.authorityEpochAfter ?? 0);
+    if (before < 0n || after < 0n) {
+      throw checkViolation("ShardMembership", "ShardMembership_epochs_non_negative", `${before}/${after}`);
+    }
+    const from = row.fromShardId === undefined ? null : row.fromShardId;
+    if (from !== null && after <= before) {
+      // §19.2 — a migration that did not advance the epoch would leave every mission
+      // authority the agent holds valid under the *old* shard's coordinator.
+      throw checkViolation("ShardMembership", "ShardMembership_migration_advances_epoch", `${before}->${after}`);
+    }
+    if (from !== null && from === row.shardId) {
+      throw checkViolation("ShardMembership", "ShardMembership_move_changes_shard", from);
+    }
+    // The partial unique index: §3.5's "exactly one shard at a time".
+    if ((row.supersededAt ?? null) === null) {
+      for (const other of view.shardMembership.values()) {
+        if (other.id === row.id) continue;
+        if ((other.supersededAt ?? null) !== null) continue;
+        if (other.agentId === row.agentId) {
+          stats.uniqueViolations += 1;
+          const error = new Error('duplicate key value violates unique constraint "ShardMembership_one_current_per_agent"');
+          error.code = "23505";
+          throw error;
+        }
+      }
+    }
+  }
+
   /**
    * Apply a transaction's overlay to committed state, re-checking every backstop
    * against the *global* view. This is the property that makes the index a backstop:
@@ -380,6 +453,16 @@ function createCommitmentStore(seed) {
     for (const [, row] of overlay.verificationEvidence) {
       if (row === null) continue;
       assertVerificationConstraints(row);
+    }
+
+    for (const [, row] of overlay.shard) {
+      if (row === null) continue;
+      assertShardConstraints(row);
+    }
+
+    for (const [, row] of overlay.shardMembership) {
+      if (row === null) continue;
+      assertMembershipConstraints(row, view);
     }
 
     for (const table of TABLES) {
@@ -461,6 +544,11 @@ function createCommitmentStore(seed) {
       for (const [key, value] of Object.entries(data || {})) {
         if (value !== null && typeof value === "object" && !(value instanceof Date) && "increment" in value) {
           next[key] = (existing[key] || 0) + value.increment;
+        } else if (value !== null && typeof value === "object" && !(value instanceof Date) && "decrement" in value) {
+          // PHASE 13 — the membership handoff moves an `agentCount` off one shard and onto
+          // another in one transaction, so the store must model both directions or the
+          // decrement would silently write an object into the column.
+          next[key] = (existing[key] || 0) - value.decrement;
         } else {
           next[key] = value;
         }
@@ -499,6 +587,16 @@ function createCommitmentStore(seed) {
           orderBy,
         );
         return typeof take === "number" ? matched.slice(0, take) : matched;
+      },
+      // PHASE 13 — `membership.currentMembership()` reads the newest un-superseded row,
+      // which is `findFirst` with an ordering rather than `findUnique`: the partial unique
+      // index makes at most one *current*, and the history holds the rest.
+      async findFirst({ where, orderBy } = {}) {
+        const matched = applyOrdering(
+          rows(table).filter((row) => matches(row, where)),
+          orderBy,
+        );
+        return matched.length > 0 ? matched[0] : null;
       },
       async count({ where } = {}) {
         return rows(table).filter((row) => matches(row, where)).length;
@@ -599,6 +697,7 @@ function createCommitmentStore(seed) {
   for (const table of TABLES) {
     client[table] = {
       findUnique: ({ where }) => transaction((tx) => tx[table].findUnique({ where })),
+      findFirst: (args) => transaction((tx) => tx[table].findFirst(args || {})),
       findMany: (args) => transaction((tx) => tx[table].findMany(args || {})),
       count: (args) => transaction((tx) => tx[table].count(args || {})),
       create: ({ data }) => transaction((tx) => tx[table].create({ data })),

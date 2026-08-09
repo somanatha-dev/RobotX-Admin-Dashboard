@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import { animate } from 'framer-motion';
 
-import { socket } from '@/lib/socket.js';
+import { socket, DASHBOARD_EVENTS } from '@/lib/socket.js';
 import {
   createRobotMarkerElement,
   updateMarkerInfo,
@@ -698,11 +698,16 @@ export function useRobotStream({
       }
     };
 
-    socket.on('TASK_ASSIGNED', onAssigned);
-    socket.on('TASK_UPDATED', onTaskUpdated);
+    // PHASE 15 — `TASK_ASSIGNED` (capitals) still carries a drawable route and is
+    // still the right event for this hook: it fires after a real decision, when
+    // there is a path to render. The lower-case `task_assigned` echo carries a
+    // PENDING task with a null robot and nothing to draw, which is why the map does
+    // not subscribe to it. Both names are catalogued in `lib/socket.js`.
+    socket.on(DASHBOARD_EVENTS.TASK_ASSIGNED, onAssigned);
+    socket.on(DASHBOARD_EVENTS.TASK_UPDATED, onTaskUpdated);
     return () => {
-      socket.off('TASK_ASSIGNED', onAssigned);
-      socket.off('TASK_UPDATED', onTaskUpdated);
+      socket.off(DASHBOARD_EVENTS.TASK_ASSIGNED, onAssigned);
+      socket.off(DASHBOARD_EVENTS.TASK_UPDATED, onTaskUpdated);
     };
   }, [upsertRoutes, removeRouteForRobot, mapRef, taskPathCacheRef]);
 

@@ -2,97 +2,2456 @@
   "source": "NEXT_GENERATION_ASSIGNMENT_ENGINE.md — parameters the specification's text names or requires, which Appendix A's table does not tabulate",
   "note": "Appendix A opens \"Not exhaustive; it establishes the required form. **Every** behavioural constant in the implementation MUST appear in a register entry of this shape.\" Each entry here is required by a named §22.1 rule-5 publish-time validation or by a stated derivation, and cites the section that requires it. None of them is a new mechanism; each is an input a frozen rule already reads.",
   "parameters": [
-    { "name": "plan.max_admissible_mission_duration", "type": "integer", "unit": "s", "default": 600, "range": { "min": 1, "max": 86400 },
-      "specScope": "region", "scopes": ["global", "region"], "changeClass": "STRUCTURAL", "owner": "Ops", "blastRadius": "region",
-      "calibrationStatus": "PROVISIONAL", "awaits": "the region's measured mission-duration distribution", "section": "§22.1 rule 5, §8.3",
+    {
+      "name": "plan.max_admissible_mission_duration",
+      "type": "integer",
+      "unit": "s",
+      "default": 600,
+      "range": {
+        "min": 1,
+        "max": 86400
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "Ops",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the region's measured mission-duration distribution",
+      "section": "§22.1 rule 5, §8.3",
       "requiredBy": "publish-time validation V1 (opportunity value horizon)",
-      "description": "The region's maximum admissible mission duration. Read by V1: cost.opportunity.value_horizon must exceed plan.commitment_horizon + this. The seeded 600 s is the largest value consistent with the specification's own defaults for the other two (1800 > 900 + 600); it is a placeholder for a measured figure, not a service limit." },
-    { "name": "observability.input_snapshot_retention", "type": "integer", "unit": "days", "default": 30, "range": { "min": 1, "max": 730 },
-      "specScope": "global", "scopes": ["global"], "changeClass": "POLICY", "owner": "Eng", "blastRadius": "fleet-wide",
-      "calibrationStatus": "PROVISIONAL", "awaits": "storage cost model for pinned round snapshots", "section": "§22.1 rule 5, §21.2",
+      "description": "The region's maximum admissible mission duration. Read by V1: cost.opportunity.value_horizon must exceed plan.commitment_horizon + this. The seeded 600 s is the largest value consistent with the specification's own defaults for the other two (1800 > 900 + 600); it is a placeholder for a measured figure, not a service limit."
+    },
+    {
+      "name": "observability.input_snapshot_retention",
+      "type": "integer",
+      "unit": "days",
+      "default": 30,
+      "range": {
+        "min": 1,
+        "max": 730
+      },
+      "specScope": "global",
+      "scopes": [
+        "global"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Eng",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "storage cost model for pinned round snapshots",
+      "section": "§22.1 rule 5, §21.2",
       "requiredBy": "publish-time validation V6 (snapshot retention)",
-      "description": "How long the pinned round input snapshots are retained. Must be at least observability.full_retention, else a retained Tier A record becomes unreplayable and its explanation unreconstructable." },
-    { "name": "fleet.agent_count", "type": "integer", "unit": "count", "default": 5000, "range": { "min": 1, "max": 1000000 },
-      "specScope": "fleet", "scopes": ["global"], "changeClass": "STRUCTURAL", "owner": "Ops", "blastRadius": "fleet-wide",
-      "calibrationStatus": "PROVISIONAL", "awaits": "the actual commissioned fleet size; re-derives α[tier] automatically when it changes", "section": "§14.5",
+      "description": "How long the pinned round input snapshots are retained. Must be at least observability.full_retention, else a retained Tier A record becomes unreplayable and its explanation unreconstructable."
+    },
+    {
+      "name": "fleet.agent_count",
+      "type": "integer",
+      "unit": "count",
+      "default": 5000,
+      "range": {
+        "min": 1,
+        "max": 1000000
+      },
+      "specScope": "fleet",
+      "scopes": [
+        "global"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "Ops",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the actual commissioned fleet size; re-derives α[tier] automatically when it changes",
+      "section": "§14.5",
       "requiredBy": "derivation of energy.shortfall_probability",
-      "description": "N_agents in α[tier] = budget[tier] / (N_agents · missions_per_agent_year). Present so the safety target automatically re-derives when the fleet grows — a target adequate at 500 agents is not adequate at 5 000, and nothing about a hand-set α would have surfaced that." },
-    { "name": "fleet.missions_per_agent_year", "type": "integer", "unit": "missions·agent⁻¹·yr⁻¹", "default": 7300, "range": { "min": 1, "max": 1000000 },
-      "specScope": "fleet", "scopes": ["global"], "changeClass": "STRUCTURAL", "owner": "Ops", "blastRadius": "fleet-wide",
-      "calibrationStatus": "PROVISIONAL", "awaits": "measured mission throughput per agent", "section": "§14.5",
+      "description": "N_agents in α[tier] = budget[tier] / (N_agents · missions_per_agent_year). Present so the safety target automatically re-derives when the fleet grows — a target adequate at 500 agents is not adequate at 5 000, and nothing about a hand-set α would have surfaced that."
+    },
+    {
+      "name": "fleet.missions_per_agent_year",
+      "type": "integer",
+      "unit": "missions·agent⁻¹·yr⁻¹",
+      "default": 7300,
+      "range": {
+        "min": 1,
+        "max": 1000000
+      },
+      "specScope": "fleet",
+      "scopes": [
+        "global"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "Ops",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured mission throughput per agent",
+      "section": "§14.5",
       "requiredBy": "derivation of energy.shortfall_probability",
-      "description": "r_missions_per_agent_year. The §14.5 worked example is r_d = 20 missions per agent per day, i.e. 7 300 per year, which composes with the seeded budgets to exactly the α targets the specification states (1e-2, 1e-5, ≈1.1e-7)." },
-    { "name": "shard.max_agents", "type": "integer", "unit": "count", "default": 20000, "range": { "min": 1, "max": 1000000 },
-      "specScope": "shard", "scopes": ["global", "region"], "changeClass": "STRUCTURAL", "owner": "SRE", "blastRadius": "shard",
-      "calibrationStatus": "PROVISIONAL", "awaits": "the region's measured mission rate", "section": "§3.5",
+      "description": "r_missions_per_agent_year. The §14.5 worked example is r_d = 20 missions per agent per day, i.e. 7 300 per year, which composes with the seeded budgets to exactly the α targets the specification states (1e-2, 1e-5, ≈1.1e-7)."
+    },
+    {
+      "name": "shard.max_agents",
+      "type": "integer",
+      "unit": "count",
+      "default": 20000,
+      "range": {
+        "min": 1,
+        "max": 1000000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the region's measured mission rate",
+      "section": "§3.5",
       "requiredBy": "publish-time validation V4 (shard sizing inequality)",
-      "description": "N_agents in the §3.5 bound-2 inequality N · r · k_txn · t_txn ≤ ρ_max · 3600. The Config Service rejects a shard definition that violates it at publish time." },
-    { "name": "shard.mission_rate_per_agent_hour", "type": "number", "unit": "missions·agent⁻¹·h⁻¹", "default": 4, "range": { "min": 0, "exclusiveMin": true, "max": 1000 },
-      "specScope": "shard", "scopes": ["global", "region"], "changeClass": "STRUCTURAL", "owner": "SRE", "blastRadius": "shard",
-      "calibrationStatus": "PROVISIONAL", "awaits": "the region's measured mission rate", "section": "§3.5",
+      "description": "N_agents in the §3.5 bound-2 inequality N · r · k_txn · t_txn ≤ ρ_max · 3600. The Config Service rejects a shard definition that violates it at publish time."
+    },
+    {
+      "name": "shard.mission_rate_per_agent_hour",
+      "type": "number",
+      "unit": "missions·agent⁻¹·h⁻¹",
+      "default": 4,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 1000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the region's measured mission rate",
+      "section": "§3.5",
       "requiredBy": "publish-time validation V4 (shard sizing inequality)",
-      "description": "r in the §3.5 bound-2 inequality. The bound is inversely proportional to it: a dense urban shard at r = 20 admits roughly 4 400 agents, not 20 000, so shard size is configured per region against that region's measured r." },
-    { "name": "shard.txn_per_mission_lifecycle", "type": "number", "unit": "count", "default": 2.05, "range": { "min": 1, "max": 20 },
-      "specScope": "global", "scopes": ["global"], "changeClass": "STRUCTURAL", "owner": "Eng", "blastRadius": "fleet-wide",
-      "calibrationStatus": "DERIVED", "section": "§3.5",
+      "description": "r in the §3.5 bound-2 inequality. The bound is inversely proportional to it: a dense urban shard at r = 20 admits roughly 4 400 agents, not 20 000, so shard size is configured per region against that region's measured r."
+    },
+    {
+      "name": "shard.txn_per_mission_lifecycle",
+      "type": "number",
+      "unit": "count",
+      "default": 2.05,
+      "range": {
+        "min": 1,
+        "max": 20
+      },
+      "specScope": "global",
+      "scopes": [
+        "global"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "Eng",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "DERIVED",
+      "section": "§3.5",
       "requiredBy": "publish-time validation V4 (shard sizing inequality)",
-      "description": "k_txn — one commit, one settlement release, and a measured ≈0.05 reassignment or recovery transactions per mission. SOFT reservations contribute zero because they are never written, which is why the bound is satisfiable at all." },
-    { "name": "shard.commit_txn_service_time", "type": "number", "unit": "ms", "default": 5, "range": { "min": 0, "exclusiveMin": true, "max": 1000 },
-      "specScope": "shard", "scopes": ["global", "region"], "changeClass": "STRUCTURAL", "owner": "SRE", "blastRadius": "shard",
-      "calibrationStatus": "PROVISIONAL", "awaits": "measured commit-transaction service time against the target Postgres", "section": "§3.5, §20.1",
+      "description": "k_txn — one commit, one settlement release, and a measured ≈0.05 reassignment or recovery transactions per mission. SOFT reservations contribute zero because they are never written, which is why the bound is satisfiable at all."
+    },
+    {
+      "name": "shard.commit_txn_service_time",
+      "type": "number",
+      "unit": "ms",
+      "default": 5,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 1000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured commit-transaction service time against the target Postgres",
+      "section": "§3.5, §20.1",
       "requiredBy": "publish-time validation V4 (shard sizing inequality)",
-      "description": "t_txn — mean commit-transaction service time. Measured, not chosen; its p99 is separately bounded at 20 ms by §20.1." },
-    { "name": "config.cache_ttl", "type": "integer", "unit": "s", "default": 3600, "range": { "min": 1, "max": 86400 },
-      "specScope": "global", "scopes": ["global"], "changeClass": "TUNED", "owner": "SRE", "blastRadius": "fleet-wide",
-      "calibrationStatus": "DERIVED", "section": "§3.3",
+      "description": "t_txn — mean commit-transaction service time. Measured, not chosen; its p99 is separately bounded at 20 ms by §20.1."
+    },
+    {
+      "name": "config.cache_ttl",
+      "type": "integer",
+      "unit": "s",
+      "default": 3600,
+      "range": {
+        "min": 1,
+        "max": 86400
+      },
+      "specScope": "global",
+      "scopes": [
+        "global"
+      ],
+      "changeClass": "TUNED",
+      "owner": "SRE",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "DERIVED",
+      "section": "§3.3",
       "requiredBy": "the Config Service's own materialised-version cache",
-      "description": "TTL of the materialised resolved set mirrored at `config:v:{version}`. Config is cache-read but DB-authoritative: the cache holds no correctness-critical sole copy, so expiry costs a database read and nothing else (§3.3). Registered rather than hard-coded because it is the Config Service's own behavioural constant and the register admits no exceptions." },
-    { "name": "energy.f_derate", "type": "number", "unit": "ratio", "default": 1.0, "range": { "min": 1.0, "max": 2.0 },
-      "specScope": "agent_class", "scopes": ["global", "agent_class"], "changeClass": "SAFETY", "owner": "Safety", "blastRadius": "agent_class",
-      "calibrationStatus": "UNCALIBRATED", "awaits": "vendor-curve validation against measured pack behaviour", "section": "§14.3",
-      "conservatism": { "compensates": "vendor-curve optimism in usable-capacity estimates", "activeInNominal": true, "activeInDegraded": true },
-      "description": "The configured conservatism factor on the vendor capacity curve in E_usable. Seeded at 1.0 — no derating beyond the vendor curve — because a fabricated factor is less honest than none, and because it enters the combined-conservatism product that §14.3 caps." },
-    { "name": "energy.combined_nominal_conservatism", "type": "number", "unit": "ratio", "default": null, "range": { "min": 1.0 },
-      "specScope": "agent_class", "scopes": ["global", "agent_class"], "changeClass": "DERIVED", "owner": "Config Service", "blastRadius": "agent_class",
-      "calibrationStatus": "DERIVED", "section": "§14.3",
-      "derivation": { "formula": "∏ of every energy-domain conservatism factor with conservatism.activeInNominal = true",
-        "inputs": ["energy.f_derate", "energy.charger_availability_margin", "energy.uncalibrated_reserve_factor"] },
-      "description": "The combined nominal energy conservatism, computed and published by the Config Service so that layered fudge factors cannot compound invisibly. Capped at publish by energy.max_combined_conservatism." },
-    { "name": "energy.combined_degraded_conservatism", "type": "number", "unit": "ratio", "default": null, "range": { "min": 1.0 },
-      "specScope": "agent_class", "scopes": ["global", "agent_class"], "changeClass": "DERIVED", "owner": "Config Service", "blastRadius": "agent_class",
-      "calibrationStatus": "DERIVED", "section": "§14.3",
-      "derivation": { "formula": "combined nominal × ∏ of every energy-domain degradation multiplier a mode can activate",
-        "inputs": ["energy.combined_nominal_conservatism", "route.degraded_reserve_factor"] },
-      "description": "The combined degraded energy conservatism. Also capped at publish by energy.max_combined_conservatism — the two products are validated together." },
-
-    { "name": "intake.validation_budget", "type": "integer", "unit": "s", "default": 30, "range": { "min": 1, "max": 3600 },
-      "specScope": "global", "scopes": ["global", "tenant", "sla_class"], "changeClass": "POLICY", "owner": "Ops", "blastRadius": "fleet-wide",
-      "calibrationStatus": "PROVISIONAL", "awaits": "measured intake validation latency", "section": "§4.2",
+      "description": "TTL of the materialised resolved set mirrored at `config:v:{version}`. Config is cache-read but DB-authoritative: the cache holds no correctness-critical sole copy, so expiry costs a database read and nothing else (§3.3). Registered rather than hard-coded because it is the Config Service's own behavioural constant and the register admits no exceptions."
+    },
+    {
+      "name": "energy.f_derate",
+      "type": "number",
+      "unit": "ratio",
+      "default": 1.0,
+      "range": {
+        "min": 1.0,
+        "max": 2.0
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "agent_class"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Safety",
+      "blastRadius": "agent_class",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "vendor-curve validation against measured pack behaviour",
+      "section": "§14.3",
+      "conservatism": {
+        "compensates": "vendor-curve optimism in usable-capacity estimates",
+        "activeInNominal": true,
+        "activeInDegraded": true
+      },
+      "description": "The configured conservatism factor on the vendor capacity curve in E_usable. Seeded at 1.0 — no derating beyond the vendor curve — because a fabricated factor is less honest than none, and because it enters the combined-conservatism product that §14.3 caps."
+    },
+    {
+      "name": "energy.combined_nominal_conservatism",
+      "type": "number",
+      "unit": "ratio",
+      "default": null,
+      "range": {
+        "min": 1.0
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "agent_class"
+      ],
+      "changeClass": "DERIVED",
+      "owner": "Config Service",
+      "blastRadius": "agent_class",
+      "calibrationStatus": "DERIVED",
+      "section": "§14.3",
+      "derivation": {
+        "formula": "∏ of every energy-domain conservatism factor with conservatism.activeInNominal = true",
+        "inputs": [
+          "energy.f_derate",
+          "energy.charger_availability_margin",
+          "energy.uncalibrated_reserve_factor"
+        ]
+      },
+      "description": "The combined nominal energy conservatism, computed and published by the Config Service so that layered fudge factors cannot compound invisibly. Capped at publish by energy.max_combined_conservatism."
+    },
+    {
+      "name": "energy.combined_degraded_conservatism",
+      "type": "number",
+      "unit": "ratio",
+      "default": null,
+      "range": {
+        "min": 1.0
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "agent_class"
+      ],
+      "changeClass": "DERIVED",
+      "owner": "Config Service",
+      "blastRadius": "agent_class",
+      "calibrationStatus": "DERIVED",
+      "section": "§14.3",
+      "derivation": {
+        "formula": "combined nominal × ∏ of every energy-domain degradation multiplier a mode can activate",
+        "inputs": [
+          "energy.combined_nominal_conservatism",
+          "route.degraded_reserve_factor"
+        ]
+      },
+      "description": "The combined degraded energy conservatism. Also capped at publish by energy.max_combined_conservatism — the two products are validated together."
+    },
+    {
+      "name": "intake.validation_budget",
+      "type": "integer",
+      "unit": "s",
+      "default": 30,
+      "range": {
+        "min": 1,
+        "max": 3600
+      },
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "tenant",
+        "sla_class"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured intake validation latency",
+      "section": "§4.2",
       "requiredBy": "the §4.5 durable timer registered on Task state RECEIVED",
-      "description": "The exit deadline of Task state RECEIVED — how long a Task may sit accepted-but-not-yet-validated. §4.2 names it; Appendix A does not tabulate it. §4.5 makes every §4.2 deadline a registered timer, so a state whose deadline has no parameter is a state whose timer cannot be registered." },
-
-    { "name": "sla.assignment_deadline", "type": "integer", "unit": "s", "default": 900, "range": { "min": 30, "max": 86400 },
-      "specScope": "sla_class", "scopes": ["global", "sla_class", "mission_class", "tenant"], "changeClass": "CONTRACTUAL", "owner": "Product", "blastRadius": "sla_class",
-      "calibrationStatus": "PROVISIONAL", "awaits": "the contracted assignment targets per SLA class", "section": "§4.2, §4.3",
+      "description": "The exit deadline of Task state RECEIVED — how long a Task may sit accepted-but-not-yet-validated. §4.2 names it; Appendix A does not tabulate it. §4.5 makes every §4.2 deadline a registered timer, so a state whose deadline has no parameter is a state whose timer cannot be registered."
+    },
+    {
+      "name": "sla.assignment_deadline",
+      "type": "integer",
+      "unit": "s",
+      "default": 900,
+      "range": {
+        "min": 30,
+        "max": 86400
+      },
+      "specScope": "sla_class",
+      "scopes": [
+        "global",
+        "sla_class",
+        "mission_class",
+        "tenant"
+      ],
+      "changeClass": "CONTRACTUAL",
+      "owner": "Product",
+      "blastRadius": "sla_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the contracted assignment targets per SLA class",
+      "section": "§4.2, §4.3",
       "requiredBy": "the §4.5 timers on Task state WAITING and Leg state QUEUED",
-      "description": "How long work may remain unassigned before the §17.4 anti-starvation ladder is invoked. It is the exit deadline of both Task WAITING and Leg QUEUED, which is why one parameter carries both — a Task is waiting exactly while one of its Legs is queued, and two independently tunable deadlines for one fact would be two answers to one question. CONTRACTUAL because it is the customer-visible promise, not an operational tuning knob." },
-
-    { "name": "stop.service_time_limit", "type": "integer", "unit": "s", "default": 600, "range": { "min": 30, "max": 7200 },
-      "specScope": "site", "scopes": ["global", "site", "mission_class"], "changeClass": "POLICY", "owner": "Ops", "blastRadius": "site",
-      "calibrationStatus": "PROVISIONAL", "awaits": "the site's learned service-time distribution (§13.2)", "section": "§4.3",
+      "description": "How long work may remain unassigned before the §17.4 anti-starvation ladder is invoked. It is the exit deadline of both Task WAITING and Leg QUEUED, which is why one parameter carries both — a Task is waiting exactly while one of its Legs is queued, and two independently tunable deadlines for one fact would be two answers to one question. CONTRACTUAL because it is the customer-visible promise, not an operational tuning knob."
+    },
+    {
+      "name": "stop.service_time_limit",
+      "type": "integer",
+      "unit": "s",
+      "default": 600,
+      "range": {
+        "min": 30,
+        "max": 7200
+      },
+      "specScope": "site",
+      "scopes": [
+        "global",
+        "site",
+        "mission_class"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "site",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the site's learned service-time distribution (§13.2)",
+      "section": "§4.3",
       "requiredBy": "the §4.5 timers on Leg states AT_PICKUP and AT_DROP",
-      "description": "How long an agent may be servicing a Stop before an operator alert. Scoped to the site because §3.6 makes the site the place service behaviour is learned; §13.2's learned model is what a calibrated value will come from, and until then this is a ceiling rather than an expectation." },
-
-    { "name": "recover.abort_budget", "type": "integer", "unit": "s", "default": 300, "range": { "min": 30, "max": 3600 },
-      "specScope": "mission_class", "scopes": ["global", "mission_class"], "changeClass": "POLICY", "owner": "Ops", "blastRadius": "mission_class",
-      "calibrationStatus": "PROVISIONAL", "awaits": "observed abort-to-safe-stop durations", "section": "§4.3, §4.6",
+      "description": "How long an agent may be servicing a Stop before an operator alert. Scoped to the site because §3.6 makes the site the place service behaviour is learned; §13.2's learned model is what a calibrated value will come from, and until then this is a ceiling rather than an expectation."
+    },
+    {
+      "name": "recover.abort_budget",
+      "type": "integer",
+      "unit": "s",
+      "default": 300,
+      "range": {
+        "min": 30,
+        "max": 3600
+      },
+      "specScope": "mission_class",
+      "scopes": [
+        "global",
+        "mission_class"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "mission_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "observed abort-to-safe-stop durations",
+      "section": "§4.3, §4.6",
       "requiredBy": "the §4.5 timer on Leg state ABORTING",
-      "description": "How long recovery may run before the Leg is forced to the applicable STRANDED_* state. The expiry action is deliberately not 'try harder': §4.3 forces the state, because an abort that has not completed within its budget is a physical situation, and representing it honestly with an operations SLA attached is what §4.3 argues for." },
-
-    { "name": "recover.reassign_budget", "type": "integer", "unit": "s", "default": 300, "range": { "min": 30, "max": 3600 },
-      "specScope": "mission_class", "scopes": ["global", "mission_class"], "changeClass": "POLICY", "owner": "Ops", "blastRadius": "mission_class",
-      "calibrationStatus": "PROVISIONAL", "awaits": "observed reassignment round-trip durations", "section": "§4.3, §4.7",
+      "description": "How long recovery may run before the Leg is forced to the applicable STRANDED_* state. The expiry action is deliberately not 'try harder': §4.3 forces the state, because an abort that has not completed within its budget is a physical situation, and representing it honestly with an operations SLA attached is what §4.3 argues for."
+    },
+    {
+      "name": "recover.reassign_budget",
+      "type": "integer",
+      "unit": "s",
+      "default": 300,
+      "range": {
+        "min": 30,
+        "max": 3600
+      },
+      "specScope": "mission_class",
+      "scopes": [
+        "global",
+        "mission_class"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "mission_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "observed reassignment round-trip durations",
+      "section": "§4.3, §4.7",
       "requiredBy": "the §4.5 timer on Leg state REASSIGNING",
-      "description": "How long a Leg may sit in REASSIGNING before escalation. Distinct from recover.max_reassignments_per_leg, which bounds the *number* of reassignments: this bounds how long one of them may take, and a chain that is short but stalled is the case the count alone would miss." }
+      "description": "How long a Leg may sit in REASSIGNING before escalation. Distinct from recover.max_reassignments_per_leg, which bounds the *number* of reassignments: this bounds how long one of them may take, and a chain that is short but stalled is the case the count alone would miss."
+    },
+    {
+      "name": "churn.notification_cost",
+      "type": "number",
+      "unit": "CU",
+      "default": null,
+      "range": {
+        "min": 0
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Fleet Ops",
+      "blastRadius": "region",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "the measured cost of notifying an agent, an operator, and a customer that a plan changed; churn pricing is Tier 2 and ships disabled",
+      "section": "§8.9",
+      "requiredBy": "the fourth addend of C_churn(c)",
+      "description": "Fixed cost of the notifications a revision triggers. Named by §8.9's formula and absent from §8.10's table, for the same reason as churn.wasted_travel_cost. Distinct from churn.base_cost: the base cost prices plan instability, this prices the messages the revision sends outward, and an operation that suppresses customer notifications has one of the two and not the other."
+    },
+    {
+      "name": "churn.wasted_travel_cost",
+      "type": "number",
+      "unit": "CU·m⁻¹",
+      "default": null,
+      "range": {
+        "min": 0
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Fleet Ops",
+      "blastRadius": "region",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "the measured cost of travel already performed against a displaced commitment; churn pricing is Tier 2 and ships disabled",
+      "section": "§8.9",
+      "requiredBy": "the third addend of C_churn(c)",
+      "description": "Price of distance already travelled against the reservation a column displaces. §8.9's formula names it — churn.wasted_travel_cost · distance_already_travelled — and §8.10's table registers only churn.base_cost and churn.per_second_elapsed, so this entry supplies the missing register row rather than letting the term be a bare constant. It is the addend that distinguishes revising a SOFT reservation (distance zero, cheap) from revising a HARD commitment (distance non-zero, expensive), which is the shape §8.9 asks for."
+    },
+    {
+      "name": "cost.opportunity.price_snapshot_max_age",
+      "type": "integer",
+      "unit": "s",
+      "default": 300,
+      "range": {
+        "min": 1,
+        "max": 86400
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Capacity Pricing",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the Capacity Pricing Service's publication interval (blocking decision B-new: the service does not exist)",
+      "section": "§5.2, §8.3.1",
+      "requiredBy": "the degradation from a published λ_zone surface to cost.opportunity.lambda_zone_prior",
+      "description": "Age beyond which a published price snapshot is refused and the opportunity term falls back to its configured priors with a recorded degradation flag. §5.2 gives Capacity Pricing a soft timeout and names the fallback — static per-zone lambda_zone_prior from config, with Ω_terminal recomputed from those static prices so the bound stays admissible — but states no staleness bound, and an unbounded one would let a round price against a surface from a different demand regime while reporting no degradation at all. The same discipline energy.charger_projection_max_age applies to the charger projection."
+    },
+    {
+      "name": "defer.wasted_round_penalty",
+      "type": "number",
+      "unit": "CU",
+      "default": null,
+      "range": {
+        "min": 0
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region",
+        "sla_class"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Fleet Ops",
+      "blastRadius": "region",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "the measured cost of a round spent without an assignment being made; deferral is Tier 2 and ships disabled",
+      "section": "§8.8",
+      "requiredBy": "the second addend of C_defer[l]",
+      "description": "penalty_for_wasted_round — the cost charged when a deferral turns out not to have improved anything, weighted by p_no_better. §8.8 names the quantity in its formula and §8.10 does not tabulate it, so it is registered here. It is the term that stops deferral from being free: without it a round could defer at zero modelled cost and §8.8's bounds (assign.max_deferral_time, assign.max_consecutive_deferrals) would be doing all the work alone."
+    },
+    {
+      "name": "degraded.max_mission_scope",
+      "type": "enum",
+      "unit": "scope",
+      "default": "LOCAL",
+      "range": null,
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Safety",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "an operations decision on which mission scopes remain acceptable under degraded observability",
+      "section": "§7.4 step 3(b)",
+      "description": "The widest mission scope a new commitment may take while the shard is in Restricted Operation. §7.4 step 3(b) restricts new commitments to missions within it. Ships at the narrowest value, because a degraded mode that permits the same work as normal operation is not a restriction."
+    },
+    {
+      "name": "degraded.reserve_factor",
+      "type": "number",
+      "unit": "ratio",
+      "default": 1,
+      "range": {
+        "min": 1,
+        "max": 3
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Safety",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "observed consumption error during a real telemetry degradation",
+      "section": "§7.4 step 3(c)",
+      "description": "Multiplier applied to every energy reserve layer while the shard is in Restricted Operation. §7.4 step 3(c) names it. Bounded below at 1: a factor under 1 would shrink reserves, which is a relaxation wearing a tightening name, and systemicGuard.assertRelaxesNothing() refuses it. Seeded at 1.0 — no additional derating — for the same reason energy.f_derate is: it enters the combined-conservatism product §14.3 caps, and at the seeded route.degraded_reserve_factor the cap leaves almost no headroom. Raising it is an explicit Safety-class decision that must also raise energy.max_combined_conservatism, which is where a deliberate choice to be very conservative belongs — stated once, rather than assembled by accident (validator V9)."
+    },
+    {
+      "name": "energy.charge_curve_integration_steps",
+      "type": "integer",
+      "unit": "steps",
+      "default": 64,
+      "range": {
+        "min": 8,
+        "max": 1024
+      },
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "agent_class"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Eng",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured integration error against vendor charge-curve fixtures",
+      "section": "§14.6",
+      "requiredBy": "t_charge(SoC₀ → SoC₁) integrated from the nonlinear P_charge(SoC, T, charger_class)",
+      "description": "Number of equal SoC sub-intervals the charge-duration integral is evaluated over. §14.6 requires the engine to integrate a per-model charge-power curve rather than assume a linear rate, and a numerical integral needs a stated step count. It is a register entry rather than a code constant because it is the one place accuracy is traded against round time, and because a fixed step count is what makes t_charge bit-identical on replay (§9.6)."
+    },
+    {
+      "name": "energy.kappa_bounds",
+      "type": "map",
+      "unit": "ratio",
+      "default": {
+        "min": 0.5,
+        "max": 2
+      },
+      "range": {
+        "min": 0.1,
+        "max": 5
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "agent_class"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Safety",
+      "blastRadius": "agent_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the realised κ distribution across a commissioned fleet",
+      "section": "§14.2",
+      "description": "Clamp on the per-agent efficiency multiplier. Safety-class because κ multiplies the whole consumption estimate: a κ driven below 1 by a run of downhill missions would under-predict every subsequent mission's energy, and F34 would admit pairings the pack cannot serve. §14.2 also reads a drifting κ as an early maintenance indicator, so the clamp is a bound on the estimate and never a substitute for acting on the drift."
+    },
+    {
+      "name": "energy.kappa_ewma_alpha",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.2,
+      "range": {
+        "min": 0,
+        "max": 1,
+        "exclusiveMin": true
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "agent_class"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Eng",
+      "blastRadius": "agent_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the observed settlement rate per agent and the measured κ drift timescale",
+      "section": "§14.2",
+      "requiredBy": "the κ(a) EWMA updater run at settlement",
+      "description": "Weight given to the newest realised-versus-predicted ratio when updating κ(a). §14.2 makes κ the mechanism that keeps the consumption model self-correcting — \"an agent that consistently consumes 12 % more than predicted has κ = 1.12 within a few missions\" — and this is the only free parameter in that update. Registered rather than hard-coded because it sets how fast a genuine drift is absorbed against how much a single anomalous mission moves the estimate, which is a calibration decision and not an implementation detail."
+    },
+    {
+      "name": "energy.model_residual_cv",
+      "type": "number",
+      "unit": "ratio",
+      "default": null,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "agent_class",
+        "mission_class"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Safety",
+      "blastRadius": "agent_class",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "the fitted residual variance of the §14.2 consumption model against realised Wh",
+      "required": true,
+      "section": "§14.5",
+      "requiredBy": "the predictive distribution of E_mission that F34's three conditions are evaluated on",
+      "description": "Coefficient of variation of the consumption model's residual, before the §14.5 inflations for route novelty, forecast horizon, and weather. Seeded null, not with a plausible number: §14.5 evaluates all three tier conditions on this distribution, so a fabricated dispersion would produce three fabricated probabilities and F34 would admit or reject on them. Absent, the distribution is INDETERMINATE and class I denies, which is the honest state until the model has been fitted."
+    },
+    {
+      "name": "energy.operational_reserve_wh",
+      "type": "number",
+      "unit": "Wh",
+      "default": 0,
+      "range": {
+        "min": 0
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "region",
+        "agent_class",
+        "agent"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "agent_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the operating policy on how much following-mission capability an agent should retain",
+      "section": "§14.5",
+      "description": "E_operational — the fourth reserve layer of §14.5, and the only overridable one: \"Optional buffer to remain useful for a following mission. Efficiency, not safety.\" Seeded at zero so the shipped default asserts no efficiency buffer at all; raising it is a policy decision with a stated cost in refused pairings. It is additive with the other three layers and, like them, may never be traded against one of them — reserves.assertNoTrade() refuses a recomposition that funds one layer from another."
+    },
+    {
+      "name": "energy.variance_inflation",
+      "type": "map",
+      "unit": "ratio",
+      "default": {
+        "route_novelty": 1.25,
+        "forecast_horizon": 1.1,
+        "weather": 1.15
+      },
+      "range": {
+        "min": 1,
+        "max": 3
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region",
+        "mission_class"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Eng",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured residual dispersion split by route novelty, horizon, and weather state",
+      "section": "§14.5",
+      "description": "The three inflations §14.5 names on the predictive variance of E_mission: \"whose variance comes from the model's residual variance, inflated for route novelty, forecast horizon, and weather uncertainty\". These deliberately do **not** declare a `conservatism` block, and therefore do not enter §14.3's combined-conservatism product: that product is defined over factors that multiply the same quantity, a reserve in Wh, and these multiply a variance in Wh². Multiplying them into it would be a product across incommensurable quantities, which §14.3 states is not a meaningful number."
+    },
+    {
+      "name": "feasibility.negative_cache_ttl",
+      "type": "map",
+      "unit": "s",
+      "default": {
+        "AGENT": 300,
+        "CLASS": 60,
+        "NONE": 10
+      },
+      "range": {
+        "min": 1,
+        "max": 3600
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "OPERATIONAL",
+      "owner": "Eng",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured candidate-set churn and predicate re-evaluation cost",
+      "section": "§7.6",
+      "description": "Negative-cache TTL per §7.6 cache tier. §7.6 requires the TTL to be derived from the reason rather than set globally, because caching a rejection with the wrong TTL is a correctness hazard; the rejecting predicate is the machine-readable reason and its cache tier is that reason's volatility. Predicates in the §10.3.2 volatile subset are never negatively cached at any TTL."
+    },
+    {
+      "name": "health.required_tier",
+      "type": "map",
+      "unit": "tier",
+      "default": null,
+      "range": null,
+      "specScope": "sla_class",
+      "scopes": [
+        "global",
+        "region",
+        "sla_class"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Safety + Ops",
+      "blastRadius": "sla_class",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "an operations decision per SLA class; unset means F9 is INDETERMINATE and denies",
+      "section": "§7.5 F9",
+      "description": "The minimum health tier an agent must hold to carry a mission of this SLA class (§16.4). Seeded null rather than at a guessed floor: F9 denies on INDETERMINATE, so an unset class is conservative, whereas a fabricated floor would silently admit marginal agents onto critical work."
+    },
+    {
+      "name": "lifecycle.cu_per_actuator_cycle",
+      "type": "map",
+      "unit": "CU",
+      "default": null,
+      "range": {
+        "min": 0
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "agent_class"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Maintenance accounting",
+      "blastRadius": "agent_class",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "component replacement cost divided by rated cycle count, per actuator, per class",
+      "required": true,
+      "section": "§8.5",
+      "requiredBy": "actuator_cycle_cost(lifts, door cycles, latch cycles) — the third addend of C_lifecycle",
+      "description": "Amortised cost of one actuation. §8.5 names actuator_cycle_cost over lifts, door cycles, and latch cycles as an addend of C_lifecycle, and states the derivation for every coefficient in that term: replacement cost divided by rated life, an accounting figure a maintenance engineer can supply and defend, not a tuned weight. §8.10 tabulates only the battery coefficient of the five, so this entry supplies the actuator one. Keyed per actuator kind because a lift cycle and a latch cycle differ by orders of magnitude in both cost and rated life."
+    },
+    {
+      "name": "lifecycle.cu_per_braking_event",
+      "type": "number",
+      "unit": "CU",
+      "default": null,
+      "range": {
+        "min": 0
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "agent_class"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Maintenance accounting",
+      "blastRadius": "agent_class",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "pad and tyre replacement cost divided by rated braking events, per class",
+      "required": true,
+      "section": "§8.5",
+      "requiredBy": "tyre_and_brake_cost(braking events, gradient exposure) — its per-event half",
+      "description": "Amortised cost of one braking event. The event half of §8.5's tyre_and_brake_cost; lifecycle.cu_per_gradient_metre is the exposure half. Registered separately because the two are measured against different rated lives — pads wear per stop, tyres per metre under load — and a single blended figure could not be derived from either accounting record."
+    },
+    {
+      "name": "lifecycle.cu_per_gradient_metre",
+      "type": "number",
+      "unit": "CU·m⁻¹",
+      "default": null,
+      "range": {
+        "min": 0
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "agent_class"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Maintenance accounting",
+      "blastRadius": "agent_class",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "tyre and transmission replacement cost over rated distance under gradient, per class",
+      "required": true,
+      "section": "§8.5",
+      "requiredBy": "tyre_and_brake_cost(braking events, gradient exposure) — its exposure half",
+      "description": "Amortised cost per metre of gradient-exposed travel. Distinct from cost.wear.cu_per_metre, which prices ordinary distance: a metre climbed or descended under load consumes tyre, transmission, and brake life at a different rate from a metre on the flat, and §8.5 names gradient exposure as its own argument for exactly that reason."
+    },
+    {
+      "name": "lifecycle.cu_per_thermal_stress_second",
+      "type": "number",
+      "unit": "CU·s⁻¹",
+      "default": null,
+      "range": {
+        "min": 0
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "agent_class"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Maintenance accounting",
+      "blastRadius": "agent_class",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "measured life reduction per second of thermal stress at reference conditions, per class",
+      "required": true,
+      "section": "§8.5",
+      "requiredBy": "thermal_stress_cost(ambient, load) — the fifth addend of C_lifecycle",
+      "description": "Amortised cost of one second of operation at the reference thermal stress. The mission's actual stress enters as a measured multiplier over ambient and load, in the same shape §14.4 uses for battery stress curves, so the rate here is the reference-condition figure a maintenance record can state. Distinct from the battery's own thermal term, which §14.4 prices inside battery_cycle_cost: this one covers the drive, the electronics, and the enclosure."
+    },
+    {
+      "name": "link.min_quality",
+      "type": "map",
+      "unit": "ratio",
+      "default": null,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "region",
+        "zone",
+        "agent_class"
+      ],
+      "changeClass": "OPERATIONAL",
+      "owner": "Eng + Ops",
+      "blastRadius": "agent_class",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "measured link budgets per radio class and supervision mode",
+      "section": "§7.5 F15",
+      "description": "Minimum link quality for a mission requiring continuous supervision or teleoperation fallback. Not indexed for AUTONOMOUS: §7.5 F15 applies no link budget there, and the dead-zone clause gates it instead."
+    },
+    {
+      "name": "localisation.min_confidence",
+      "type": "map",
+      "unit": "ratio",
+      "default": null,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "zone",
+      "scopes": [
+        "global",
+        "region",
+        "zone",
+        "site"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Safety",
+      "blastRadius": "zone",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "per-environment localisation accuracy measurements",
+      "section": "§7.5 F10",
+      "description": "Minimum reported localisation confidence for the mission environment. F10 requires this and independent corroboration; the threshold alone never admits, because a failed localisation stack reports high confidence in a wrong pose."
+    },
+    {
+      "name": "payload.mass_discrepancy_tolerance_kg",
+      "type": "number",
+      "unit": "kg",
+      "default": 0.5,
+      "range": {
+        "min": 0,
+        "max": 10
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "agent_class"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Safety",
+      "blastRadius": "agent_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured on-board scale accuracy per container model",
+      "section": "§15.6",
+      "requiredBy": "manifest reconciliation at every custody event",
+      "description": "The band inside which an observed-versus-manifest mass delta is instrument error rather than a discrepancy event. §15.6: \"A mass delta inconsistent with the manifest is a discrepancy event, not a rounding error — it may mean a wrong item, a missing item, or tampering.\" Safety-class because widening it is how a lost-goods signal would be tuned away; it is a property of the scale, and the calibration owner is the only party entitled to set it."
+    },
+    {
+      "name": "payload.packing_cache_ttl",
+      "type": "integer",
+      "unit": "s",
+      "default": 3600,
+      "range": {
+        "min": 60,
+        "max": 86400
+      },
+      "specScope": "global",
+      "scopes": [
+        "global"
+      ],
+      "changeClass": "TUNED",
+      "owner": "SRE",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "observed repeat rate of identical consignment signatures",
+      "section": "§15.3",
+      "description": "TTL of §15.3's tier-4 memoised packing result, keyed by (container_config, item_multiset_signature). The key names every input the result depends on, so the TTL is a cache-size control rather than a correctness control: a container reconfiguration changes the key. The cache is non-authoritative — a miss costs a re-evaluation and nothing else (§3.3, invariant I16)."
+    },
+    {
+      "name": "payload.packing_node_budget",
+      "type": "integer",
+      "unit": "nodes",
+      "default": 5000,
+      "range": {
+        "min": 100,
+        "max": 1000000
+      },
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "mission_class",
+        "agent_class"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Eng",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured tier-3 resolution rate against the §20.1 per-candidate budget",
+      "section": "§15.3",
+      "requiredBy": "the tier-3 bounded branch-and-bound whose exhaustion is INDETERMINATE",
+      "description": "Node budget of §15.3's tier-3 bounded exact search. Exact 3D bin packing is NP-hard and cannot run unbounded for 200 candidates in a 250 ms budget, so the search is bounded and its exhaustion is an outcome: \"If tier 3 exhausts its budget without a result, the outcome is INDETERMINATE with policy DENY — the engine declines rather than dispatching a load it could not prove fits.\" Raising it buys resolved marginal cases at the cost of round time; it never converts a proven infeasibility into a feasibility."
+    },
+    {
+      "name": "plan.max_heuristic_insertions",
+      "type": "integer",
+      "unit": "positions",
+      "default": 32,
+      "range": {
+        "min": 1,
+        "max": 4096
+      },
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "region",
+        "agent_class"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Eng",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured insertion-enumeration cost at realised queue depths",
+      "section": "§13.3",
+      "requiredBy": "the bounded heuristic §13.3 requires once a sequence exceeds plan.max_exhaustive_stops",
+      "description": "Ceiling on the number of insertion positions evaluated when the agent's existing sequence is longer than plan.max_exhaustive_stops. §13.3 says insertion positions are enumerated exhaustively for short sequences and by bounded heuristic beyond, and names the first bound only; this is the second. Chaining is Tier 2 and ships disabled, so the parameter is inert until that kill switch is cleared."
+    },
+    {
+      "name": "plan.service_time_prior",
+      "type": "map",
+      "unit": "s",
+      "default": null,
+      "range": {
+        "min": 0
+      },
+      "specScope": "site",
+      "scopes": [
+        "global",
+        "region",
+        "site"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Fleet Ops",
+      "blastRadius": "site",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "the first fitted ServiceTimeModel cohorts; until then every stop prices against this prior and reports that it did",
+      "section": "§8.2, §13.2",
+      "requiredBy": "t_service_first and t_service_last when no fitted cohort covers the stop",
+      "description": "The configured prior §8.2 requires: service time is learned per (site, stop_type, mission_class, time_of_day) with a configured prior. It is the last rung of §13.2's shrinkage ladder and the value a brand-new site prices against on its first day. Registered per stop type because §13.2's own justification is that a lobby, a kerbside handover, and a warehouse dock differ by an order of magnitude, and a single global constant guarantees systematic ETA error at every one of them."
+    },
+    {
+      "name": "plan.service_time_prior_cv",
+      "type": "number",
+      "unit": "dimensionless",
+      "default": 0.5,
+      "range": {
+        "min": 0,
+        "max": 4
+      },
+      "specScope": "site",
+      "scopes": [
+        "global",
+        "region",
+        "site"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Fleet Ops",
+      "blastRadius": "site",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the observed dispersion of service times at the first instrumented sites",
+      "section": "§13.1, §13.2",
+      "requiredBy": "the per-stop uncertainty band when the service time comes from the prior rather than a fitted cohort",
+      "description": "Coefficient of variation of the service-time prior. §13.1 requires every projected stop time to carry an uncertainty band, so the prior needs a dispersion as well as a location — a prior with no spread would report a fitted-quality band around a guess, and p_late in §8.4 reads that band. Seeded at 0.5, deliberately wide: an unfitted cohort should widen the band, not narrow it."
+    },
+    {
+      "name": "plan.service_time_shrinkage_strength",
+      "type": "number",
+      "unit": "observations",
+      "default": 20,
+      "range": {
+        "min": 0
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Eng",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "cross-validated shrinkage strength against realised service times",
+      "section": "§13.2",
+      "requiredBy": "the hierarchical-shrinkage weight w = n / (n + strength) at each rung of the cohort ladder",
+      "description": "The pseudo-count governing §13.2's hierarchical shrinkage to broader cohorts when data is sparse. A cohort holding exactly `strength` observations is weighted half its own mean and half its parent's. It is a register entry rather than a code constant because it is the single knob trading responsiveness to a new site against noise from a thin one, and because a fixed value is what makes a fitted model reproducible."
+    },
+    {
+      "name": "reliability.max_intervention_rate",
+      "type": "map",
+      "unit": "per_mission",
+      "default": null,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "mission_class",
+      "scopes": [
+        "global",
+        "region",
+        "mission_class"
+      ],
+      "changeClass": "OPERATIONAL",
+      "owner": "Ops",
+      "blastRadius": "mission_class",
+      "calibrationStatus": "UNCALIBRATED",
+      "awaits": "observed intervention-rate distribution per cohort (§16.4)",
+      "section": "§7.5 F11",
+      "description": "The acceptable bound on an agent's recent intervention rate for this mission class. F11 declares ADMIT_WITH_PENALTY on indeterminate and stands in the cohort prior, so an agent with no history of its own is not grounded for lacking history it can only accumulate by working."
+    },
+    {
+      "name": "route.cell_pair_cache_ttl",
+      "type": "integer",
+      "unit": "s",
+      "default": 900,
+      "range": {
+        "min": 1,
+        "max": 86400
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Eng",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the realised rate at which cell-pair travel times move within a time bucket",
+      "section": "§20.3 item 2",
+      "requiredBy": "the (origin_cell, destination_cell, mobility_profile, time_bucket) travel-time cache",
+      "description": "Lifetime of a cell-pair travel-time entry. The key already carries the time bucket, so the TTL bounds staleness within a bucket — congestion moving faster than the bucket boundary — rather than across buckets. Distinct from the charger-reachability cache, whose key carries a projection version and whose lifetime is therefore purely storage reclamation."
+    },
+    {
+      "name": "route.cell_pair_min_hit_rate",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.95,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "SRE",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "a steady-state measurement confirming the specification's target is achievable at this fleet's cell size",
+      "section": "§20.3",
+      "requiredBy": "the alertable cell-pair cache hit-rate SLI",
+      "description": "Alert threshold for the cell-pair cache hit rate. §20.3 states the target directly — above 95 % for the cell-pair cache and above 90 % for the charger-reachability cache, both reported separately and both alertable — and it is a parameter rather than a code constant because a sustained drop translates into round-time growth, and the threshold is what makes that visible before it becomes a latency incident."
+    },
+    {
+      "name": "route.charger_reachability_k",
+      "type": "integer",
+      "unit": "count",
+      "default": 5,
+      "range": {
+        "min": 1,
+        "max": 50
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Eng",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured depth at which a reachable charger is actually selected",
+      "section": "§20.3",
+      "requiredBy": "the charger-reachability cache entry",
+      "description": "The k in §20.3 item 3's \"nearest k chargers with travel time and energy, ordered\". Because there are far fewer chargers than delivery points, the reachable set per cell is small and stable, so k is small. It bounds the entry size, not the constraint: E_return selects the nearest charger the pinned projection shows free or reservable, and a k too small to contain one is reported as such rather than silently answered from the geographically nearest."
+    },
+    {
+      "name": "route.charger_reachability_min_hit_rate",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.9,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "SRE",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "steady-state hit rate measured after the first projection-publication precompute cycle",
+      "section": "§20.3",
+      "description": "The alert threshold on the charger-reachability cache hit rate. §20.3 states the steady-state target as > 90 % and requires it to be reported and alerted separately from the cell-pair cache's > 95 %, \"because a sustained drop in either translates directly into round-time growth, and a drop confined to one of them has a different cause and a different fix\"."
+    },
+    {
+      "name": "route.intra_cell_offset_m",
+      "type": "number",
+      "unit": "m",
+      "default": 250,
+      "range": {
+        "min": 0,
+        "max": 2000
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Eng",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the cell edge length chosen under blocking decision B5",
+      "section": "§20.3",
+      "description": "The intra-cell offset correction added to a cell-quantised return-leg distance. §20.3 items 2 and 3 quantise both cache populations to cells of roughly 200–500 m and state that \"within-cell error is bounded by the cell diameter and is corrected by an intra-cell offset term\". Applied in the pessimistic direction for E_return: a reserve computed from an optimistic cell-centre distance is a reserve that does not cover the walk from the cell edge."
+    },
+    {
+      "name": "solve.batch_growth_threshold",
+      "type": "integer",
+      "unit": "count",
+      "default": 10,
+      "range": {
+        "min": 1,
+        "max": 1000
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Eng",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured arrival burstiness and per-round amortisation per region",
+      "section": "§9.2",
+      "requiredBy": "the Loaded row of §9.2’s round-cadence table",
+      "description": "Queue depth above which the batch window grows from solve.window_min toward solve.window_max. §9.2 names this parameter in the Loaded row (“Queue depth > solve.batch_growth_threshold”); Appendix A tabulates the three windows it interpolates between but not the threshold that selects them, so the cadence rule cannot be evaluated without this entry."
+    },
+    {
+      "name": "solve.max_window_sla_fraction",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.05,
+      "range": {
+        "min": 0,
+        "max": 0.5
+      },
+      "specScope": "sla_class",
+      "scopes": [
+        "global",
+        "sla_class"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Product",
+      "blastRadius": "sla_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the contracted assignment targets per SLA class, against which the batch window is a deduction",
+      "section": "§9.2",
+      "requiredBy": "§9.2’s requirement that the batch window “MUST be bounded so that the window can never consume a meaningful fraction of any mission’s SLA budget”",
+      "description": "The largest share of sla.assignment_deadline that the adaptive batch window may consume for a Leg of that SLA class. §9.2 states the bound as a requirement without naming a parameter for “a meaningful fraction”; a bound with no registered number is a bound implemented as a code constant, which is exactly what §22 and the parameter build gate exist to prevent. POLICY and owned by Product because it trades customer-visible latency against allocation quality, which is not an engineering tuning decision."
+    },
+    {
+      "name": "observability.tier_b_reservoir_size",
+      "type": "integer",
+      "unit": "records",
+      "default": 100,
+      "range": {
+        "min": 1,
+        "max": 100000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the exempt-population volume measured during a real degraded episode",
+      "section": "§21.2",
+      "requiredBy": "the reservoir fallback §21.2 mandates once observability.tier_b_write_budget is exhausted",
+      "description": "How many Tier B records the reservoir holds per shard per budget window. §21.2: once the write budget is exhausted, \"further exempt decisions fall back to Tier A plus a reservoir sample of Tier B that is uniform over the exempt population\". A reservoir needs a size, and an unregistered one would be the constant that decides how much fidelity is retained under exactly the conditions the record matters most."
+    },
+    {
+      "name": "observability.calibration_bias_alarm",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.2,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 5
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Eng",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the observed per-slice error distributions the first calibration cycle produces",
+      "section": "§21.5",
+      "requiredBy": "§21.5’s \"drift alarms per slice\"",
+      "description": "Relative bias at which a predictor slice raises a drift alarm. §21.5 gives its own worked example at this magnitude — \"a route whose realised travel time has drifted 20 % above prediction indicates roadworks, a new signal, or seasonal congestion\" — and requires drift alarms per slice without tabulating the threshold. Seeded at that example rather than at an invented figure."
+    },
+    {
+      "name": "observability.calibration_min_samples",
+      "type": "integer",
+      "unit": "count",
+      "default": 30,
+      "range": {
+        "min": 1,
+        "max": 1000000
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Eng",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the per-slice observation volume the fleet actually produces",
+      "section": "§21.5",
+      "requiredBy": "§21.5’s per-slice bias and dispersion statistics",
+      "description": "Minimum observations before a slice’s bias or dispersion is reported or alarmed on. Without it a slice with two observations alarms as loudly as one with two thousand, and the drift signal §21.5 exists to produce is drowned by its own noise."
+    },
+    {
+      "name": "observability.calibration_tier_window",
+      "type": "map",
+      "unit": "s",
+      "indexedBy": [
+        "tier"
+      ],
+      "keys": [
+        "T1",
+        "T2",
+        "T3"
+      ],
+      "default": {
+        "T1": 604800,
+        "T2": 7862400,
+        "T3": 31557600
+      },
+      "range": {
+        "min": 3600
+      },
+      "specScope": "fleet",
+      "scopes": [
+        "global"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Safety",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the realised event rates per tier once the fleet operates",
+      "section": "§21.5, §26 I17",
+      "requiredBy": "§21.5’s requirement that the three tiers be validated at different timescales",
+      "description": "The window over which each shortfall tier’s probabilistic calibration is assessed. §21.5 is explicit that the tiers span five orders of magnitude and are therefore \"validated at different timescales and by different instruments: T1 from direct event counts within days, T2 from event counts over quarters, and T3 — whose budget is a handful of events per fleet-year — from the predictive distribution’s tail calibration rather than from event counts\". Seeded at a week, a quarter, and a fleet-year respectively. T3’s window sizes the tail sample, not an event count: \"validating a 1e-7 target by counting its occurrences is a category error\"."
+    },
+    {
+      "name": "perf.intake_ack_p99",
+      "type": "number",
+      "unit": "ms",
+      "default": 50,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 60000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 intake acknowledgement. §20.1: the synchronous customer path. Registered rather than written into sli.js because §20.1 calls its targets \"requirements for the release gate, not aspirations\", and a release-gate threshold is a threshold."
+    },
+    {
+      "name": "perf.round_wall_clock_p99",
+      "type": "number",
+      "unit": "ms",
+      "default": 250,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 600000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 round wall-clock at 500 Legs x 200 candidates. §20.1: keeps the batch window meaningful."
+    },
+    {
+      "name": "perf.candidate_generation_per_leg_p99",
+      "type": "number",
+      "unit": "ms",
+      "default": 5,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 60000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 candidate generation per Leg. §20.1: index lookup plus ring expansion."
+    },
+    {
+      "name": "perf.feasibility_per_candidate_cached_p99",
+      "type": "number",
+      "unit": "µs",
+      "default": 50,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 1000000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 feasibility evaluation per candidate, cached. §20.1: 100 000 evaluations per round must be affordable."
+    },
+    {
+      "name": "perf.cost_per_candidate_p99",
+      "type": "number",
+      "unit": "µs",
+      "default": 100,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 1000000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 cost evaluation per candidate with routing cached."
+    },
+    {
+      "name": "perf.approach_routing_matrix_p99",
+      "type": "number",
+      "unit": "ms",
+      "default": 20,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 60000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 approach routing matrix, 200x1, cached. The first of §20.3’s two per-candidate routing populations."
+    },
+    {
+      "name": "perf.charger_reachability_cached_p99",
+      "type": "number",
+      "unit": "µs",
+      "default": 10,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 1000000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 return-leg charger-reachability lookup on a cache hit. §20.1 reports this separately from the approach matrix because it is a second per-candidate query population, \"not a rounding error on the first\"."
+    },
+    {
+      "name": "perf.charger_reachability_miss_p99",
+      "type": "number",
+      "unit": "ms",
+      "default": 2,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 60000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 return-leg charger-reachability lookup on a cache miss."
+    },
+    {
+      "name": "perf.commit_transaction_p99",
+      "type": "number",
+      "unit": "ms",
+      "default": 20,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 60000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 commit transaction. The serial section of §3.5."
+    },
+    {
+      "name": "perf.commit_transaction_p999",
+      "type": "number",
+      "unit": "ms",
+      "default": 100,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 60000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "**p99.9** commit transaction — one of the two §20.1 targets stated at p99.9 rather than p99, because it bounds the leadership-fence exposure window of §10.3.2 guard G1. \"The vulnerable transaction is by definition an unusually slow one and a p99 says nothing about it.\""
+    },
+    {
+      "name": "perf.commit_transaction_mean",
+      "type": "number",
+      "unit": "ms",
+      "default": 5,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 60000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1, §3.5",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "Mean commit transaction time. §20.1 is explicit that \"the mean, not the p99, is what the shard-sizing bound of §3.5 consumes\" — the same quantity shard.commit_txn_service_time carries into publish-time validation V4, monitored here against its realised value."
+    },
+    {
+      "name": "perf.decision_to_dispatch_p99",
+      "type": "number",
+      "unit": "ms",
+      "default": 100,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 600000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 decision to dispatch."
+    },
+    {
+      "name": "perf.decision_to_dispatch_p999",
+      "type": "number",
+      "unit": "ms",
+      "default": 1000,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 600000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "**p99.9** decision to dispatch — the second of §20.1’s two p99.9 targets. It bounds how long a HARD commitment can exist without the agent having been told (§11.1)."
+    },
+    {
+      "name": "perf.intake_to_offer_p99",
+      "type": "number",
+      "unit": "ms",
+      "default": 2000,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 600000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 time from intake to offer under nominal operation. Customer-visible responsiveness."
+    },
+    {
+      "name": "perf.agent_loss_detection_p99",
+      "type": "number",
+      "unit": "ms",
+      "default": 15000,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 600000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 detection of agent loss. §20.1: heartbeat interval plus margin."
+    },
+    {
+      "name": "perf.lease_expiry_to_recovery_p99",
+      "type": "number",
+      "unit": "ms",
+      "default": 30000,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 600000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 lease expiry to recovery start."
+    },
+    {
+      "name": "perf.reconciler_full_sweep_p99",
+      "type": "number",
+      "unit": "ms",
+      "default": 60000,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 3600000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1",
+      "requiredBy": "observability/sli.js — the §20.1 release-gate targets",
+      "description": "p99 reconciler full sweep. §20.1: bounds worst-case divergence duration."
+    },
+    {
+      "name": "perf.tier_a_record_bytes",
+      "type": "integer",
+      "unit": "bytes",
+      "default": 2048,
+      "range": {
+        "min": 1,
+        "max": 1048576
+      },
+      "specScope": "global",
+      "scopes": [
+        "global"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "Eng",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "DERIVED",
+      "section": "§20.1, §21.2",
+      "requiredBy": "observability/tierA.js — the O(1) sizing bound",
+      "description": "The §20.1 bound on a single Tier A record: \"< 2 KB per decision, always retained\". It is the arithmetic §21.2 opens with — a fully itemised record would be O(k · predicates) and 10 TB/day per region — expressed as a checkable number rather than a design intention."
+    },
+    {
+      "name": "map.obstruction_class_max_age",
+      "type": "integer",
+      "unit": "s",
+      "default": 300,
+      "range": {
+        "min": 10,
+        "max": 86400
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Safety",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the region's measured map hazard-data publication cadence",
+      "section": "§4.3, §18.3 B7",
+      "requiredBy": "map/obstructionClass.js — the staleness budget §4.3 states without tabulating",
+      "description": "§4.3 defines INDETERMINATE as hazard data \"unavailable **or stale beyond its budget**\" and Appendix A tabulates no budget; this is it. It is Safety-class because it decides STRANDED_SAFE from STRANDED_OBSTRUCTING, and therefore whether the §18.6 external chain opens. Seeded at 5 minutes, which is short enough that an agent stopping in an area whose classification has just changed is treated as indeterminate rather than as clear — the direction §4.3's DENY semantics require."
+    },
+    {
+      "name": "failure.poison_quarantine_threshold",
+      "type": "integer",
+      "unit": "count",
+      "default": 3,
+      "range": {
+        "min": 1,
+        "max": 20
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Eng",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "observed evaluation-crash correlation in staging",
+      "section": "§18.3 B20",
+      "requiredBy": "failure/infraFailures.quarantineDecision — B20's \"after n failures\"",
+      "description": "B20's n: how many evaluation crashes correlated to one mission id before that mission is quarantined out of the round. §18.3 words the bound without fixing it. Three is the smallest value that separates a genuinely poisonous input from a transient — one crash can be an unrelated fault in the round, two can be the same transient recurring — while bounding the damage to three rounds."
+    },
+    {
+      "name": "ops.external_escalation_contacts",
+      "type": "map",
+      "unit": "contact set",
+      "default": null,
+      "range": null,
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Ops",
+      "blastRadius": "region",
+      "calibrationStatus": "UNCALIBRATED",
+      "required": true,
+      "awaits": "the responsible infrastructure operator per region — rail, tram, highways, or site security",
+      "section": "§18.6",
+      "requiredBy": "failure/externalEscalation.resolveContactSet — §18.6 step 3",
+      "description": "The per-region escalation contact set §18.6 requires, keyed by region id, each carrying a **named owner**, the contacts, and the instant it was last reviewed. §18.6: \"The escalation contact set is per-region configuration with a named owner, reviewed on the same cadence as the safety case (§24.7). An unreviewed contact list is the most common way a correctly-designed escalation path fails in practice.\" Seeded null and `required` rather than with a placeholder, because a fabricated contact is worse than a recorded absence: the chain would report success into a number nobody answers."
+    },
+    {
+      "name": "ops.escalation_contact_review_period",
+      "type": "integer",
+      "unit": "s",
+      "default": 7776000,
+      "range": {
+        "min": 86400,
+        "max": 31536000
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the safety case's own review cadence (§24.7)",
+      "section": "§18.6",
+      "requiredBy": "failure/externalEscalation.resolveContactSet — the review-state half of step 3",
+      "description": "How long an external escalation contact set may go unreviewed before step 3 records CONTACT_SET_UNREVIEWED beside the notification it still emits. §18.6 ties the cadence to the safety case; 90 days is a quarterly review, which is the shortest cadence §24.7's own artefacts are governed on."
+    },
+    {
+      "name": "ops.emergency_services_hazard_threshold",
+      "type": "map",
+      "unit": "threshold",
+      "default": null,
+      "range": null,
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Safety",
+      "blastRadius": "region",
+      "calibrationStatus": "UNCALIBRATED",
+      "required": true,
+      "awaits": "a safety decision with the local emergency services and the site authority",
+      "section": "§18.6 step 4",
+      "requiredBy": "failure/externalEscalation.emergencyServicesEligible",
+      "description": "The obstruction classes and hazard states at which §18.6 step 4 is **offered** to the on-call operator, as `{ obstructionClasses: [...], hazardStates: [...] }`. §18.6 states the threshold over both — \"where the obstruction class **and** hazard state meet the configured threshold\" — so both lists must be met. It never opens step 4: the step is human-gated, and this parameter decides only whether a person is asked. Seeded null so that an unconfigured region offers nothing automatically rather than offering everything."
+    },
+    {
+      "name": "invariant.check_interval",
+      "type": "integer",
+      "unit": "s",
+      "default": 60,
+      "range": {
+        "min": 5,
+        "max": 3600
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured checker pass cost against a production-sized shard",
+      "section": "§26.1",
+      "requiredBy": "workers/invariant.worker.js — the cadence of \"continuously verified\"",
+      "description": "How often the Invariant Checker runs a full pass. §26.1 says \"continuously verified\" without fixing a period; this is the period. It bounds the worst-case time between a violation occurring and the register reporting it, which is the quantity the invariant-violation SLI is actually measured against."
+    },
+    {
+      "name": "invariant.monotonicity_window",
+      "type": "integer",
+      "unit": "s",
+      "default": 300,
+      "range": {
+        "min": 60,
+        "max": 86400
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured checker pass cost against a production-sized shard",
+      "section": "§26.1 I6",
+      "requiredBy": "observability/invariantChecker.js — the look-back of the windowed checks",
+      "description": "The look-back of I6's **windowed** monotonicity audit and of the other window-scoped checks. §26.1 specifies a windowed audit against a persisted high-water mark rather than a full-history one, because a sequence that was monotone at the last pass and is monotone since is monotone — which is what makes the check O(agents) per pass rather than O(history)."
+    },
+    {
+      "name": "shard.renewal_interval",
+      "type": "integer",
+      "unit": "ms",
+      "default": 1500,
+      "range": {
+        "min": 100,
+        "max": 30000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured store round-trip latency against the operated consensus store",
+      "section": "§19.5",
+      "requiredBy": "workers/shardSupervisor.worker.js and publish-time validation A4 (leadership renewal margin)",
+      "description": "How often the active Coordinator renews its leadership lease. It must leave room for §19.5's margin: a leader stops committing time.max_clock_skew plus the store's round-trip budget before expiry, so a renewal interval at or beyond shard.lease_duration minus that margin leaves the shard uncommittable between every renewal. Validation A4 enforces the coupling at publish rather than letting it surface as a shard that commits in bursts. The 1 500 ms default renews the 5 s default lease three times per lease."
+    },
+    {
+      "name": "shard.store_round_trip_budget",
+      "type": "integer",
+      "unit": "ms",
+      "default": 500,
+      "range": {
+        "min": 10,
+        "max": 10000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured p99 round-trip to the operated consensus store",
+      "section": "§19.5",
+      "requiredBy": "shard/leadership.shouldStopCommitting and shard/election.renewalBudget",
+      "description": "The store round-trip allowance in §19.5's stop-committing margin — 'leaving a margin of time.max_clock_skew plus the store's round-trip budget'. Safety-class because it sizes the window in which a coordinator may still believe it leads: too small a value narrows nothing G1 does not already close, and too large a value costs committable time on every lease. Seeded equal to time.max_clock_skew, which is the value shouldStopCommitting already falls back to when none is supplied."
+    },
+    {
+      "name": "shard.migration_min_interval",
+      "type": "integer",
+      "unit": "ms",
+      "default": 2000,
+      "range": {
+        "min": 0,
+        "max": 600000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured fence-rejection response to a paced rebalance",
+      "section": "§19.2",
+      "requiredBy": "workers/shardSupervisor.worker.js — the pacing of 'one agent at a time'",
+      "description": "The minimum interval between two agent migrations during a rebalance. §19.2 requires migration 'one at a time'; that count is structural and is not this parameter. What this bounds is the rate: every migration advances an authority_epoch and therefore aborts any round holding that agent through guard G3, so an unpaced rebalance produces a fence-rejection burst that invariant I5's verification reads as a rising baseline."
+    },
+    {
+      "name": "shard.min_agents",
+      "type": "integer",
+      "unit": "count",
+      "default": 1000,
+      "range": {
+        "min": 1,
+        "max": 1000000
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "SRE",
+      "blastRadius": "shard",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the region's measured mission rate and the operated cost of a coordinator",
+      "section": "§3.5",
+      "requiredBy": "the merge half of §19.2's rebalancing, and GET /api/shards' sizing report",
+      "description": "The lower end of §3.5's stated 1 000–20 000 agents per shard, below which merging quiet shards is indicated. Unlike shard.max_agents this is not derived from an inequality — §3.5 derives only the upper bound — so it is seeded at the range's stated floor and is an operating-cost judgement rather than a correctness one. A shard below it is not incorrect; it is a coordinator, a leadership lease, and a set of caches serving less work than they cost."
+    },
+    {
+      "name": "shard.locality_max_round_time_divergence",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.1,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 1
+      },
+      "specScope": "global",
+      "scopes": [
+        "global"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "Eng",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the first paired locality benchmark, which is Phase 15's scale suite",
+      "section": "§24.6",
+      "requiredBy": "shard/sizing.compareLocality — §24.6's locality test criterion",
+      "description": "The relative round-time divergence at which §24.6's locality test still calls two shards 'statistically indistinguishable'. §24.6 states the test and not its tolerance, and a tolerance written inside a test file is a threshold nobody registered, owns, or can change without editing a test. It is compared symmetrically: a large-fleet shard that is materially faster also fails, because that is evidence the two benchmarks were not identical rather than evidence of locality."
+    },
+    {
+      "name": "crossregion.downstream_binding_eta_confidence",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.8,
+      "range": {
+        "min": 0,
+        "exclusiveMin": true,
+        "max": 1
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Ops",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured upstream ETA calibration at transfer points (§21.5)",
+      "section": "§19.6",
+      "requiredBy": "shard/crossRegion.mayHarden — §19.6's late binding",
+      "description": "The upstream-ETA confidence at which a cross-region saga's downstream Leg may be hardened. §19.6: the downstream Leg is 'pre-planned but not hardened until the upstream Leg's ETA is confident enough — late binding again, for the same reason'. Absent a measurement, mayHarden() returns false rather than defaulting to true: hardening early binds a downstream agent to an arrival the upstream Leg has not earned, and when it slips that agent was held out of its own region's rounds for nothing."
+    },
+    {
+      "name": "security.certificate_revocation_recheck_interval",
+      "type": "integer",
+      "unit": "s",
+      "default": 900,
+      "range": {
+        "min": 30,
+        "max": 86400
+      },
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Security",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the operated CA's revocation-publication latency",
+      "section": "§23.2",
+      "requiredBy": "security/sessionBinding.dueForRecheck and workers/certificateRotation.worker.js",
+      "description": "How often a live agent session re-checks its certificate against the store. §23.2 requires revocation to be checked 'at session establishment AND periodically during long sessions', and this parameter is the length of the window in which a revoked device keeps acting: a unit that stays connected for weeks would, under an establishment-only check, never see its own revocation take effect. Safety-class because raising it widens exactly that window, which is the kind of change an optimiser chasing store load would make and be locally correct about every time."
+    },
+    {
+      "name": "security.certificate_rotation_lead_time",
+      "type": "integer",
+      "unit": "s",
+      "default": 604800,
+      "range": {
+        "min": 3600,
+        "max": 7776000
+      },
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Security",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured fleet-wide rotation throughput, which depends on how many devices can be reached per day",
+      "section": "§23.2",
+      "requiredBy": "security/sessionBinding.dueForRotation — §23.2's automated rotation",
+      "description": "How far before expiry a certificate is queued for rotation. §23.2 requires 'automated rotation'; automation without lead time is a fleet that rotates on the day it expires, and any device unreachable that day drops out of the fleet. Seven days is one weekly maintenance cycle."
+    },
+    {
+      "name": "security.session_max_age",
+      "type": "integer",
+      "unit": "s",
+      "default": 86400,
+      "range": {
+        "min": 300,
+        "max": 2592000
+      },
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Security",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured agent reconnection cost at fleet scale",
+      "section": "§23.2",
+      "requiredBy": "security/sessionBinding.establish — the session's own expiry",
+      "description": "The maximum age of a certificate-bound agent session before a SESSION_REKEY is required. §23.2's 'short-lived tokens' applied to the binding: a session that never expires is one whose revocation depends entirely on the periodic re-check succeeding. Seeded at the 24 h TTL the retired bearer-token session carried, so the change of scheme does not silently change the lifetime as well."
+    },
+    {
+      "name": "security.attestation_max_age",
+      "type": "integer",
+      "unit": "s",
+      "default": 2592000,
+      "range": {
+        "min": 3600,
+        "max": 31557600
+      },
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "region",
+        "agent_class"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Security",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "measured firmware and hardware change cadence per agent class",
+      "section": "§23.2",
+      "requiredBy": "security/attestation.verify — the staleness half of attestation validity",
+      "description": "The oldest firmware/hardware attestation that may still derive a capability. §23.2 makes capabilities derive from 'the commissioning record plus a signed firmware/hardware attestation', and a manifest signed long enough ago describes a device that has since been serviced, reflashed, and possibly rebuilt. Safety-class because a capability is an eligibility input: raising this admits stale evidence into predicate F21, which is class I."
+    },
+    {
+      "name": "security.position_plausibility_tolerance",
+      "type": "number",
+      "unit": "ratio",
+      "default": 1.2,
+      "range": {
+        "min": 1,
+        "max": 5
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "region",
+        "agent_class"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Security",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the measured distribution of implied speed between accepted fixes, per agent class",
+      "section": "§23.5",
+      "requiredBy": "security/trustBoundaries.validatePosition — the kinematic ceiling",
+      "description": "The multiplier applied to the MobilityModel's maximum speed before a position report is judged kinematically impossible. §23.5: 'A jump exceeding achievable speed is rejected, not smoothed.' The tolerance exists because a fix pair straddling a timestamp quantisation can imply a speed slightly above the true one; it is not a licence for the ceiling to be soft. Safety-class because raising it is how a spoofed position would be admitted, and the change would look like noise reduction."
+    },
+    {
+      "name": "security.energy_rate_tolerance",
+      "type": "number",
+      "unit": "ratio",
+      "default": 1.5,
+      "range": {
+        "min": 1,
+        "max": 10
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "region",
+        "agent_class"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Security",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the measured residual distribution of §14.2's consumption model against reported SoC",
+      "section": "§23.5",
+      "requiredBy": "security/trustBoundaries.validateEnergy — 'consistency with distance travelled and the energy model'",
+      "description": "How far a reported energy drop may exceed §14.2's predicted consumption before the report is refused. §23.5 requires energy reports to be consistent with the distance travelled and the energy model; the tolerance is the model's own error budget, not a second model. Safety-class because energy feeds F34, and a report admitted here that the model cannot explain is an input the reserve calculation then trusts."
+    },
+    {
+      "name": "security.implausible_report_quarantine_threshold",
+      "type": "integer",
+      "unit": "count",
+      "default": 3,
+      "range": {
+        "min": 1,
+        "max": 100
+      },
+      "specScope": "agent_class",
+      "scopes": [
+        "global",
+        "region",
+        "agent_class"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Security",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the measured background rate of refused reports on healthy agents",
+      "section": "§23.5",
+      "requiredBy": "security/trustBoundaries.persistentImplausibility — quarantine and the security event",
+      "description": "How many refused reports constitute 'persistent implausibility', which §23.5 says 'triggers quarantine and a security event'. A single refused fix is noise — multipath, a dropped packet, a gauge that settled — and a sustained pattern is evidence; the two need opposite responses, so the boundary is a registered value rather than a number chosen inside a handler. Seeded to match health.unresponsive_strikes, whose reasoning is identical."
+    },
+    {
+      "name": "security.override_rate_window",
+      "type": "integer",
+      "unit": "s",
+      "default": 604800,
+      "range": {
+        "min": 3600,
+        "max": 31557600
+      },
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the first quarter of observed override volume",
+      "section": "§23.6",
+      "requiredBy": "security/override.rates — the window the two thresholds are counted over",
+      "description": "The window override rates are measured over. §23.6 monitors override rates 'per operator and per predicate' as a design signal; a rate needs a window, and one week matches the operational review cadence the signal feeds."
+    },
+    {
+      "name": "security.override_rate_threshold_per_operator",
+      "type": "integer",
+      "unit": "count",
+      "default": 20,
+      "range": {
+        "min": 1,
+        "max": 100000
+      },
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the first quarter of observed override volume per operator",
+      "section": "§23.6",
+      "requiredBy": "security/override.breaches — the per-operator finding",
+      "description": "Overrides by one operator in security.override_rate_window above which a finding is raised. §23.6 is explicit that this is 'a signal that a constraint is miscalibrated or that an operator needs support — both actionable, neither punitive by default', so the finding names the interpretation and not only the count."
+    },
+    {
+      "name": "security.override_rate_threshold_per_predicate",
+      "type": "integer",
+      "unit": "count",
+      "default": 50,
+      "range": {
+        "min": 1,
+        "max": 100000
+      },
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the first quarter of observed override volume per predicate",
+      "section": "§23.6",
+      "requiredBy": "security/override.breaches — the per-predicate finding",
+      "description": "Waivers of one predicate in security.override_rate_window above which a finding is raised. Higher than the per-operator threshold on purpose: many operators waiving one predicate is the normal shape of a miscalibrated constraint, and §23.6 names that as evidence about the constraint rather than about the operators."
+    },
+    {
+      "name": "security.elevated_roles",
+      "type": "set",
+      "unit": "role",
+      "default": [
+        "SUPER_ADMIN"
+      ],
+      "range": {},
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Security",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "DERIVED",
+      "section": "§23.4",
+      "requiredBy": "middlewares/auth_middleware.requireActionClass and security/override.authoriseAction",
+      "description": "The roles §23.4's highest-privilege actions require. DERIVED rather than PROVISIONAL: it is not a measurement awaiting data but a statement of the deployment's role model, and the value is exactly the ELEVATED_ROLES constant config.routes.js and shards.routes.js already carried — registered here so the three surfaces read one list instead of three copies. Safety-class because widening it is how a quarantine override or a Safety-class config publish becomes available to a role that was never meant to hold it."
+    },
+    {
+      "name": "security.second_approver_action_classes",
+      "type": "set",
+      "unit": "action_class",
+      "default": [
+        "QUARANTINE_OVERRIDE",
+        "SAFETY_CONFIG_CHANGE"
+      ],
+      "range": {},
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "SAFETY",
+      "owner": "Security",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "DERIVED",
+      "section": "§23.4, §23.6",
+      "requiredBy": "security/override.authoriseAction — 'and where configured a second approver'",
+      "description": "The §23.4 action classes that require a second approver in this deployment. §23.4 says 'where configured a second approver' and §23.6 says 'High-risk overrides require a second approver | Configurable per action class', so the set is configuration. It may only ever ADD to each action class's own default: authoriseAction() takes the union, never the configured set alone, because a configuration able to remove a second-approver requirement would put the strongest control in §23 behind an ordinary config change."
+    },
+    {
+      "name": "privacy.identity_retention",
+      "type": "integer",
+      "unit": "days",
+      "default": 14,
+      "range": {
+        "min": 1,
+        "max": 730
+      },
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Legal",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the operating jurisdiction's stated retention obligation for delivery contact data",
+      "section": "§23.7",
+      "requiredBy": "privacy/identityStore.expired and publish-time validation A5 (identity retention ordering)",
+      "description": "How long an identity record's sealed identifying fields are kept before the retention sweep tombstones them. §23.7 requires 'retention limits distinct from (and shorter than) the operational retention of the decision's technical content', and A5 enforces that ordering against observability.full_retention at publish. Shorter by construction is the whole point: the technical record must outlive the personal data it never contained."
+    },
+    {
+      "name": "cutover.engine_enabled",
+      "type": "boolean",
+      "unit": "flag",
+      "default": false,
+      "range": {},
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "Eng",
+      "blastRadius": "region",
+      "calibrationStatus": "DERIVED",
+      "section": "execution plan Phase 15; §1.8; §22.2",
+      "requiredBy": "cutover/enabled.forShard — the per-shard half of the production cutover switch",
+      "description": "Is the engine the decision path for this shard? The execution plan stages the cutover as 'ENGINE_ENABLED=true per shard', and a process-scoped environment variable cannot express 'shard A is live and shard B is not'. Resolved at region scope, which is §22.2's own alias for a shard (one shard owns one operating region, §3.5), so no scope level is added. STRUCTURAL rather than SAFETY on purpose: §22.3 forbids any automated process from changing a Safety-class parameter, and the automatic rollback of §22.4 item 4 must be able to set this false. The asymmetry is enforced in code — cutover/guardrails.assertOneDirectional admits only DISABLE, and stage.authoriseEnable refuses an automated request outright — so the only automatic transition is the one that lowers risk. After Phase 15 removed the legacy dispatcher from the build, false means this shard has no decision path, not that another serves it."
+    },
+    {
+      "name": "cutover.guardrail_check_interval",
+      "type": "integer",
+      "unit": "seconds",
+      "default": 30,
+      "range": {
+        "min": 5,
+        "max": 600
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "Eng",
+      "blastRadius": "region",
+      "calibrationStatus": "DERIVED",
+      "section": "§22.4 item 4",
+      "requiredBy": "workers/cutover.worker.start — the staged-rollout controller cadence",
+      "description": "How often the staged-rollout controller assesses each live shard against its pre-declared SLI guardrails. Derived rather than tuned: it is bounded below by the SLI publication TTL (a controller reading faster than the snapshot is republished re-reads the same window) and above by the requirement that a regression be caught inside one observation window. Not a threshold on any decision — it only sets how promptly an already-decided rollback fires."
+    },
+    {
+      "name": "cutover.observation_window",
+      "type": "integer",
+      "unit": "seconds",
+      "default": 3600,
+      "range": {
+        "min": 300,
+        "max": 604800
+      },
+      "specScope": "shard",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "Eng",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the realised arrival rate per shard, which fixes how long a window must be to carry the minimum sample count for the p99.9 guardrails",
+      "section": "§22.3, §22.4 item 4",
+      "requiredBy": "cutover/guardrails.declare — the default observation window a shard must hold before the next is staged",
+      "description": "How long a shard must run live, without a guardrail breach and with sufficient samples, before the next shard in the staging order may be enabled. §22.3's Safety row requires a 'mandatory post-change monitoring window' and the cutover is the largest change the register admits. Sufficiency is a joint condition of this window and each guardrail's own minSamples: elapsing without samples yields HOLD, never PROCEED."
+    },
+    {
+      "name": "cutover.shadow_agreement_window",
+      "type": "integer",
+      "unit": "days",
+      "default": 14,
+      "range": {
+        "min": 7,
+        "max": 90
+      },
+      "specScope": "global",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "Eng",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "DERIVED",
+      "section": "§21.6; execution plan Phase 15 testing requirements",
+      "requiredBy": "cutover/gates shadow_agreement — the release gate the shadow worker discharges",
+      "description": "The minimum span of live traffic shadow mode must have run over before its agreement report can discharge the shadow_agreement release gate. The default is the execution plan's own figure ('Shadow-mode agreement report over >= 2 weeks of live traffic') read directly, which is why it is DERIVED rather than PROVISIONAL: it is transcribed from a stated requirement, not chosen."
+    },
+    {
+      "name": "release.soak_duration",
+      "type": "integer",
+      "unit": "hours",
+      "default": 72,
+      "range": {
+        "min": 24,
+        "max": 720
+      },
+      "specScope": "global",
+      "scopes": [
+        "global"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "Eng",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the observed time constant of the slowest accumulating resource (timer table growth and cell-pair cache residency), which sets how long a soak must run to expose drift rather than noise",
+      "section": "§24.6",
+      "requiredBy": "cutover/gates soak — the release gate the long-running scale profile discharges",
+      "description": "How long the soak profile must run before it can discharge the soak release gate. §24.6 says 'soak tests over days to expose leaks, unbounded caches, timer accumulation, and queue drift'; the default reads 'days' as three. A soak shorter than the slowest accumulator's time constant reports a clean run about a leak it could not have seen."
+    },
+    {
+      "name": "release.locality_indistinguishability_tolerance",
+      "type": "decimal",
+      "unit": "ratio",
+      "default": 0.05,
+      "range": {
+        "min": 0.01,
+        "max": 0.25
+      },
+      "specScope": "global",
+      "scopes": [
+        "global"
+      ],
+      "changeClass": "STRUCTURAL",
+      "owner": "Eng",
+      "blastRadius": "fleet-wide",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "the measured run-to-run variance of the round-time benchmark on the target hardware, which is what statistically indistinguishable has to be defined against",
+      "section": "§24.6, T9",
+      "requiredBy": "tests/scale/locality — the T9 locality gate",
+      "description": "The fractional round-time difference within which a shard in a small fleet and a shard in a million-agent fleet count as statistically indistinguishable (§24.6). T9 is the scaling claim, and its verification needs a number: 'indistinguishable' with no tolerance is a judgement call made after seeing the data. The gate is two-sided here because a shard that is faster in the large fleet is as much a sign of a broken benchmark as one that is slower."
+    }
   ]
 }

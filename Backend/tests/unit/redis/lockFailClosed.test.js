@@ -37,7 +37,18 @@ async function kvWithUnreachableRedis() {
   }
 }
 
-describe("reservation locking must fail closed when Redis was configured but is unavailable (HR1)", () => {
+// ── PHASE 15 — the default flipped, and the fail-closed behaviour is now opt-in ──
+//
+// The plan's Phase 15 Redis row retires "`robotReserve:*` reliance for correctness (it
+// remains advisory)". The legacy dispatcher that depended on this lock is out of the
+// build, and exclusivity is `engine/commitment/commit.js`'s SERIALIZABLE transaction with
+// its fencing token. So `reserveRobot` is advisory by default, and HR1's fail-closed throw
+// is reached only by a caller that says `{ advisory: false }` — i.e. one declaring it has
+// no other exclusivity mechanism. HR1 itself is unchanged and is still tested below; what
+// changed is which callers are subject to it.
+const NON_ADVISORY = { advisory: false };
+
+describe("reservation locking fails closed for a NON-ADVISORY caller when Redis is unreachable (HR1)", () => {
   const openKvs = [];
 
   afterEach(async () => {
@@ -55,7 +66,7 @@ describe("reservation locking must fail closed when Redis was configured but is 
 
     // Pre-fix this resolves `true` from the in-memory Map — the caller believes
     // it holds a cluster-wide lock that does not exist.
-    await expect(kv.reserveRobot("robotReserve:R1", "task-1", 30)).rejects.toThrow(
+    await expect(kv.reserveRobot("robotReserve:R1", "task-1", 30, NON_ADVISORY)).rejects.toThrow(
       /lock|reservation|unavailable/i
     );
   });
@@ -69,8 +80,8 @@ describe("reservation locking must fail closed when Redis was configured but is 
     openKvs.push(a.close, b.close);
 
     const results = await Promise.allSettled([
-      a.kv.reserveRobot("robotReserve:R1", "task-A", 30),
-      b.kv.reserveRobot("robotReserve:R1", "task-B", 30),
+      a.kv.reserveRobot("robotReserve:R1", "task-A", 30, NON_ADVISORY),
+      b.kv.reserveRobot("robotReserve:R1", "task-B", 30, NON_ADVISORY),
     ]);
 
     const granted = results.filter((r) => r.status === "fulfilled" && r.value === true);
@@ -81,9 +92,20 @@ describe("reservation locking must fail closed when Redis was configured but is 
     const { kv, close } = await kvWithUnreachableRedis();
     openKvs.push(close);
 
-    await expect(kv.reserveRobot("robotReserve:R1", "task-1", 30)).rejects.toMatchObject({
+    await expect(kv.reserveRobot("robotReserve:R1", "task-1", 30, NON_ADVISORY)).rejects.toMatchObject({
       status: 503,
     });
+  });
+
+  test("PHASE 15 — the DEFAULT caller is advisory and is granted the lock instead (§10.4)", async () => {
+    const { kv, close } = await kvWithUnreachableRedis();
+    openKvs.push(close);
+
+    // §3.3: "cache unavailability MUST NOT halt commitment". Returning false, or
+    // throwing, would halt the round on a cache outage — which is exactly the baseline
+    // behaviour §10.4 removes. Correctness is the commit transaction's, not this lock's.
+    await expect(kv.reserveRobot("robotReserve:R1", "task-1", 30)).resolves.toBe(true);
+    await expect(kv.reserveRobot("robotReserve:R1", "task-2", 30)).resolves.toBe(true);
   });
 
   test("non-lock capabilities still degrade gracefully rather than failing closed", async () => {

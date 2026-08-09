@@ -57,6 +57,15 @@ const RATE_DIMENSIONS = Object.freeze({
   "cost.staleness.cu_per_second_age": DIMENSION.CU_PER_SECOND,
   "churn.per_second_elapsed": DIMENSION.CU_PER_SECOND,
   "cost.opportunity.lambda_zone_prior": DIMENSION.CU_PER_SECOND,
+  // Phase 8. §8.9's C_churn formula names `churn.wasted_travel_cost ·
+  // distance_already_travelled` and §8.5's C_lifecycle names gradient exposure and
+  // thermal stress as addends with their own coefficients; §8.10's table registers
+  // neither, so the register entries are supplementary and their dimensions are declared
+  // here for the same reason every other rate's is — a rate applied to the wrong quantity
+  // produces a plausible-looking wrong number.
+  "churn.wasted_travel_cost": DIMENSION.CU_PER_METRE,
+  "lifecycle.cu_per_gradient_metre": DIMENSION.CU_PER_METRE,
+  "lifecycle.cu_per_thermal_stress_second": DIMENSION.CU_PER_SECOND,
 });
 
 /**
@@ -81,6 +90,13 @@ const ABSOLUTE_CU_PARAMETERS = Object.freeze([
   "fairness.weight",
   "preempt.min_gain",
   "solve.max_generation_gap_regression",
+  // Phase 8. Each is a CU amount multiplied by a count — an actuation, a braking event,
+  // a notification, a wasted round — exactly as §8.10 registers
+  // `cost.battery.cu_per_equivalent_cycle` as a CU amount multiplied by a cycle count.
+  "lifecycle.cu_per_actuator_cycle",
+  "lifecycle.cu_per_braking_event",
+  "churn.notification_cost",
+  "defer.wasted_round_penalty",
 ]);
 
 /**

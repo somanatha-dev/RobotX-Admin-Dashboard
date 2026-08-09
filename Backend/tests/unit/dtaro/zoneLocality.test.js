@@ -84,39 +84,32 @@ describe("DTARO zone-locality (F6) — registry persistence + change detection",
     expect(registry.zoneId).toBe(ZONE_A.id);
   });
 
-  test("the persisted zone is what makes the DTARO Z term discriminate between candidates", async () => {
-    const { computeCosts } = require("../../../src/services/costEvaluator.service");
+  // PHASE 15 — these two tests used to call `costEvaluator.service.computeCosts` and assert
+  // that its Z term discriminated by zone. That module is gone: §1.3 prohibits the min-max
+  // normalisation it was built on ("a 10 km mission must cost more than a 1 km mission, all
+  // else equal — a property the baseline's min-max normalisation cannot satisfy"), Phase 8
+  // replaced it with absolute-CU cost terms, and Phase 15 removed it from the build.
+  //
+  // What the tests were really pinning survives, and is what is pinned here: the *write
+  // path*. A zone that is never persisted cannot influence any allocation under either cost
+  // model, so the regression guard is still worth having. The consumers are now
+  // `cost/cOpportunity.js` (λ_zone is keyed by zone) and `cost/cPolicy.js` (zone affinity).
+  test("the persisted zone is the value a zone-keyed cost term would read", async () => {
+    prisma.robot.findUnique.mockResolvedValue(existingRobot());
 
-    // Two identical candidates that differ ONLY in zone membership. If zone
-    // locality is live, the same-zone robot must score strictly lower.
-    const candidates = [
-      { robotId: "R-same", distanceM: 100, durationSec: 60, battery: 80, zoneId: ZONE_A.id },
-      { robotId: "R-other", distanceM: 100, durationSec: 60, battery: 80, zoneId: ZONE_B.id },
-    ];
+    socket.trigger("TELEMETRY", { ...IN_A, battery: 50, status: "ACTIVE" });
+    await waitFor(async () => (await getRobotState(kv, "R1"))?.zoneId === ZONE_A.id);
 
-    const results = await computeCosts(kv, candidates, undefined, ZONE_A.id);
-    const same = results.find((r) => r.robotId === "R-same");
-    const other = results.find((r) => r.robotId === "R-other");
-
-    expect(same.components.Z).toBe(0);
-    expect(other.components.Z).toBe(1);
-    expect(same.cost).toBeLessThan(other.cost);
+    // λ_zone (§8.3) and the zone-affinity credit (§8.6) are both keyed by exactly this id.
+    expect((await getRobotState(kv, "R1")).zoneId).toBe(ZONE_A.id);
   });
 
-  test("a candidate whose zone was never persisted cannot benefit from locality (regression guard)", async () => {
-    const { computeCosts } = require("../../../src/services/costEvaluator.service");
-
-    // This is precisely the pre-fix production state: every candidate carries
-    // zoneId=null, so Z is a constant 1 across the board and the term drops
-    // out of the ranking entirely.
-    const candidates = [
-      { robotId: "R1", distanceM: 100, durationSec: 60, battery: 80, zoneId: null },
-      { robotId: "R2", distanceM: 100, durationSec: 60, battery: 80, zoneId: null },
-    ];
-
-    const results = await computeCosts(kv, candidates, undefined, ZONE_A.id);
-    const zValues = new Set(results.map((r) => r.components.Z));
-    expect(zValues.size).toBe(1); // no discrimination — documents the failure mode
+  test("a robot that never reported carries no zone at all (regression guard)", async () => {
+    const unseen = await getRobotState(kv, "R-never-reported");
+    // Absent, not defaulted. §6's missing-data policy: a zone-affinity credit granted to an
+    // agent whose zone nobody recorded would be a policy credit applied on absent evidence,
+    // which is the pre-fix production state this guard exists to keep out.
+    expect(unseen === null || unseen.zoneId === null || unseen.zoneId === undefined).toBe(true);
   });
 
   describe("ZONE_UPDATED is a state-change notification, not a per-tick broadcast", () => {

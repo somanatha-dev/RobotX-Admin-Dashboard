@@ -7,6 +7,10 @@ const { dispatchCommand } = require("../services/commandDispatcher.service");
 const { getRobotState, updateHealthStatus } = require("../services/robotRegistry.service");
 const { z } = require("zod");
 const robotStateCache = require("../cache/robotStateCache");
+// PHASE 14 — §23.6's override discipline. The rules live in the engine module; this
+// controller applies them at the one operator surface that returns a withdrawn agent to
+// service.
+const override = require("../engine/security/override");
 
 async function writeRobotLiveState(kv, robot, { exSeconds = 15 } = {}) {
   if (!kv || !robot) return;
@@ -375,6 +379,24 @@ const unlockPairing = asyncHandler(async (req, res) => {
 // this is the only way either is cleared. Only allowed out of an actual fault
 // state (status ERROR or live healthStatus FAULT); anything else is rejected
 // as an invalid transition rather than silently no-op'd.
+//
+// ── PHASE 14 — §23.6's override discipline ───────────────────────────────────
+// The route is gated as a QUARANTINE_OVERRIDE (§23.4): elevated role, recorded reason,
+// second approver, and both audit records. Three things this endpoint deliberately does
+// **not** become as a result:
+//
+//   1. **It is not a predicate waiver.** Clearing a fault changes the agent's *observed
+//      state*; the feasibility gate then re-evaluates F3 and F8 against the new state and
+//      reaches its own conclusion. That distinction is what keeps class I absolute: an
+//      operator asserting "this fault is resolved" is a claim about the world, which is
+//      legitimate and auditable, while "assign it anyway" is a waiver of a class I
+//      predicate, which §7.2 forbids to everyone. A request that tries to be the second
+//      is refused below, by name.
+//   2. **It does not skip the state check.** The 409 on a robot that is not in a fault
+//      state stays exactly as it was.
+//   3. **It records the reason on the Event row.** The audit stream has it, but an
+//      operator reading `Event` during an incident should not have to join two tables to
+//      find out why a fault was cleared.
 const clearRobotFault = asyncHandler(async (req, res) => {
   const prisma = getPrisma();
   const kv = req.app?.locals?.kv;
@@ -385,6 +407,39 @@ const clearRobotFault = asyncHandler(async (req, res) => {
     const err = new Error("robotId is required");
     err.status = 400;
     throw err;
+  }
+
+  // §23.6 / §7.2 — a request that asks to waive a predicate is refused here, before
+  // anything else happens, and the refusal names the class. `override.authoriseWaiver`
+  // issues it without consulting the requester's role, which is how "never overridable
+  // by **anyone**" is implemented: the absoluteness of the class must not be one
+  // privilege escalation away from being negotiable.
+  const waiveRequest = toStringOrNull(req.body?.waivePredicate);
+  if (waiveRequest) {
+    const decision = override.authoriseWaiver(
+      {
+        predicateId: waiveRequest,
+        // Both predicates this endpoint's state touches are class I (§7.5: F3 is the
+        // operator-hold/quarantine check, F8 the blocking-fault check).
+        constraintClass: "I",
+        actorId: req.user?.id ?? null,
+        actorRole: req.user?.role ?? null,
+        reason: toStringOrNull(req.body?.reason),
+      },
+      { elevatedRoles: [] },
+      {},
+    );
+    res.status(403).json({
+      ok: false,
+      error: "Forbidden",
+      refusal: decision.refusal,
+      detail: decision.detail,
+      note:
+        "clearing a fault is permitted and is what this endpoint does: it changes the agent's observed state, and " +
+        "the feasibility gate then re-evaluates against the new state. Waiving the predicate is a different act and " +
+        "is not permitted to anyone (§7.2, §23.6).",
+    });
+    return;
   }
 
   const robot = await prisma.robot.findUnique({
@@ -420,11 +475,18 @@ const clearRobotFault = asyncHandler(async (req, res) => {
   await updateHealthStatus(kv, robotCode, "OK");
 
   try {
+    // §23.6 — identity and reason on the Event row too. The hash-chained stream is the
+    // non-repudiable record; this is the one an operator already has open.
+    const reason = req.override?.request?.reason || null;
+    const actor = req.override?.request?.actorId || req.user?.id || null;
     await prisma.event.create({
       data: {
         robotId: robot.id,
         type: "INFO",
-        message: `Fault cleared via recovery workflow (status ${dbStatus} -> ${nextStatus})`,
+        message:
+          `Fault cleared via recovery workflow (status ${dbStatus} -> ${nextStatus})` +
+          (actor ? ` by ${actor}` : "") +
+          (reason ? `: ${reason}` : ""),
       },
     });
   } catch {

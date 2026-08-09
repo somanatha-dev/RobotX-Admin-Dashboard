@@ -196,11 +196,35 @@ describe("the migration agrees with schema.prisma", () => {
     if (!fs.existsSync(file)) continue;
     for (const [, table, column] of fs
       .readFileSync(file, "utf8")
-      .matchAll(/ALTER TABLE "([A-Za-z_]+)" ADD COLUMN "([A-Za-z_]+)"/g)) {
+      // `\s+`, not a single space: Prisma's own generated style — which every migration
+      // in this tree copies — is `ADD COLUMN     "x"` with five. A single-space pattern
+      // matched nothing, so this subtraction was silently inert until Phase 11 became
+      // the first later migration to add a column to a table this one creates.
+      .matchAll(/ALTER TABLE "([A-Za-z_]+)" ADD COLUMN\s+"([A-Za-z_]+)"/g)) {
       if (!columnsAddedLater.has(table)) columnsAddedLater.set(table, new Set());
       columnsAddedLater.get(table).add(column);
     }
   }
+
+  // The same subtraction, for indexes. A later phase that adds a column to a table this
+  // migration created usually indexes it too, and the generated output carries both —
+  // so subtracting only the column would leave the index to fail this comparison for
+  // exactly the reason the subtraction exists to excuse.
+  const indexesAddedLater = new Set();
+  const constraintsAddedLater = new Set();
+  for (const directory of fs.readdirSync(MIGRATIONS_ROOT).sort()) {
+    if (directory <= THIS_MIGRATION) continue;
+    const file = path.join(MIGRATIONS_ROOT, directory, "migration.sql");
+    if (!fs.existsSync(file)) continue;
+    const sql = fs.readFileSync(file, "utf8");
+    for (const [, name] of sql.matchAll(/CREATE (?:UNIQUE )?INDEX "([A-Za-z0-9_]+)"/g)) indexesAddedLater.add(name);
+    // A later-added column that is a foreign key brings its constraint with it.
+    for (const [, name] of sql.matchAll(/ADD CONSTRAINT "([A-Za-z0-9_]+)"/g)) constraintsAddedLater.add(name);
+  }
+
+  const addedByALaterMigration = (statement) =>
+    [...indexesAddedLater].some((name) => statement.includes(`INDEX "${name}"`)) ||
+    [...constraintsAddedLater].some((name) => statement.includes(`ADD CONSTRAINT "${name}"`));
 
   /** Remove later-added column definitions from a generated CREATE TABLE. */
   const asOfThisMigration = (statement, table) => {
@@ -222,7 +246,7 @@ describe("the migration agrees with schema.prisma", () => {
     );
 
   test.each(PHASE_2_TABLES)("%s: every generated statement appears verbatim in the migration", (table) => {
-    const expected = relevant(generatedStatements, table);
+    const expected = relevant(generatedStatements, table).filter((statement) => !addedByALaterMigration(statement));
     expect(expected.length).toBeGreaterThan(0);
     for (const statement of expected) {
       expect(migrationStatements).toContain(asOfThisMigration(statement, table));

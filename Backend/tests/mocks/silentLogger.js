@@ -22,4 +22,29 @@ const logger = {
   child: () => logger,
 };
 
+// PHASE 11 — §21.7's structured engine emitters. The real logger enforces log-volume
+// discipline by *throwing* outside production when handed per-candidate detail; the
+// stand-in must not silently accept what the real one refuses, or a test would pass
+// against a payload production would reject. So these delegate to the real
+// implementations of the discipline and drop only the rendering.
+const real = jest.requireActual("../../src/config/logger");
+
+logger.TRACE_FIELDS = real.TRACE_FIELDS;
+logger.PER_CANDIDATE_FIELDS = real.PER_CANDIDATE_FIELDS;
+logger.LogVolumeDisciplineError = real.LogVolumeDisciplineError;
+logger.withoutPerCandidateDetail = real.withoutPerCandidateDetail;
+logger.missingTraceFields = real.missingTraceFields;
+
+logger.round = (summary = {}) => {
+  const { removed } = real.withoutPerCandidateDetail(summary);
+  if (removed.length > 0) throw new real.LogVolumeDisciplineError(removed);
+  return { kind: "round", ...summary };
+};
+
+logger.anomaly = (kind, meta = {}) => {
+  const { removed } = real.withoutPerCandidateDetail(meta);
+  if (removed.length > 0) throw new real.LogVolumeDisciplineError(removed);
+  return { kind: `anomaly.${kind}`, ...meta };
+};
+
 module.exports = logger;

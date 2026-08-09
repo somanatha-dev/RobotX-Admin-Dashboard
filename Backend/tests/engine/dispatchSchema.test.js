@@ -255,9 +255,14 @@ describe("command signing (§23.3)", () => {
     const before = new Date("2026-07-30T09:00:00.000Z");
     const after = new Date("2026-07-30T11:00:00.000Z");
 
+    // PHASE 14 — the verdict gained a `scope`. §23.3's "Every rejection is reported and
+    // counted, **by scope**" needs the dimension at the point of refusal, and deriving it
+    // afterwards from the command name would fail for exactly the envelopes whose command
+    // field is the thing that was tampered with.
     expect(commandSigning.admitEnvelope(signed, { agentId: "agent-1", now: before, key: KEY })).toEqual({
       accepted: true,
       reason: null,
+      scope: "COMMITMENT",
     });
     expect(commandSigning.admitEnvelope(signed, { agentId: "agent-2", now: before, key: KEY }).reason).toBe(
       "ADDRESSED_TO_ANOTHER_AGENT",

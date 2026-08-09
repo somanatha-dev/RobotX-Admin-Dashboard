@@ -38,6 +38,7 @@
  *   A1  λ_min is a genuine underestimate of every class's λ_time (§6.4, §8.10)
  *   A2  derived parameters are not hand-entered (§22.1 rule 6)
  *   A3  the migrated legacy liveness coupling `flush interval < offline cutoff`
+ *   A4  the leadership renewal margin is satisfiable (§19.5) — Phase 13
  *
  * Per-parameter type and range validation runs first (P-series). A cross-parameter
  * check reading an out-of-range value would report a second, derived failure.
@@ -46,6 +47,12 @@
 const { CALIBRATION_STATUS, checkRegister } = require("./calibrationStatus");
 const { rejectHandEnteredDerived, CONTINGENCY_TIER } = require("./derived");
 const { normaliseScopeLevel, permitsScope } = require("./resolver");
+// PHASE 13 — V4's inequality and §3.5's definition-set rules live where the shard model
+// lives, and are read from here rather than restated. A second copy of a sizing bound is a
+// second thing to update when k_txn is re-measured.
+const sizing = require("../shard/sizing");
+const shardModel = require("../shard/shardModel");
+const election = require("../shard/election");
 
 /** @structural unit conversion: seconds in an hour, from the §3.5 inequality's own statement */
 const SECONDS_PER_HOUR = 3600;
@@ -330,44 +337,90 @@ function v3ContingencyQuantileDerived(values, derivedValues, bindings) {
 /**
  * V4 — the shard-sizing inequality of §3.5 holds for the region's measured mission
  * rate: `N · r · k_txn · t_txn ≤ ρ_max · 3600`.
+ *
+ * ── PHASE 13 — the arithmetic moved, and the check gained a second subject ───
+ * The inequality itself now lives in `shard/sizing.evaluateSerialCommitBound()`, and this
+ * check delegates to it. Two copies of a sizing inequality is two places to update when
+ * `k_txn` is re-measured, and the copy that is not updated is the one that admits the
+ * oversubscribed shard — the exact failure §3.5 wrote both bounds down to prevent.
+ *
+ * The check is also now applied **per shard definition** as well as to the resolved global
+ * values. §3.5 is explicit that the bound "is inversely proportional to mission rate" and
+ * that "shard size is therefore configured per region against that region's measured `r`",
+ * so a publish carrying region-scoped overrides has as many instances of this inequality as
+ * it has regions, and validating only the global one would pass a publish in which the one
+ * dense urban region is oversubscribed by a factor of five.
+ *
+ * @param {Map<string, *>|object} values the resolved global values
+ * @param {object[]} [shards] per-shard definitions `{ shardId, regionId, maxAgents?,
+ *   missionRatePerAgentHour?, commitTxnServiceTimeMs? }` — each field falling back to the
+ *   global value when the definition does not override it
+ * @returns {object[]}
  */
-function v4ShardSizing(values) {
-  const agents = read(values, "shard.max_agents");
-  const rate = read(values, "shard.mission_rate_per_agent_hour");
-  const txnPerMission = read(values, "shard.txn_per_mission_lifecycle");
-  const serviceTimeMs = read(values, "shard.commit_txn_service_time");
-  const rhoMax = read(values, "commit.max_serial_utilisation");
+function v4ShardSizing(values, shards) {
+  const globalInputs = {
+    agents: read(values, "shard.max_agents"),
+    missionRatePerAgentHour: read(values, "shard.mission_rate_per_agent_hour"),
+    txnPerMissionLifecycle: read(values, "shard.txn_per_mission_lifecycle"),
+    commitTxnServiceTimeMs: read(values, "shard.commit_txn_service_time"),
+    maxSerialUtilisation: read(values, "commit.max_serial_utilisation"),
+  };
 
-  if (![agents, rate, txnPerMission, serviceTimeMs, rhoMax].every(isNumber)) {
-    return [
-      finding(
-        "V4",
-        SEVERITY.BLOCKING,
-        "§22.1 rule 5 · §3.5",
-        "the shard-sizing inequality cannot be evaluated: one of shard.max_agents, " +
-          "shard.mission_rate_per_agent_hour, shard.txn_per_mission_lifecycle, " +
-          "shard.commit_txn_service_time, commit.max_serial_utilisation is unset.",
-      ),
-    ];
+  const results = [];
+
+  const evaluateOne = (inputs, label) => {
+    const bound = sizing.evaluateSerialCommitBound(inputs);
+    if (!bound.evaluated) {
+      results.push(
+        finding(
+          "V4",
+          SEVERITY.BLOCKING,
+          "§22.1 rule 5 · §3.5",
+          `${label}the shard-sizing inequality cannot be evaluated: ${bound.missing.join(", ")} unset. ` +
+            "An unevaluated bound is not a satisfied one — a shard sized against a bound nobody computed is " +
+            "sized against nothing.",
+        ),
+      );
+      return;
+    }
+    if (bound.satisfied) return;
+    results.push(finding("V4", SEVERITY.BLOCKING, "§22.1 rule 5 · §3.5", `${label}${bound.sentence}`));
+  };
+
+  evaluateOne(globalInputs, "");
+
+  for (const definition of Array.isArray(shards) ? shards : []) {
+    if (!definition) continue;
+    const label = `shard "${String(definition.shardId)}" (region "${String(definition.regionId)}"): `;
+    evaluateOne(
+      {
+        agents: isNumber(definition.maxAgents) ? definition.maxAgents : globalInputs.agents,
+        missionRatePerAgentHour: isNumber(definition.missionRatePerAgentHour)
+          ? definition.missionRatePerAgentHour
+          : globalInputs.missionRatePerAgentHour,
+        // `k_txn` is deliberately not overridable per shard: §3.5 derives it from the
+        // mission lifecycle, which is a property of the design rather than of a region.
+        txnPerMissionLifecycle: globalInputs.txnPerMissionLifecycle,
+        commitTxnServiceTimeMs: isNumber(definition.commitTxnServiceTimeMs)
+          ? definition.commitTxnServiceTimeMs
+          : globalInputs.commitTxnServiceTimeMs,
+        maxSerialUtilisation: globalInputs.maxSerialUtilisation,
+      },
+      label,
+    );
   }
 
-  const serviceTimeSeconds = serviceTimeMs / MS_PER_SECOND;
-  const demand = agents * rate * txnPerMission * serviceTimeSeconds;
-  const capacity = rhoMax * SECONDS_PER_HOUR;
+  // §3.5 also requires region → shard to be a function and shard ids to be unique. A
+  // publish that broke either would produce a map intake cannot route against, discovered
+  // at the first Leg rather than here.
+  if (Array.isArray(shards) && shards.length > 0) {
+    const structural = shardModel.validateDefinitions(shards);
+    for (const problem of structural.problems) {
+      results.push(finding("V4", SEVERITY.BLOCKING, "§22.1 rule 5 · §3.5", problem));
+    }
+  }
 
-  if (demand <= capacity) return [];
-  const admissible = Math.floor(capacity / (rate * txnPerMission * serviceTimeSeconds));
-  return [
-    finding(
-      "V4",
-      SEVERITY.BLOCKING,
-      "§22.1 rule 5 · §3.5",
-      `shard sizing violates bound 2: N · r · k_txn · t_txn = ${demand.toFixed(2)} exceeds ` +
-        `ρ_max · 3600 = ${capacity.toFixed(2)}. At r = ${rate} missions per agent per hour this shard ` +
-        `admits about ${admissible} agents, not ${agents}. The bound is inversely proportional to ` +
-        "mission rate, so shard size is configured per region against that region's measured r.",
-    ),
-  ];
+  return results;
 }
 
 /**
@@ -669,6 +722,116 @@ function a3LegacyLivenessCoupling(values) {
   ];
 }
 
+/**
+ * A4 — the leadership renewal margin of §19.5 is satisfiable.
+ *
+ * > A coordinator MUST stop committing the moment it cannot renew its lease, *before* the
+ * > lease actually expires, leaving a margin of `time.max_clock_skew` plus the store's
+ * > round-trip budget.
+ *
+ * That sentence is a coupling between four parameters, and a publish can satisfy every one
+ * of their individual ranges while making the coupling impossible: with a 5 s lease, a
+ * 500 ms skew allowance, a 500 ms store round trip and a 4 500 ms renewal interval, the
+ * leader's *first* renewal already falls after the instant §19.5 requires it to have
+ * stopped committing. The shard would then commit in bursts and idle between them, and
+ * nothing about any individual value would show why.
+ *
+ * A-series rather than V-series for the same reason A1–A3 are: §22.1 rule 5's list does not
+ * enumerate it, and the list is introduced with "the following are validated at publish and
+ * are blocking", not "only the following". §19.5 states the requirement in normative
+ * language, which is the standard the other three A-checks were admitted under.
+ */
+function a4LeadershipRenewalMargin(values) {
+  const leaseSeconds = read(values, "shard.lease_duration");
+  const renewalMs = read(values, "shard.renewal_interval");
+  const skewMs = read(values, "time.max_clock_skew");
+  const roundTripMs = read(values, "shard.store_round_trip_budget");
+
+  if (![leaseSeconds, renewalMs, skewMs, roundTripMs].every(isNumber)) {
+    return [
+      finding(
+        "A4",
+        SEVERITY.BLOCKING,
+        "§19.5",
+        "the leadership renewal margin cannot be validated: one of shard.lease_duration, " +
+          "shard.renewal_interval, time.max_clock_skew, shard.store_round_trip_budget is unset.",
+      ),
+    ];
+  }
+
+  const budget = election.renewalBudget({
+    leaseDurationSeconds: leaseSeconds,
+    maxClockSkewMillis: skewMs,
+    storeRoundTripMillis: roundTripMs,
+  });
+
+  if (renewalMs < budget.latestRenewalMillis) return [];
+
+  return [
+    finding(
+      "A4",
+      SEVERITY.BLOCKING,
+      "§19.5",
+      `shard.renewal_interval (${renewalMs} ms) is not below the latest lawful renewal instant ` +
+        `(${budget.latestRenewalMillis} ms). ${budget.sentence} The shard would stop committing before every ` +
+        "renewal and resume after it — committing in bursts, with nothing about any individual parameter's range " +
+        "showing why.",
+    ),
+  ];
+}
+
+/**
+ * A5 — the identity store's retention is shorter than the technical record's (§23.7).
+ *
+ * > field-level classification, encryption at rest, least-privilege access, PII
+ * > redaction in analytical copies, **retention limits distinct from (and shorter than)
+ * > the operational retention of the decision's *technical* content**, and support for
+ * > erasure requests without destroying the audit trail's integrity.
+ *
+ * The parenthesis is the check. A deployment that set `privacy.identity_retention` to or
+ * beyond `observability.full_retention` would be keeping personal data exactly as long as
+ * the decision record it was deliberately separated from — which is the state the whole
+ * §23.7 construction exists to leave behind, arrived at by a config publish rather than
+ * by a schema mistake.
+ *
+ * The mirror image of V6, and deliberately so: V6 refuses a snapshot retention *below*
+ * the technical record's, because that breaks replay; A5 refuses an identity retention
+ * *at or above* it, because that breaks the privacy separation. The two together are what
+ * make the ordering `identity < technical ≤ snapshot` a published property rather than an
+ * intention.
+ *
+ * A-series rather than V-series for the reason A1–A4 are: §22.1 rule 5's list does not
+ * enumerate it, and §23.7 states the requirement in normative language.
+ */
+function a5IdentityRetentionOrdering(values) {
+  const identity = read(values, "privacy.identity_retention");
+  const full = read(values, "observability.full_retention");
+
+  if (![identity, full].every(isNumber)) {
+    return [
+      finding(
+        "A5",
+        SEVERITY.BLOCKING,
+        "§23.7",
+        "identity retention cannot be validated: privacy.identity_retention or observability.full_retention is unset.",
+      ),
+    ];
+  }
+  if (identity < full) return [];
+
+  return [
+    finding(
+      "A5",
+      SEVERITY.BLOCKING,
+      "§23.7",
+      `privacy.identity_retention (${identity} days) is not shorter than observability.full_retention ` +
+        `(${full} days). §23.7 requires the identity store's retention be "distinct from (and shorter than) the ` +
+        'operational retention of the decision\'s technical content"; equal retention keeps the personal data for ' +
+        "exactly as long as the record it was separated from, which is the state the separation exists to leave behind.",
+    ),
+  ];
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Entry point
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -734,7 +897,7 @@ function validatePublish(candidate) {
   findings.push(...v1OpportunityValueHorizon(values));
   findings.push(...v2PolicyCreditCeilings(entries, values, derivedValues));
   findings.push(...v3ContingencyQuantileDerived(values, derivedValues, bindings));
-  findings.push(...v4ShardSizing(values));
+  findings.push(...v4ShardSizing(values, candidate.shards));
   findings.push(...v5DedupRetention(values));
   findings.push(...v6SnapshotRetention(values));
   findings.push(...v7AgingMultiplierFinite(values));
@@ -744,6 +907,8 @@ function validatePublish(candidate) {
   findings.push(...a1LambdaFloorAdmissible(values));
   findings.push(...a2NoHandEnteredDerived(bindings));
   findings.push(...a3LegacyLivenessCoupling(values));
+  findings.push(...a4LeadershipRenewalMargin(values));
+  findings.push(...a5IdentityRetentionOrdering(values));
 
   const blocking = findings.filter((item) => item.severity === SEVERITY.BLOCKING);
   const launchGate = findings.filter((item) => item.severity === SEVERITY.LAUNCH_GATE);
@@ -770,5 +935,7 @@ module.exports = {
   a1LambdaFloorAdmissible,
   a2NoHandEnteredDerived,
   a3LegacyLivenessCoupling,
+  a4LeadershipRenewalMargin,
+  a5IdentityRetentionOrdering,
   validatePublish,
 };

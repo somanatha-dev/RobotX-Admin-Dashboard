@@ -32,6 +32,9 @@
  */
 
 const logger = require("../config/logger");
+// PHASE 12 — §18.5's mode register, consulted before any engine command leaves the process.
+// Data and pure queries only; this import adds no store dependency to a legacy-tree service.
+const modeRegister = require("../engine/degraded/modeRegister");
 
 const MAX_RETRIES = 2;
 const RETRY_BASE_MS = 1000; // first retry after 1 s, second after 2 s
@@ -203,7 +206,42 @@ async function dispatchStop(io, robotId, payload) {
  * @param {object} envelope from `workers/outbox.worker.js`'s `envelopeOf`
  * @returns {Promise<{ delivered: boolean, detail: string|null, socketId: string|null }>}
  */
-async function deliverOutboxCommand(io, agentSocketId, envelope) {
+async function deliverOutboxCommand(io, agentSocketId, envelope, options = {}) {
+  // ── PHASE 12 — §18.5 Custodial Operation: **no commands** ───────────────────
+  //
+  //   > Command authority derives from a fence allocated in the Commitment Store; with
+  //   > the store unavailable no fence can be allocated, so no command can be authorised.
+  //   > The engine does not fall back to a cached fence, because a fence that cannot be
+  //   > advanced durably provides none of the protection a fence exists to provide.
+  //
+  // The gate sits here rather than in the drain worker because this function is the *only*
+  // route by which a §10.3.1 command reaches an agent (§4.1 rule 5). A check one level up
+  // would be a check some future caller could route around; a check at the single exit is
+  // one nothing can.
+  //
+  // `activeModes` is supplied by the caller — the drain worker reads it from
+  // `degraded/transitions.activeModes`, whose authority is the `DegradedModeEvent` table.
+  // This service does not read it itself, and takes no engine store dependency: a legacy-
+  // tree service that queried the mode register would be a second place the shard's mode is
+  // determined, and two determinations of "may we command" is one too many.
+  //
+  // Absent `activeModes`, nothing is suspended. That is the correct default for the legacy
+  // path — which has no modes and is unchanged until the Phase 15 cutover — and it is safe
+  // for the engine path because the drain worker always supplies it.
+  const suspension = modeRegister.commandsSuspended(options.activeModes || []);
+  if (suspension.suspended) {
+    // Not an error and not a discard: the outbox row stays PENDING and is delivered when
+    // the mode exits. §18.4 — infrastructure failure never fails customer work; the queue
+    // drains more slowly, and no task is failed for this reason.
+    return {
+      delivered: false,
+      detail: `COMMANDS_SUSPENDED:${suspension.byMode}`,
+      socketId: null,
+      degradedMode: suspension.byMode,
+      reason: suspension.reason,
+    };
+  }
+
   if (!assertIoServer(io, `deliverOutboxCommand(${envelope?.command})`)) {
     return { delivered: false, detail: "NO_IO_SERVER", socketId: null };
   }
@@ -247,8 +285,15 @@ async function deliverOutboxCommand(io, agentSocketId, envelope) {
  * @param {object} io
  * @returns {(agentSocketId: string, envelope: object) => Promise<{ delivered: boolean, detail: string|null }>}
  */
-function outboxDeliveryArm(io) {
-  return (agentSocketId, envelope) => deliverOutboxCommand(io, agentSocketId, envelope);
+function outboxDeliveryArm(io, options = {}) {
+  // `options.activeModes` may be a value or a function. A function is what the drain worker
+  // passes, because the shard's mode set can change between two rows of one drain pass and a
+  // value captured at bind time would let a command out after Custodial Operation opened.
+  return (agentSocketId, envelope) =>
+    deliverOutboxCommand(io, agentSocketId, envelope, {
+      activeModes:
+        typeof options.activeModes === "function" ? options.activeModes() : options.activeModes || [],
+    });
 }
 
 module.exports = {

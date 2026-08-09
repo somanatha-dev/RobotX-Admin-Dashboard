@@ -18,7 +18,8 @@
       "blastRadius": "shard",
       "calibrationStatus": "DERIVED",
       "section": "§17.3",
-      "description": "Kill switch for Repositioning. Thrown (true) disables the mechanism and degrades to: No reposition missions. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+      "description": "Kill switch for Repositioning. Thrown (true) disables the mechanism and degrades to: No reposition missions. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first.",
+      "derivation": "Stated source: §1.8 rule 3 fixes this value directly — \"Tier 0 plus Tier 1 ... is a complete, safe, shippable engine. Tier 2 mechanisms are then enabled one at a time.\" The launch value of every kill switch is therefore thrown, and it is DERIVED from that sentence rather than chosen: there is no measurement that could produce a different launch state, and Phase 16 is the only thing that changes it, one switch at a time behind its own gate."
     },
     {
       "name": "killswitch.preemption",
@@ -36,7 +37,8 @@
       "blastRadius": "shard",
       "calibrationStatus": "DERIVED",
       "section": "§4.8",
-      "description": "Kill switch for Preemption, including victim disposition. Thrown (true) disables the mechanism and degrades to: Disabled entirely. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+      "description": "Kill switch for Preemption, including victim disposition. Thrown (true) disables the mechanism and degrades to: Disabled entirely. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first.",
+      "derivation": "Stated source: §1.8 rule 3 fixes this value directly — \"Tier 0 plus Tier 1 ... is a complete, safe, shippable engine. Tier 2 mechanisms are then enabled one at a time.\" The launch value of every kill switch is therefore thrown, and it is DERIVED from that sentence rather than chosen: there is no measurement that could produce a different launch state, and Phase 16 is the only thing that changes it, one switch at a time behind its own gate."
     },
     {
       "name": "killswitch.deferral",
@@ -54,7 +56,8 @@
       "blastRadius": "shard",
       "calibrationStatus": "DERIVED",
       "section": "§8.8",
-      "description": "Kill switch for Deferral as a priced arc. Thrown (true) disables the mechanism and degrades to: Immediate assignment when any feasible candidate exists. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+      "description": "Kill switch for Deferral as a priced arc. Thrown (true) disables the mechanism and degrades to: Immediate assignment when any feasible candidate exists. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first.",
+      "derivation": "Stated source: §1.8 rule 3 fixes this value directly — \"Tier 0 plus Tier 1 ... is a complete, safe, shippable engine. Tier 2 mechanisms are then enabled one at a time.\" The launch value of every kill switch is therefore thrown, and it is DERIVED from that sentence rather than chosen: there is no measurement that could produce a different launch state, and Phase 16 is the only thing that changes it, one switch at a time behind its own gate."
     },
     {
       "name": "killswitch.cross_region_candidacy",
@@ -72,7 +75,8 @@
       "blastRadius": "shard",
       "calibrationStatus": "DERIVED",
       "section": "§19.6",
-      "description": "Kill switch for Cross-region candidacy. Thrown (true) disables the mechanism and degrades to: Region-local only. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+      "description": "Kill switch for Cross-region candidacy. Thrown (true) disables the mechanism and degrades to: Region-local only. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first.",
+      "derivation": "Stated source: §1.8 rule 3 fixes this value directly — \"Tier 0 plus Tier 1 ... is a complete, safe, shippable engine. Tier 2 mechanisms are then enabled one at a time.\" The launch value of every kill switch is therefore thrown, and it is DERIVED from that sentence rather than chosen: there is no measurement that could produce a different launch state, and Phase 16 is the only thing that changes it, one switch at a time behind its own gate."
     },
     {
       "name": "killswitch.chaining",
@@ -90,7 +94,8 @@
       "blastRadius": "shard",
       "calibrationStatus": "DERIVED",
       "section": "§13.3",
-      "description": "Kill switch for Chaining — queue depth > 1. Thrown (true) disables the mechanism and degrades to: capacity[agent_class] = 1; strict one-mission-per-agent. Independent of multi-Leg columns, because queue depth lives in plan feasibility while multi-Leg structure lives in column generation. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+      "description": "Kill switch for Chaining — queue depth > 1. Thrown (true) disables the mechanism and degrades to: capacity[agent_class] = 1; strict one-mission-per-agent. Independent of multi-Leg columns, because queue depth lives in plan feasibility while multi-Leg structure lives in column generation. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first.",
+      "derivation": "Stated source: §1.8 rule 3 fixes this value directly — \"Tier 0 plus Tier 1 ... is a complete, safe, shippable engine. Tier 2 mechanisms are then enabled one at a time.\" The launch value of every kill switch is therefore thrown, and it is DERIVED from that sentence rather than chosen: there is no measurement that could produce a different launch state, and Phase 16 is the only thing that changes it, one switch at a time behind its own gate."
     },
     {
       "name": "killswitch.multi_leg_columns",
@@ -108,7 +113,8 @@
       "blastRadius": "shard",
       "calibrationStatus": "DERIVED",
       "section": "§9.3",
-      "description": "Kill switch for Multi-Leg columns (bundling and consolidation). Thrown (true) disables the mechanism and degrades to: Singleton columns only — which puts every round in the singleton regime, where the solve is a totally unimodular min-cost flow, integral and exact, and solver duals are exact marginal prices. This switch degrades to a *stronger* guarantee, not a weaker one. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+      "description": "Kill switch for Multi-Leg columns (bundling and consolidation). Thrown (true) disables the mechanism and degrades to: Singleton columns only — which puts every round in the singleton regime, where the solve is a totally unimodular min-cost flow, integral and exact, and solver duals are exact marginal prices. This switch degrades to a *stronger* guarantee, not a weaker one. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first.",
+      "derivation": "Stated source: §1.8 rule 3 fixes this value directly — \"Tier 0 plus Tier 1 ... is a complete, safe, shippable engine. Tier 2 mechanisms are then enabled one at a time.\" The launch value of every kill switch is therefore thrown, and it is DERIVED from that sentence rather than chosen: there is no measurement that could produce a different launch state, and Phase 16 is the only thing that changes it, one switch at a time behind its own gate."
     },
     {
       "name": "killswitch.reliability_based_gating",
@@ -126,7 +132,8 @@
       "blastRadius": "shard",
       "calibrationStatus": "DERIVED",
       "section": "§8.4, §16",
-      "description": "Kill switch for Reliability-priced risk. Thrown (true) disables the mechanism and degrades to: Cohort priors only. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+      "description": "Kill switch for Reliability-priced risk. Thrown (true) disables the mechanism and degrades to: Cohort priors only. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first.",
+      "derivation": "Stated source: §1.8 rule 3 fixes this value directly — \"Tier 0 plus Tier 1 ... is a complete, safe, shippable engine. Tier 2 mechanisms are then enabled one at a time.\" The launch value of every kill switch is therefore thrown, and it is DERIVED from that sentence rather than chosen: there is no measurement that could produce a different launch state, and Phase 16 is the only thing that changes it, one switch at a time behind its own gate."
     },
     {
       "name": "killswitch.batch_solving",
@@ -144,7 +151,8 @@
       "blastRadius": "shard",
       "calibrationStatus": "DERIVED",
       "section": "§9.1, §9.2",
-      "description": "Kill switch for Batch solving. Thrown (true) disables the mechanism and degrades to: The same round executed with a batch of one Leg. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+      "description": "Kill switch for Batch solving. Thrown (true) disables the mechanism and degrades to: The same round executed with a batch of one Leg. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first.",
+      "derivation": "Stated source: §1.8 rule 3 fixes this value directly — \"Tier 0 plus Tier 1 ... is a complete, safe, shippable engine. Tier 2 mechanisms are then enabled one at a time.\" The launch value of every kill switch is therefore thrown, and it is DERIVED from that sentence rather than chosen: there is no measurement that could produce a different launch state, and Phase 16 is the only thing that changes it, one switch at a time behind its own gate."
     },
     {
       "name": "killswitch.opportunity_cost_term",
@@ -162,7 +170,8 @@
       "blastRadius": "shard",
       "calibrationStatus": "DERIVED",
       "section": "§8.3",
-      "description": "Kill switch for The opportunity-cost and terminal-value model. Thrown (true) disables the mechanism and degrades to: λ_zone from configured static per-zone, per-bucket priors; the derivation of §8.3 is unchanged, only its input source is. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+      "description": "Kill switch for The opportunity-cost and terminal-value model. Thrown (true) disables the mechanism and degrades to: λ_zone from configured static per-zone, per-bucket priors; the derivation of §8.3 is unchanged, only its input source is. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first.",
+      "derivation": "Stated source: §1.8 rule 3 fixes this value directly — \"Tier 0 plus Tier 1 ... is a complete, safe, shippable engine. Tier 2 mechanisms are then enabled one at a time.\" The launch value of every kill switch is therefore thrown, and it is DERIVED from that sentence rather than chosen: there is no measurement that could produce a different launch state, and Phase 16 is the only thing that changes it, one switch at a time behind its own gate."
     },
     {
       "name": "killswitch.churn_pricing",
@@ -180,7 +189,8 @@
       "blastRadius": "region",
       "calibrationStatus": "DERIVED",
       "section": "§8.9",
-      "description": "Kill switch for Churn pricing. Thrown (true) disables the mechanism and degrades to: Reassignment priced without a churn term. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+      "description": "Kill switch for Churn pricing. Thrown (true) disables the mechanism and degrades to: Reassignment priced without a churn term. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first.",
+      "derivation": "Stated source: §1.8 rule 3 fixes this value directly — \"Tier 0 plus Tier 1 ... is a complete, safe, shippable engine. Tier 2 mechanisms are then enabled one at a time.\" The launch value of every kill switch is therefore thrown, and it is DERIVED from that sentence rather than chosen: there is no measurement that could produce a different launch state, and Phase 16 is the only thing that changes it, one switch at a time behind its own gate."
     },
     {
       "name": "killswitch.local_search",
@@ -198,7 +208,8 @@
       "blastRadius": "region",
       "calibrationStatus": "DERIVED",
       "section": "§9.5",
-      "description": "Kill switch for Post-solve local search. Thrown (true) disables the mechanism and degrades to: The solver's own solution, reported with its own gap. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+      "description": "Kill switch for Post-solve local search. Thrown (true) disables the mechanism and degrades to: The solver's own solution, reported with its own gap. Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first.",
+      "derivation": "Stated source: §1.8 rule 3 fixes this value directly — \"Tier 0 plus Tier 1 ... is a complete, safe, shippable engine. Tier 2 mechanisms are then enabled one at a time.\" The launch value of every kill switch is therefore thrown, and it is DERIVED from that sentence rather than chosen: there is no measurement that could produce a different launch state, and Phase 16 is the only thing that changes it, one switch at a time behind its own gate."
     },
     {
       "name": "killswitch.duty_cycle_regulariser",
@@ -216,7 +227,8 @@
       "blastRadius": "region",
       "calibrationStatus": "DERIVED",
       "section": "§17.2",
-      "description": "Kill switch for The duty-cycle regulariser. Thrown (true) disables the mechanism and degrades to: Priced wear only (§17.1). Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first."
+      "description": "Kill switch for The duty-cycle regulariser. Thrown (true) disables the mechanism and degrades to: Priced wear only (§17.1). Ships thrown — §1.8 rule 3 launches the Tier 0 + Tier 1 engine and enables Tier 2 mechanisms one at a time, each validated in shadow mode first.",
+      "derivation": "Stated source: §1.8 rule 3 fixes this value directly — \"Tier 0 plus Tier 1 ... is a complete, safe, shippable engine. Tier 2 mechanisms are then enabled one at a time.\" The launch value of every kill switch is therefore thrown, and it is DERIVED from that sentence rather than chosen: there is no measurement that could produce a different launch state, and Phase 16 is the only thing that changes it, one switch at a time behind its own gate."
     }
   ]
 }

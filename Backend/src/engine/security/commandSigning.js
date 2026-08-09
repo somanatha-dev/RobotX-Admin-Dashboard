@@ -27,13 +27,26 @@
  * Binding the agent id into the signed form makes a misaddressed command a signature
  * failure rather than a policy check somebody could forget to write.
  *
- * ── Symmetric now, asymmetric at Phase 14 ───────────────────────────────────
- * Phase 4 signs with HMAC-SHA256 over a canonical serialisation. Phase 14 owns mTLS,
- * per-device certificates, and hardware-backed keys (§23.2); it replaces the *key
- * material and algorithm*, not the envelope, which is why the canonical form and the
- * field set are fixed here and the key is an injected parameter rather than an
- * environment read. A module that reached for `process.env` would make key rotation a
- * code change.
+ * ── Symmetric at Phase 4, asymmetric at Phase 14 ────────────────────────────
+ * Phase 4 signed with HMAC-SHA256 over a canonical serialisation and recorded the
+ * promise that Phase 14 "replaces the *key material and algorithm*, not the envelope".
+ * **Phase 14 keeps that promise exactly.** `SIGNED_FIELDS`, `canonicalise()` and the
+ * separator are byte-for-byte what Phase 4 shipped; what is added is `ALGORITHM.ED25519`
+ * beside the existing `HMAC_SHA256`, selected per call, defaulting to HMAC so that every
+ * Phase 4 caller and every deployed agent is unaffected.
+ *
+ * ── Why asymmetric matters, and why HMAC is not simply replaced ─────────────
+ * An HMAC key that lets an agent *verify* a command also lets it *forge* one, because
+ * the two are the same key. In a fleet that means the compromise of one device yields a
+ * key that mints commands for every device — §23.1's "compromised agent" row escalating
+ * into its "spoofed agent identity" row. Ed25519 removes that: the fleet holds a public
+ * key and can verify, and only the coordinator can sign.
+ *
+ * HMAC is nonetheless retained rather than deleted, because a signing scheme is a
+ * *coordinated firmware rollout* (the plan's own risk note for this phase), and a
+ * migration in which the server can only speak the new scheme is one in which every
+ * un-updated agent stops accepting commands at the moment of deploy. Both are supported
+ * and the envelope records which was used, so a fleet moves device by device.
  *
  * Tier 1 by path (`src/engine/security/`), serving the Tier 0 rejection rules of
  * §10.3.1 by making the fields they compare unforgeable.
@@ -44,8 +57,25 @@ const crypto = require("crypto");
 const clock = require("../commitment/clock");
 const fencing = require("../commitment/fencing");
 
-/** @structural the HMAC digest algorithm; Phase 14 replaces the scheme, not the envelope */
+/** @structural the HMAC digest algorithm; Phase 14 adds a scheme beside it, not in place of it */
 const SIGNATURE_ALGORITHM = "sha256";
+
+/**
+ * The two signing schemes (§23.2, §23.3).
+ *
+ * `HMAC_SHA256` is Phase 4's and remains the default, so no existing caller changes
+ * behaviour by upgrading. `ED25519` is the per-device, hardware-backed scheme §23.2
+ * asks for; it takes a `KeyObject` (or PEM) rather than a shared secret, which is what
+ * makes "keys in a secure element where available" expressible at all — a secure element
+ * exports a public key and never a secret.
+ * @structural the signature scheme labels
+ */
+const ALGORITHM = Object.freeze({
+  HMAC_SHA256: "HMAC_SHA256",
+  ED25519: "ED25519",
+});
+
+const ALGORITHMS = Object.freeze(Object.values(ALGORITHM));
 
 /**
  * The canonical-form field separator: ASCII **unit separator**. Written as an escape
@@ -163,15 +193,48 @@ function canonicalise(envelope) {
 }
 
 /**
+ * Which scheme does this call use?
+ *
+ * Defaulting rather than requiring: every Phase 4 call site passes two arguments, and
+ * an unrecognised label is refused rather than silently treated as HMAC — a typo that
+ * downgraded the scheme would be invisible and would produce a signature that verifies.
+ *
+ * @param {object|string|undefined} options
+ * @returns {string}
+ */
+function algorithmOf(options) {
+  const requested = typeof options === "string" ? options : options && options.algorithm;
+  if (requested === undefined || requested === null) return ALGORITHM.HMAC_SHA256;
+  if (!ALGORITHMS.includes(requested)) {
+    throw new TypeError(
+      `"${String(requested)}" is not one of ${ALGORITHMS.join(", ")}. An unrecognised label is refused rather than ` +
+        "defaulted: a typo that silently downgraded the scheme would still produce a signature that verifies (§23.3).",
+    );
+  }
+  return requested;
+}
+
+/**
  * Sign an envelope.
  *
  * @param {object} envelope
- * @param {string|Buffer} key
+ * @param {string|Buffer|import("crypto").KeyObject} key an HMAC secret, or an Ed25519
+ *   private key when `options.algorithm` is `ED25519`
+ * @param {{ algorithm?: string }|string} [options]
  * @returns {string} the hex signature
  */
-function sign(envelope, key) {
-  const material = requireKey(key);
-  return crypto.createHmac(SIGNATURE_ALGORITHM, material).update(canonicalise(envelope), "utf8").digest("hex");
+function sign(envelope, key, options) {
+  const algorithm = algorithmOf(options);
+  const bytes = canonicalise(envelope);
+
+  if (algorithm === ALGORITHM.ED25519) {
+    // No `requireKey` length check: an Ed25519 key is a `KeyObject` or PEM, and applying
+    // a shared-secret minimum to it would reject a valid key for the wrong reason. Node
+    // refuses a key of the wrong type here, which is the check that actually applies.
+    return crypto.sign(null, Buffer.from(bytes, "utf8"), key).toString("hex");
+  }
+
+  return crypto.createHmac(SIGNATURE_ALGORITHM, requireKey(key)).update(bytes, "utf8").digest("hex");
 }
 
 /**
@@ -179,15 +242,35 @@ function sign(envelope, key) {
  *
  * `timingSafeEqual` rather than `===`: a comparison that returns early on the first
  * differing byte leaks the prefix of a valid signature to anyone who can measure it,
- * which turns forgery from infeasible into a few thousand requests.
+ * which turns forgery from infeasible into a few thousand requests. Ed25519 verification
+ * is constant-time inside OpenSSL, so the same property holds on that branch without a
+ * comparison here.
  *
  * @param {object} envelope
  * @param {string} signature
- * @param {string|Buffer} key
+ * @param {string|Buffer|import("crypto").KeyObject} key the HMAC secret, or the
+ *   **public** key for `ED25519`
+ * @param {{ algorithm?: string }|string} [options]
  * @returns {boolean}
  */
-function verify(envelope, signature, key) {
+function verify(envelope, signature, key, options) {
   if (typeof signature !== "string" || signature === "") return false;
+
+  let algorithm;
+  try {
+    algorithm = algorithmOf(options);
+  } catch {
+    return false;
+  }
+
+  if (algorithm === ALGORITHM.ED25519) {
+    try {
+      return crypto.verify(null, Buffer.from(canonicalise(envelope), "utf8"), key, Buffer.from(signature, "hex"));
+    } catch {
+      return false;
+    }
+  }
+
   let expected;
   try {
     expected = sign(envelope, key);
@@ -212,32 +295,59 @@ function verify(envelope, signature, key) {
  * @param {object} context
  * @param {string} context.agentId the receiving agent's own id
  * @param {Date} context.now the receiver's clock
- * @param {string|Buffer} context.key
- * @returns {{ accepted: boolean, reason: string|null }}
+ * @param {string|Buffer|import("crypto").KeyObject} context.key
+ * @param {string} [context.algorithm]
+ * @returns {{ accepted: boolean, reason: string|null, scope: string|null }}
  */
 function admitEnvelope(envelope, context) {
   const settings = context || {};
   const source = envelope || {};
 
-  if (!verify(source, source.signature, settings.key)) {
-    return { accepted: false, reason: "SIGNATURE_INVALID" };
+  // §23.3 — "Every rejection is reported and counted, by scope." The scope travels with
+  // the reason so the counter is dimensioned at the point of refusal; deriving it later
+  // from the command name would fail for exactly the envelopes whose command field is
+  // the thing that was tampered with.
+  const scope = scopeOfEnvelope(source);
+
+  if (!verify(source, source.signature, settings.key, { algorithm: settings.algorithm })) {
+    return { accepted: false, reason: "SIGNATURE_INVALID", scope };
   }
   if (source.agentId !== settings.agentId) {
-    return { accepted: false, reason: "ADDRESSED_TO_ANOTHER_AGENT" };
+    return { accepted: false, reason: "ADDRESSED_TO_ANOTHER_AGENT", scope };
   }
   if (clock.hasPassed(source.notValidAfter, settings.now)) {
-    return { accepted: false, reason: "NOT_VALID_AFTER_PASSED" };
+    return { accepted: false, reason: "NOT_VALID_AFTER_PASSED", scope };
   }
-  return { accepted: true, reason: null };
+  return { accepted: true, reason: null, scope };
+}
+
+/**
+ * The fence scope a rejection is counted under, tolerating an envelope whose `command`
+ * is unrecognised — which is itself a countable outcome rather than a throw, because a
+ * receiver must be able to count what it refused.
+ *
+ * @param {object} envelope
+ * @returns {string|null}
+ */
+function scopeOfEnvelope(envelope) {
+  try {
+    return fencing.fenceScopeOf(envelope && envelope.command);
+  } catch {
+    return "UNKNOWN_COMMAND";
+  }
 }
 
 module.exports = {
   SIGNATURE_ALGORITHM,
+  ALGORITHM,
+  ALGORITHMS,
   SIGNED_FIELDS,
   MINIMUM_KEY_BYTES,
+  algorithmOf,
   canonicalValue,
   canonicalise,
   sign,
   verify,
+  scopeOfEnvelope,
   admitEnvelope,
 };

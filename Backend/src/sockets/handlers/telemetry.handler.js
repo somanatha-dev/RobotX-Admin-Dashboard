@@ -8,6 +8,137 @@ const { haversineMeters } = require("../../utils/distance");
 const robotStateCache = require("../../cache/robotStateCache");
 // PHASE 5 (§12.3) — progress supervision. The handler *feeds* it; it does not act on it.
 const progress = require("../../engine/supervision/progress");
+// PHASE 14 (§23.5) — agent reports are untrusted input, validated before use.
+const attestation = require("../../engine/security/attestation");
+const trustBoundaries = require("../../engine/security/trustBoundaries");
+
+// §23.5 — "Persistent implausibility triggers quarantine and a security event."
+//
+// A single refused report is noise; a sustained pattern is evidence, and the two need
+// opposite responses. The counter is per-process and in-memory, bounded by fleet size —
+// the same pattern `lastDbFlushAt` and `sockets/rateLimit.js` use — because the *decision*
+// it feeds (quarantine) is a durable write that the engine's own quarantine path owns.
+// A counter that had to be durable would put a write on the telemetry hot path to
+// measure something whose action is taken at most once per agent.
+const implausibleReportCounts = new Map();
+
+/**
+ * Count one refused report, and report whether the agent has crossed the threshold.
+ *
+ * @param {string} robotId
+ * @param {number} [threshold] `security.implausible_report_quarantine_threshold`
+ * @returns {{ count: number, quarantine: boolean, securityEvent: boolean, reason: string|null }}
+ */
+function recordImplausibleReport(robotId, threshold) {
+  const count = (implausibleReportCounts.get(robotId) || 0) + 1;
+  implausibleReportCounts.set(robotId, count);
+  return { count, ...trustBoundaries.persistentImplausibility({ agentId: robotId, rejections: count, threshold }) };
+}
+
+/**
+ * Forget an agent's refusal history. Called when a report is accepted: §23.5's threshold
+ * is about *persistent* implausibility, and a counter that never decayed would quarantine
+ * every long-lived agent eventually.
+ *
+ * @param {string} robotId
+ */
+function clearImplausibleReports(robotId) {
+  if (implausibleReportCounts.has(robotId)) implausibleReportCounts.delete(robotId);
+}
+
+/** When the last accepted fix for each agent was taken, for the kinematic check. */
+const lastAcceptedFixAt = new Map();
+
+/**
+ * Read a configuration value from the process's pinned snapshot.
+ *
+ * @param {object} config
+ * @param {string} name
+ * @param {*} fallback
+ * @returns {*}
+ */
+function configValue(config, name, fallback) {
+  const values = config?.values;
+  const value = values instanceof Map ? values.get(name) : values?.[name];
+  return value === undefined || value === null ? fallback : value;
+}
+
+/**
+ * Apply §23.5's position and energy rows to one telemetry frame.
+ *
+ * The **ceiling** for the kinematic check is the agent's MobilityModel maximum speed
+ * (§2.2). Where the projected `Agent` carries no mobility model — which is every legacy
+ * `Robot` until Phase 2's backfill has run for it — the check reports `INDETERMINATE` and
+ * the frame is not refused: an absent ceiling is a missing input, not evidence of a
+ * spoof, and refusing on it would take the whole legacy fleet offline. That is §7.3's
+ * three-valued discipline applied one layer out.
+ *
+ * @param {object} input `{ robotId, existing, reported, charging, config }`
+ * @returns {{ refused: boolean, enforced: boolean, reasons: string[], measured: object,
+ *             quarantineThreshold: number|undefined }}
+ */
+function assessAgentReport(input) {
+  const source = input || {};
+  const reported = source.reported || {};
+  const existing = source.existing || {};
+  const config = source.config;
+
+  const reasons = [];
+  let measured = {};
+
+  const previousAtMs = lastAcceptedFixAt.get(source.robotId) ?? null;
+
+  if (Number.isFinite(reported.lat) && Number.isFinite(reported.lon)) {
+    const position = trustBoundaries.validatePosition({
+      last:
+        Number.isFinite(existing.lat) && Number.isFinite(existing.lon) && previousAtMs !== null
+          ? { lat: existing.lat, lon: existing.lon, atMs: previousAtMs }
+          : null,
+      reported: { lat: reported.lat, lon: reported.lon, atMs: reported.atMs },
+      // §2.2's ceiling, where the projection carries one. `maxSpeedMps` is absent on a
+      // legacy `Robot` row, which yields INDETERMINATE rather than a refusal.
+      maxSpeedMps: existing.maxSpeedMps,
+      tolerance: configValue(config, "security.position_plausibility_tolerance", undefined),
+    });
+    measured = { ...measured, position: position.measured };
+    if (position.verdict === trustBoundaries.VERDICT.REJECTED) reasons.push(...position.reasons);
+  }
+
+  if (Number.isFinite(reported.battery) && Number.isFinite(existing.battery)) {
+    /** @structural percent to ratio */
+    const PERCENT = 100;
+    const energy = trustBoundaries.validateEnergy({
+      lastSoc: existing.battery / PERCENT,
+      reportedSoc: reported.battery / PERCENT,
+      charging: source.charging === true,
+      rateTolerance: configValue(config, "security.energy_rate_tolerance", undefined),
+    });
+    measured = { ...measured, energy: energy.measured };
+    if (energy.verdict === trustBoundaries.VERDICT.REJECTED) reasons.push(...energy.reasons);
+  }
+
+  const refused = reasons.length > 0;
+  if (!refused && Number.isFinite(reported.lat) && Number.isFinite(reported.lon)) {
+    lastAcceptedFixAt.set(source.robotId, reported.atMs);
+    // Bounded by fleet size, swept on the same opportunistic schedule as the flush gate.
+    if (lastAcceptedFixAt.size > 50_000) {
+      for (const [id, at] of lastAcceptedFixAt) {
+        if (reported.atMs - at > DB_FLUSH_INTERVAL_MS * 10) lastAcceptedFixAt.delete(id);
+      }
+    }
+  }
+
+  return {
+    refused,
+    // Enforced only when the engine is on. Off, the verdict is computed and logged so the
+    // refusal rate is observable before it is load-bearing (§21.6's shadow discipline
+    // applied to a security control).
+    enforced: engineEnabled(),
+    reasons,
+    measured,
+    quarantineThreshold: configValue(config, "security.implausible_report_quarantine_threshold", undefined),
+  };
+}
 
 // DB-safe statuses (must map to the RobotStatus Prisma enum)
 const ROBOT_STATUS = new Set(["IDLE", "ACTIVE", "PAUSED", "OFFLINE", "ERROR", "ISSUES"]);
@@ -167,6 +298,35 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
       const robotId = toStringOrNull(socket.data.robotId);
       if (!robotId) return;
 
+      // ── PHASE 14 — §23.2 / §23.5: capability is rejected entirely ───────────
+      //
+      //   > | Capability | Rejected entirely; see §23.2 |
+      //
+      // The telemetry schema is `passthrough()` by design — an agent may report fields
+      // the server does not model — which is exactly the gap a capability claim would
+      // arrive through. §23.5's table gives capability one word where every other field
+      // gets a validation rule, and the asymmetry is the point: position can be
+      // sanity-checked against physics, but a capability claim has nothing to check it
+      // against, because the claim *is* the fact.
+      //
+      // The frame is **dropped**, not stripped. Stripping would let an agent that is
+      // trying to escalate carry on reporting position as though nothing had happened,
+      // and the security event would be the only trace; dropping makes the attempt cost
+      // the attacker their telemetry, which is the correct incentive.
+      const capabilityClaims = attestation.findCapabilityClaims(payload);
+      if (capabilityClaims.length > 0) {
+        log.warn("TELEMETRY carrying a capability claim — frame rejected entirely (§23.2, §23.5)", {
+          robotId,
+          paths: capabilityClaims.map((claim) => claim.path),
+          detail:
+            "capabilities derive from the commissioning record plus a signed firmware/hardware attestation, never " +
+            "from agent telemetry. A compromised agent claiming hazmat_certified must not thereby become eligible " +
+            "for hazmat work.",
+        });
+        recordImplausibleReport(robotId);
+        return;
+      }
+
       const nowMs = Date.now();
       const now = new Date(nowMs);
       const lat = toNumberOrNull(payload?.lat);
@@ -201,6 +361,61 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
         }
         existing = row;
         robotStateCache.set(robotId, existing);
+      }
+
+      // ── PHASE 14 — §23.5's position and energy trust boundaries ────────────
+      //
+      //   > Position | Kinematic plausibility against the last accepted fix … **A jump
+      //   > exceeding achievable speed is rejected, not smoothed.**
+      //   > Energy | Monotonicity except while charging; rate-of-change bounds …
+      //
+      // Rejected, not smoothed, and the frame is dropped rather than partially applied.
+      // A smoothed jump is a position that is *plausible and wrong*, and every downstream
+      // consumer — feasibility, cost, verification, the availability index — would treat
+      // it as measured. Dropping leaves the last accepted fix standing, which is stale and
+      // *known* to be stale, and staleness is a condition §2.7 and §7.3 already handle
+      // correctly.
+      //
+      // Gated on `ENGINE_ENABLED` for the same reason every engine behaviour since Phase 4
+      // has been: the legacy dispatcher is still the production path, its telemetry
+      // contract predates the MobilityModel this check reads a ceiling from, and Phase 15
+      // stages the flag. When the flag is off the checks are computed and **logged**, never
+      // enforced — so the refusal rate is observable before it is load-bearing.
+      const trustVerdict = assessAgentReport({
+        robotId,
+        existing,
+        reported: { lat, lon, battery, atMs: nowMs },
+        charging: statusRaw === "CHARGING",
+        config: socket?.request?.app?.locals?.config,
+      });
+
+      if (trustVerdict.refused) {
+        const escalation = recordImplausibleReport(robotId, trustVerdict.quarantineThreshold);
+        log.warn("TELEMETRY refused by the §23.5 trust boundaries", {
+          robotId,
+          reasons: trustVerdict.reasons,
+          measured: trustVerdict.measured,
+          consecutive: escalation.count,
+          enforced: trustVerdict.enforced,
+        });
+        if (escalation.quarantine) {
+          // §23.5 — "Persistent implausibility triggers quarantine and a security event."
+          // The event is emitted here; the quarantine itself is the engine's own path
+          // (`QUARANTINE`, an agent-scope command), which this handler does not own.
+          log.error?.("SECURITY: persistent implausibility", { robotId, detail: escalation.reason });
+          io.to("dashboard").emit("SECURITY_EVENT", {
+            kind: "PERSISTENT_IMPLAUSIBILITY",
+            robotId,
+            consecutive: escalation.count,
+            reason: escalation.reason,
+            timestamp: nowMs,
+          });
+        }
+        if (trustVerdict.enforced) return;
+      } else {
+        // §23.5's threshold is about *persistent* implausibility; a counter that never
+        // decayed would quarantine every long-lived agent eventually.
+        clearImplausibleReports(robotId);
       }
 
       let statusUpdate = {};
@@ -636,8 +851,21 @@ function resetProgressSupervisionState() {
   lastKnownPosition.clear();
 }
 
+/**
+ * PHASE 14 — clear the per-process §23.5 state between tests, matching
+ * `resetProgressSupervisionState`'s purpose. Both maps are per-process caches whose
+ * survival across tests would make one test's refusals another test's quarantine.
+ */
+function resetTrustBoundaryState() {
+  implausibleReportCounts.clear();
+  lastAcceptedFixAt.clear();
+}
+
 module.exports = {
   registerTelemetryHandlers,
   feedProgressSupervision,
   resetProgressSupervisionState,
+  assessAgentReport,
+  recordImplausibleReport,
+  resetTrustBoundaryState,
 };

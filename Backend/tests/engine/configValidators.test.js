@@ -78,7 +78,11 @@ describe("the §22.1 rule-5 matrix — each violation triggers its own check and
       id: "V4",
       what: "a shard sized past the serial commit section",
       bindings: [bind("shard.mission_rate_per_agent_hour", 20)],
-      expect: /shard sizing violates bound 2/,
+      // PHASE 13 — V4 now delegates the inequality to `shard/sizing.js`, which is the one
+      // place it is written. The wording is that module's; the arithmetic and the §3.5
+      // reasoning it reports are unchanged, and the worked figure it quotes ("about 4 390
+      // agents, not 20 000") is §3.5's own example.
+      expect: /bound 2 is violated: N·r·k_txn·t_txn/,
     },
     {
       id: "V5",

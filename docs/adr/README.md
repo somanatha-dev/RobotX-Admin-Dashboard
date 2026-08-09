@@ -1,6 +1,8 @@
 # Architecture Decision Log
 
-**Status of every record in this log: `Accepted — frozen`.**
+**Status of every record numbered `01`–`32`: `Accepted — frozen`.**
+**Records numbered `33` upward are integration decisions and are `Accepted`** — see
+*Adding a record* below, and the second register table.
 
 38 decisions, recorded verbatim from Appendix C of
 `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` during **Phase 0** of
@@ -100,3 +102,15 @@ frozen architecture. It may never contradict a frozen record.
 | [30](ADR-30-erasure-versus-replay.md) | Erasure versus replay | Identifying values held only in a separate identity store behind a stable surrogate key; erasure tombstones the identity and leaves the technical record replayable; enforced by a build gate over an erased corpus | Asserting the separation as a principle and leaving the decision-record schema to interpret it | §23.7, §24.3 |
 | [31](ADR-31-simulator-trust.md) | Simulator trust | One-sided fidelity gate on the simulator itself, measured per model against realised production distributions | A release gate that is itself unvalidated, whose characteristic failure is systematic optimism | §24.4 |
 | [32](ADR-32-conservatism.md) | Conservatism | Every derating factor declares the uncertainty it compensates; the Config Service publishes the combined product and rejects it beyond a stated cap | Independently-chosen margins compounding invisibly to a fleet-wide conservatism nobody chose | §14.3 |
+
+## The integration register
+
+Decisions taken *under* the frozen architecture, numbered from `33` upward and marked
+`Accepted` rather than `Accepted — frozen`. Each chooses how to meet the architecture, not
+what the architecture is, and none may contradict a record above. The **Spec** column names
+the sections the record is answerable to; where a record and those sections appear to
+disagree, the specification wins and the record is defective.
+
+| ADR | Decision | Chosen | Rejected | Spec |
+|---|---|---|---|---|
+| [33](ADR-33-b1-traversal-domain-scope.md) | B1 traversal-domain scope (**D4**) | B1 procures a self-hosted outdoor geodesic routing engine serving `SIDEWALK_GRAPH` and `ROAD_GRAPH` from one OSM extract per region; `INDOOR_GRAPH` and `AIRSPACE_VOLUME` are excluded from B1's scope | Procuring a multi-modal routing platform — `INDOOR_GRAPH` is a site-local proximity partition an OSM engine does not provide, and `AIRSPACE_VOLUME` is a future modality requiring 3D routing | §5.2, §6.2, §20.3, §25.2, §27 item 2 |

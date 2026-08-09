@@ -54,6 +54,14 @@ const RENEWAL_OUTCOME = Object.freeze({
   REFUSED: "REFUSED",
   LOST_RACE: "LOST_RACE",
   NOT_RENEWABLE: "NOT_RENEWABLE",
+  /**
+   * PHASE 12 — §18.5 B1. The Commitment Store is unavailable, so renewal **stops**. It is
+   * a distinct outcome from `REFUSED` (the evidence was insufficient) and from
+   * `NOT_RENEWABLE` (the commitment is gone), because the operational response is
+   * different in kind: those two are facts about one commitment, and this one is a fact
+   * about the shard.
+   */
+  HALTED_STORE_UNAVAILABLE: "HALTED_STORE_UNAVAILABLE",
 });
 
 /**
@@ -90,6 +98,37 @@ const RECOVERY_OUTCOME = Object.freeze({
 async function renew(tx, input) {
   const source = input || {};
   const commitment = source.commitment;
+
+  // PHASE 12 — §18.5 / §18.3 B1, enforced rather than described.
+  //
+  // The module header has always stated that renewal "stops" when the store is
+  // unavailable rather than falling back to a cached lease. Until Phase 12 that was a
+  // property of what this module *imports* — no cache — which is a real guarantee against
+  // one mistake (reading a cached lease) and no guarantee at all against another: a caller
+  // that kept renewing against a store it already knew was unreachable would produce a
+  // stream of failed writes and, worse, would leave the shard supervising on the belief
+  // that renewal was still happening. `storeAvailable === false` is the caller stating
+  // what it knows, and this refusal is what turns that knowledge into a stop.
+  //
+  // Only an explicit `false` halts. An absent flag means the caller has no health signal,
+  // and in that case the correct behaviour is to attempt the write and let it fail on its
+  // own evidence — refusing on an unknown would convert a missing argument into a shard
+  // that stops supervising.
+  if (source.storeAvailable === false) {
+    return {
+      outcome: RENEWAL_OUTCOME.HALTED_STORE_UNAVAILABLE,
+      reason: "COMMITMENT_STORE_UNAVAILABLE",
+      detail:
+        "§12.2: leases are never renewed against a cached value. The durable store is the sole authority " +
+        "for lease validity (§3.3), and when it is unavailable renewal stops — it does not fall back. " +
+        "A cached lease cannot be revoked, so it certifies only that the commitment was valid at some " +
+        "point in the past.",
+      leaseExpiry: null,
+      // Named, not entered: `degraded/transitions.js` owns entry, and entering a mode from
+      // inside a per-commitment renewal would enter it once per commitment.
+      directive: custodialDirective(),
+    };
+  }
 
   if (!commitment) {
     return { outcome: RENEWAL_OUTCOME.NOT_RENEWABLE, reason: "NO_COMMITMENT", leaseExpiry: null };
@@ -131,6 +170,35 @@ async function renew(tx, input) {
   }
 
   return { outcome: RENEWAL_OUTCOME.RENEWED, reason: null, leaseExpiry: granted.expiresAt };
+}
+
+/**
+ * PHASE 12 — the §18.5 Custodial Operation directive, in the shape
+ * `degraded/transitions.enter()` consumes.
+ *
+ * Named here and entered there, which is the discipline `dispatch/escalation.js` and
+ * `supervision/timers.js` already apply to their own modes: a component that entered a mode
+ * would be a second mode register, and this one would enter it once per commitment renewed.
+ *
+ * The three fields are what §18.5 makes non-negotiable about this mode. `noCommands` is the
+ * one most easily lost in translation — the natural reading of "the database is down" is
+ * "stop writing", and the specification's reading is "stop *commanding*", because command
+ * authority is a fence and a fence that cannot be advanced durably is not a fence.
+ *
+ * @returns {object}
+ */
+function custodialDirective() {
+  return Object.freeze({
+    alert: "COMMITMENT_STORE_UNAVAILABLE",
+    enterDegradedMode: "CUSTODIAL_OPERATION",
+    suspendsInvariant: "I2",
+    noCommits: true,
+    noCommands: true,
+    // §18.5: the safety property that replaces server-side supervision, enforced on the
+    // agent and therefore unaffected by the outage that caused this.
+    agentAutonomyLimitParameter: "agent.autonomous_continuation_limit",
+    ownedBy: "Phase 12 — degraded/modeRegister.js",
+  });
 }
 
 /**
@@ -298,6 +366,7 @@ module.exports = {
   RENEWAL_OUTCOME,
   RECOVERY_OUTCOME,
   RECOVERY_STATES,
+  custodialDirective,
   renew,
   findExpired,
   assessRecovery,

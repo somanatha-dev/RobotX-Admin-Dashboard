@@ -1,0 +1,178 @@
+{
+  "note": "Golden replay corpus entry (§24.3). tierB is what was stored; reconstructionInput is what replay recomputes from Tier A + the pinned snapshot.",
+  "tierA": {
+    "decisionId": "shard-a:1770000000000:LEG-3",
+    "roundId": "shard-a:1770000000000",
+    "shardId": "shard-a",
+    "legId": "LEG-3",
+    "samplingRate": 0.5,
+    "samplingDraw": 0.8145456335041672
+  },
+  "tierB": {
+    "decisionId": "shard-a:1770000000000:LEG-3",
+    "roundId": "shard-a:1770000000000",
+    "shardId": "shard-a",
+    "decisionTime": "2026-02-02T02:40:00.000Z",
+    "writtenBecause": "SAMPLED",
+    "exemptionReason": null,
+    "candidateSet": [
+      {
+        "agentId": "AGT-006",
+        "discoveryTier": 0,
+        "availabilityClass": "READY",
+        "lowerBoundMilliCU": "6000",
+        "admitted": true
+      }
+    ],
+    "feasibility": [
+      {
+        "agentId": "AGT-006",
+        "admitted": true,
+        "bindingPredicateId": null,
+        "predicates": [
+          {
+            "predicateId": "F01",
+            "outcome": "PASS",
+            "observed": true,
+            "required": true,
+            "inputSource": "AGENT_STATE",
+            "observationAgeMs": 120,
+            "indeterminatePolicy": "DENY",
+            "margin": null,
+            "marginUnit": null
+          },
+          {
+            "predicateId": "F34",
+            "outcome": "PASS",
+            "observed": {
+              "bindingTier": "T2",
+              "marginWh": -12.5
+            },
+            "required": {
+              "tier": "T2"
+            },
+            "inputSource": "ENERGY_MODEL",
+            "observationAgeMs": 300,
+            "indeterminatePolicy": "DENY",
+            "margin": 0.31,
+            "marginUnit": "ratio"
+          }
+        ]
+      }
+    ],
+    "costs": [
+      {
+        "agentId": "AGT-006",
+        "terms": {
+          "cDirect": "9007199254740993"
+        },
+        "totalMilliCU": "9007199254740993",
+        "unit": "milli-CU"
+      }
+    ],
+    "columnDetail": [
+      {
+        "identity": "col:AGT-006:LEG-3",
+        "agentId": "AGT-006",
+        "legIds": [
+          "LEG-3"
+        ],
+        "kept": true,
+        "prunedReason": null,
+        "gammaMilliCU": "9007199254740993",
+        "priceDecomposition": {
+          "cDirect": "9007199254740993"
+        },
+        "omittedTerms": []
+      },
+      {
+        "identity": "col:pruned:LEG-3",
+        "agentId": "AGT-099",
+        "legIds": [
+          "LEG-3"
+        ],
+        "kept": false,
+        "prunedReason": "BUDGET",
+        "gammaMilliCU": "99999",
+        "priceDecomposition": null,
+        "omittedTerms": null
+      }
+    ],
+    "contentHash": "305ccc4c06b55356860cb85a7443999c8d7dac55a7968cf245faf783df411fdc",
+    "sizeBytes": 1161,
+    "retainUntil": null
+  },
+  "reconstructionInput": {
+    "roundId": "shard-a:1770000000000",
+    "shardId": "shard-a",
+    "decisionTimeMs": 1770000000000,
+    "decisionId": "shard-a:1770000000000:LEG-3",
+    "candidates": [
+      {
+        "agentId": "AGT-006",
+        "discoveryTier": 0,
+        "availabilityClass": "READY",
+        "lowerBoundMilliCU": "6000",
+        "gammaMilliCU": "9007199254740993",
+        "rejected": false,
+        "bindingPredicateId": null,
+        "breakdown": {
+          "cDirect": "9007199254740993"
+        },
+        "predicateResults": [
+          {
+            "predicateId": "F01",
+            "outcome": "PASS",
+            "observed": true,
+            "required": true,
+            "inputSource": "AGENT_STATE",
+            "observationAgeMs": 120,
+            "indeterminatePolicy": "DENY"
+          },
+          {
+            "predicateId": "F34",
+            "outcome": "PASS",
+            "observed": {
+              "bindingTier": "T2",
+              "marginWh": -12.5
+            },
+            "required": {
+              "tier": "T2"
+            },
+            "inputSource": "ENERGY_MODEL",
+            "observationAgeMs": 300,
+            "indeterminatePolicy": "DENY",
+            "margin": 0.31,
+            "marginUnit": "ratio"
+          }
+        ]
+      }
+    ],
+    "columns": [
+      {
+        "identity": "col:AGT-006:LEG-3",
+        "agentId": "AGT-006",
+        "legIds": [
+          "LEG-3"
+        ],
+        "gammaMilliCU": "9007199254740993",
+        "breakdown": {
+          "cDirect": "9007199254740993"
+        },
+        "omittedTerms": []
+      }
+    ],
+    "pruned": [
+      {
+        "identity": "col:pruned:LEG-3",
+        "agentId": "AGT-099",
+        "legIds": [
+          "LEG-3"
+        ],
+        "reason": "BUDGET",
+        "gammaMilliCU": "99999",
+        "breakdown": null
+      }
+    ]
+  }
+}

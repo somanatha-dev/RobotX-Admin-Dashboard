@@ -1,14 +1,147 @@
+/**
+ * Task Service — the §3.4 request path.
+ *
+ * ── PHASE 15 — the legacy assignment path is gone ───────────────────────────
+ * The execution plan's Phase 15 row retires "the legacy assignment path in
+ * `task.service.js`", and its completion criterion is that the legacy decision path is
+ * "**removed from the build, not merely bypassed**". This file is where that criterion is
+ * most visible, so what left and what stayed are both stated.
+ *
+ * **Removed.** `_processAssignment` (greedy per-arrival selection through
+ * `taskAssignment.service.js`), `_finalizeAssignment` (the bind-and-dispatch
+ * transaction), `legacyDetachedAssignment` (the unsupervised `setImmediate` that §5.2
+ * item C6 names as the root cause of "stuck at PENDING with no record of the failure"),
+ * `seedTaskKeys` (the Redis writes that made the cache the source of truth for an
+ * assignment), `getRoutesWithDistance` and `pathDistanceMeters` (the post-hoc route
+ * measurement §13.1 replaces with a plan built *before* the choice), and the
+ * `robotReserve:*` retry loop that was the only exclusivity mechanism this path had.
+ * `tools/gates/checkLegacyRetirement.js` fails the build if any of them returns.
+ *
+ * **Kept, deliberately, until the retention window closes.** `rerouteTask` and the
+ * `straightLineRoute` fallback it uses. Rerouting an in-flight legacy `Task` is not the
+ * assignment path — it is an operator action on work already committed — and the plan
+ * retires the `taskPath:*` / `robotTaskState:*` keys it reads "**after cutover**", not at
+ * it. Deleting it here would strand every mission in flight across the cutover.
+ * `docs/runbooks/cutover.md` names this as the last legacy surface and the condition
+ * under which it goes.
+ *
+ * ── What `assignTask` does now, and what it refuses ────────────────────────
+ * One path. Validate, create the `Task` row, map it to the domain (§2.4), and admit it to
+ * the round through `engine/intake/intake.js`. There is no branch, no detach, and no
+ * background computation: the request path's last act is a durable `WorkQueue` row and
+ * the round path's first act is to read it, so no work depends on process-local state.
+ *
+ * When the engine is **not** live for the resolved shard, the request is **refused** with
+ * 503 rather than queued. This is where the post-cutover world differs sharply from the
+ * strangler world, and the difference is deliberate: with the legacy dispatcher out of the
+ * build, admitting work to a shard whose coordinator is not running would recreate exactly
+ * the defect the architecture exists to eliminate — a task accepted, durably recorded, and
+ * never decided, with no component responsible for noticing (§12.1). A 503 naming the
+ * state is honest; a queue nobody drains is not.
+ *
+ * ── The two halves of "is the engine live" ─────────────────────────────────
+ * `engine/cutover/enabled.js` owns the conjunction (process `ENGINE_ENABLED` AND the
+ * shard's `cutover.engine_enabled` binding). This file asks it rather than reading the
+ * environment, so a shard that has not been staged is refused here for the same reason,
+ * and with the same words, as it is everywhere else.
+ */
+
 const { toStringOrNull, toNumberOrNull } = require("../utils/parse");
 const crypto = require("crypto");
-const { selectNearestRobot } = require("./taskAssignment.service");
 const { directionsWithDistance } = require("./mapbox.service");
-const { updatePlannedPath, updateAssignedTask } = require("./robotRegistry.service");
-const { dispatchTaskAssign, dispatchRerouteAlert } = require("./commandDispatcher.service");
-const { recordAllocation } = require("./metrics.service");
+const { dispatchRerouteAlert } = require("./commandDispatcher.service");
 const { safeJsonParse } = require("../utils/json");
-const { haversineMeters } = require("../utils/distance");
 const logger = require("../config/logger");
-const robotStateCache = require("../cache/robotStateCache");
+const intake = require("../engine/intake/intake");
+const cadence = require("../engine/solve/cadence");
+const cutoverEnabled = require("../engine/cutover/enabled");
+const { taskToWork } = require("../engine/domain/mappers/legacyTask");
+const { PURPOSES } = require("../engine/domain/purpose");
+
+/**
+ * Is the engine the decision path for the shard this request resolves to?
+ *
+ * Both halves, from one place (`engine/cutover/enabled.js`). Callers pass the published
+ * configuration snapshot and the shard; a caller that passes neither gets `false`, which
+ * is the right answer for a caller that cannot say which shard it means.
+ *
+ * @param {{ config?: object|null, regionId?: string|null, shardId?: string|null }} [context]
+ * @returns {boolean}
+ */
+function engineEnabled(context) {
+  const settings = context || {};
+  return cutoverEnabled.forShard({
+    snapshot: settings.config || null,
+    shard: { regionId: settings.regionId || null, shardId: settings.shardId || null },
+  });
+}
+
+/**
+ * PHASE 10 — §3.4's request path, for a legacy `Task` row.
+ *
+ * The bridge is `domain/mappers/legacyTask.taskToWork()` (Phase 2), which maps one legacy
+ * Task to exactly one Mission, one `PRIMARY` Leg, and two Stops with deterministic ids —
+ * §2.4's own "the model collapses to the simple case with no overhead". The ids being
+ * deterministic is what makes this idempotent: a retried submission materialises the same
+ * Leg and the intake's own unique key answers with the original acceptance.
+ *
+ * This function lives here rather than inside `src/engine/intake/` deliberately: the
+ * engine's intake takes a `Leg.id` and knows nothing about the legacy `Task` shape, and
+ * teaching it that shape would give a Tier 1 module a dependency that retires at Phase 15.
+ *
+ * @param {object} prisma
+ * @param {object} pending the freshly created legacy Task row
+ * @param {object} options `{ cadenceConfig, admissionInputs, receivedAtMs }`
+ * @returns {Promise<object>} the §3.4 response
+ */
+async function admitToRound(prisma, pending, options = {}) {
+  const work = taskToWork(pending, { regionId: options.regionId ?? null });
+
+  // Materialised idempotently: the ids are a pure function of `Task.taskId`, so a retry
+  // converges on the same rows rather than creating a second Leg for one request.
+  await prisma.mission.upsert({ where: { id: work.mission.id }, create: work.mission, update: {} });
+  await prisma.leg.upsert({ where: { id: work.leg.id }, create: work.leg, update: {} });
+  for (const stop of work.stops) {
+    await prisma.stop.upsert({ where: { id: stop.id }, create: stop, update: {} });
+  }
+
+  const receivedAtMs = typeof options.receivedAtMs === "number" ? options.receivedAtMs : Date.now();
+  const config = options.cadenceConfig || {};
+
+  // The window quoted to the caller is the one the next round will actually use, taken
+  // from the same `solve/cadence.js` the coordinator reads. Two independent notions of
+  // the round window — one for quoting and one for running — would make the prediction
+  // wrong by construction rather than by circumstance.
+  const verdict = cadence.windowFor({
+    queueDepth: options.queueDepth ?? 0,
+    feasibleSupply: options.feasibleSupply ?? 0,
+    slaClassesWaiting: options.slaClassesWaiting || [],
+    slaBudgetsSeconds: options.slaBudgetsSeconds,
+    config,
+  });
+
+  return intake.admit(
+    { prisma },
+    {
+      legId: work.leg.id,
+      taskId: pending.taskId,
+      purpose: PURPOSES.PRIMARY.name,
+      slaClass: options.slaClass ?? null,
+      tenantId: options.tenantId ?? null,
+      idempotencyKey: options.idempotencyKey,
+      externalRef: pending.taskId,
+      receivedAtMs,
+      shardResolution: { regionId: options.regionId ?? null, shardByRegionId: options.shardByRegionId },
+      admissionInputs: options.admissionInputs || {},
+      cadence: {
+        windowMs: verdict.windowMs,
+        maxLegsPerRound: verdict.maxLegsThisRound,
+        feasibleSupply: options.feasibleSupply,
+        slaBudgetSeconds: options.slaBudgetSeconds,
+      },
+    },
+  );
+}
 
 async function readRobotLive(kv, robotId) {
   if (!kv) return null;
@@ -18,21 +151,6 @@ async function readRobotLive(kv, robotId) {
   } catch {
     return null;
   }
-}
-
-async function seedTaskKeys(kv, { taskId, robotId, toPickup, toDrop, pickup, drop }) {
-  if (!kv) return;
-  const ex = 86400;
-  await Promise.all([
-    kv.set(`taskPath:${taskId}`, JSON.stringify({ toPickup, toDrop, pickup, drop }), { ex }),
-    kv.set(`task:${taskId}`, JSON.stringify({ phase: "TO_PICKUP", idx: 0, waitUntil: null }), { ex }),
-    kv.set(`robotTask:${robotId}`, String(taskId), { ex }),
-    kv.set(
-      `robotTaskState:${robotId}`,
-      JSON.stringify({ taskId: String(taskId), phase: "TO_PICKUP", pathIndex: 0, waitUntil: null, segment: "toPickup", startedAt: null, parking: null }),
-      { ex }
-    ),
-  ]);
 }
 
 function straightLineRoute({ from, to, points = 40 } = {}) {
@@ -51,312 +169,29 @@ function straightLineRoute({ from, to, points = 40 } = {}) {
   return out;
 }
 
-/** Compute total path distance in metres from consecutive haversine segments. */
-function pathDistanceMeters(points) {
-  if (!Array.isArray(points) || points.length < 2) return null;
-  let total = 0;
-  for (let i = 1; i < points.length; i++) {
-    const a = points[i - 1];
-    const b = points[i];
-    if (typeof a?.lat === "number" && typeof a?.lon === "number" &&
-        typeof b?.lat === "number" && typeof b?.lon === "number") {
-      total += haversineMeters(a.lat, a.lon, b.lat, b.lon);
-    }
-  }
-  return total > 0 ? total : null;
-}
-
-async function getRoutesWithDistance({ from, pickup, drop } = {}) {
-  // Dense fallback paths — only used when ALL Mapbox profiles fail.
-  const fallbackToPickup = straightLineRoute({ from, to: pickup, points: 100 });
-  const fallbackToDrop   = straightLineRoute({ from: pickup, to: drop, points: 100 });
-
-  // Profile priority:
-  //   driving  — public road network, works for any two addressable points
-  //   walking  — pedestrian paths, better for short campus hops
-  //   cycling  — additional fallback
-  // Each profile is tried independently for both segments.
-  for (const profile of ["driving", "walking", "cycling"]) {
-    try {
-      const [r1, r2] = await Promise.all([
-        directionsWithDistance({ from, to: pickup, profile }),
-        directionsWithDistance({ from: pickup, to: drop, profile }),
-      ]);
-
-      const totalDistance =
-        typeof r1.distanceMeters === "number" && typeof r2.distanceMeters === "number"
-          ? r1.distanceMeters + r2.distanceMeters
-          : pathDistanceMeters([...r1.points, ...r2.points]);
-
-      logger.info(
-        `[Routes] ${profile} OK — ${r1.points.length} + ${r2.points.length} pts, ` +
-        `${totalDistance ? (totalDistance / 1000).toFixed(2) + " km" : "?"}`
-      );
-
-      // Stitch the seam: make toDrop[0] == toPickup[-1] so the two route lines
-      // share an exact common point and visually join seamlessly at the pickup marker.
-      const stitchedToDrop = r2.points.slice();
-      if (r1.points.length > 0 && stitchedToDrop.length > 0) {
-        stitchedToDrop[0] = r1.points[r1.points.length - 1];
-      }
-
-      return {
-        toPickup:       r1.points,
-        toDrop:         stitchedToDrop,
-        distanceMeters: totalDistance,
-        usedFallback:   false,
-      };
-    } catch (e) {
-      logger.warn(`[Routes] ${profile} failed — ${e?.message} (code=${e?.mapboxCode || "?"})`);
-    }
-  }
-
-  // All Mapbox profiles failed — straight-line fallback (still navigable for simulation).
-  logger.warn("[Routes] All Mapbox profiles failed — using straight-line fallback");
-  if (!fallbackToPickup || !fallbackToDrop) {
-    const err = new Error("Failed to generate routes (Mapbox + fallback unavailable)");
-    err.status = 502;
-    throw err;
-  }
-  const totalDistance = pathDistanceMeters([...fallbackToPickup, ...fallbackToDrop]);
-  return {
-    toPickup:       fallbackToPickup,
-    toDrop:         fallbackToDrop,
-    distanceMeters: totalDistance,
-    usedFallback:   true,
-  };
-}
-
-// F4: bounded retry against the next-best candidate when the top pick is
-// concurrently claimed by another in-flight assignment, plus the short TTL
-// on the Redis reservation itself — both back-stops against a reservation
-// ever being held forever (deadlock/orphan avoidance).
-//
-// ── PHASE 3 note: this is no longer the system's only exclusivity mechanism ──
-//
-// `src/engine/commitment/commit.js` now provides the durable one the frozen
-// architecture specifies (§10.3.2): a SERIALIZABLE transaction with `FOR UPDATE`
-// row locks on both the agent and the Leg, guards G1–G6, a per-commitment fencing
-// token, a lease, and two schema backstops that hold even when application logic is
-// defective.
-//
-// This path is deliberately left intact and unchanged. The plan keeps the legacy
-// dispatcher live and untouched until the Phase 15 cutover, and `ENGINE_ENABLED` is
-// false in every environment, so for now this reservation remains the *only*
-// protection this code path has — which is why `kv.reserveRobot` keeps its
-// fail-closed behaviour for callers that do not opt into §10.4's advisory
-// semantics. See the policy note in `src/cache/kv.js`.
-//
-// §10.2 records why this mechanism is insufficient on its own and must not be
-// relied on once the durable path is live: the TTL can expire during a long
-// finalisation while the holder continues to act as though it holds the lock;
-// release performs no ownership check; and the transaction runs at READ COMMITTED,
-// which does not serialise the conflicting pair.
-const RESERVATION_TTL_SEC = 30;
-const MAX_RESERVATION_RETRIES = 2;
-const reservationKey = (robotId) => `robotReserve:${robotId}`;
-
 /**
- * Background worker — runs DTARO robot selection, route computation, and DB
- * finalisation after the PENDING task record has already been returned to the client.
+ * Public API — §3.4's request path. One path, no branch.
+ *
+ * Validate, create the `Task` row, and admit it to the round. The response carries the
+ * §3.4 contract: task id, idempotency echo, queue position, and a predicted assignment
+ * window that does not imply an assignment has occurred.
+ *
+ * Refuses with 503 when the engine is not live for the resolved shard — see the file
+ * header for why refusing beats queueing now that the legacy dispatcher is out of the
+ * build.
+ *
+ * `task.robotId` — the legacy "assign me this specific robot" field — is **no longer
+ * honoured**, and the response says so rather than ignoring it silently. A
+ * caller-nominated agent bypasses candidate generation, the feasibility gate and the
+ * solve together, and §7.1's rule is absolute: the gate "is evaluated before cost and is
+ * never traded against it". The supported way to force an agent is §23.6's override
+ * discipline — scoped, reasoned, audited, and refused outright for class I, R and F —
+ * which Phase 14 shipped. No new capability is added here to replace the field; Phase 15
+ * ships no new capability at all.
  */
-async function _processAssignment(prisma, taskId, payload, { kv, io } = {}) {
-  const { robotCodeIn, pickupLat, pickupLon, dropLat, dropLon, pickup, drop } = payload;
-
-  let robotCode = null;
-  let start = null;
-  let reservedRobotCode = null;
-  let allocationCost = null;
-  let allocationComponents = null;
-  let allocationLatencyMs = null;
-
-  try {
-    if (robotCodeIn) {
-      // Manual assignment — reserve the explicitly requested robot. There's
-      // no "next candidate" to fall back to here, so a lost reservation race
-      // just fails the assignment (the caller asked for this exact robot).
-      if (kv) {
-        const ok = await kv.reserveRobot(reservationKey(robotCodeIn), taskId, RESERVATION_TTL_SEC);
-        if (!ok) {
-          const err = new Error(`Robot ${robotCodeIn} is currently being assigned to another task`);
-          err.status = 409;
-          throw err;
-        }
-        reservedRobotCode = robotCodeIn;
-      }
-      robotCode = robotCodeIn;
-    } else {
-      // DTARO auto-selection — if the winning candidate was just claimed by a
-      // concurrent assignment, retry selection excluding it and fall through
-      // to the next-best candidate instead of failing the task outright.
-      const excludeRobotIds = [];
-      const selectionStartedAt = Date.now();
-      for (let attempt = 0; attempt <= MAX_RESERVATION_RETRIES; attempt++) {
-        const best = await selectNearestRobot({
-          prisma, kv,
-          pickup: { lat: pickupLat, lon: pickupLon },
-          excludeRobotIds,
-        });
-
-        if (!kv) {
-          robotCode = best.robotId;
-          start = best.start;
-          allocationCost = best.cost ?? null;
-          allocationComponents = best.costComponents ?? null;
-          allocationLatencyMs = Date.now() - selectionStartedAt;
-          break;
-        }
-
-        const ok = await kv.reserveRobot(reservationKey(best.robotId), taskId, RESERVATION_TTL_SEC);
-        if (ok) {
-          robotCode = best.robotId;
-          start = best.start;
-          reservedRobotCode = best.robotId;
-          allocationCost = best.cost ?? null;
-          allocationComponents = best.costComponents ?? null;
-          allocationLatencyMs = Date.now() - selectionStartedAt;
-          break;
-        }
-
-        logger.warn("Robot reservation lost to a concurrent assignment — retrying next candidate", {
-          taskId, robotId: best.robotId, attempt,
-        });
-        excludeRobotIds.push(best.robotId);
-      }
-
-      if (!robotCode) {
-        const err = new Error("No robot could be reserved for assignment (all candidates claimed concurrently)");
-        err.status = 409;
-        throw err;
-      }
-    }
-
-    return await _finalizeAssignment(
-      prisma, taskId, robotCode, start,
-      { pickupLat, pickupLon, dropLat, dropLon },
-      { kv, io, cost: allocationCost, costComponents: allocationComponents, latencyMs: allocationLatencyMs }
-    );
-  } finally {
-    // Release on every path — success or failure — so a reservation never
-    // outlives the request that took it (the TTL is only the last-resort
-    // backstop, e.g. a process crash between reserve and release).
-    if (reservedRobotCode && kv) {
-      await kv.releaseReservation(reservationKey(reservedRobotCode));
-    }
-  }
-}
-
-async function _finalizeAssignment(prisma, taskId, robotCode, start, { pickupLat, pickupLon, dropLat, dropLon }, { kv, io, cost = null, costComponents = null, latencyMs = null } = {}) {
-  const robotRow = await prisma.robot.findUnique({
-    where: { robotId: robotCode },
-    select: { id: true, status: true, currentTaskId: true, lat: true, lon: true, isOnline: true },
-  });
-  if (!robotRow) throw new Error("Robot not commissioned");
-  if (robotRow.currentTaskId) throw new Error("Robot already has an active task");
-  if (!robotRow.isOnline) throw new Error(`Robot ${robotCode} is offline`);
-
-  const live = await readRobotLive(kv, robotCode);
-  const startLat = typeof live?.lat === "number" ? live.lat : start?.lat ?? (typeof robotRow.lat === "number" ? robotRow.lat : null);
-  const startLon = typeof live?.lon === "number" ? live.lon : start?.lon ?? (typeof robotRow.lon === "number" ? robotRow.lon : null);
-  if (typeof startLat !== "number" || typeof startLon !== "number") throw new Error("Robot has no known position");
-
-  const from        = { lat: startLat, lon: startLon };
-  const pickupCoord = { lat: pickupLat, lon: pickupLon };
-  const dropCoord   = { lat: dropLat,   lon: dropLon   };
-
-  const routes = await getRoutesWithDistance({ from, pickup: pickupCoord, drop: dropCoord });
-
-  // Finalise in a transaction: mark task ASSIGNED + bind robot.
-  const updated = await prisma.$transaction(async (tx) => {
-    const cur = await tx.robot.findUnique({ where: { id: robotRow.id }, select: { status: true, currentTaskId: true } });
-    if (cur?.currentTaskId) throw new Error("Robot already has an active task");
-    // Allow IDLE and PAUSED (PAUSED covers CHARGING virtual robots stored as PAUSED in DB).
-    const assignable = new Set(["IDLE", "PAUSED"]);
-    if (!assignable.has(String(cur?.status || ""))) throw new Error("Robot is not available for assignment");
-
-    const t = await tx.task.update({
-      where: { taskId },
-      data: {
-        robotId:       robotRow.id,
-        status:        "ASSIGNED",
-        distanceMeters: typeof routes.distanceMeters === "number" ? routes.distanceMeters : null,
-      },
-      include: { robot: { select: { robotId: true, id: true } } },
-    });
-
-    await tx.robot.update({
-      where: { id: robotRow.id },
-      data: { currentTaskId: t.id, status: "ACTIVE", isOnline: true, lastSeenAt: new Date() },
-    });
-
-    return t;
-  });
-
-  // Keep the telemetry-hot-path cache in sync with the status/currentTaskId
-  // transition the transaction above just committed (see robotStateCache.js).
-  robotStateCache.set(robotCode, { status: "ACTIVE", isOnline: true });
-
-  // Cache routes + state machine in Redis.
-  if (kv) {
-    await seedTaskKeys(kv, {
-      taskId, robotId: robotCode,
-      toPickup: routes.toPickup, toDrop: routes.toDrop,
-      pickup: pickupCoord, drop: dropCoord,
-    });
-
-    // Emit TASK_ASSIGNED for map route overlays.
-    try {
-      io?.to("dashboard")?.emit("TASK_ASSIGNED", {
-        taskId,
-        robotId:       robotCode,
-        pickup:        pickupCoord,
-        drop:          dropCoord,
-        pathToPickup:  routes.toPickup,
-        pathToDrop:    routes.toDrop,
-        usedFallback:  Boolean(routes.usedFallback),
-      });
-    } catch { /* ignore */ }
-
-    // Emit TASK_UPDATED so the task card in the UI refreshes with robot + distance.
-    try {
-      io?.to("dashboard")?.emit("TASK_UPDATED", {
-        taskId,
-        status:        "ASSIGNED",
-        robotId:       robotCode,
-        robot:         { robotId: robotCode },
-        distanceMeters: typeof routes.distanceMeters === "number" ? routes.distanceMeters : null,
-      });
-    } catch { /* ignore */ }
-
-    try {
-      const fullPath = [...(routes.toPickup || []), ...(routes.toDrop || [])];
-      await updatePlannedPath(kv, robotCode, fullPath);
-      await updateAssignedTask(kv, robotCode, taskId);
-    } catch { /* non-critical */ }
-
-    try {
-      await dispatchTaskAssign(io, robotCode, {
-        taskId,
-        pickup: pickupCoord, drop: dropCoord,
-        pathToPickup: routes.toPickup, pathToDrop: routes.toDrop,
-      });
-    } catch { /* non-critical */ }
-
-    try {
-      await recordAllocation(kv, { robotId: robotCode, taskId, cost, costComponents, latencyMs });
-    } catch { /* non-critical */ }
-  }
-
-  return updated;
-}
-
-/**
- * Public API — creates a PENDING task immediately and processes the DTARO
- * assignment in the background so the HTTP response is fast.
- */
-async function assignTask(prisma, task, { kv, io } = {}) {
+async function assignTask(prisma, task, { kv, io, ...options } = {}) {
   let taskId = toStringOrNull(task?.taskId || task?.id);
-  const robotCodeIn = toStringOrNull(task?.robotId);
+  const nominatedAgentId = toStringOrNull(task?.robotId);
   const pickup      = toStringOrNull(task?.pickup);
   const drop        = toStringOrNull(task?.drop);
 
@@ -382,7 +217,28 @@ async function assignTask(prisma, task, { kv, io } = {}) {
     throw err;
   }
 
-  // Phase 1 — Create PENDING task immediately (fast, no Mapbox calls).
+  // ── The cutover gate, checked before anything is written ──────────────────
+  //
+  // Before the row, not after it. A refused request that had already created a PENDING
+  // `Task` would leave exactly the artefact §12.1 objects to: a durable record of work
+  // that no component owns. The caller gets a 503 and the database is untouched.
+  const posture = cutoverEnabled.describe({
+    snapshot: options.config || null,
+    shard: { regionId: options.regionId || null, shardId: options.shardId || null },
+  });
+  if (!posture.live) {
+    const err = new Error(
+      `the assignment engine is not live for this shard: ${posture.consequence}`,
+    );
+    err.status = 503;
+    err.code = "ENGINE_NOT_LIVE";
+    err.posture = posture;
+    throw err;
+  }
+
+  // Create the PENDING task. Fast and synchronous: no routing provider is consulted on
+  // the request path (§3.4), because the plan that will be routed is built inside the
+  // round, before the choice, from the same artefact the cost model scores (§13.1).
   const pending = await prisma.task.create({
     data: { taskId, pickup, pickupLat, pickupLon, drop, dropLat, dropLon, status: "PENDING" },
     include: { robot: { select: { robotId: true } } },
@@ -393,20 +249,50 @@ async function assignTask(prisma, task, { kv, io } = {}) {
     io?.to("dashboard")?.emit("TASK_CREATED", { ...pending, robot: null });
   } catch { /* ignore */ }
 
-  // Phase 2 — Heavy work in background: DTARO + Mapbox + DB update.
-  setImmediate(async () => {
-    try {
-      await _processAssignment(prisma, taskId, { robotCodeIn, pickupLat, pickupLon, dropLat, dropLon, pickup, drop }, { kv, io });
-    } catch (e) {
-      logger.error("Task assignment failed", { taskId, error: e?.message });
-      try {
-        await prisma.task.update({ where: { taskId }, data: { status: "FAILED" } });
-        io?.to("dashboard")?.emit("TASK_UPDATED", { taskId, status: "FAILED" });
-      } catch { /* ignore */ }
-    }
+  // ── §3.4's request path ───────────────────────────────────────────────────
+  //
+  // The request path's last act is a durable `WorkQueue` row, and the round path's
+  // first act is to read it. Between the two there is no closure, no timer, and no
+  // process-local state, which is what makes the work survivable across a restart —
+  // and what makes "stuck at PENDING with no record of the failure" unrepresentable:
+  // a waiting Leg is a queue row with a position, an age, and a state.
+  const admitted = await admitToRound(prisma, pending, {
+    receivedAtMs: options.receivedAtMs,
+    cadenceConfig: options.cadenceConfig,
+    admissionInputs: options.admissionInputs,
+    queueDepth: options.queueDepth,
+    feasibleSupply: options.feasibleSupply,
+    slaClass: options.slaClass,
+    slaBudgetSeconds: options.slaBudgetSeconds,
+    tenantId: options.tenantId,
+    idempotencyKey: options.idempotencyKey,
+    regionId: options.regionId,
+    shardByRegionId: options.shardByRegionId,
   });
 
-  return pending;
+  // The legacy `{ ...task }` shape every existing caller reads is still present, and the
+  // §3.4 contract arrives beside it under `intake`. The plan supersedes the old response
+  // contract here (`docs/runbooks/cutover.md` carries the API version note); the legacy
+  // fields are retained through the retention window so a consumer that has not migrated
+  // reads a task row rather than a 500.
+  //
+  // `ignoredFields` is how a dropped input is reported rather than swallowed. A caller
+  // still sending `robotId` learns that it had no effect, in the response, at the moment
+  // it had no effect — not weeks later when someone notices the robot it named was never
+  // the one that went.
+  const ignoredFields = nominatedAgentId
+    ? [
+        {
+          field: "robotId",
+          value: nominatedAgentId,
+          reason:
+            "caller-nominated agents are not honoured: selection runs through candidate generation, the " +
+            "feasibility gate and the solve (§6, §7, §9). Use the §23.6 override to force an agent.",
+        },
+      ]
+    : [];
+
+  return Object.assign({}, pending, { intake: admitted, ignoredFields });
 }
 
 /**
@@ -511,4 +397,4 @@ async function rerouteTask(prisma, taskId, { kv, io } = {}) {
   return { taskId, robotId, segment, points: newPoints.length };
 }
 
-module.exports = { assignTask, rerouteTask, straightLineRoute, getRoutesWithDistance };
+module.exports = { assignTask, rerouteTask, straightLineRoute, admitToRound, engineEnabled };

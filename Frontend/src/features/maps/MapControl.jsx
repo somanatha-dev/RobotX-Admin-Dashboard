@@ -575,9 +575,16 @@ function MapControlInner({ filtersHost }) {
   // The location/campus filter drives the map viewport (flyTo); the global
   // robots list (from AppProvider) drives which markers are visible, so that
   // robots commissioned with a custom location still appear on the map.
-  // taskPathCacheRef holds route paths from TASK_ASSIGNED events — persists
-  // across page navigation so routes are drawn even if user wasn't on /map
+  // taskPathCacheRef holds route paths from `TASK_ASSIGNED` events — persists
+  // across page navigation so routes are drawn even if the user wasn't on /map
   // when the event fired.
+  //
+  // PHASE 15: `TASK_ASSIGNED` (capitals) is the event that means a robot was
+  // actually chosen and a route exists. The engine's intake acknowledgement is
+  // `task_accepted` and carries a queue position rather than a path, so there is
+  // nothing for this cache to hold until a round has decided. The full contract,
+  // including which legacy events are retired after the retention window, is in
+  // `src/lib/socket.js`.
   const { recenter } = useRobotStream({
     robots: globalRobots,
     taskPathCacheRef,

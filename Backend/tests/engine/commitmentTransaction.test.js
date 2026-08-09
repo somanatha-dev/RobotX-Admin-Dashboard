@@ -725,8 +725,15 @@ describe("the commit path takes no cache dependency (§10.4, invariant I16)", ()
     try {
       // §10.4 — "cache unavailability MUST NOT halt commitment".
       await expect(kv.reserveRobot("robotReserve:a", "task", 30, { advisory: true })).resolves.toBe(true);
-      // The legacy caller keeps the fail-closed behaviour until Phase 15.
-      await expect(kv.reserveRobot("robotReserve:a", "task", 30)).rejects.toThrow(/LOCK_UNAVAILABLE|unreachable/);
+      // PHASE 15 — the default flipped. The plan's Redis row retires "robotReserve:*
+      // reliance for correctness (it remains advisory)", and the condition it waited on —
+      // the durable path being live — is met, so an unqualified caller is advisory too.
+      await expect(kv.reserveRobot("robotReserve:a", "task", 30)).resolves.toBe(true);
+      // The fail-closed behaviour is retained and reachable, for a caller that declares it
+      // has no other exclusivity mechanism. No caller in this repository does.
+      await expect(kv.reserveRobot("robotReserve:a", "task", 30, { advisory: false })).rejects.toThrow(
+        /LOCK_UNAVAILABLE|unreachable/,
+      );
     } finally {
       await close();
       process.env.REDIS_URL = previous.url === undefined ? "" : previous.url;

@@ -16,7 +16,7 @@ import * as authApi from '@/lib/api/auth.js';
 import * as robotsApi from '@/lib/api/robots.js';
 import * as tasksApi from '@/lib/api/tasks.js';
 import * as locationsApi from '@/lib/api/locations.js';
-import { socket } from '@/lib/socket.js';
+import { socket, DASHBOARD_EVENTS, ENGINE_NOT_LIVE } from '@/lib/socket.js';
 
 export default function AppProvider({ children }) {
   const rrNavigate = useNavigate();
@@ -461,8 +461,13 @@ export default function AppProvider({ children }) {
       });
     };
 
-    // TASK_ASSIGNED — cache route path data so the map can draw lines even if
-    // the user navigates to /map after the event fired.
+    // `TASK_ASSIGNED` (capitals) — unchanged by the cutover and genuinely means
+    // assigned: it is emitted when a route exists to draw, which is after a real
+    // decision. Not to be confused with the lower-case `task_assigned`
+    // compatibility echo, which this provider does not subscribe to.
+    //
+    // Cached so the map can draw the lines even if the user navigates to /map
+    // after the event fired.
     const onTaskAssigned = (data) => {
       const taskId  = String(data?.taskId  || '').trim();
       const robotId = String(data?.robotId || '').trim();
@@ -488,25 +493,97 @@ export default function AppProvider({ children }) {
       }
     };
 
+    // ── PHASE 15 — §3.4's intake acknowledgement ────────────────────────────
+    //
+    // `task_accepted` is the honest event: the task was validated, admitted,
+    // deduplicated, routed to a shard and durably queued. **No robot has been
+    // chosen yet** — the engine decides in a later round — so the card shows a
+    // queue position and a predicted window rather than a spinner that implies an
+    // assignment is already under way.
+    //
+    // The legacy `task_assigned` still fires beside it for unmigrated clients and
+    // is deliberately NOT subscribed to here: its payload says PENDING with a null
+    // robot, and reading it as an assignment is exactly the conflation §3.4
+    // forbids. See `lib/socket.js` for the full contract.
+    const onTaskAccepted = (data) => {
+      const taskId = String(data?.taskId || '').trim();
+      if (!taskId) return;
+      setTasks((prev) =>
+        prev.map((t) =>
+          String(t.taskId || '').trim() === taskId
+            ? {
+                ...t,
+                status: 'PENDING',
+                queuePosition: typeof data?.queuePosition === 'number' ? data.queuePosition : null,
+                predictedAssignmentWindow: data?.predictedAssignmentWindow ?? null,
+                intakeSentence: data?.sentence ?? null,
+              }
+            : t,
+        ),
+      );
+    };
+
+    // Intake refused the submission. After the cutover the most important refusal
+    // is ENGINE_NOT_LIVE: the shard has no decision path, because the legacy
+    // dispatcher was removed from the build rather than merely bypassed. Showing
+    // it is the difference between an operator who knows to check the rollout and
+    // one watching a card that will never move.
+    const onTaskError = (data) => {
+      const taskId = String(data?.taskId || '').trim();
+      const message =
+        data?.code === ENGINE_NOT_LIVE
+          ? `Task ${taskId || ''} refused — the assignment engine is not live for this shard. No work is queued.`
+          : `Task ${taskId || ''} refused — ${data?.error || 'unknown reason'}`;
+      addEvent(message.trim(), data?.code === ENGINE_NOT_LIVE ? 'critical' : 'warning');
+      if (!taskId) return;
+      setTasks((prev) =>
+        prev.map((t) =>
+          String(t.taskId || '').trim() === taskId
+            ? { ...t, status: 'FAILED', intakeSentence: data?.error ?? null, intakeCode: data?.code ?? null }
+            : t,
+        ),
+      );
+    };
+
+    // §11.2 — the agent may refuse an offer. Three outcomes, and they are not the
+    // same event: an ACCEPT is progress, a REJECT re-plans the Leg, and a DEFER is
+    // an agent deliberately holding work. The baseline could express none of them.
+    const onOfferResponse = (data) => {
+      const robotId = String(data?.agentId || data?.robotId || '').trim();
+      const response = String(data?.response || '').trim();
+      if (!response) return;
+      if (response === 'OFFER_REJECT') {
+        addEvent(`Robot ${robotId || 'unknown'} rejected an offer — re-planning`, 'warning');
+      } else if (response === 'OFFER_DEFER') {
+        addEvent(`Robot ${robotId || 'unknown'} deferred an offer`, 'warning');
+      }
+    };
+
     // Subscribe to the single canonical telemetry event.
     // "robot_update" and "ROBOT_UPDATE" were legacy aliases removed from the
     // backend; subscribing to all three was firing the same handler 3× per tick.
-    socket.on('robot:update', onRobotUpdate);
-    socket.on('ROBOT_UPDATED', onRobotUpdated);
-    socket.on('TASK_CREATED', onTaskCreated);
-    socket.on('TASK_UPDATED', onTaskUpdated);
-    socket.on('TASK_ASSIGNED', onTaskAssigned);
-    socket.on('ALERT_CREATED', onAlertCreated);
-    socket.on('REROUTE_ALERT', onRerouteAlert);
+    socket.on(DASHBOARD_EVENTS.ROBOT_UPDATE, onRobotUpdate);
+    socket.on(DASHBOARD_EVENTS.ROBOT_UPDATED, onRobotUpdated);
+    socket.on(DASHBOARD_EVENTS.TASK_CREATED, onTaskCreated);
+    socket.on(DASHBOARD_EVENTS.TASK_ACCEPTED, onTaskAccepted);
+    socket.on(DASHBOARD_EVENTS.TASK_ERROR, onTaskError);
+    socket.on(DASHBOARD_EVENTS.OFFER_RESPONSE, onOfferResponse);
+    socket.on(DASHBOARD_EVENTS.TASK_UPDATED, onTaskUpdated);
+    socket.on(DASHBOARD_EVENTS.TASK_ASSIGNED, onTaskAssigned);
+    socket.on(DASHBOARD_EVENTS.ALERT_CREATED, onAlertCreated);
+    socket.on(DASHBOARD_EVENTS.REROUTE_ALERT, onRerouteAlert);
 
     return () => {
-      socket.off('robot:update', onRobotUpdate);
-      socket.off('ROBOT_UPDATED', onRobotUpdated);
-      socket.off('TASK_CREATED', onTaskCreated);
-      socket.off('TASK_UPDATED', onTaskUpdated);
-      socket.off('TASK_ASSIGNED', onTaskAssigned);
-      socket.off('ALERT_CREATED', onAlertCreated);
-      socket.off('REROUTE_ALERT', onRerouteAlert);
+      socket.off(DASHBOARD_EVENTS.ROBOT_UPDATE, onRobotUpdate);
+      socket.off(DASHBOARD_EVENTS.ROBOT_UPDATED, onRobotUpdated);
+      socket.off(DASHBOARD_EVENTS.TASK_CREATED, onTaskCreated);
+      socket.off(DASHBOARD_EVENTS.TASK_ACCEPTED, onTaskAccepted);
+      socket.off(DASHBOARD_EVENTS.TASK_ERROR, onTaskError);
+      socket.off(DASHBOARD_EVENTS.OFFER_RESPONSE, onOfferResponse);
+      socket.off(DASHBOARD_EVENTS.TASK_UPDATED, onTaskUpdated);
+      socket.off(DASHBOARD_EVENTS.TASK_ASSIGNED, onTaskAssigned);
+      socket.off(DASHBOARD_EVENTS.ALERT_CREATED, onAlertCreated);
+      socket.off(DASHBOARD_EVENTS.REROUTE_ALERT, onRerouteAlert);
     };
   }, [addEvent, setDecisionRequest]);
   // ─────────────────────────────────────────────────────────────────────────

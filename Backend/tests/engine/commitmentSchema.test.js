@@ -299,13 +299,133 @@ describe("the schema carries what Phase 3 needs and nothing more", () => {
   });
 
   // Phase 4 landed `Outbox` and `AgentDedupState`; Phase 5 lands `Timer`,
-  // `ReconcilerRepair`, and `VerificationEvidence`. The assertion narrows by exactly what
-  // each landed phase owns rather than being deleted — the same discipline the
-  // engine-tree ownership assertion follows. A Phase 6+ table appearing early still
-  // fails, which is the property worth keeping.
-  test("no Phase 6+ table appears — no RejectionAggregate, no NearMissSketch, no EnergyModelParams", () => {
-    for (const table of ["RejectionAggregate", "NearMissSketch", "EnergyModelParams", "BatteryState", "Charger"]) {
-      expect({ table, present: new RegExp(`model ${table} \\{`).test(schema) }).toEqual({ table, present: false });
+  // `ReconcilerRepair`, and `VerificationEvidence`; Phase 6 lands `RejectionAggregate`
+  // and `NearMissSketch`; Phase 7 lands §14's and §15's six; Phase 9 lands
+  // `AgentCellPosition`; Phase 10 lands `WorkQueue` and `Round`. The assertion narrows
+  // by exactly what each landed phase owns rather than being deleted — the same
+  // discipline the engine-tree ownership assertion follows. Phase 11 lands
+  // `DecisionRecordB`, `InputSnapshot`, `CalibrationObservation`, and `AuditEvent`; a
+  // Phase 12+ table appearing early still fails, which is the property worth keeping.
+  // Phase 12 lands `DegradedModeEvent`, `InvariantStatus`, and `ExternalEscalation` — see
+  // `degradedSchema.test.js` for their own presence assertions. Phase 13 lands `Shard`,
+  // `ShardMembership`, `CrossRegionSaga`, and `TransferPoint` — see `shardSchema.test.js`
+  // for theirs. Phase 14 lands §23's four — `AgentCertificate`, `CapabilityAttestation`,
+  // `IdentityRecord` and `OverrideAudit`; see `securitySchema.test.js` for their own
+  // presence assertions. The boundary narrows again to what Phase 14 does **not** land,
+  // which is the property worth keeping: Phase 15 adds no table at all and its migration
+  // row is a *drop*, so the assertion here becomes the one that catches a drop arriving
+  // early — which, for `Robot.currentTaskId`, would remove the legacy path's own record a
+  // full retention window before the plan permits it.
+  test("no Phase 15 column drop has happened — the legacy identifying columns are still present", () => {
+    const stop = /model Stop \{[\s\S]*?\n\}/.exec(schema)[0];
+    for (const column of ["label", "lat", "lon"]) {
+      expect({ column, present: new RegExp(`^\\s{2}${column}\\s`, "m").test(stop) }).toEqual({ column, present: true });
+    }
+    const robot = /model Robot \{[\s\S]*?\n\}/.exec(schema)[0];
+    expect(/currentTaskId/.test(robot)).toBe(true);
+  });
+
+  test("Phase 14's four tables are present — AgentCertificate, CapabilityAttestation, IdentityRecord, OverrideAudit", () => {
+    for (const table of ["AgentCertificate", "CapabilityAttestation", "IdentityRecord", "OverrideAudit"]) {
+      expect({ table, present: new RegExp(`model ${table} \\{`).test(schema) }).toEqual({ table, present: true });
+    }
+  });
+
+  test("Phase 13's four tables are present — Shard, ShardMembership, CrossRegionSaga, TransferPoint", () => {
+    for (const table of ["Shard", "ShardMembership", "CrossRegionSaga", "TransferPoint"]) {
+      expect({ table, present: new RegExp(`model ${table} \\{`).test(schema) }).toEqual({ table, present: true });
+    }
+  });
+
+  // The property this file exists to protect, restated for Phase 13: guard G1 reads
+  // `ShardLeadership`, and Phase 13 replaces how the fence gets there without changing the
+  // table the guard reads. A column added or removed here would make "G1 unchanged" a
+  // claim about source rather than about the database.
+  test("Phase 3's ShardLeadership table is unchanged by Phase 13 — the columns G1 reads are exactly the ones it shipped with", () => {
+    const model = /model ShardLeadership \{[\s\S]*?\n\}/.exec(schema)[0];
+    const columns = [...model.matchAll(/^\s{2}(\w+)\s+\S/gm)].map((match) => match[1]).sort();
+    expect(columns).toEqual(
+      [
+        "id",
+        "shardId",
+        "leadershipFence",
+        "holder",
+        "leaseExpiry",
+        "lastAdvancedBy",
+        "lastAdvancedAt",
+        // A back-relation, which adds no column to this table. Prisma resolves it from
+        // `Shard.shardId`'s foreign key, and the migration contains no ALTER TABLE.
+        "shard",
+        "createdAt",
+        "updatedAt",
+      ].sort(),
+    );
+  });
+
+  test("Phase 12's three tables are present — DegradedModeEvent, InvariantStatus, ExternalEscalation", () => {
+    for (const table of ["DegradedModeEvent", "InvariantStatus", "ExternalEscalation"]) {
+      expect({ table, present: new RegExp(`model ${table} \\{`).test(schema) }).toEqual({ table, present: true });
+    }
+  });
+
+  test("Phase 10's two tables are present — WorkQueue and Round", () => {
+    for (const table of ["WorkQueue", "Round"]) {
+      expect({ table, present: new RegExp(`model ${table} \\{`).test(schema) }).toEqual({ table, present: true });
+    }
+  });
+
+  test("Phase 11's four tables are present — the §21 observability surface", () => {
+    for (const table of ["DecisionRecordB", "InputSnapshot", "CalibrationObservation", "AuditEvent"]) {
+      expect({ table, present: new RegExp(`model ${table} \\{`).test(schema) }).toEqual({ table, present: true });
+    }
+  });
+
+  // §2.6 / invariant I18, checked against the schema rather than against the modules
+  // that respect it: a SOFT reservation has no durable home, so neither Phase 10 table
+  // may carry a provisional agent binding. `WorkQueue` naming an agent would be a SOFT
+  // reservation under a different table name, and it would put the re-planning rate
+  // inside the durable path that §3.5's shard-sizing arithmetic depends on it not being.
+  test("neither Phase 10 table carries a provisional agent binding (§2.6, I18)", () => {
+    for (const table of ["WorkQueue", "Round"]) {
+      const model = new RegExp(`model ${table} \\{[\\s\\S]*?\\n\\}`).exec(schema)[0];
+      // An agent *identifier* or an `Agent` relation is a binding; `Round.agentCount` is
+      // a tally of how many agents the round allocated to and binds nothing. The
+      // distinction is the whole point: §2.6 forbids persisting *which* agent a Leg is
+      // provisionally planned onto, not counting how many were used.
+      const bindings = model
+        .split("\n")
+        .filter((line) => /^\s{2}(agentId|agentIds|plannedAgent\w*|reservedAgent\w*|agent)\s/.test(line) || /^\s{2}\w+\s+Agent\b/.test(line))
+        .map((line) => line.trim());
+      expect({ table, bindings }).toEqual({ table, bindings: [] });
+    }
+  });
+
+  test("Phase 8's two tables are present", () => {
+    for (const table of ["ServiceTimeModel", "ZonePriceSnapshot"]) {
+      expect({ table, present: new RegExp(`model ${table} \\{`).test(schema) }).toEqual({ table, present: true });
+    }
+  });
+
+  test("Phase 9's table is present — AgentCellPosition", () => {
+    expect(schema).toMatch(/model AgentCellPosition \{/);
+  });
+
+  test("Phase 7's six energy and payload tables are present", () => {
+    for (const table of [
+      "EnergyModelParams",
+      "BatteryState",
+      "Charger",
+      "ChargerReservation",
+      "ChargerAvailabilityProjection",
+      "PackingResultCache",
+    ]) {
+      expect({ table, present: new RegExp(`model ${table} \\{`).test(schema) }).toEqual({ table, present: true });
+    }
+  });
+
+  test("Phase 6's two rejection-telemetry tables are present", () => {
+    for (const table of ["RejectionAggregate", "NearMissSketch"]) {
+      expect({ table, present: new RegExp(`model ${table} \\{`).test(schema) }).toEqual({ table, present: true });
     }
   });
 

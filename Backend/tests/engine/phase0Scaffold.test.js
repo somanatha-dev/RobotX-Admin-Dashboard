@@ -113,9 +113,161 @@ describe("the engine module tree", () => {
     "security/commandSigning.js",
   ];
 
+  // `lifecycle/` is named file-by-file rather than as a directory, for the same reason
+  // `shard/`, `security/` and `cutover/` are: §17.3's repositioning and §4.6's preemption are
+  // Phase 16's, and both would land in this folder. A directory prefix here would stop this
+  // walk catching `lifecycle/preemption.js`, which is precisely the module the boundary
+  // exists to refuse.
   const PHASE_5_OWNED = [
     "supervision/",
-    "lifecycle/",
+    "lifecycle/legMachine.js",
+    "lifecycle/taskMachine.js",
+    "lifecycle/transitions.js",
+    "lifecycle/settlement.js",
+    "lifecycle/cancellation.js",
+    "lifecycle/reassignment.js",
+  ];
+
+  // Phase 6's additions are §7's feasibility gate in full: the 38-predicate register,
+  // three-valued evaluation, the systemic-indeterminacy guard, the three-tier cache,
+  // the §10.3.2 volatile subset, and §7.7's rejection telemetry.
+  const PHASE_6_OWNED = [
+    "feasibility/",
+  ];
+
+  // Phase 7's additions are §14's energy model and §15's payload model, plus the one
+  // routing artefact §20.3 item 3 makes a Tier 0 input — the charger-reachability cache.
+  // `routing/` is named file-by-file rather than as a directory: the rest of it is
+  // Phase 8's and Phase 9's, and a directory prefix here would stop catching their work
+  // leaking backwards. `plan/`, `solve/`, `pricing/`, and `cost/` beyond Phase 1's two
+  // files remain forbidden.
+  const PHASE_7_OWNED = [
+    "energy/",
+    "payload/",
+    "routing/chargerReachabilityCache.js",
+  ];
+
+  // Phase 8's additions are §8's cost function in full, §13's Plan Builder, the §8.3
+  // pricing clients, and §20.3 item 2's cell-pair travel-time cache. `cost/` opens up
+  // beyond Phase 1's two files, and `plan/` and `pricing/` open for the first time.
+  // `candidates/` and `solve/` remain forbidden: they are Phase 9's and Phase 10's, and
+  // this list is what stops their work leaking backwards.
+  const PHASE_8_OWNED = [
+    "cost/",
+    "plan/",
+    "pricing/",
+    "routing/cellPairCache.js",
+  ];
+
+  // Phase 9's additions are §6's candidate generation in full: the Availability
+  // Index, hierarchical expansion, the admissible lower bound and its Ω
+  // corrections, canonical ordering, cell-cluster sharing, and the admissibility
+  // build gate. `solve/` remains forbidden — it is Phase 10's, and this list is
+  // what stops that work leaking backwards.
+  const PHASE_9_OWNED = [
+    "candidates/",
+  ];
+
+  // Phase 10's additions are §9's round loop and solve in full — the adaptive cadence,
+  // the regime and its guarantees, the five §9.4 budgets with anytime behaviour, the
+  // set-partitioning objective with its deferral variable, the singleton-regime min-cost
+  // flow, and the round itself — plus §3.4's intake path and §2.6's round-local plan
+  // state. `observability/`, `degraded/`, `failure/`, and `fairness/` remain forbidden:
+  // they are Phase 11's and Phase 12's, and this list is what stops their work leaking
+  // backwards.
+  //
+  // `solve/` is named file-by-file rather than as a directory, for the same reason `shard/`,
+  // `security/`, `cutover/` and `lifecycle/` are. §9.3's column-regime branch-and-bound, set
+  // partitioning and local search are all Phase 16's and all of them would land in this
+  // folder; a directory prefix would let `solve/setPartitioning.js`, `solve/branchAndBound.js`
+  // or `solve/localSearch.js` appear here unremarked. That risk is highest exactly while
+  // Phase 10 is re-opened for §20.2 conformance work, which is when this list is the only
+  // mechanical thing standing between the two phases.
+  const PHASE_10_OWNED = [
+    "intake/",
+    "solve/budgets.js",
+    "solve/cadence.js",
+    "solve/costScaling.js",
+    "solve/minCostFlow.js",
+    "solve/objective.js",
+    "solve/regime.js",
+    "solve/round.js",
+    "shard/planState.js",
+  ];
+
+  // Phase 11's additions are §21's observability surface in full: the two-tier decision
+  // record with its deterministic sampler and bounded exemption list, the §21.3
+  // Explanation API's answers, the §21.4 metric set, §20.1's SLI targets, §21.5's
+  // calibration loop, §21.6's shadow mode, and §21.7's hash-chained audit stream.
+  // `degraded/`, `failure/`, `map/`, and `fairness/` remain forbidden — they are Phase
+  // 12's, and this list is what stops their work leaking backwards.
+  const PHASE_11_OWNED = [
+    "observability/",
+  ];
+
+  // Phase 12's additions are §18's and §26's: the six named degraded modes with their
+  // entry and exit events and their §26.2 matrix, the agent and infrastructure failure
+  // catalogues, obstruction classification, §18.6's external escalation chain, and the
+  // Invariant Checker. `fairness/` remains forbidden — §17.4's ladder is its own phase's,
+  // and this list is what stops that work leaking backwards.
+  const PHASE_12_OWNED = [
+    "degraded/",
+    "failure/",
+    "map/",
+  ];
+
+  // Phase 13's additions are §3.5's and §19's: the shard model and its region→shard map,
+  // leader election over a consensus store, failover's recover-and-reconstruct, the two
+  // sizing bounds, the transactional membership handoff, and §19.6's cross-region saga.
+  // `shard/` is named file-by-file rather than as a directory: `leadership.js` is Phase
+  // 3's and `planState.js` is Phase 10's, and a directory prefix here would stop this
+  // walk catching a later phase's work leaking into the same folder.
+  const PHASE_13_OWNED = [
+    "shard/shardModel.js",
+    "shard/election.js",
+    "shard/failover.js",
+    "shard/sizing.js",
+    "shard/membership.js",
+    "shard/crossRegion.js",
+  ];
+
+  // Phase 14's additions are §23's: the certificate-bound session, capability attestation,
+  // the six trust-boundary rows, the override discipline, and the privacy separation.
+  // `security/` is named file-by-file for the same reason `shard/` is —
+  // `commandSigning.js` is Phase 4's, and a directory prefix would stop this walk catching
+  // a Phase 15 module dropped into the same folder. `fairness/` remains forbidden: §17.4's
+  // ladder is its own phase's, and this list is what stops that work leaking backwards.
+  const PHASE_14_OWNED = [
+    "security/sessionBinding.js",
+    "security/attestation.js",
+    "security/trustBoundaries.js",
+    "security/override.js",
+    "privacy/surrogateKeys.js",
+    "privacy/identityStore.js",
+    "privacy/erasure.js",
+  ];
+
+  // Phase 15 ships no new *capability* — "No new capability ships in this phase" — but it
+  // does ship the cutover machinery itself, which has to live somewhere. `cutover/` is
+  // named file-by-file for the same reason `security/` is: a directory prefix would stop
+  // this walk catching a Phase 16 module dropped into the same folder. `fairness/` remains
+  // forbidden, because §17.4's ladder and §17.3's repositioning are Phase 16's.
+  //
+  // `routing/inProcessCache.js` is the one exception to "no new capability", and it is
+  // named here rather than under Phase 8 deliberately. It is a **B1 prerequisite**, not a
+  // Phase 8 deliverable: §20.1 budgets a cached return-leg lookup at < 10 µs and
+  // `PHASE_15_B1_ROUTING_DECISION_REPORT.md` §7.1 measured loopback Redis `GET` at
+  // p50 304 µs / p99 1 156 µs, so the lookup tier is unbuildable-as-specified independently
+  // of which engine B1 selects. It ships no capability — it issues no query, holds no
+  // adapter, and implements no part of §5.2's degradation ladder. Phase 8's `client.js`
+  // remains absent and remains Phase 8's.
+  const PHASE_15_OWNED = [
+    "cutover/enabled.js",
+    "cutover/gates.js",
+    "cutover/guardrails.js",
+    "cutover/stage.js",
+    "cutover/store.js",
+    "routing/inProcessCache.js",
   ];
 
   const LANDED_PHASE_OWNED = [
@@ -124,7 +276,27 @@ describe("the engine module tree", () => {
     ...PHASE_3_OWNED,
     ...PHASE_4_OWNED,
     ...PHASE_5_OWNED,
+    ...PHASE_6_OWNED,
+    ...PHASE_7_OWNED,
+    ...PHASE_8_OWNED,
+    ...PHASE_9_OWNED,
+    ...PHASE_10_OWNED,
+    ...PHASE_11_OWNED,
+    ...PHASE_12_OWNED,
+    ...PHASE_13_OWNED,
+    ...PHASE_14_OWNED,
+    ...PHASE_15_OWNED,
   ];
+
+  /**
+   * The ownership predicate itself, lifted out of the walk so that the same rule the walk
+   * applies to the real tree can be applied to a planted module list below. A guard whose
+   * rejection half is never exercised is a guard nobody has seen work.
+   */
+  const unownedAmong = (modules) =>
+    modules.filter(
+      (module) => !LANDED_PHASE_OWNED.some((owned) => module === owned || module.startsWith(owned)),
+    );
 
   test("holds runtime code only where a landed phase owns it", () => {
     const runtimeModules = [];
@@ -138,10 +310,44 @@ describe("the engine module tree", () => {
       }
     };
     walk(ENGINE_ROOT, "");
-    const unexpected = runtimeModules.filter(
-      (module) => !LANDED_PHASE_OWNED.some((owned) => module === owned || module.startsWith(owned)),
-    );
-    expect(unexpected).toEqual([]);
+    expect(unownedAmong(runtimeModules)).toEqual([]);
+  });
+
+  test("every Phase 10 solve module and Phase 5 lifecycle module on disk is still owned", () => {
+    // The other half of the file-by-file change: converting a directory prefix into a list is
+    // only safe if the list is complete. This asserts it against the filesystem, so a
+    // legitimate Phase 10 or Phase 5 file can never be locked out by an omission here — the
+    // walk above would report it, and this test says which list is short.
+    for (const directory of ["solve", "lifecycle"]) {
+      const onDisk = fs
+        .readdirSync(path.join(ENGINE_ROOT, directory))
+        .filter((name) => name.endsWith(".js"))
+        .map((name) => `${directory}/${name}`);
+      expect({ directory, unowned: unownedAmong(onDisk) }).toEqual({ directory, unowned: [] });
+    }
+  });
+
+  test("a Phase 16 module dropped into solve/ or lifecycle/ is refused", () => {
+    // `PHASE_15_INDEPENDENT_VERIFICATION.md` Finding 3: while `solve/` and `lifecycle/` were
+    // whole-directory grants, the Phase 16 boundary held in those two folders only because the
+    // files did not exist — not because this walk would refuse them. It refuses them now, and
+    // this is the proof, planted rather than asserted in prose.
+    //
+    // §17.4's fairness ladder, §4.6's preemption, and §9.3's column-regime mechanisms (set
+    // partitioning, branch and bound, local search) are the five named Phase 16 mechanisms
+    // that would plausibly land inside a folder an earlier phase already owns.
+    const planted = [
+      "solve/setPartitioning.js",
+      "solve/branchAndBound.js",
+      "solve/localSearch.js",
+      "lifecycle/preemption.js",
+      "fairness/ladder.js",
+    ];
+    expect(unownedAmong(planted).sort()).toEqual([...planted].sort());
+
+    // Negative control: the rule that refuses those must still admit the real files, or the
+    // test above would pass for the wrong reason — a predicate that refuses everything.
+    expect(unownedAmong(["solve/costScaling.js", "lifecycle/transitions.js"])).toEqual([]);
   });
 
   test("Phase 1's own modules are all present", () => {
@@ -319,6 +525,26 @@ describe("ARCHITECTURE.md", () => {
 describe("the ADR log", () => {
   const adrFiles = fs.readdirSync(ADR_ROOT).filter((f) => f.startsWith("ADR-"));
 
+  /**
+   * The log holds two classes of record, and `docs/adr/README.md` has always said so:
+   *
+   *   **01–32** — Appendix C's decisions, recorded verbatim in Phase 0, `Accepted — frozen`.
+   *   **33 upward** — *integration* decisions taken under the frozen architecture, which choose
+   *     how to meet it rather than what it is, marked `Accepted` and never `frozen`.
+   *
+   * Until D4 was ratified the second class was empty, so the tests below could treat "every
+   * record" and "every frozen record" as the same set. `ADR-33` is the first member of it, and
+   * conflating the two would have exactly one of two effects: either an integration record has
+   * to falsely claim frozen status, or the Appendix C set stops being checked for completeness.
+   * Both are worse than telling the two apart, so the split is made here rather than papered over.
+   */
+  const integrationOf = (file) => {
+    const match = /^ADR-(\d{2})/u.exec(file);
+    return match && Number(match[1]) >= 33;
+  };
+  const frozenFiles = adrFiles.filter((file) => !integrationOf(file));
+  const integrationFiles = adrFiles.filter(integrationOf);
+
   test("records every decision in Appendix C of the frozen specification", () => {
     const spec = fs.readFileSync(
       path.join(REPO_ROOT, "NEXT_GENERATION_ASSIGNMENT_ENGINE.md"),
@@ -341,16 +567,32 @@ describe("the ADR log", () => {
       const match = adrFiles.find((file) => file.startsWith(`ADR-${id}-`));
       expect({ id, recorded: Boolean(match) }).toEqual({ id, recorded: true });
     }
-    expect(adrFiles).toHaveLength(ids.length);
+    // The frozen set is Appendix C's and nothing else: a record numbered 01–32 that Appendix C
+    // does not name would be a decision smuggled in as a frozen one.
+    expect(frozenFiles).toHaveLength(ids.length);
   });
 
-  test("every record is accepted and frozen", () => {
-    for (const file of adrFiles) {
+  test("every Appendix C record is accepted and frozen", () => {
+    for (const file of frozenFiles) {
       const contents = fs.readFileSync(path.join(ADR_ROOT, file), "utf8");
       expect({ file, frozen: contents.includes("**Accepted — frozen**") }).toEqual({
         file,
         frozen: true,
       });
+      expect(contents).toMatch(/^## Decision$/m);
+      expect(contents).toMatch(/^## Rejected$/m);
+    }
+  });
+
+  test("every integration record is accepted, declares itself as one, and never claims to be frozen", () => {
+    for (const file of integrationFiles) {
+      const contents = fs.readFileSync(path.join(ADR_ROOT, file), "utf8");
+      // Stricter than the frozen class, not looser. An integration record that claimed
+      // `Accepted — frozen` would be asserting it cannot be superseded by a later integration
+      // decision, which is the one thing README's supersession rule reserves for Appendix C.
+      expect({ file, frozen: contents.includes("**Accepted — frozen**") }).toEqual({ file, frozen: false });
+      expect({ file, accepted: /\|\s*\*\*Status\*\*\s*\|\s*\*\*Accepted\*\*\s*\|/u.test(contents) }).toEqual({ file, accepted: true });
+      expect({ file, declared: /integration decision under a frozen architecture/iu.test(contents) }).toEqual({ file, declared: true });
       expect(contents).toMatch(/^## Decision$/m);
       expect(contents).toMatch(/^## Rejected$/m);
     }

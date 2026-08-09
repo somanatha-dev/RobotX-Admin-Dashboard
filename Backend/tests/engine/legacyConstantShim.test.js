@@ -81,7 +81,13 @@ describe("the values now come from the register", () => {
       const entry = entries.get(name);
       expect({ name, phase: typeof entry.legacy.retiresInPhase }).toEqual({ name, phase: "number" });
       expect(entry.legacy.replacedBy).toBeTruthy();
-      expect(entry.legacy.consumers.length).toBeGreaterThan(0);
+      // PHASE 15 — an entry may now legitimately have *no* consumers, but only once it
+      // records the phase that retired them. An empty consumer list with no
+      // `retiredInPhase` is dead configuration nobody noticed, which is exactly what this
+      // assertion exists to catch; an empty list *with* one is a completed retirement.
+      const retired = typeof entry.legacy.retiredInPhase === "number";
+      expect({ name, ok: entry.legacy.consumers.length > 0 || retired }).toEqual({ name, ok: true });
+      if (retired) expect(entry.legacy.retirementNote).toBeTruthy();
     }
   });
 

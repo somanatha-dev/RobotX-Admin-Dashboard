@@ -94,36 +94,34 @@ enum Role {
 //////////////////////////////////////////////////////
 
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  password  String
-  role      Role     @default(SUPER_ADMIN)
+  id       String @id @default(uuid())
+  email    String @unique
+  password String
+  role     Role   @default(SUPER_ADMIN)
 
   // Set the first time this account signs in with "Continue with Google".
   // Login is keyed off the unique email above, so a Google sign-in with a
   // matching, verified email always resolves to this same row — it never
   // creates a second account.
-  googleId  String?  @unique
+  googleId String? @unique
 
-  pinAuth AdminPinAuth?
+  pinAuth             AdminPinAuth?
   webauthnCredentials WebAuthnCredential[]
 
   createdAt DateTime @default(now())
 }
 
-
 //////////////////////////////////////////////////////
 // 🔐 ADMIN PIN AUTH (SEPARATE TABLE)
 //////////////////////////////////////////////////////
 
-
 model AdminPinAuth {
-  id        String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  pinHash   String
+  pinHash String
 
-  userId    String   @unique
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 }
@@ -133,28 +131,28 @@ model AdminPinAuth {
 //////////////////////////////////////////////////////
 
 model WebAuthnCredential {
-  id           String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   // Base64url authenticator credential ID — unique per authenticator.
-  credentialId String   @unique
+  credentialId String @unique
 
   // Base64url-encoded COSE public key returned at registration; used to
   // verify every subsequent assertion signature. Never a secret by itself.
-  publicKey    String
+  publicKey String
 
   // Signature counter reported by the authenticator; must be strictly
   // increasing on each successful assertion (replay-clone detection).
-  counter      BigInt   @default(0)
+  counter BigInt @default(0)
 
-  transports   String?
-  deviceType   String?
-  backedUp     Boolean  @default(false)
+  transports String?
+  deviceType String?
+  backedUp   Boolean @default(false)
 
-  createdAt    DateTime @default(now())
-  lastUsedAt   DateTime?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
 
   @@index([userId])
 }
@@ -164,26 +162,26 @@ model WebAuthnCredential {
 //////////////////////////////////////////////////////
 
 model Location {
-  id        String   @id @default(uuid())
-  name      String
-  type      LocationType
+  id   String       @id @default(uuid())
+  name String
+  type LocationType
 
   // Optional stable identifier for clean URLs/APIs.
   // Example: "india", "karnataka", "bengaluru", "rr-nagar"
-  slug      String?  @unique
+  slug String? @unique
 
-  parentId  String?
-  parent    Location? @relation("Hierarchy", fields: [parentId], references: [id])
-  children  Location[] @relation("Hierarchy")
+  parentId String?
+  parent   Location?  @relation("Hierarchy", fields: [parentId], references: [id])
+  children Location[] @relation("Hierarchy")
 
-  lat       Float?
-  lon       Float?
+  lat Float?
+  lon Float?
 
-  robots    Robot[]
+  robots Robot[]
 
+  @@unique([name, parentId])
   @@index([type])
   @@index([parentId])
-  @@unique([name, parentId])
 }
 
 //////////////////////////////////////////////////////
@@ -191,58 +189,58 @@ model Location {
 //////////////////////////////////////////////////////
 
 model Robot {
-  id            String   @id @default(uuid())
-  robotId       String   @unique
-  name          String?
+  id      String  @id @default(uuid())
+  robotId String  @unique
+  name    String?
 
   //////////////////////////////////////////////////
   // 🔥 REQUIRED (FILTER SYSTEM)
   //////////////////////////////////////////////////
 
-  locationId    String
-  location      Location @relation(fields: [locationId], references: [id])
+  locationId String
+  location   Location @relation(fields: [locationId], references: [id])
 
-  campusId      String?
-  campus        Campus?  @relation(fields: [campusId], references: [id])
+  campusId String?
+  campus   Campus? @relation(fields: [campusId], references: [id])
 
   // DTARO: zone assignment + utilization tracking
-  zoneId        String?
-  zone          Zone?    @relation(fields: [zoneId], references: [id], onDelete: SetNull)
-  utilization   Float?   @default(0)
+  zoneId      String?
+  zone        Zone?   @relation(fields: [zoneId], references: [id], onDelete: SetNull)
+  utilization Float?  @default(0)
 
-  status        RobotStatus @default(IDLE)
-  battery       Float?
+  status  RobotStatus @default(IDLE)
+  battery Float?
 
-  isOnline      Boolean   @default(false)
-  socketId      String?
-  lastSeenAt    DateTime?
+  isOnline   Boolean   @default(false)
+  socketId   String?
+  lastSeenAt DateTime?
 
   // live location (FAST access for dashboard/map)
-  lat           Float?
-  lon           Float?
-  speed         Float?
+  lat   Float?
+  lon   Float?
+  speed Float?
 
   //////////////////////////////////////////////////
   // RELATIONS
   //////////////////////////////////////////////////
 
   // 🔥 CURRENT TASK (1:1 STRICT)
-  currentTaskId String?  @unique
-  currentTask   Task?    @relation("CurrentTask", fields: [currentTaskId], references: [id])
+  currentTaskId String? @unique
+  currentTask   Task?   @relation("CurrentTask", fields: [currentTaskId], references: [id])
 
   // 🔥 ALL TASK HISTORY (1:N)
-  tasks         Task[]   @relation("RobotTasks")
+  tasks Task[] @relation("RobotTasks")
 
-  telemetry     Telemetry[]
-  events        Event[]
-  commands      Command[]
-  decisions     Decision[]
+  telemetry Telemetry[]
+  events    Event[]
+  commands  Command[]
+  decisions Decision[]
 
   // Phase 2 (§2.1): the domain-side Agent this Robot projects to. A back-relation
   // only — no column is added to Robot, and no legacy read path observes it.
-  agent         Agent?
+  agent Agent?
 
-  createdAt     DateTime @default(now())
+  createdAt DateTime @default(now())
 
   //////////////////////////////////////////////////
   // INDEXES (PERFORMANCE)
@@ -263,13 +261,13 @@ model Robot {
 //////////////////////////////////////////////////////
 
 model Zone {
-  id        String   @id @default(uuid())
-  name      String   @unique
+  id   String @id @default(uuid())
+  name String @unique
 
-  minLat    Float
-  maxLat    Float
-  minLon    Float
-  maxLon    Float
+  minLat Float
+  maxLat Float
+  minLon Float
+  maxLon Float
 
   robots    Robot[]
   obstacles ObstacleEvent[]
@@ -287,13 +285,16 @@ model Zone {
   // non-null default would fabricate containment that nobody assigned.
   //////////////////////////////////////////////////
 
-  regionId  String?
-  region    Region?  @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  regionId String?
+  region   Region? @relation(fields: [regionId], references: [id], onDelete: SetNull)
 
   // The zone's cell set. Containment is by published assignment, never by
   // query-time geometry (§3.6) — the bounding box above is legacy DTARO state and is
   // not what the engine resolves containment from.
-  cells     CellAssignment[]
+  cells CellAssignment[]
+
+  /// PHASE 8 — §8.3.1. Back-relation only; adds no column here.
+  priceSnapshots ZonePriceSnapshot[]
 
   createdAt DateTime @default(now())
 
@@ -305,20 +306,20 @@ model Zone {
 //////////////////////////////////////////////////////
 
 model ObstacleEvent {
-  id               String   @id @default(uuid())
-  obstacleId       String   @unique
+  id         String @id @default(uuid())
+  obstacleId String @unique
 
-  lat              Float
-  lon              Float
+  lat Float
+  lon Float
 
-  zoneId           String?
-  zone             Zone?    @relation(fields: [zoneId], references: [id], onDelete: SetNull)
+  zoneId String?
+  zone   Zone?   @relation(fields: [zoneId], references: [id], onDelete: SetNull)
 
-  severity         String   @default("MEDIUM")
+  severity         String  @default("MEDIUM")
   reportingRobotId String?
 
-  expiresAt        DateTime
-  createdAt        DateTime @default(now())
+  expiresAt DateTime
+  createdAt DateTime @default(now())
 
   @@index([zoneId])
   @@index([expiresAt])
@@ -329,14 +330,14 @@ model ObstacleEvent {
 //////////////////////////////////////////////////////
 
 model Campus {
-  id        String   @id @default(uuid())
-  code      String   @unique
-  name      String
+  id   String @id @default(uuid())
+  code String @unique
+  name String
 
   centerLat Float
   centerLon Float
 
-  robots    Robot[]
+  robots Robot[]
 
   createdAt DateTime @default(now())
 }
@@ -346,34 +347,34 @@ model Campus {
 //////////////////////////////////////////////////////
 
 model Task {
-  id          String   @id @default(uuid())
-  taskId      String   @unique
+  id     String @id @default(uuid())
+  taskId String @unique
 
   //////////////////////////////////////////////////
   // RELATIONS
   //////////////////////////////////////////////////
 
   // assigned robot
-  robotId     String?
-  robot       Robot?   @relation("RobotTasks", fields: [robotId], references: [id], onDelete: SetNull)
+  robotId String?
+  robot   Robot?  @relation("RobotTasks", fields: [robotId], references: [id], onDelete: SetNull)
 
   // reverse for currentTask (STRICT 1:1)
-  currentFor  Robot?   @relation("CurrentTask")
+  currentFor Robot? @relation("CurrentTask")
 
   //////////////////////////////////////////////////
   // DATA
   //////////////////////////////////////////////////
 
-  pickup      String
-  pickupLat   Float
-  pickupLon   Float
-  drop        String
-  dropLat     Float
-  dropLon     Float
+  pickup    String
+  pickupLat Float
+  pickupLon Float
+  drop      String
+  dropLat   Float
+  dropLon   Float
 
   distanceMeters Float?
 
-  status      TaskStatus @default(PENDING)
+  status TaskStatus @default(PENDING)
 
   /// PHASE 5 (§4.1 rule 2) — the optimistic-concurrency counter every Task
   /// transition is a conditional write on, and what §4.5 keys the Task's durable
@@ -391,13 +392,13 @@ model Task {
   ///
   /// Additive and defaulted, so every existing row is valid and no legacy write path
   /// acquires a new requirement. Same treatment as Phase 2's additive Task columns.
-  version     Int      @default(0)
+  version Int @default(0)
 
   startedAt   DateTime?
   completedAt DateTime?
 
-  events      Event[]
-  decisions   Decision[]
+  events    Event[]
+  decisions Decision[]
 
   //////////////////////////////////////////////////
   // PHASE 2 (§2.4) — the Task as the unit of customer-visible work
@@ -414,23 +415,39 @@ model Task {
   // Typed matching against a CapabilityBundle lives in `domain/capability.js`.
   //////////////////////////////////////////////////
 
-  tenantId       String?
-  slaClass       String?
+  //////////////////////////////////////////////////
+  // PHASE 14 (§23.7) — surrogate keys for origin and destination.
+  //
+  // Two keys, not one: `pickup` and `drop` are two different premises, and one key over
+  // both would make an erasure request for either erase the other. The *derived*
+  // quantities live on `Stop`, where the decision path actually reads them — a Task's
+  // origin and destination are §2.4's description of the work, and the arithmetic runs
+  // over the Legs and Stops the planner produces from it.
+  //
+  // `pickup` and `drop` are retained until Phase 15's drop window, for the reason stated
+  // on `Stop`.
+  //////////////////////////////////////////////////
+
+  originIdentityKey      String?
+  destinationIdentityKey String?
+
+  tenantId         String?
+  slaClass         String?
   businessPriority Int?
-  requirements   Json?
+  requirements     Json?
 
-  windowStart    DateTime?
-  windowEnd      DateTime?
+  windowStart DateTime?
+  windowEnd   DateTime?
 
-  payloadSpecId  String?
-  payloadSpec    PayloadSpec? @relation(fields: [payloadSpecId], references: [id], onDelete: SetNull)
+  payloadSpecId String?
+  payloadSpec   PayloadSpec? @relation(fields: [payloadSpecId], references: [id], onDelete: SetNull)
 
   // §2.8: `Task >──< Mission` — a Mission may discharge several Tasks and a Task may
   // span several Legs. The relation is many-to-many exactly as the specification
   // draws it; Prisma's implicit join table carries it, so no entity is invented.
-  missions       Mission[]
+  missions Mission[]
 
-  createdAt   DateTime @default(now())
+  createdAt DateTime @default(now())
 
   //////////////////////////////////////////////////
   // INDEXES
@@ -447,15 +464,15 @@ model Task {
 //////////////////////////////////////////////////////
 
 model Telemetry {
-  id        String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  robotId   String
-  robot     Robot    @relation(fields: [robotId], references: [id], onDelete: Cascade)
+  robotId String
+  robot   Robot  @relation(fields: [robotId], references: [id], onDelete: Cascade)
 
-  lat       Float?
-  lon       Float?
-  speed     Float?
-  battery   Float?
+  lat     Float?
+  lon     Float?
+  speed   Float?
+  battery Float?
 
   createdAt DateTime @default(now())
 
@@ -467,16 +484,16 @@ model Telemetry {
 //////////////////////////////////////////////////////
 
 model Event {
-  id        String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  robotId   String?
-  robot     Robot?   @relation(fields: [robotId], references: [id], onDelete: SetNull)
+  robotId String?
+  robot   Robot?  @relation(fields: [robotId], references: [id], onDelete: SetNull)
 
-  taskId    String?
-  task      Task?    @relation(fields: [taskId], references: [id])
+  taskId String?
+  task   Task?   @relation(fields: [taskId], references: [id])
 
-  type      EventType
-  message   String
+  type    EventType
+  message String
 
   createdAt DateTime @default(now())
 
@@ -490,16 +507,16 @@ model Event {
 //////////////////////////////////////////////////////
 
 model Command {
-  id         String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  robotId    String
-  robot      Robot    @relation(fields: [robotId], references: [id], onDelete: Cascade)
+  robotId String
+  robot   Robot  @relation(fields: [robotId], references: [id], onDelete: Cascade)
 
-  type       CommandType
+  type CommandType
 
-  status     CommandStatus @default(SENT)
+  status CommandStatus @default(SENT)
 
-  issuedAt   DateTime @default(now())
+  issuedAt   DateTime  @default(now())
   executedAt DateTime?
 
   @@index([robotId])
@@ -511,18 +528,18 @@ model Command {
 //////////////////////////////////////////////////////
 
 model Decision {
-  id        String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  robotId   String
-  robot     Robot    @relation(fields: [robotId], references: [id], onDelete: Cascade)
+  robotId String
+  robot   Robot  @relation(fields: [robotId], references: [id], onDelete: Cascade)
 
-  taskId    String?
-  task      Task?    @relation(fields: [taskId], references: [id])
+  taskId String?
+  task   Task?   @relation(fields: [taskId], references: [id])
 
-  reason    String
-  imageUrl  String?
+  reason   String
+  imageUrl String?
 
-  action    DecisionAction?
+  action     DecisionAction?
   resolvedAt DateTime?
 
   createdAt DateTime @default(now())
@@ -530,6 +547,7 @@ model Decision {
   @@index([robotId])
   @@index([taskId])
 }
+
 //////////////////////////////////////////////////////
 // CONFIGURATION AND GOVERNANCE (§22) — Phase 1
 //
@@ -567,24 +585,24 @@ enum OperatingRegimeState {
 }
 
 model ConfigVersion {
-  id                 String   @id @default(uuid())
+  id String @id @default(uuid())
 
   // Monotone. Referenced by version in every decision record (§22.1 rule 3).
-  version            Int      @unique
+  version Int @unique
 
-  publishedAt        DateTime @default(now())
-  publishedBy        String
+  publishedAt DateTime @default(now())
+  publishedBy String
 
   // Content hash over the canonical serialisation of `payload`. A replay checks it
   // before trusting the version it loaded.
-  signature          String
+  signature String
 
   // The complete resolved set: register digest, declared bindings, derived values,
   // kill-switch state, regimes, spatial maps. Self-contained so a replay needs no
   // other store (§9.6 requirement 6).
-  payload            Json
+  payload Json
 
-  note               String?
+  note String?
 
   // Two-person approval evidence for Safety-class changes (§22.3).
   approvals          Json?
@@ -594,26 +612,26 @@ model ConfigVersion {
   // rather than a discovery.
   launchGateFindings Json?
 
-  bindings           ConfigScopeBinding[]
+  bindings ConfigScopeBinding[]
 
   @@index([publishedAt])
 }
 
 model ConfigScopeBinding {
-  id              String   @id @default(uuid())
+  id String @id @default(uuid())
 
   configVersionId String
   configVersion   ConfigVersion @relation(fields: [configVersionId], references: [id], onDelete: Cascade)
 
   // A §22.2 level: global | region | zone | site | agent_class | agent | tenant |
   // sla_class | mission_class | time_window.
-  scopeLevel      String
-  scopeKey        String   @default("")
+  scopeLevel String
+  scopeKey   String @default("")
 
-  parameterName   String
-  value           Json
+  parameterName String
+  value         Json
 
-  createdAt       DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@unique([configVersionId, parameterName, scopeLevel, scopeKey])
   @@index([parameterName])
@@ -629,60 +647,60 @@ model ConfigActiveVersion {
 }
 
 model ParameterRegisterEntry {
-  name              String   @id
+  name String @id
 
-  type              String
-  unit              String
-  defaultValue      Json?
-  range             Json?
+  type         String
+  unit         String
+  defaultValue Json?
+  range        Json?
 
   // §22.2 levels at which this parameter may be bound.
-  scopes            String[]
+  scopes    String[]
   // The Scope column exactly as Appendix A writes it, including `fleet` and `shard`.
-  specScope         String?
+  specScope String?
 
-  changeClass       ConfigChangeClass
-  owner             String
-  blastRadius       String?
+  changeClass ConfigChangeClass
+  owner       String
+  blastRadius String?
 
   calibrationStatus CalibrationStatus
   // The data a PROVISIONAL or UNCALIBRATED entry awaits (§22.4).
   awaits            String?
 
-  section           String?
-  description       String?
-  derivation        Json?
-  registerFile      String?
+  section      String?
+  description  String?
+  derivation   Json?
+  registerFile String?
 
-  updatedAt         DateTime @updatedAt
+  updatedAt DateTime @updatedAt
 
   @@index([changeClass])
   @@index([calibrationStatus])
 }
 
 model OperatingRegime {
-  id                String   @id @default(uuid())
-  name              String   @unique
-  description       String?
+  id          String  @id @default(uuid())
+  name        String  @unique
+  description String?
 
-  triggerCondition  Json
-  parameterDeltas   Json
-  entryCriteria     String
-  exitCriteria      String
-  owner             String
+  triggerCondition Json
+  parameterDeltas  Json
+  entryCriteria    String
+  exitCriteria     String
+  owner            String
 
   state             OperatingRegimeState @default(INACTIVE)
   // Calibration is per regime: a coefficient set fitted across a mixed year is wrong
   // in both regimes (§22.4).
   calibrationStatus CalibrationStatus    @default(UNCALIBRATED)
 
-  proposedAt        DateTime?
-  confirmedBy       String?
-  confirmedAt       DateTime?
-  exitedAt          DateTime?
-  history           Json?
+  proposedAt  DateTime?
+  confirmedBy String?
+  confirmedAt DateTime?
+  exitedAt    DateTime?
+  history     Json?
 
-  createdAt         DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@index([state])
 }
@@ -787,43 +805,64 @@ enum ObstructionClass {
 /// §3.6 OperatingRegion — the shard boundary. Every Agent and every Leg belongs to
 /// exactly one at a time; region determines the assignment shard (§19.2).
 model Region {
-  id          String   @id @default(uuid())
-  regionId    String   @unique
+  id          String  @id @default(uuid())
+  regionId    String  @unique
   name        String
   description String?
 
-  zones       Zone[]
-  sites       Site[]
-  agents      Agent[]
-  missions    Mission[]
-  cells       CellAssignment[]
+  zones    Zone[]
+  sites    Site[]
+  agents   Agent[]
+  missions Mission[]
+  cells    CellAssignment[]
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  /// PHASE 7 — §5.2 / §14.5. Back-relations only; neither adds a column here.
+  chargers           Charger[]
+  chargerProjections ChargerAvailabilityProjection[]
+
+  /// PHASE 13 — §3.5 / §19.6. Back-relations only; none adds a column here. `shard` is
+  /// singular because `Shard.regionId` is unique: region → shard is a function, which is
+  /// what makes "every Leg is routed to exactly one shard at intake" well defined.
+  shard                    Shard?
+  transferPointsUpstream   TransferPoint[] @relation("TransferPointUpstream")
+  transferPointsDownstream TransferPoint[] @relation("TransferPointDownstream")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 /// §3.6 Site — a bounded place with its own access rules and service-time
 /// behaviour. Sites and zones are orthogonal and deliberately so: site is where
 /// service behaviour is learned, zone is where supply is priced.
 model Site {
-  id           String   @id @default(uuid())
-  siteId       String   @unique
-  name         String
+  id     String @id @default(uuid())
+  siteId String @unique
+  name   String
 
-  regionId     String
-  region       Region   @relation(fields: [regionId], references: [id], onDelete: Restrict)
+  regionId String
+  region   Region @relation(fields: [regionId], references: [id], onDelete: Restrict)
 
   // Access rules (lift, door code, dock, gate) and, for indoor or multi-level
   // sites, the graph zones §6.2 uses in place of geodesic cells.
-  accessRules  Json?
-  graphZones   Json?
+  accessRules Json?
+  graphZones  Json?
 
-  cells        CellAssignment[]
-  stops        Stop[]
-  homedAgents  Agent[]  @relation("AgentHomeDepot")
+  cells       CellAssignment[]
+  stops       Stop[]
+  homedAgents Agent[]          @relation("AgentHomeDepot")
 
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  /// PHASE 7 — §5.2. Back-relation only.
+  chargers Charger[]
+
+  /// PHASE 8 — §13.2. Back-relation only; adds no column here.
+  serviceTimeModels ServiceTimeModel[]
+
+  /// PHASE 13 — §19.6. Back-relation only; adds no column here. Optional on the other
+  /// side: a kerbside locker is a custodian without being a Site.
+  transferPoints TransferPoint[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([regionId])
 }
@@ -841,32 +880,88 @@ model Site {
 /// (i) enumerates exactly five new enums and this is not one of them; the permitted
 /// values are enforced in `src/engine/spatial/cells.js`.
 model CellAssignment {
-  id         String   @id @default(uuid())
+  id String @id @default(uuid())
 
   cellId     String
   resolution String
 
-  regionId   String
-  region     Region   @relation(fields: [regionId], references: [id], onDelete: Restrict)
+  regionId String
+  region   Region @relation(fields: [regionId], references: [id], onDelete: Restrict)
 
-  zoneId     String?
-  zone       Zone?    @relation(fields: [zoneId], references: [id], onDelete: SetNull)
+  zoneId String?
+  zone   Zone?   @relation(fields: [zoneId], references: [id], onDelete: SetNull)
 
-  siteId     String?
-  site       Site?    @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  siteId String?
+  site   Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
 
   // The ConfigVersion that published this assignment. Not a foreign key: the mirror
   // must be seedable before any configuration version is published, and the pinned
   // payload — not this row — is what a round resolves against.
-  mapVersion Int      @default(0)
+  mapVersion Int @default(0)
 
-  createdAt  DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@unique([cellId, mapVersion])
   @@index([regionId])
   @@index([zoneId])
   @@index([siteId])
   @@index([resolution])
+}
+
+//////////////////////////////////////////////////////
+// PHASE 9 — AVAILABILITY INDEX DURABLE MIRROR (§6.2)
+//////////////////////////////////////////////////////
+
+/// §6.2 — "[the Availability Index is] a live spatial index over assignable
+/// agents... rebuildable from the observation log." Redis holds the hot-path
+/// lookup (`engine:idx:*`, advisory, §3.3, I16 — its loss costs candidate-search
+/// quality, never correctness, because feasibility is re-verified at commit); this
+/// table is the durable state `candidates/availabilityIndex.rebuildFromRecords()`
+/// reconstructs Redis from on Cold Index (§18.5, B3), and what
+/// `src/workers/indexMaintainer.worker.js` keeps in agreement with Redis as
+/// observations arrive.
+///
+/// One row per agent, upserted rather than appended: only an agent's *current*
+/// index placement is ever queried, so a new observation supersedes the row
+/// rather than joining it — the append-only history already lives in
+/// `Observation` (§2.7).
+model AgentCellPosition {
+  id String @id @default(uuid())
+
+  agentId String @unique
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  /// Plain, unconstrained — the same convention `DecisionRecordA`/
+  /// `RejectionAggregate` already use, ahead of Phase 13's `Shard` table.
+  shardId String
+
+  lat Float
+  lon Float
+
+  fineCellId   String
+  coarseCellId String
+
+  /// One of `candidates/availabilityIndex.js`'s `AVAILABILITY_CLASS` (§6.2):
+  /// `IDLE_READY`, `QUEUE_CAPACITY_AVAILABLE`, `CHARGING_INTERRUPTIBLE`,
+  /// `FINISHING_SOON`. A string rather than an enum for the same reason
+  /// `CellAssignment.resolution` is: the plan's Phase 2 migration group (i)
+  /// enumerates the new enums this programme adds, and this is not one of them.
+  availabilityClass String
+
+  /// §6.2's secondary indices, denormalised here so a Cold Index rebuild does not
+  /// have to re-join the capability bundle for every agent it replays.
+  capabilityClasses String[]
+  containerClasses  String[]
+
+  /// When the position this row reflects was observed (§2.7) — distinct from
+  /// `updatedAt`, which is when the row was written.
+  observedAtMs BigInt
+
+  updatedAt DateTime @updatedAt
+
+  @@index([shardId, fineCellId, availabilityClass])
+  @@index([shardId, coarseCellId, availabilityClass])
+  @@index([availabilityClass])
 }
 
 //////////////////////////////////////////////////////
@@ -879,49 +974,49 @@ model CellAssignment {
 /// destination are different queries against different networks — not the same
 /// query with a fudge factor.
 model MobilityModel {
-  id                  String   @id @default(uuid())
-  modelId             String   @unique
-  name                String
+  id      String @id @default(uuid())
+  modelId String @unique
+  name    String
 
-  traversalDomain     String
-  permissionSet       Json?
-  speedModel          Json?
-  kinematicLimits     Json?
-  envelopeConstraints Json?
+  traversalDomain      String
+  permissionSet        Json?
+  speedModel           Json?
+  kinematicLimits      Json?
+  envelopeConstraints  Json?
   dimensionalFootprint Json?
 
-  agentClasses        AgentClass[]
+  agentClasses AgentClass[]
 
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 /// §2.1 / §14 — the class-level energy model. Phase 7 adds the fitted per-class
 /// β coefficients (`EnergyModelParams`) and the per-agent `BatteryState`; this row
 /// is the declarative model those attach to.
 model EnergyModel {
-  id                    String   @id @default(uuid())
-  modelId               String   @unique
-  name                  String
+  id      String @id @default(uuid())
+  modelId String @unique
+  name    String
 
-  packNominalWh         Float?
-  chemistry             String?
+  packNominalWh           Float?
+  chemistry               String?
   consumptionCoefficients Json?
-  thermalDeratingCurve  Json?
-  chargePowerCurve      Json?
+  thermalDeratingCurve    Json?
+  chargePowerCurve        Json?
 
-  agentClasses          AgentClass[]
+  agentClasses AgentClass[]
 
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 /// §15.2 — a capacity scalar is insufficient: a 20 kg limit tells you nothing about
 /// whether two 40 cm boxes fit through a 30 cm hatch.
 model ContainerModel {
-  id                   String   @id @default(uuid())
-  modelId              String   @unique
-  name                 String
+  id      String @id @default(uuid())
+  modelId String @unique
+  name    String
 
   totalMassLimitKg     Float?
   totalVolumeLitres    Float?
@@ -931,40 +1026,40 @@ model ContainerModel {
   loadingInterface     String?
   cleanlinessClass     String?
 
-  compartments         Compartment[]
-  agentClasses         AgentClass[]
+  compartments Compartment[]
+  agentClasses AgentClass[]
 
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 /// §15.2 — the **aperture** is modelled separately from the internal dimension
 /// because it is a distinct and frequently binding constraint that a volume-based
 /// model misses entirely.
 model Compartment {
-  id                String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  containerModelId  String
-  containerModel    ContainerModel @relation(fields: [containerModelId], references: [id], onDelete: Cascade)
+  containerModelId String
+  containerModel   ContainerModel @relation(fields: [containerModelId], references: [id], onDelete: Cascade)
 
   // Position in the container's ordered compartment list (§15.2).
-  ordinal           Int
+  ordinal Int
 
-  internalLengthMm  Float?
-  internalWidthMm   Float?
-  internalHeightMm  Float?
+  internalLengthMm Float?
+  internalWidthMm  Float?
+  internalHeightMm Float?
 
-  apertureWidthMm   Float?
-  apertureHeightMm  Float?
+  apertureWidthMm  Float?
+  apertureHeightMm Float?
 
-  maxMassKg         Float?
-  thermalClass      String?
-  activeThermal     Boolean  @default(false)
-  lockClass         String?
-  tamperSensing     Boolean  @default(false)
-  accessSide        String?
+  maxMassKg     Float?
+  thermalClass  String?
+  activeThermal Boolean @default(false)
+  lockClass     String?
+  tamperSensing Boolean @default(false)
+  accessSide    String?
 
-  createdAt         DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@unique([containerModelId, ordinal])
   @@index([containerModelId])
@@ -973,15 +1068,15 @@ model Compartment {
 /// §2.3 — capabilities are typed, not string tags, because untyped tags cannot
 /// express thresholds and degrade into a taxonomy nobody maintains.
 model CapabilityBundle {
-  id           String   @id @default(uuid())
-  bundleId     String   @unique
-  name         String
+  id       String @id @default(uuid())
+  bundleId String @unique
+  name     String
 
   capabilities Capability[]
   agentClasses AgentClass[]
 
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 /// §2.3 — one typed capability. `kind` is one of the five representations
@@ -992,15 +1087,15 @@ model CapabilityBundle {
 /// capability claim arriving via telemetry is untrusted input. Phase 14 adds the
 /// signed attestation this row records the result of.
 model Capability {
-  id         String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  bundleId   String
-  bundle     CapabilityBundle @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  bundleId String
+  bundle   CapabilityBundle @relation(fields: [bundleId], references: [id], onDelete: Cascade)
 
-  name       String
-  kind       String
-  value      Json?
-  unit       String?
+  name  String
+  kind  String
+  value Json?
+  unit  String?
 
   // Certified capabilities carry a validity window and an issuer, and MUST be
   // checked against *mission end time*, not decision time (§2.3).
@@ -1008,9 +1103,9 @@ model Capability {
   validFrom  DateTime?
   validUntil DateTime?
 
-  source     String?
+  source String?
 
-  createdAt  DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@unique([bundleId, name])
   @@index([bundleId])
@@ -1018,29 +1113,32 @@ model Capability {
 
 /// §2.1 — the agent class keys every model-specific parameter set.
 model AgentClass {
-  id                 String   @id @default(uuid())
-  classId            String   @unique
-  name               String
+  id      String @id @default(uuid())
+  classId String @unique
+  name    String
 
   hardwareRevision   String?
   firmwareVersionSet Json?
 
-  mobilityModelId    String?
-  mobilityModel      MobilityModel? @relation(fields: [mobilityModelId], references: [id], onDelete: SetNull)
+  mobilityModelId String?
+  mobilityModel   MobilityModel? @relation(fields: [mobilityModelId], references: [id], onDelete: SetNull)
 
-  energyModelId      String?
-  energyModel        EnergyModel? @relation(fields: [energyModelId], references: [id], onDelete: SetNull)
+  energyModelId String?
+  energyModel   EnergyModel? @relation(fields: [energyModelId], references: [id], onDelete: SetNull)
 
-  containerModelId   String?
-  containerModel     ContainerModel? @relation(fields: [containerModelId], references: [id], onDelete: SetNull)
+  containerModelId String?
+  containerModel   ContainerModel? @relation(fields: [containerModelId], references: [id], onDelete: SetNull)
 
   capabilityBundleId String?
   capabilityBundle   CapabilityBundle? @relation(fields: [capabilityBundleId], references: [id], onDelete: SetNull)
 
-  agents             Agent[]
+  agents Agent[]
 
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  /// PHASE 7 — §14.2's fitted coefficients. Back-relation only.
+  energyModelParams EnergyModelParams[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 //////////////////////////////////////////////////////
@@ -1058,28 +1156,28 @@ model AgentClass {
 /// columns bolted onto Robot: Robot stays byte-for-byte authoritative for the legacy
 /// dispatcher, and the backfill genuinely converts Robot rows into Agent rows.
 model Agent {
-  id             String   @id @default(uuid())
+  id String @id @default(uuid())
 
   // The stable agent id (§2.1 Identity). Seeded from `Robot.robotId` by the
   // backfill, which is what makes the mapping deterministic and re-runnable.
-  agentId        String   @unique
+  agentId String @unique
 
   // The legacy Robot this Agent projects. Nullable because §25 admits agents with
   // no Robot row (drones, human couriers); unique because the projection is 1:1.
-  robotDbId      String?  @unique
-  robot          Robot?   @relation(fields: [robotDbId], references: [id], onDelete: Cascade)
+  robotDbId String? @unique
+  robot     Robot?  @relation(fields: [robotDbId], references: [id], onDelete: Cascade)
 
-  fleetId        String?
-  tenantId       String?
+  fleetId  String?
+  tenantId String?
 
-  agentClassId   String?
-  agentClass     AgentClass? @relation(fields: [agentClassId], references: [id], onDelete: SetNull)
+  agentClassId String?
+  agentClass   AgentClass? @relation(fields: [agentClassId], references: [id], onDelete: SetNull)
 
-  regionId       String?
-  region         Region?  @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  regionId String?
+  region   Region? @relation(fields: [regionId], references: [id], onDelete: SetNull)
 
-  homeDepotId    String?
-  homeDepot      Site?    @relation("AgentHomeDepot", fields: [homeDepotId], references: [id], onDelete: SetNull)
+  homeDepotId String?
+  homeDepot   Site?   @relation("AgentHomeDepot", fields: [homeDepotId], references: [id], onDelete: SetNull)
 
   /// §2.1 — lifecycle, distinct from operational status.
   lifecycleState LifecycleState @default(COMMISSIONED)
@@ -1088,12 +1186,12 @@ model Agent {
   /// changes (quarantine, session rekey, shard migration), never on an ordinary
   /// commit, so several commitments may be created against one agent in one round
   /// without invalidating each other.
-  authorityEpoch BigInt   @default(0)
+  authorityEpoch BigInt @default(0)
 
   /// §2.6 — the monotone source of **commitment-scope** fences. Each commitment
   /// draws its own fence from this counter and is compared *per commitment id*,
   /// never as a single maximum across the agent's concurrent commitments.
-  fenceCounter   BigInt   @default(0)
+  fenceCounter BigInt @default(0)
 
   /// §2.1 — the per-agent `capacity` override. Recorded durably here; the engine
   /// resolves `capacity[agent_class]` through the Config Service (§22.2), which
@@ -1102,15 +1200,29 @@ model Agent {
   /// time.
   capacityOverride Int?
 
-  commitments    Commitment[]
-  observations   Observation[]
+  commitments  Commitment[]
+  observations Observation[]
 
   /// PHASE 4 — §11.1 / §11.5. Back-relations only; neither adds a column here.
-  outbox         Outbox[]
-  dedupState     AgentDedupState?
+  outbox     Outbox[]
+  dedupState AgentDedupState?
 
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  /// PHASE 7 — §14.2 / §14.3 / §14.7. Back-relations only; none adds a column here.
+  batteryState        BatteryState?
+  chargerReservations ChargerReservation[]
+
+  /// PHASE 9 — §6.2. Back-relation only; no column here.
+  cellPosition AgentCellPosition?
+
+  /// PHASE 13 — §3.5. Back-relation only; no column here. Deliberately *not* a
+  /// `currentShardId` column on this row: §3.5 makes membership a transactional handoff
+  /// with a history, and a denormalised pointer here would be a second place the answer
+  /// lives — the same defect §19.4 removes from live state ("derived state is computed,
+  /// never blind-written").
+  shardMemberships ShardMembership[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([regionId])
   @@index([agentClassId])
@@ -1126,59 +1238,59 @@ model Agent {
 /// **tolerance**, because declared masses are frequently wrong: feasibility uses the
 /// upper bound of the tolerance and energy estimation uses the expectation.
 model PayloadSpec {
-  id                  String   @id @default(uuid())
-  specId              String   @unique
+  id     String @id @default(uuid())
+  specId String @unique
 
-  massKg              Float?
-  massToleranceKg     Float?
+  massKg          Float?
+  massToleranceKg Float?
 
-  lengthMm            Float?
-  widthMm             Float?
-  heightMm            Float?
-  shapeClass          String?
-  volumeLitres        Float?
+  lengthMm     Float?
+  widthMm      Float?
+  heightMm     Float?
+  shapeClass   String?
+  volumeLitres Float?
 
   orientationConstraints Json?
-  stackable           Boolean  @default(true)
-  loadBearingLimitKg  Float?
-  fragilityClass      String?
+  stackable              Boolean @default(true)
+  loadBearingLimitKg     Float?
+  fragilityClass         String?
 
-  thermalMinC         Float?
-  thermalMaxC         Float?
+  thermalMinC                Float?
+  thermalMaxC                Float?
   thermalMaxExcursionSeconds Int?
 
-  securityClass       String?
-  hazardClasses       String[]
-  segregationRules    Json?
+  securityClass    String?
+  hazardClasses    String[]
+  segregationRules Json?
 
-  declaredValue       Float?
-  regulatoryClass     String?
+  declaredValue   Float?
+  regulatoryClass String?
 
-  itemCount           Int?
-  divisible           Boolean  @default(false)
+  itemCount Int?
+  divisible Boolean @default(false)
 
-  tasks               Task[]
-  manifests           PayloadManifest[]
+  tasks     Task[]
+  manifests PayloadManifest[]
 
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 /// §15.6 — the payload manifest is reconciled at every custody event. A mass delta
 /// inconsistent with the manifest is a discrepancy event, not a rounding error.
 model PayloadManifest {
-  id            String   @id @default(uuid())
-  manifestId    String   @unique
+  id         String @id @default(uuid())
+  manifestId String @unique
 
-  legId         String?
-  leg           Leg?     @relation(fields: [legId], references: [id], onDelete: Cascade)
+  legId String?
+  leg   Leg?    @relation(fields: [legId], references: [id], onDelete: Cascade)
 
   payloadSpecId String?
   payloadSpec   PayloadSpec? @relation(fields: [payloadSpecId], references: [id], onDelete: SetNull)
 
   // The loading plan (§15.3 tier 2) and the item rows it places.
-  items         Json?
-  loadingPlan   Json?
+  items       Json?
+  loadingPlan Json?
 
   declaredMassKg Float?
   observedMassKg Float?
@@ -1186,10 +1298,10 @@ model PayloadManifest {
   // OPEN until custody is discharged. An agent MUST NOT be returned to the
   // available pool while any compartment is non-empty against an open manifest
   // (§15.6, invariant I7).
-  state         String   @default("OPEN")
+  state String @default("OPEN")
 
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([legId])
   @@index([payloadSpecId])
@@ -1203,14 +1315,19 @@ model PayloadManifest {
 /// §2.4 — the ordered set of Legs that discharges one or more Tasks, joined at
 /// transfer points where custody passes between agents.
 model Mission {
-  id        String   @id @default(uuid())
-  missionId String   @unique
+  id        String @id @default(uuid())
+  missionId String @unique
 
-  regionId  String?
-  region    Region?  @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  regionId String?
+  region   Region? @relation(fields: [regionId], references: [id], onDelete: SetNull)
 
-  tasks     Task[]
-  legs      Leg[]
+  tasks Task[]
+  legs  Leg[]
+
+  /// PHASE 13 — §19.6. Back-relation only; adds no column here. At most one saga per
+  /// mission: the decomposition happens once, at intake, and a second saga over the same
+  /// mission would be two orchestrators for one custody chain.
+  crossRegionSaga CrossRegionSaga?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1222,22 +1339,22 @@ model Mission {
 /// commitment. The Leg is the unit of assignment and the decision index of the
 /// objective (§1.4).
 model Leg {
-  id           String   @id @default(uuid())
-  legId        String   @unique
+  id    String @id @default(uuid())
+  legId String @unique
 
-  missionId    String
-  mission      Mission  @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  missionId String
+  mission   Mission @relation(fields: [missionId], references: [id], onDelete: Cascade)
 
   // Position within the Mission's ordered Leg list.
-  sequence     Int      @default(0)
+  sequence Int @default(0)
 
   /// §2.4 — set at creation and **never mutated**. It exists because several
   /// mechanisms need to distinguish *why* a Leg exists, and leaving that implicit
   /// forces each of them to invent its own test, inconsistently.
-  purpose      LegPurpose
+  purpose LegPurpose
 
   /// §4.3.
-  state        LegState @default(QUEUED)
+  state LegState @default(QUEUED)
 
   /// §2.5.
   custodyState CustodyState @default(NONE)
@@ -1245,7 +1362,7 @@ model Leg {
   /// §4.1 rule 2 / §4.4 — the optimistic-concurrency counter every Leg transition
   /// is a conditional write on. Also what §4.5 keys the Leg's durable timers on:
   /// the supervised entity's *own* version, never the agent's epoch.
-  version      Int      @default(0)
+  version Int @default(0)
 
   /// §4.6 / §10.3.2 guard G5 — `cancel_requested_at IS NULL OR purpose ∈
   /// custodial_purposes`. A cancellation request is recorded here rather than
@@ -1257,21 +1374,30 @@ model Leg {
   /// §4.3 — the obstruction class of the stopping location, which is what derives
   /// STRANDED_SAFE from STRANDED_OBSTRUCTING. Derived automatically from the Map
   /// service, never operator-entered.
-  obstructionClass  ObstructionClass?
+  obstructionClass ObstructionClass?
 
   // §4.3 DEFERRED / §11.2 DEFER: the earliest time this Leg may re-enter a round.
   startNotBefore DateTime?
   slaDeadline    DateTime?
 
-  stops        Stop[]
-  commitments  Commitment[]
-  manifests    PayloadManifest[]
+  stops       Stop[]
+  commitments Commitment[]
+  manifests   PayloadManifest[]
 
   /// PHASE 5 — §12.5's graded completion verification. A back-relation only.
   verifications VerificationEvidence[]
 
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  /// PHASE 10 — §3.2's durable work queue. A back-relation only; at most one entry
+  /// per Leg, which is what stops a retried intake enqueuing the same Leg twice.
+  workQueueEntry WorkQueue?
+
+  /// PHASE 12 — §18.6's external escalation chain. A back-relation only; it adds no
+  /// column. One row per step attempt, so the chain is a history rather than a
+  /// status field that the next step overwrites.
+  externalEscalations ExternalEscalation[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([missionId, sequence])
   @@index([state])
@@ -1286,41 +1412,73 @@ model Leg {
 /// WAIT, CHARGE, INSPECT, TRANSFER, REPOSITION) is enforced in
 /// `src/engine/domain/work.js`.
 model Stop {
-  id                  String   @id @default(uuid())
-  stopId              String   @unique
+  id     String @id @default(uuid())
+  stopId String @unique
 
-  legId               String
-  leg                 Leg      @relation(fields: [legId], references: [id], onDelete: Cascade)
+  legId String
+  leg   Leg    @relation(fields: [legId], references: [id], onDelete: Cascade)
 
-  sequence            Int
+  sequence Int
 
-  stopType            String
+  stopType String
 
-  label               String?
-  lat                 Float?
-  lon                 Float?
+  label String?
+  lat   Float?
+  lon   Float?
 
-  siteId              String?
-  site                Site?    @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  siteId String?
+  site   Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
+
+  //////////////////////////////////////////////////
+  // PHASE 14 (§23.7) — the surrogate key and the derived, non-identifying quantities
+  //
+  // > No decision record or input snapshot stores an identifying value directly. Both
+  // > store a **stable surrogate key** into a separate, access-controlled identity
+  // > store, plus the *derived, non-identifying* quantities the decision actually
+  // > consumed: the fine cell, the zone, the geofence result, the access-window class,
+  // > the service-time cohort, the coordinates quantised to the routing graph's node.
+  // > **The engine's arithmetic uses only these; a street address is never an input to
+  // > a cost term.**
+  //
+  // These six are exactly that enumeration, named identically to
+  // `privacy/surrogateKeys.DERIVED_QUANTITIES` so the register and the columns cannot
+  // silently diverge. `identityKey` replaces `label` — and `lat`/`lon` — as the decision
+  // path's route to this Stop's location.
+  //
+  // `label`, `lat` and `lon` are **retained and nulled by the backfill**, not dropped.
+  // The plan gives Phase 15 the drop ("Drop legacy columns only after a full retention
+  // window with the new path live"), and the legacy dispatcher — still the production
+  // path until that cutover — reads them. Dropping them here would break a live path to
+  // satisfy a rule the build gate already enforces on the records that matter.
+  //////////////////////////////////////////////////
+
+  identityKey       String?
+  fineCell          String?
+  zoneId            String?
+  geofenceResult    String?
+  accessWindowClass String?
+  serviceTimeCohort String?
+  routingNodeId     String?
 
   // §13.2 — the learned service-time model this stop is priced against.
   serviceTimeModelRef String?
 
-  windowStart         DateTime?
-  windowEnd           DateTime?
+  windowStart DateTime?
+  windowEnd   DateTime?
 
   // §2.4 — access constraints (lift, door code, dock, gate) and the payload delta
   // this Stop applies. §15.4 evaluates load state per stop, not once.
-  accessConstraints   Json?
-  payloadDelta        Json?
+  accessConstraints Json?
+  payloadDelta      Json?
 
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([legId, sequence])
   @@index([legId])
   @@index([siteId])
   @@index([stopType])
+  @@index([identityKey])
 }
 
 //////////////////////////////////////////////////////
@@ -1338,46 +1496,46 @@ model Stop {
 /// the partial unique index that enforces ≤ `capacity[agent_class]` active
 /// commitments per agent (I1). Nothing writes this table in Phase 2.
 model Commitment {
-  id              String   @id @default(uuid())
+  id String @id @default(uuid())
 
   /// §2.6 — the idempotency and correlation key across every subsystem.
-  commitmentId    String   @unique
+  commitmentId String @unique
 
-  agentId         String
+  agentId String
   // Restrict, not Cascade: a durable contract must not be silently destroyed by the
   // deletion of the row it binds. In Phase 2 no commitment rows exist, so no legacy
   // decommissioning path changes behaviour.
-  agent           Agent    @relation(fields: [agentId], references: [id], onDelete: Restrict)
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Restrict)
 
-  legId           String
-  leg             Leg      @relation(fields: [legId], references: [id], onDelete: Restrict)
+  legId String
+  leg   Leg    @relation(fields: [legId], references: [id], onDelete: Restrict)
 
-  kind            String   @default("HARD")
+  kind String @default("HARD")
 
   /// §10.3 — the commitment-scope fencing token, drawn from the agent's
   /// `fenceCounter` and compared *per commitment id*.
-  fence           BigInt
+  fence BigInt
 
   /// §12.2 — absolute time after which the commitment is presumed lost unless
   /// renewed on commitment-scoped positive evidence.
-  leaseExpiry     DateTime
+  leaseExpiry DateTime
 
-  custodyState    CustodyState @default(NONE)
+  custodyState CustodyState @default(NONE)
 
   /// §2.6 — the stop sequence, route references, and predicted timeline committed.
   planSnapshotRef String?
 
   /// §21.2 — pointer to the decision record that produced this commitment.
-  decisionRef     String?
+  decisionRef String?
 
   /// §2.6 — optimistic-concurrency counter for conditional writes.
-  version         Int      @default(0)
+  version Int @default(0)
 
-  grantedAt       DateTime @default(now())
+  grantedAt DateTime @default(now())
 
   // Null while the commitment is active. Phase 3's partial unique index enforcing
   // the capacity constraint (I1) is predicated on this column.
-  releasedAt      DateTime?
+  releasedAt DateTime?
 
   /// PHASE 3 — §10.3.2 / invariant I1. The capacity slot this commitment occupies
   /// on its agent: an integer in `[0, capacity[agent_class])`, allocated as the
@@ -1401,11 +1559,11 @@ model Commitment {
   /// express a partial index, and the predicate `WHERE releasedAt IS NULL` is the
   /// whole point of it. Same treatment as Phase 1's and Phase 2's CHECK constraints
   /// and triggers, which live in migration SQL for the same reason.
-  capacitySlot    Int      @default(0)
+  capacitySlot Int @default(0)
 
   /// PHASE 4 — §11.1. The dispatch obligations written in this commitment's own
   /// transaction. A back-relation only; it adds no column.
-  outbox          Outbox[]
+  outbox Outbox[]
 
   @@index([agentId, releasedAt])
   @@index([legId])
@@ -1429,33 +1587,39 @@ model Commitment {
 /// row's *management* with real consensus-backed election. **G1's code does not
 /// change**, so there is no window in which leadership is unenforced.
 model ShardLeadership {
-  id               String   @id @default(uuid())
+  id String @id @default(uuid())
 
   /// The shard this record governs. One row per shard.
-  shardId          String   @unique
+  shardId String @unique
 
   /// §19.5 — monotonic, advanced on **each leadership change**. Advancing it does
   /// **not** advance any agent's `authority_epoch`: leadership change concerns which
   /// coordinator may write, not which authority the agents operate under, and the
   /// two scopes are kept orthogonal on purpose (§10.3.1).
-  leadershipFence  BigInt   @default(0)
+  leadershipFence BigInt @default(0)
 
   /// The current holder's identity, or null when the shard is unheld.
-  holder           String?
+  holder String?
 
   /// Absolute expiry from the store's clock (§10.6). A coordinator MUST stop
   /// committing before this instant, leaving `time.max_clock_skew` plus the store's
   /// round-trip budget of margin — but stopping early only *narrows* the window;
   /// G1 is what closes it.
-  leaseExpiry      DateTime?
+  leaseExpiry DateTime?
 
   /// Recorded so Phase 13's failover can distinguish a fence advanced by election
   /// from one advanced manually during the Phase 3 → Phase 13 window.
-  lastAdvancedBy   String?
-  lastAdvancedAt   DateTime?
+  lastAdvancedBy String?
+  lastAdvancedAt DateTime?
 
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  /// PHASE 13 — §3.5's shard, where one has been defined for this leadership row. A
+  /// back-relation only; it adds no column here, and Phase 3's table is otherwise
+  /// **unchanged**, which is what keeps guard G1's read identical to the one it shipped
+  /// with.
+  shard Shard?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([leaseExpiry])
 }
@@ -1472,24 +1636,24 @@ model ShardLeadership {
 /// Phase 3 writes this table inside the commit transaction. Phase 12's independent
 /// Invariant Checker reads it.
 model AgentFenceAudit {
-  id                 String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  agentId            String   @unique
+  agentId String @unique
 
   /// The highest `fence_counter` ever observed for this agent.
-  fenceHighWater     BigInt   @default(0)
+  fenceHighWater BigInt @default(0)
 
   /// The highest `authority_epoch` ever observed for this agent. Phase 3 never
   /// advances `authority_epoch` (§10.3.2 step 4), so this column moves only when a
   /// later phase's agent-scope authority change does.
-  epochHighWater     BigInt   @default(0)
+  epochHighWater BigInt @default(0)
 
   /// The commitment whose allocation last advanced `fenceHighWater`, so a
   /// non-monotone observation names the transaction that should have prevented it.
-  lastFenceSource    String?
+  lastFenceSource String?
 
-  observedAt         DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  observedAt DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   @@index([observedAt])
 }
@@ -1516,37 +1680,37 @@ model AgentFenceAudit {
 /// §10.3.1 was revised to remove. A CHECK constraint enforces that a row carries the
 /// columns its own scope requires and not the other scope's.
 model Outbox {
-  id             String   @id @default(uuid())
+  id String @id @default(uuid())
 
   /// §10.5 — the idempotency key of this command, in one of the **two disjoint
   /// namespaces**: `(commitment_id, sequence, fence)` for a mission command,
   /// `(agent_id, sequence, authority_epoch)` for an agent command. Unique, so a
   /// retried enqueue of the same command cannot produce a second row.
-  idempotencyKey String   @unique
+  idempotencyKey String @unique
 
   /// The agent this command is addressed to. Delivery is by agent identity through a
   /// session registry (§11.3), so every row names an agent — including a mission
   /// command, which additionally names its commitment.
-  agentId        String
-  agent          Agent    @relation(fields: [agentId], references: [id], onDelete: Restrict)
+  agentId String
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Restrict)
 
   /// Null for an agent-scope command. Set for every mission-scope command.
-  commitmentId   String?
-  commitment     Commitment? @relation(fields: [commitmentId], references: [commitmentId], onDelete: Restrict)
+  commitmentId String?
+  commitment   Commitment? @relation(fields: [commitmentId], references: [commitmentId], onDelete: Restrict)
 
   /// §10.3.1's normative table: MISSION | AGENT. Queries are side-effect-free and
   /// are never enqueued, so QUERY never appears here.
-  commandClass   String
+  commandClass String
 
   /// The command itself — `OFFER`, `RECALL`, `QUARANTINE`, and so on.
-  command        String
+  command String
 
   /// COMMITMENT | AGENT, from the same normative table. Stored rather than derived
   /// so a row is self-describing to the drain worker and to an auditor.
-  fenceScope     String
+  fenceScope String
 
   /// §10.3.1 — the commitment-scope fence. Mission rows only.
-  fence          BigInt?
+  fence BigInt?
 
   /// §10.3.1 — the agent-scope epoch. Agent rows only.
   authorityEpoch BigInt?
@@ -1554,47 +1718,47 @@ model Outbox {
   /// §10.3.1's interaction rule: *"Every agent-scope command carries, in addition to
   /// `authority_epoch`, the agent's current `fence_counter` value as `fence_floor`."*
   /// Agent rows only.
-  fenceFloor     BigInt?
+  fenceFloor BigInt?
 
   /// §11.3 — the per-commitment (or per-agent) ordering counter. The agent applies
   /// commands in sequence order and holds a command with a gap below it, which is
   /// what makes "RECALL is never applied before its OFFER" a protocol property
   /// rather than a transport hope.
-  sequence       Int
+  sequence Int
 
-  payload        Json
+  payload Json
 
   /// §23.3 — *"The `not_valid_after` field is the defence against a delayed-delivery
   /// attack — and equally against an innocent delayed queue."*
-  notValidAfter  DateTime
+  notValidAfter DateTime
 
   /// §23.3 — a signature over the whole payload including the agent id.
-  signature      String
+  signature String
 
   /// PENDING | CLAIMED | DELIVERED | ACKED | UNACKNOWLEDGED | EXPIRED | SUPPRESSED |
   /// FAILED. Constrained by a CHECK in the migration so an unknown state cannot be
   /// written by any path.
-  state          String   @default("PENDING")
+  state String @default("PENDING")
 
-  attempts       Int      @default(0)
+  attempts Int @default(0)
 
-  claimedBy      String?
-  claimedAt      DateTime?
+  claimedBy String?
+  claimedAt DateTime?
 
   /// A claim is a lease. Without an expiry, a worker that dies mid-delivery strands
   /// its claimed rows forever — the same "stuck with no owner" class §12.1 exists to
   /// eliminate. Reclaim is conditional on this instant having passed.
   claimExpiresAt DateTime?
 
-  deliveredAt    DateTime?
-  ackedAt        DateTime?
+  deliveredAt DateTime?
+  ackedAt     DateTime?
 
   /// The last transport or agent-side rejection, for the escalation ladder and for
   /// the dispatch SLIs. Never a silent discard (§11.3).
-  lastError      String?
+  lastError String?
 
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   /// The plan's named index: the drain worker's claim query and the expiry sweep.
   @@index([state, notValidAfter])
@@ -1617,24 +1781,24 @@ model Outbox {
 /// untrustworthy. Without this row the reset is invisible, and a fleet with broken
 /// dedup persistence behaves perfectly until the first redelivery.
 model AgentDedupState {
-  id                   String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  agentId              String   @unique
-  agent                Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  agentId String @unique
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
   /// §11.5 — *"a monotonic counter persisted alongside the state and incremented
   /// whenever the state is created, cleared, or found corrupt. This is what makes a
   /// state loss detectable rather than silent."*
-  dedupStateGeneration BigInt   @default(0)
+  dedupStateGeneration BigInt @default(0)
 
   /// The agent's own view of the two §10.3.1 scopes at its last handshake.
-  authorityEpoch       BigInt   @default(0)
-  fenceFloor           BigInt   @default(0)
+  authorityEpoch BigInt @default(0)
+  fenceFloor     BigInt @default(0)
 
-  reportedAt           DateTime @default(now())
+  reportedAt DateTime @default(now())
 
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([reportedAt])
 }
@@ -1665,46 +1829,46 @@ model AgentDedupState {
 /// longer matches its own entity is **discarded on fire**, which is what makes
 /// late-firing timers harmless without requiring reliable cancellation.
 model Timer {
-  id            String   @id @default(uuid())
+  id String @id @default(uuid())
 
   /// The §4.5 key, serialised: `entityType:entityId:state:entityVersion:handler`.
   /// Unique, so registering the same deadline twice — a retried transition, a
   /// reconciler repair racing a timer handler — yields one timer rather than two.
-  timerKey      String   @unique
+  timerKey String @unique
 
   /// LEG | TASK | COMMITMENT. A string rather than an enum for the same reason the
   /// Phase 2 models give: the plan's enum list is closed and this is not on it.
-  entityType    String
-  entityId      String
+  entityType String
+  entityId   String
 
   /// The §4.2 or §4.3 state whose deadline this is.
-  state         String
+  state String
 
   /// The supervised entity's **own** version. Never an agent-level counter; the
   /// `Timer_entity_version_non_negative` CHECK is the schema's half of that, and
   /// `supervision/timers.js` refuses an agent-scope key outright.
   entityVersion BigInt
 
-  dueAt         DateTime
+  dueAt DateTime
 
   /// The idempotent handler that runs on fire. Handlers *attempt* a transition; a
   /// timer never forces one (§4.5).
-  handler       String
-  payload       Json?
+  handler String
+  payload Json?
 
   /// PENDING | FIRED | CANCELLED | DISCARDED. Constrained by a CHECK, so a timer
   /// cannot reach a state no sweep matches.
-  timerState    String   @default("PENDING")
+  timerState String @default("PENDING")
 
-  attempts      Int      @default(0)
-  firedAt       DateTime?
-  resolvedAt    DateTime?
-  lastOutcome   String?
+  attempts    Int       @default(0)
+  firedAt     DateTime?
+  resolvedAt  DateTime?
+  lastOutcome String?
 
-  shardId       String?
+  shardId String?
 
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   /// The plan's named index — the timer worker's due query.
   @@index([dueAt])
@@ -1722,26 +1886,26 @@ model Timer {
 /// One row per repair, categorised by the §12.4 divergence class, so the rate is
 /// per-category and a release gate can name a threshold for each.
 model ReconcilerRepair {
-  id         String   @id @default(uuid())
+  id String @id @default(uuid())
 
   /// One of the nine §12.4 divergence classes, by its enumerated name.
-  category   String
+  category String
 
   entityType String
   entityId   String
 
   /// What the reconciler did about it.
-  action     String
+  action String
 
-  detail     Json?
+  detail Json?
 
   /// §12.4's "Escalate when" column. A repair that escalated is a different event from
   /// one that did not, and the two must not be summed into one rate.
-  escalated  Boolean  @default(false)
+  escalated Boolean @default(false)
 
-  shardId    String?
+  shardId String?
 
-  at         DateTime @default(now())
+  at DateTime @default(now())
 
   @@index([category, at])
   @@index([entityType, entityId])
@@ -1759,49 +1923,49 @@ model ReconcilerRepair {
 /// only "failed" could not be re-evaluated when a threshold is re-derived, and a
 /// verification record that cannot be re-evaluated is not evidence.
 model VerificationEvidence {
-  id                String   @id @default(uuid())
-  evidenceId        String   @unique
+  id         String @id @default(uuid())
+  evidenceId String @unique
 
-  legId             String
-  leg               Leg      @relation(fields: [legId], references: [id], onDelete: Cascade)
+  legId String
+  leg   Leg    @relation(fields: [legId], references: [id], onDelete: Cascade)
 
   /// The Task whose contract this completion discharges, where one is known.
-  taskId            String?
+  taskId String?
 
   /// L0 | L1 | L2 | L3 — what the mission class required.
-  requiredLevel     String
+  requiredLevel String
   /// The highest level the evidence actually supports.
-  achievedLevel     String
+  achievedLevel String
 
   /// SUFFICIENT | INSUFFICIENT. Insufficient sends the Task to `VERIFYING` with an
   /// operator queue — "not to `COMPLETED`, and not to `FAILED`. Both of those are lies
   /// about the physical state."
-  outcome           String
+  outcome String
 
   /// The named tests that failed, so the operator queue shows *why* rather than "no".
-  failures          String[]
+  failures String[]
 
   /// L1's geometric check.
-  arrivalDistanceM  Float?
+  arrivalDistanceM Float?
 
   /// §12.5's three plausibility measurements, as measured.
-  trackFixCount     Int?
+  trackFixCount      Int?
   legDurationSeconds Float?
-  fixRatePerMinute  Float?
-  corridorFraction  Float?
-  maxGapSeconds     Float?
-  maxImpliedSpeedMs Float?
+  fixRatePerMinute   Float?
+  corridorFraction   Float?
+  maxGapSeconds      Float?
+  maxImpliedSpeedMs  Float?
 
   /// L2's physical event and L3's external attestation, as supplied.
-  physicalEvidence  Json?
-  attestation       Json?
+  physicalEvidence Json?
+  attestation      Json?
 
   /// §12.5 / §23.5 — *"a completion claim from a position the agent could not
   /// physically have reached […] is rejected and raises a security event."*
-  securityEvent     Boolean  @default(false)
+  securityEvent Boolean @default(false)
 
-  observedAt        DateTime
-  createdAt         DateTime @default(now())
+  observedAt DateTime
+  createdAt  DateTime @default(now())
 
   @@index([legId])
   @@index([outcome])
@@ -1822,38 +1986,38 @@ model VerificationEvidence {
 /// Append-only: a BEFORE UPDATE trigger in the migration refuses mutation, so a
 /// recorded observation cannot be rewritten by any path.
 model Observation {
-  id                String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  agentId           String
-  agent             Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  agentId String
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
   // What was measured — position, soc, velocity, localisation_confidence,
   // link_quality, and so on. A string rather than an enum: the plan's group (i)
   // enumerates five new enums and this is not one of them.
-  kind              String
+  kind String
 
-  value             Json
+  value Json
 
   /// When the **agent** measured it — not when the server stored it.
-  observedAt        DateTime
+  observedAt DateTime
 
   /// When the server accepted it — used for link-latency measurement.
-  receivedAt        DateTime @default(now())
+  receivedAt DateTime @default(now())
 
   /// Sensor, agent report, inferred, operator-entered, forecast.
-  source            String
+  source String
 
-  confidence        Float?
-  variance          Float?
+  confidence Float?
+  variance   Float?
 
   /// Per-agent monotonic, for ordering and replay detection.
-  sequence          BigInt?
+  sequence BigInt?
 
   /// §2.7 — positions carry dead-reckoning provenance: a position extrapolated from
   /// the last fix and a velocity is marked as such, with a growing uncertainty
   /// radius. Extrapolation is permitted for cost estimation and **prohibited for
   /// safety constraints**.
-  deadReckoned      Boolean  @default(false)
+  deadReckoned       Boolean @default(false)
   uncertaintyRadiusM Float?
 
   @@index([agentId, kind, observedAt])
@@ -1869,12 +2033,12 @@ model Observation {
 /// written and always retained in full; it is `O(1)` in candidate count, not
 /// `O(k · predicates)`, which is what makes explainability (T8) affordable.
 ///
-/// Phase 2 lands the skeleton with §21.2's sections as columns. Phase 11 completes
-/// the writer, the sampler, Tier B, the input snapshots, and the Explanation API.
-/// Nothing writes this table in Phase 2.
+/// Phase 2 lands the skeleton with §21.2's sections as columns. **Phase 11 completes
+/// it** — the writer, the sampler, Tier B, the input snapshots, and the Explanation
+/// API — and every column added below is additive.
 model DecisionRecordA {
-  id                  String   @id @default(uuid())
-  decisionId          String   @unique
+  id         String @id @default(uuid())
+  decisionId String @unique
 
   // Identity.
   roundId             String
@@ -1885,31 +2049,1758 @@ model DecisionRecordA {
 
   // Versions: code, config, active regime, model artefacts, map, routing graph,
   // charger-availability projection.
-  versions            Json?
+  versions Json?
 
   // New arrival, re-plan, recovery, preemption, escalation step.
-  trigger             String?
+  trigger String?
 
   // Immutable references to the agent-state, price, forecast, weather, and
   // projection snapshots — the inputs replay consumes.
-  inputSnapshotRefs   Json?
+  inputSnapshotRefs Json?
 
-  legId               String?
-  legSummary          Json?
+  legId      String?
+  legSummary Json?
 
-  outcome             Json?
-  runnerUpAndTopN     Json?
-  costTotals          Json?
-  rejectionSummary    Json?
+  /// PHASE 14 — §23.7. The surrogate keys this decision's inputs referenced, so an
+  /// erasure request can find every decision that pointed at a subject **without**
+  /// reading — or holding — the subject. A JSON array rather than a join table: the keys
+  /// are opaque tokens carried for reachability, not a relation anything traverses in
+  /// the decision path.
+  ///
+  /// It holds keys and nothing else. `privacy/surrogateKeys.assertNonIdentifying()` is
+  /// applied to the whole record before it is written, and
+  /// `tools/gates/checkIdentityIsolation.js` proves at build time that no cost term
+  /// reads an identifying field.
+  surrogateKeys Json?
+
+  outcome              Json?
+  runnerUpAndTopN      Json?
+  costTotals           Json?
+  rejectionSummary     Json?
   searchAndSolveBounds Json?
-  degradation         Json?
-  deferral            Json?
-  overrides           Json?
-  predictions         Json?
+  degradation          Json?
+  deferral             Json?
+  overrides            Json?
+  predictions          Json?
 
-  createdAt           DateTime @default(now())
+  createdAt DateTime @default(now())
+
+  /// PHASE 11 — §21.2. The pinned snapshot **as a relation**, not only as the JSON
+  /// reference above. §24.3's snapshot-retention check is "a decision whose Tier A
+  /// record is retained but whose input snapshot has expired"; expressed as a
+  /// foreign key that audit is a join, and expressed only as a JSON blob it is a
+  /// table scan nobody runs. `SetNull`, never `Cascade`: an expired snapshot must
+  /// leave its decision record standing and *visibly* unreplayable — deleting the
+  /// record would erase the evidence of the defect.
+  inputSnapshotId String?
+  inputSnapshot   InputSnapshot? @relation(fields: [inputSnapshotId], references: [id], onDelete: SetNull)
+
+  /// §21.2's retention table, made queryable. Tier A is retained in full for
+  /// `observability.full_retention` "and in summarised form thereafter", so this is
+  /// the boundary between the two, not a deletion date.
+  fullRetentionUntil DateTime?
+
+  /// §20.1 — "Tier-A decision-record write < 2 KB per decision". Recorded per record
+  /// rather than sampled, because the bound is a release-gate target and a size that
+  /// is only ever estimated is a target nobody can fail.
+  sizeBytes Int?
+
+  /// §21.2 — whether a Tier B record accompanies this decision, and why. Held here
+  /// rather than inferred from `DecisionRecordB`'s existence so that a *shed* exempt
+  /// decision is distinguishable from an unsampled one: the first is a counted loss
+  /// of fidelity, the second is the design working as intended.
+  tierBWritten Boolean @default(false)
+  tierBReason  String?
+
+  /// §21.2 — the sampling decision's own inputs, so the sample is replayable: the
+  /// rate in force and the deterministic draw derived from `decisionId`.
+  samplingDraw Float?
+  samplingRate Float?
+
+  /// §21.6 — shadow mode. Null for a production decision; the candidate's label for a
+  /// decision that "was recorded and never executed".
+  ///
+  /// A discriminator column rather than a second table, so that a shadow decision is
+  /// the *same shape* as the production one it is being compared against — an agreement
+  /// report between two differently-shaped records would be comparing the schemas as
+  /// much as the decisions. Every production read filters `shadowLabel: null` through
+  /// the one shared predicate in `observability/decisionRecord.js`, so a shadow run
+  /// cannot enter an SLI, an explanation, or a replay corpus.
+  shadowLabel String?
+
+  tierB DecisionRecordB?
 
   @@index([roundId])
   @@index([shardId, decisionTime])
   @@index([legId])
+  @@index([inputSnapshotId])
+  @@index([shardId, tierBWritten, decisionTime])
+  @@index([shadowLabel, decisionTime])
+}
+
+//////////////////////////////////////////////////////
+// (h2) PHASE 11 — TIER B, SNAPSHOTS, CALIBRATION, AUDIT (§21)
+//////////////////////////////////////////////////////
+
+/// §21.2 — **Tier B: the full-fidelity record. Sampled and budgeted.**
+///
+/// > Because replay reproduces Tier B exactly, the pair (Tier A + deterministic
+/// > replay) is informationally equivalent to (Tier A + Tier B) for every decision
+/// > whose inputs are retained. Tier B is therefore a **cache of a computable
+/// > function**, and sizing it is a cost-latency trade-off rather than a fidelity
+/// > trade-off.
+///
+/// That sentence is the reason this table may be sampled at all, and it is why
+/// `contentHash` exists: §24.3's reconstruction-equivalence gate requires that
+/// reconstruction from Tier A alone reproduces this content **byte for byte**, and a
+/// stored digest is what makes the comparison cheap enough to run over a whole corpus
+/// on every build.
+model DecisionRecordB {
+  id String @id @default(uuid())
+
+  /// One Tier B per decision. The relation is to `DecisionRecordA.decisionId` rather
+  /// than to its surrogate id: the decision id is the identity every other subsystem
+  /// already carries (`Commitment.decisionRef`, the Explanation API's path segment),
+  /// and a second join key would be a second thing to get wrong.
+  decisionId String          @unique
+  decision   DecisionRecordA @relation(fields: [decisionId], references: [decisionId], onDelete: Cascade)
+
+  roundId      String
+  shardId      String
+  decisionTime DateTime
+
+  /// SAMPLED · EXEMPT · RESERVOIR (§21.2). Kept because the three have different
+  /// meanings for an analyst: a sampled record is representative of the population,
+  /// an exempt one is deliberately not, and a reservoir one is a uniform draw from
+  /// the exempt population after the write budget was exhausted.
+  writtenBecause String
+
+  /// The *decision-specific* exemption that admitted this record — never a shard-wide
+  /// mode, which §21.2 requires be recorded once at the mode level instead.
+  exemptionReason String?
+
+  /// §21.2's four Tier B sections.
+  candidateSet Json?
+  feasibility  Json?
+  costs        Json?
+  columnDetail Json?
+
+  /// PHASE 14 — §23.7, the same rule as `DecisionRecordA.surrogateKeys`. Tier B is the
+  /// record §24.3's gate compares byte for byte, so it is the record where an
+  /// identifying value would do the most damage: a field whose erasure changed these
+  /// bytes is an identifying field wrongly admitted into the decision path, and the
+  /// erased-corpus run of the gate is what catches it at build.
+  surrogateKeys Json?
+
+  /// The canonical digest of the four sections above, over
+  /// `determinism/ordering.canonicalJson`. §24.3's gate compares this against the
+  /// digest of a reconstruction from Tier A alone.
+  contentHash String
+
+  sizeBytes Int?
+
+  /// `observability.tier_b_retention`. "Thereafter: discarded; reconstructible by
+  /// replay while the input snapshots survive."
+  retainUntil DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([roundId])
+  @@index([shardId, decisionTime])
+  @@index([writtenBecause])
+  @@index([retainUntil])
+}
+
+/// §21.2 / §9.6 requirement 5 — the immutable, content-addressed snapshot of a
+/// round's inputs. **The inputs replay consumes.**
+///
+/// > Input snapshots are retained at least as long as Tier A, since replay — and
+/// > therefore the reconstruction path for explanation — depends on them. A retention
+/// > policy that expires a snapshot before its Tier A record is a defect, and the
+/// > Config Service validates the ordering at publish time (§22.1 rule 5).
+///
+/// One row per round, referenced by every decision record of that round: the pinning
+/// is a property of the round (§9.6), not of the individual Leg, and duplicating it
+/// per decision would make the "same inputs" claim a comparison rather than an
+/// identity.
+///
+/// Immutable: there is no `updatedAt` and nothing updates a row. `hash` is the digest
+/// `determinism/snapshot.captureSnapshot()` computes, so tampering is detectable by
+/// recomputation rather than by trust.
+model InputSnapshot {
+  id         String @id @default(uuid())
+  snapshotId String @unique
+
+  roundId String
+  shardId String
+
+  /// §9.6 requirement 4 — `decision_time` is an input.
+  decisionTime DateTime
+
+  /// The content address of the pinned body. `snapshot.isIntact()` recomputes it.
+  hash String
+
+  /// §9.6 requirement 7 — the deterministically derived seed.
+  seed String?
+
+  /// The pins §21.2's Versions row enumerates, promoted to columns where they are
+  /// queried and left in `pins` where they are merely carried.
+  configVersion   String?
+  codeVersion     String?
+  activeRegime    String?
+  killSwitchState Json?
+
+  /// Every remaining pin: agent-state, price, forecast, weather, charger-availability
+  /// projection, and model-artefact versions.
+  pins Json?
+
+  /// The resolved configuration values the round actually used — §21.2 requires the
+  /// record to store these, not merely the version, because a version that is later
+  /// republished under the same name would otherwise silently change history.
+  resolvedValues Json?
+
+  /// PHASE 14 — §23.7. The snapshot is the record replay *consumes*, so it is the one
+  /// §23.7 names first: "replay consumes the pinned input snapshot (§21.2) — which
+  /// contains addresses". After this phase it does not. It carries surrogate keys and
+  /// the derived, non-identifying quantities, and the erasure gate proves that erasing
+  /// what those keys point at leaves the replay bit-identical.
+  surrogateKeys Json?
+
+  /// `observability.input_snapshot_retention`, which publish-time validation V6
+  /// already requires to be at least `observability.full_retention`.
+  retainUntil DateTime?
+
+  capturedAt DateTime @default(now())
+
+  decisions DecisionRecordA[]
+
+  @@index([roundId])
+  @@index([shardId, decisionTime])
+  @@index([retainUntil])
+  @@index([hash])
+}
+
+/// §21.5 — prediction calibration as a first-class loop.
+///
+/// > Every prediction the engine makes — travel time, service time, energy, failure
+/// > probability, demand — is compared against its realised outcome at settlement, and
+/// > the comparison is a monitored SLI, not an offline curiosity.
+///
+/// One row per (prediction, realised outcome) pair. The slice dimensions §21.5 names —
+/// zone, class, agent class, time bucket — are columns rather than a JSON blob because
+/// "drift alarms per slice" means the slice is a `GROUP BY`, and a dimension inside
+/// JSON is a dimension nobody groups by.
+model CalibrationObservation {
+  id String @id @default(uuid())
+
+  /// TRAVEL_TIME · SERVICE_TIME · ENERGY · FAILURE_PROBABILITY · DEMAND ·
+  /// ASSIGNMENT_WINDOW · ENERGY_SHORTFALL. CHECK-constrained in the migration.
+  predictor String
+
+  /// What the prediction was attached to. All nullable: a demand forecast belongs to
+  /// a zone and a time bucket, not to a Leg.
+  decisionId   String?
+  commitmentId String?
+  legId        String?
+  agentId      String?
+
+  // The §21.5 slices.
+  shardId      String?
+  zoneId       String?
+  missionClass String?
+  agentClassId String?
+  /// The hour-of-week bucket, in `[0, 168)`, matching `ServiceTimeModel`'s own.
+  timeBucket   Int?
+
+  /// The predicted and realised quantities, in the predictor's own unit. Never
+  /// normalised: §1.3's rejection of dimensionless comparison applies here too — a
+  /// bias of "0.2" is uninterpretable without knowing whether it is seconds or Wh.
+  unit      String
+  predicted Float?
+  realised  Float?
+
+  /// `realised − predicted`. Stored rather than computed on read so that "bias (mean
+  /// signed error)" is one aggregate over an indexed column.
+  signedError Float?
+
+  /// §21.5 — "Dispersion (error spread) — drives uncertainty band width". The band
+  /// the prediction carried, and whether reality landed inside it.
+  bandLower  Float?
+  bandUpper  Float?
+  withinBand Boolean?
+
+  /// §21.5's third bullet — the calibration of *probabilistic* predictions. For F34
+  /// this is the tier whose claimed shortfall probability is under test, the claimed
+  /// probability itself, and whether the event occurred. T3 is validated by the
+  /// predictive distribution's tail rather than by counting these, which is why
+  /// `tailQuantile` is carried alongside `eventOccurred`.
+  tier               String?
+  claimedProbability Float?
+  eventOccurred      Boolean?
+  tailQuantile       Float?
+
+  /// When the prediction was made, and when reality settled it. Both, because the
+  /// lag between them is what decides which timescale's instrument may read the row.
+  predictedAt DateTime
+  observedAt  DateTime
+
+  createdAt DateTime @default(now())
+
+  @@index([predictor, observedAt])
+  @@index([predictor, zoneId, observedAt])
+  @@index([predictor, agentClassId, observedAt])
+  @@index([predictor, tier, observedAt])
+  @@index([decisionId])
+}
+
+/// §21.7 — the audit stream.
+///
+/// > **Audit stream** — separate, append-only, hash-chained, longer retention:
+/// > operator actions, overrides, config changes, quarantine decisions, constraint
+/// > relaxations, manual assignments, cancellations. Non-repudiation matters when a
+/// > decision is disputed months later.
+///
+/// Hash-chained means each row's `hash` covers its own content **and its
+/// predecessor's hash**, so removing or altering any row breaks every subsequent
+/// link. That is the property that makes the stream evidence rather than a log: a
+/// party who can silently delete the row recording their own override has not been
+/// audited.
+///
+/// `sequence` is per stream and dense. The unique index on `(streamId, sequence)` is
+/// what makes a *deletion* detectable as well as an alteration — a broken chain
+/// catches edits, a gap in a dense sequence catches removals, and neither alone
+/// catches both.
+model AuditEvent {
+  id String @id @default(uuid())
+
+  /// The chain this event belongs to. One per shard by default; a global stream for
+  /// fleet-wide actions such as a config publish.
+  streamId String
+
+  /// Dense, starting at 0, per stream.
+  sequence BigInt
+
+  /// OPERATOR_ACTION · OVERRIDE · CONFIG_CHANGE · QUARANTINE · CONSTRAINT_RELAXATION ·
+  /// MANUAL_ASSIGNMENT · CANCELLATION · DEGRADED_MODE · TIER_B_SHEDDING.
+  /// CHECK-constrained in the migration: an audit stream that accepts an unrecognised
+  /// event type accepts an event nobody defined the meaning of.
+  eventType String
+
+  /// Who did it. §23.6 requires an identity on every override; this is where it lands.
+  actorId   String?
+  actorRole String?
+
+  /// What it was done to — a decision id, an agent id, a parameter name.
+  subjectType String?
+  subjectId   String?
+
+  reason  String?
+  payload Json?
+
+  /// The chain. `previousHash` is null only for a stream's first event.
+  previousHash String?
+  hash         String  @unique
+
+  recordedAt DateTime @default(now())
+
+  @@unique([streamId, sequence])
+  @@index([streamId, recordedAt])
+  @@index([eventType, recordedAt])
+  @@index([subjectType, subjectId])
+}
+
+//////////////////////////////////////////////////////
+// (i) PHASE 6 — REJECTION TELEMETRY (§7.7)
+//////////////////////////////////////////////////////
+
+/// §7.7 — the binding-constraint distribution, the first of the two derived SLIs.
+///
+/// > If 60 % of rejections in a zone are F34 (energy), the operational answer is
+/// > charger placement, not scoring changes. This turns the engine into an instrument
+/// > for capacity planning.
+///
+/// **Rows here are exact over 100 % of decisions, not sampled.** §7.7 requires the
+/// tuples to be folded into the shard's histograms *before* the decision record is
+/// written, so that full-fidelity capacity diagnostics and bounded write volume hold
+/// simultaneously. The per-candidate rows are what get sampled into Tier B (§21.2);
+/// these counts are not. Sampling first "would degrade the histogram to an estimate
+/// and destroy exactly the property that makes it useful for capacity planning".
+///
+/// The engine aggregates in memory during the round and the flusher folds those counts
+/// in here, so a round pays no synchronous write for this.
+model RejectionAggregate {
+  id String @id @default(uuid())
+
+  shardId      String?
+  zoneId       String?
+  missionClass String?
+
+  /// §2.4's LegPurpose, as a string rather than the enum: this is a reporting
+  /// dimension, and a widened purpose set must not require a migration here before
+  /// the aggregate can record it.
+  legPurpose String?
+
+  /// F1 … F38.
+  predicateId String
+
+  /// §7.7: "For F34 the binding **tier** (§14.5) is part of the key, since a fleet
+  /// blocked on immobilisation risk and one blocked on divert-to-charge risk need
+  /// different interventions." Null for every predicate that has no tier.
+  tier String?
+
+  /// The half-open time bucket these counts were accumulated over. Bucketing rather
+  /// than one row per flush keeps the table's growth proportional to
+  /// dimensions x time rather than to decision volume.
+  bucketStart DateTime
+  bucketEnd   DateTime
+
+  count BigInt @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// One row per dimension tuple per bucket. The flusher upserts on this key, which is
+  /// what makes a re-run of a flush idempotent rather than double-counting.
+  @@unique([shardId, zoneId, missionClass, legPurpose, predicateId, tier, bucketStart])
+  @@index([predicateId, bucketStart])
+  @@index([zoneId, bucketStart])
+  @@index([bucketStart])
+}
+
+/// §7.7 — near-miss margins, the second derived SLI.
+///
+/// > For each rejected predicate, the *distance* from satisfaction, kept as a
+/// > **streaming quantile sketch rather than raw rows**. A fleet routinely failing F34
+/// > by 3 % is one configuration change away from working, and that is very different
+/// > from failing by 60 %.
+///
+/// The sketch is a fixed logarithmic bucket ladder rather than a sampled reservoir:
+/// §7.7 wants it exact over 100 % of decisions, and a reservoir needs randomness, which
+/// the decision path prohibits (T6, §9.6).
+///
+/// **Buckets are keyed by `(predicateId, marginUnit)`.** Several predicates bound more
+/// than one dimension — F17 a count and a duration, F29 metres and kilograms — and a
+/// quantile over pooled units is a number with no interpretation.
+model NearMissSketch {
+  id String @id @default(uuid())
+
+  shardId String?
+
+  predicateId String
+
+  /// The margin's dimension: count, ms, m, kg, Wh, prob, ratio, rank, degC.
+  marginUnit String
+
+  bucketStart DateTime
+  bucketEnd   DateTime
+
+  /// bucket index -> count, as the engine's `rejectionTelemetry` sketch produces it.
+  /// Signed indices: a margin of -0.03 (failed by 3 %) and +0.03 (passed with 3 % to
+  /// spare) are the two facts §7.7's example contrasts, and a magnitude-only sketch
+  /// could not tell them apart.
+  buckets Json
+
+  total BigInt @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([shardId, predicateId, marginUnit, bucketStart])
+  @@index([predicateId, bucketStart])
+  @@index([bucketStart])
+}
+
+//////////////////////////////////////////////////////
+// PHASE 7 — ENERGY AND PAYLOAD MODELS (§14, §15, §20.3)
+//////////////////////////////////////////////////////
+
+/// §14.2 — the fitted consumption coefficients for one agent class.
+///
+/// Separate from `EnergyModel` because that row is the *declarative* model (pack size,
+/// chemistry, the curves the vendor supplies) while this one holds the coefficients
+/// **fitted from realised missions**, which are re-fitted on their own cadence and
+/// versioned so a decision can name the model it was taken under (§9.6 requirement 5,
+/// `snapshot.DEFERRED_PINS.modelVersions`).
+///
+/// `betaPayloadThermal` is stored separately from `betaThermal` for the reason §14.2
+/// gives at length: folding it in would make the vehicle's own thermal coefficient
+/// payload-dependent, "which destroys its calibratability".
+model EnergyModelParams {
+  id String @id @default(uuid())
+
+  agentClassId String
+  agentClass   AgentClass @relation(fields: [agentClassId], references: [id], onDelete: Cascade)
+
+  /// The artefact version pinned into the round snapshot and recorded in the decision
+  /// record. Monotone per class.
+  modelVersion Int @default(1)
+
+  /// Scalar coefficients of §14.2's equation, in their own units.
+  betaDist      Float?
+  betaMass      Float?
+  betaClimb     Float?
+  betaRegen     Float?
+  betaMoveTime  Float?
+  betaStopStart Float?
+  betaDwell     Float?
+  betaAux       Float?
+  etaRegen      Float?
+
+  /// `beta_thermal(T_ambient, T_pack)` as two measured curves, and
+  /// `beta_payload_thermal(thermal_class, T_ambient)` as one curve per thermal class.
+  betaThermal        Json?
+  betaPayloadThermal Json?
+
+  /// The vendor cycle-life-versus-DoD curves §14.4 prices wear from.
+  stressCurves Json?
+
+  /// Residual dispersion of this fit, the input to §14.5's predictive distribution.
+  /// Null until the model has been fitted: a fabricated dispersion produces three
+  /// fabricated tier probabilities and F34 admits or rejects on them.
+  residualCv Float?
+
+  fittedAt  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([agentClassId, modelVersion])
+  @@index([agentClassId])
+}
+
+/// §14.3 / §14.2 — the per-agent battery and efficiency state.
+///
+/// `soh` is why §14.1 rejects a percentage floor: "at 70 % state of health, 30 % SoC is
+/// 21 % of the nominal energy the threshold was calibrated against". `kappa` is §14.2's
+/// per-agent efficiency multiplier, updated by an EWMA at settlement and never inside a
+/// round — a kappa that moved mid-round would make two candidates for the same agent
+/// evaluate against different models.
+///
+/// Internal resistance is tracked separately from `soh` because §14.3 assigns it two
+/// distinct consequences: it reduces deliverable power, and it is a leading indicator
+/// of pack failure that feeds the health tier (§16.4).
+model BatteryState {
+  id String @id @default(uuid())
+
+  agentId String @unique
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  /// State of health in [0, 1].
+  soh Float?
+
+  internalResistanceMilliOhm Float?
+  baselineResistanceMilliOhm Float?
+  resistanceTrendPerCycle    Float?
+
+  /// Cumulative |dSoC| throughput and the equivalent full cycles it implies (§14.4).
+  socThroughput Float @default(0)
+  cycleCount    Float @default(0)
+
+  /// kappa(a) — §14.2's self-correcting efficiency multiplier, with the sample count
+  /// that produced it, so a value from three missions is distinguishable from one from
+  /// three hundred.
+  kappa            Float     @default(1)
+  kappaSampleCount Int       @default(0)
+  kappaUpdatedAt   DateTime?
+
+  lastObservedSoc Float?
+  lastObservedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// §5.2 — a charger, as the Charging Scheduler publishes it. The engine reads this
+/// table; it never writes a reservation or a target SoC (§14.7).
+model Charger {
+  id String @id @default(uuid())
+
+  chargerId String @unique
+
+  siteId String?
+  site   Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
+
+  regionId String?
+  region   Region? @relation(fields: [regionId], references: [id], onDelete: SetNull)
+
+  /// The §3.6 fine cell this charger sits in — the key the reachability cache is built
+  /// against (§20.3 item 3).
+  cellId String?
+
+  chargerClass String?
+  ratedPowerW  Float?
+  connector    String?
+
+  latitude  Float?
+  longitude Float?
+
+  /// §14.5's depot-only fallback destination set: "the fixed infrastructure whose
+  /// availability does not depend on any round's output".
+  isDepot Boolean @default(false)
+
+  reservations ChargerReservation[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([cellId])
+  @@index([regionId])
+  @@index([siteId])
+  @@index([isDepot])
+}
+
+/// §14.7 — a charging reservation. **Owned by the Charging Scheduler.**
+///
+/// A hard constraint on the engine (F18): "an agent reserved for charging is not
+/// available, which prevents the classic two-scheduler conflict". `targetSoc` rides
+/// with the reservation because §14.6 makes it the Scheduler's field; the engine reads
+/// it and may submit a priced request to change it, but never writes one.
+model ChargerReservation {
+  id String @id @default(uuid())
+
+  reservationId String @unique
+
+  agentId String
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  chargerDbId String?
+  charger     Charger? @relation(fields: [chargerDbId], references: [id], onDelete: SetNull)
+
+  reservedFrom  DateTime
+  reservedUntil DateTime
+
+  /// Consumed as an input constraint, never computed by the engine (§14.6).
+  targetSoc Float?
+
+  state      String  @default("ACTIVE")
+  /// The Scheduler's own identifier, kept so a reconciliation can tell a reservation
+  /// the engine has seen from one it has not.
+  externalId String?
+
+  /// The projection version this reservation was published alongside, so a reservation
+  /// and the availability projection that implied it stay correlated.
+  projectionVersion Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([agentId, reservedFrom])
+  @@index([chargerDbId, reservedFrom])
+  @@index([state])
+}
+
+/// §14.5 — the charger availability projection, immutable and versioned.
+///
+/// This is the artefact that breaks the `E_return` circularity by construction rather
+/// than by iteration: "The projection published from the **previous completed round** is
+/// the input to the current one." It is pinned into the round snapshot by version and
+/// recorded in the decision record, so a replay loads the same projection and reaches
+/// the same conclusion.
+///
+/// Immutable: rows are inserted, never updated. A projection that could be edited after
+/// a round consumed it would make that round unreplayable.
+model ChargerAvailabilityProjection {
+  id String @id @default(uuid())
+
+  version Int @unique
+
+  publishedAt DateTime
+  publishedBy String?
+
+  /// The end of the horizon the projection covers. A projected arrival beyond it is not
+  /// availability — it is an unknown, and `eReturn.js` treats it as one.
+  horizonEnd DateTime?
+
+  regionId String?
+  region   Region? @relation(fields: [regionId], references: [id], onDelete: SetNull)
+
+  /// Per-charger free and reservable intervals, exactly as the Scheduler published them.
+  payload Json
+
+  createdAt DateTime @default(now())
+
+  @@index([publishedAt])
+  @@index([regionId])
+}
+
+/// §15.3 tier 4 — the memoised packing result.
+///
+/// Keyed by `(container_config, item_multiset_signature)`: two consignments of the same
+/// items in a different order are the same packing problem, and keying on the order
+/// would miss the repeat that §15.3 says should cost nothing.
+///
+/// A `BUDGET_EXHAUSTED` verdict is deliberately never stored — the budget may be larger
+/// next time, and memoising an indecision would make it permanent for the entry's life.
+model PackingResultCache {
+  id String @id @default(uuid())
+
+  containerConfig String
+  itemSignature   String
+
+  verdict String
+  tier    Int?
+
+  bindingConstraint String?
+  thermalAssignment Json?
+  compartmentLoads  Json?
+  loadingPlan       Json?
+
+  nodesExplored Int?
+
+  computedAt DateTime  @default(now())
+  expiresAt  DateTime?
+
+  @@unique([containerConfig, itemSignature])
+  @@index([expiresAt])
+}
+
+//////////////////////////////////////////////////////
+// (i) PHASE 8 — COST FUNCTION AND PLAN BUILDER (§8, §13)
+//
+// Two tables, one per artefact the frozen specification names for this phase:
+//
+//   (a) `ServiceTimeModel`  — §13.2's learned dwell distribution, per cohort
+//   (b) `ZonePriceSnapshot` — §8.3.1's λ_zone surface, with Ω_terminal alongside
+//
+// Nothing else. The cost terms are pure functions of a plan and a config snapshot and
+// have no durable state of their own; the plan is a round-local artefact (§13.1) and
+// is recorded, when it is recorded at all, inside the Tier A decision record that
+// Phase 11 owns.
+//////////////////////////////////////////////////////
+
+/// §13.2 — the learned service-time distribution.
+///
+/// > Service time is *learned* per `(site, stop_type, mission_class, hour_of_week)` with
+/// > hierarchical shrinkage to broader cohorts when data is sparse, because a busy office
+/// > lobby with a lift, a kerbside handover, and a warehouse dock have service times that
+/// > differ by an order of magnitude, and a single global constant guarantees systematic
+/// > ETA error at every one of them.
+///
+/// The four discriminators are **nullable**, and that is the schema-level expression of the
+/// hierarchy: a row with `hourOfWeek = null` is the cohort marginalised over the hour, and a
+/// row with only `stopType` set is the broadest cohort above the configured prior. The
+/// fitter writes one row per level it can estimate, and `plan/timeline.js` walks them from
+/// the broadest to the most specific, shrinking at each step. Storing only the leaf cohorts
+/// would make the shrinkage ladder unreconstructable from the table.
+///
+/// `sampleCount` is carried because it is the shrinkage weight's numerator, not merely
+/// provenance: without it a cohort fitted from three observations is indistinguishable from
+/// one fitted from three thousand, and §13.2's whole point is that the two must be treated
+/// differently.
+model ServiceTimeModel {
+  id String @id @default(uuid())
+
+  /// The fitted model's version, so a decision record can name the artefact it priced
+  /// against (§9.6 requirement 6). Rows of one version are written together and read
+  /// together; a round pins a version and never mixes two.
+  version Int
+
+  siteId String?
+  site   Site?   @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  /// The permitted set is enforced in `src/engine/domain/work.js`, as for `Stop.stopType`.
+  stopType String?
+
+  missionClass String?
+
+  /// 0–167, Sunday 00:00 **site-local** being 0. Local rather than UTC because a lobby is
+  /// busy at 09:00 where it stands; `plan/timeline.hourOfWeek()` derives it arithmetically
+  /// from the site's own UTC offset rather than from a host calendar (T6).
+  hourOfWeek Int?
+
+  /// §13.2's distribution parameters. The mean and the dispersion are both required: §8.4
+  /// prices `p_late` from the ETA predictive distribution rather than the point estimate, so
+  /// a model with no dispersion would make punctuality unpriceable.
+  meanSeconds Float
+  sdSeconds   Float
+
+  /// The shrinkage weight's numerator (§13.2).
+  sampleCount Int
+
+  /// The parent cohort this row was shrunk toward, for audit. Null for the broadest row,
+  /// whose parent is the configured prior `plan.service_time_prior`.
+  parentCohortKey String?
+
+  fittedAt DateTime @default(now())
+
+  @@unique([version, siteId, stopType, missionClass, hourOfWeek])
+  @@index([version])
+  @@index([siteId, stopType])
+  @@index([stopType, missionClass])
+}
+
+/// §8.3.1 / §6.4 — the pinned λ_zone price surface, with `Ω_terminal` published alongside.
+///
+/// > **`λ_zone(z, τ)`** — the marginal reduction in expected future operating cost obtained
+/// > from having one additional *available* agent in zone `z` at time `τ`, in CU·s⁻¹,
+/// > supplied by the Capacity Pricing Service. This is the only quantity in the opportunity
+/// > model that is estimated from data.
+///
+/// > `Ω_terminal` … computed once per round from the same price snapshot the cost function
+/// > uses (§8.3), **published by the Capacity Pricing Service alongside the price surface**,
+/// > and recorded in the decision record.
+///
+/// `omegaTerminalCu` therefore lives on this row and not in configuration. §6.4's
+/// admissibility argument is about the surface actually in use, and a bound stored anywhere
+/// it could be updated independently of the prices would eventually be a proof about a
+/// surface nobody evaluated.
+///
+/// **Insert-only, and versioned**, for the same reason `ChargerAvailabilityProjection` is: a
+/// round pins `priceSnapshotVersion` and records it, and a surface editable after a round
+/// consumed it would make that round unreplayable (§9.6, ADR 21). There is no `updatedAt`.
+model ZonePriceSnapshot {
+  id String @id @default(uuid())
+
+  version Int
+
+  zoneId String
+  zone   Zone   @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  /// The time bucket this price applies to, and its half-open interval. The interval is
+  /// stored rather than derived from a bucket width so that `pricing/vTerminal.vAvail()`
+  /// integrates over exactly the intervals that were published — an integral over
+  /// reconstructed boundaries is not the same quantity as one over the publisher's.
+  bucket      String
+  bucketStart DateTime
+  bucketEnd   DateTime
+
+  /// λ_zone in CU·s⁻¹. Non-negative by CHECK: §8.3.3's unavailability component is
+  /// non-negative *because* λ ≥ 0, and that is what leaves `C_opportunity` bounded below by
+  /// `−Ω_terminal` alone rather than by an unknown quantity (§6.4).
+  lambdaCuPerSecond Float
+
+  /// Which of §8.3.1's three estimators produced this value: FORECAST_QUEUEING,
+  /// SOLVER_DUAL_CALIBRATION, or STATIC_PRIOR. Recorded per row because a surface may be
+  /// live in one zone and prior-padded in another, and §5.2 requires the degradation to be
+  /// flagged rather than inferred.
+  estimator String
+
+  /// §6.4's Ω_terminal for the region this surface covers, in CU. Identical across the rows
+  /// of one version by construction; carried on the row so that reading any part of the
+  /// surface also yields the bound derived from it.
+  omegaTerminalCu Float
+
+  /// The forecast version the estimate consumed, where one did (§9.6 requirement 6).
+  forecastVersion String?
+
+  publishedAt DateTime
+  publishedBy String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([version, zoneId, bucket])
+  @@index([version])
+  @@index([zoneId, bucketStart])
+  @@index([publishedAt])
+}
+
+//////////////////////////////////////////////////////
+// (n) PHASE 10 — ROUND LOOP AND SOLVE (§3.2, §3.4, §9)
+//////////////////////////////////////////////////////
+
+/// §3.2 — "Work Queue | Durable priority queue of pending Legs per shard | L1/L3 |
+/// durable | per shard".
+///
+/// This table is what makes §3.4's decoupling real. The baseline's intake creates a
+/// `PENDING` row and detaches the assignment into a `setImmediate` with no owner, no
+/// timeout, no retry, and no observability — the root cause of the audit's "stuck at
+/// PENDING with no record of the failure". Here the request path's last act is a
+/// durable row in this table, and the round path's first act is to read it. A Leg that
+/// is waiting is *visible* as a row with a position and an age, rather than invisible
+/// inside a detached closure.
+///
+/// **The database is authoritative.** `engine:queue:{shard}` mirrors this table in
+/// Redis for a fast peek and is advisory only (§3.3's cache-authority rule): losing it
+/// costs a round-start read, never a Leg.
+///
+/// **SOFT reservations are not here and are not anywhere durable** (§2.6, invariant
+/// I18). A queued Leg carries no provisional agent. The coordinator's plan state holds
+/// that, in memory, and it is reconstructed rather than recovered on failover.
+model WorkQueue {
+  id String @id @default(uuid())
+
+  /// One queue entry per Leg. Unique so that a retried intake — the same Leg
+  /// submitted twice — cannot produce two entries competing for the same Leg
+  /// (§10.5's idempotence, applied at the intake boundary rather than at commit).
+  legId String @unique
+  leg   Leg    @relation(fields: [legId], references: [id], onDelete: Cascade)
+
+  /// Plain, unconstrained — the same convention `DecisionRecordA`,
+  /// `RejectionAggregate`, and `AgentCellPosition` already use, ahead of Phase 13's
+  /// `Shard` table.
+  shardId String
+
+  /// §3.4 — "an idempotency echo". The caller's key where one was supplied,
+  /// otherwise the one intake derived. Unique so a duplicate submission is answered
+  /// with the original acceptance rather than admitted twice.
+  idempotencyKey String @unique
+
+  /// §20.5 — shedding is keyed on Leg `purpose` first and SLA class second, so both
+  /// are denormalised onto the queue row: admission control must be able to decide
+  /// without joining, and `custodial_purposes` must be identifiable at a glance.
+  purpose  LegPurpose
+  slaClass String?
+  tenantId String?
+
+  /// Lower sorts first. Derived at intake from SLA class and purpose; never a
+  /// free-form operator field.
+  priority Int @default(0)
+
+  /// QUEUED · CLAIMED · SOLVED · SHED · WITHDRAWN. CHECK-constrained in the
+  /// migration; a string rather than an enum because the plan's Phase 2 migration
+  /// group (i) enumerates the enums this programme adds and this is not among them.
+  state String @default("QUEUED")
+
+  /// §4.3 DEFERRED / §11.2 DEFER — the earliest round that may consider this entry.
+  /// Distinct from `Leg.startNotBefore`, which is a property of the work; this is a
+  /// property of the queueing.
+  availableAt DateTime?
+
+  /// The round that most recently claimed this entry, for the audit trail. Not a
+  /// foreign key: a claimed round may be pruned before its queue entries are.
+  claimedByRoundId String?
+  claimedAt        DateTime?
+
+  /// How many rounds have considered this entry without producing an assignment —
+  /// what §17.4's ladder accounting reads, and what makes "waiting" a countable
+  /// quantity rather than an impression.
+  roundsConsidered Int @default(0)
+
+  /// §8.8 — consecutive deferrals, bounded by `assign.max_consecutive_deferrals`.
+  /// Present and always zero while the `deferral` kill switch is thrown.
+  consecutiveDeferrals Int       @default(0)
+  firstDeferredAt      DateTime?
+
+  /// §3.4's honest predicted assignment window, as it was quoted to the caller. Kept
+  /// so the prediction can be scored against the realised assignment (§21.5's
+  /// calibration reads it); a window that is never compared to reality is a
+  /// reassurance, not a prediction.
+  predictedWindow Json?
+
+  /// §4.1 rule 2 — the optimistic-concurrency counter every queue transition is a
+  /// conditional write on.
+  version Int @default(0)
+
+  enqueuedAt DateTime  @default(now())
+  settledAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shardId, state, priority, enqueuedAt])
+  @@index([shardId, state, availableAt])
+  @@index([state])
+  @@index([claimedByRoundId])
+}
+
+/// §9 — one row per round of one shard's coordinator loop.
+///
+/// > The `Assignment Coordinator` for each shard runs a continuous loop: collect the
+/// > batch, discover candidates, evaluate feasibility, evaluate cost, solve, commit,
+/// > dispatch, and record.
+///
+/// The row exists so a round is an *entity* rather than an event: it has an identity
+/// the decision records point at, the pinned snapshot references replay consumes
+/// (§9.6 requirement 5), the regime whose guarantee it is entitled to assert (§9.3),
+/// the budgets it ran under and which of them bound (§9.4), and an outcome — including
+/// the outcome "produced nothing, and here is why".
+///
+/// Phase 11 owns the Tier A decision record's full §21.2 shape. This table is the
+/// round-level context those records hang from, and Phase 10 writes it.
+model Round {
+  id      String @id @default(uuid())
+  roundId String @unique
+
+  shardId String
+
+  /// §9.6 requirement 4 — the round's single timestamp. Every time-dependent
+  /// quantity in the round is computed relative to this, and no component reads a
+  /// wall clock during evaluation.
+  decisionTime DateTime
+
+  /// §10.3.2 guard G1 — the leadership fence this round's commits were authorised
+  /// under, recorded so a commit that landed late can be attributed to the leader
+  /// that issued it.
+  leadershipFence     BigInt?
+  coordinatorInstance String?
+
+  /// §9.6 requirements 5 and 6 — the immutable references and pinned versions a
+  /// replay must load: agent state, config, prices, forecast, model artefacts, and
+  /// the charger availability projection.
+  snapshotRefs Json?
+
+  /// §9.6 requirement 7 — the deterministically derived seed, recorded so any
+  /// sampled generation replays.
+  seed String?
+
+  /// FAST_PATH · NOMINAL · LOADED · SATURATED (§9.2).
+  cadenceRegime String?
+  windowMs      Int?
+
+  /// SINGLETON or COLUMN (§9.3). CHECK-constrained in the migration. **The engine
+  /// never asserts a guarantee it is not in the regime for**, and this column is what
+  /// makes that checkable after the fact rather than only at the moment of the claim.
+  regime String
+
+  /// §9.4's five bounds as they were configured, and which of them bound. An
+  /// anytime solver that returned its incumbent must say so.
+  budgets Json?
+
+  legCount    Int @default(0)
+  columnCount Int @default(0)
+  agentCount  Int @default(0)
+
+  /// COMPLETED · BUDGET_LIMITED · EMPTY · ABANDONED, with the detail. A round that
+  /// produced nothing records why; §12.1's argument is that the absence of an
+  /// outcome is itself an outcome that must be owned by something.
+  outcome Json?
+
+  /// The two approximations §9.3 reports **separately** and never sums: the search
+  /// gap from candidate-set truncation (§6.4) and the LP–IP gap from the column
+  /// regime. Both in milli-CU, carried as strings because int64 milli-CU does not
+  /// survive a JSON number.
+  searchGapMilliCU String?
+  lpIpGapMilliCU   String?
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([shardId, decisionTime])
+  @@index([shardId, startedAt])
+  @@index([regime])
+}
+
+//////////////////////////////////////////////////////
+// PHASE 12 — FAILURE HANDLING, DEGRADED MODES, INVARIANTS (§18, §26)
+//////////////////////////////////////////////////////
+
+/// §18.5 — a degraded mode is a **named, entered, exited, and recorded state of a
+/// shard**, not an emergent condition.
+///
+/// > Four rules govern every mode: 1. **Entry and exit are events**, written to the
+/// > audit stream with cause, entering component, and the set of invariants suspended.
+/// > Time spent in each mode is an SLI (§21.4).
+///
+/// This table is that record. Three properties of its shape are load-bearing:
+///
+///   · `cause` and `enteringComponent` are **NOT NULL**. A mode entered for no recorded
+///     reason cannot be exited on evidence either, and one nobody entered is one nobody
+///     will exit — which is how a named state decays back into the emergent condition
+///     §18.5 rejects.
+///   · `suspendedInvariants` is an array rather than a nullable string, and an *empty*
+///     array is a legitimate, recorded value: four of the six modes suspend nothing, and
+///     recording that explicitly is what lets a reader tell "suspended nothing" from
+///     "nobody wrote it down".
+///   · `timeBoxExpiresAt` carries §18.5 rule 2's box. A suspension that outlives it is
+///     alertable (§26.1), which requires the expiry to be a column somebody can query
+///     rather than a duration somebody must recompute.
+///
+/// A partial unique index on `(shardId, mode) WHERE "exitedAt" IS NULL` — hand-written
+/// in the migration, because Prisma cannot express a partial index — is the schema's
+/// backstop for entry idempotence. Two open rows for one mode would double-count the
+/// time-in-mode SLI and leave an exit closing an arbitrary one of them.
+model DegradedModeEvent {
+  id String @id @default(uuid())
+
+  shardId String
+
+  /// One of §18.5's six named modes. CHECK-constrained in the migration, so a seventh
+  /// mode cannot be written by any path.
+  mode String
+
+  /// §18.5 rule 1's three mandatory fields.
+  cause             String
+  enteringComponent String
+
+  /// The invariants this mode's entry suspended (§18.5 rule 1, §26.2). Empty for the
+  /// four modes that suspend nothing.
+  suspendedInvariants String[]
+
+  /// The invariants §26.2 marks `D` for this mode — enforced, but verified at degraded
+  /// latency or granularity. Recorded beside the suspensions rather than merged with
+  /// them, because §26.1 is explicit that the third status "is not a euphemism for the
+  /// second" and the same distinction applies to the two lists.
+  degradedInvariants String[]
+
+  enteredAt DateTime
+
+  /// §18.5 rule 2 — "A suspension is explicit, scoped, and **time-boxed**."
+  /// `degraded.max_duration` resolved at entry, so the box a mode was entered under
+  /// survives a later configuration change.
+  timeBoxExpiresAt DateTime?
+
+  /// §18.5's own exit column for this mode, copied at entry so the record states the
+  /// criterion it was closed against rather than the criterion in force today.
+  exitCriterion String?
+
+  /// The mode's envelope as declared at entry (§18.5). Narrowings only; the register's
+  /// rule-3 and rule-4 assertions are what keep it that way.
+  envelope Json?
+  detail   Json?
+
+  exitedAt         DateTime?
+  exitReason       String?
+  exitingComponent String?
+
+  /// "Time spent in each mode is an SLI" (§18.5 rule 1, §21.4). Materialised at exit
+  /// rather than computed on read, so the SLI is a sum over a column.
+  durationMs Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shardId, enteredAt])
+  @@index([shardId, exitedAt])
+  @@index([mode])
+}
+
+/// §26 — the Invariant Checker's output, one row per invariant per shard, plus the
+/// per-agent high-water rows I6's windowed audit persists.
+///
+/// > The Checker reports one of three statuses per invariant, and the third is not a
+/// > euphemism for the second.
+///
+/// ── Why the high-water marks live here and not in `AgentFenceAudit` ──────────
+/// I6's verification is a "windowed monotonicity audit against a persisted high-water
+/// mark per agent". `AgentFenceAudit.fenceHighWater` is maintained by the **commit
+/// path** — the code I6 constrains — so checking monotonicity against it would verify
+/// only that the commit path is self-consistent with itself, which is precisely the
+/// circularity §26.1 warns about when it says "a checker sharing logic with the
+/// enforcer verifies nothing". The Checker therefore keeps its own mark, written from
+/// its own observations of `Agent.fenceCounter` and `Agent.authorityEpoch`.
+///
+/// `subjectId` is `""` rather than NULL for a shard-level row, because a NULL in a
+/// unique key does not collide in Postgres and upsert-by-key is exactly what this
+/// table needs.
+model InvariantStatus {
+  id String @id @default(uuid())
+
+  /// I1–I22. CHECK-constrained in the migration against §26.1's register.
+  invariantId String
+
+  shardId String
+
+  /// SHARD for a status row, AGENT for an I6 high-water row. CHECK-constrained.
+  subjectType String @default("SHARD")
+  subjectId   String @default("")
+
+  /// ENFORCED | VIOLATED | SUSPENDED (§26.1). CHECK-constrained: a fourth status would
+  /// be a claim §26.1 does not define the response to.
+  status String
+
+  checkedAt DateTime
+
+  /// The SLI whose target is exactly zero (§26.1, §21.4).
+  violationCount Int @default(0)
+
+  /// §26.1 — a suspension "names the mode that authorised it". NULL for every status
+  /// that is not SUSPENDED, which is what makes an unauthorised suspension unwritable
+  /// rather than merely discouraged (see the CHECK in the migration).
+  authorisingMode String?
+
+  /// How this invariant was verified this pass. Recorded per row because §26.1 states a
+  /// different instrument per invariant and a status with no instrument is an assertion
+  /// with no method.
+  instrument String?
+
+  /// The bounded violation sample and the degradation notes.
+  detail Json?
+
+  /// I6's persisted marks: `fence_counter` and `authority_epoch` respectively.
+  highWaterMark          BigInt?
+  secondaryHighWaterMark BigInt?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([invariantId, shardId, subjectId])
+  @@index([shardId, status])
+  @@index([status, checkedAt])
+  @@index([invariantId, checkedAt])
+}
+
+/// §18.6 — the external escalation chain for obstructing strandings.
+///
+/// > `STRANDED_OBSTRUCTING` (§4.3) is the one state in this design whose response chain
+/// > extends outside the operator. It therefore has its own specified path, because a
+/// > chain that is improvised during a live carriageway blockage is not a chain.
+///
+/// One row **per step attempt**, not one per stranding. The chain is a history: step 5
+/// is "continuous until cleared" and writes a row every re-evaluation, and step 4's
+/// operator decision — including a *declined* one — is a fact worth keeping. A status
+/// column that the next step overwrote would destroy exactly the record a dispute months
+/// later would need (§21.7's argument, applied to the one chain that reaches outside).
+///
+/// `operatorId` is what makes step 4's human gate auditable. §18.6 marks that step
+/// "deliberately human-gated"; a step-4 row with no operator is a call nobody authorised,
+/// and the migration's CHECK refuses to store one.
+model ExternalEscalation {
+  id String @id @default(uuid())
+
+  legId String
+  leg   Leg    @relation(fields: [legId], references: [id], onDelete: Cascade)
+
+  /// 1–5, as §18.6 numbers them. CHECK-constrained to that range.
+  step Int
+
+  /// The obstruction class at the time of this step (§4.3). Re-evaluated by step 5, so
+  /// the history shows an escalation or a de-escalation as it happened.
+  obstructionClass ObstructionClass?
+
+  /// NONE | ELEVATED | SEVERE | UNKNOWN — the second half of step 4's threshold.
+  hazardState String?
+
+  /// The per-region contact set this step emitted to, with its named owner and review
+  /// state. Snapshotted rather than referenced: a contact list that changed after the
+  /// incident must not rewrite what the incident actually reached.
+  contactSet Json?
+
+  /// EMITTED | NO_CONTACT_CONFIGURED | CONTACT_SET_UNREVIEWED | AWAITING_OPERATOR |
+  /// CONFIRMED_BY_OPERATOR | DECLINED_BY_OPERATOR | DE_ESCALATED | CLEARED.
+  /// CHECK-constrained.
+  disposition String
+
+  /// Step 4's human gate, and its audit trail.
+  operatorId   String?
+  operatorRole String?
+
+  detail Json?
+
+  occurredAt DateTime @default(now())
+
+  /// Set on the step that closes the chain — step 5's de-escalation, or the clearance.
+  clearedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([legId, occurredAt])
+  @@index([step])
+  @@index([clearedAt])
+}
+
+//////////////////////////////////////////////////////
+// PHASE 13 — SHARDING, LEADERSHIP, AND THE SINGLE WRITER (§3.5, §19)
+//////////////////////////////////////////////////////
+
+/// §3.5 — an **AssignmentShard** owns a set of Agents and the Legs whose work is
+/// served by them, partitioned by **OperatingRegion**.
+///
+/// > Every Agent belongs to exactly one shard at a time. Shard membership changes are
+/// > explicit, transactional handoffs, never inferred from position drift.
+/// > Every Leg is routed to exactly one shard at intake, determined by its first Stop's
+/// > region.
+///
+/// ── Why `regionId` is unique ────────────────────────────────────────────────
+/// The second sentence above requires region → shard to be a **function**: a Leg's
+/// first Stop names one region, and exactly one shard must own the result. Permitting
+/// two shards in one region would leave intake with a choice it has no rule for, and
+/// §6.4's `Ω_terminal` — a maximum over prices *within the search region* — would no
+/// longer bound anything either shard can actually reach. It also encodes §3.5's own
+/// answer to a hot shard: "the correct fix is redistricting, not global search". A
+/// split is therefore a redistricting that produces two regions, each with its shard,
+/// rather than a second shard quietly appearing inside one region.
+///
+/// ── Why the leadership row is a foreign key ─────────────────────────────────
+/// Guard G1 compares a commit against a row. `leadership.advanceFence()` already
+/// refuses to create one implicitly, because "a missing row is not an advanced fence".
+/// The foreign key makes the converse unrepresentable: a shard that exists but has no
+/// leadership record cannot be written at all, so no commit can be attempted against a
+/// shard whose fence has no home.
+///
+/// ── The two sizing bounds live here as *observations*, not as configuration ──
+/// §3.5's bounds are evaluated from configuration (`shard.max_agents`,
+/// `shard.mission_rate_per_agent_hour`, `shard.txn_per_mission_lifecycle`,
+/// `shard.commit_txn_service_time`, `commit.max_serial_utilisation`) and from measured
+/// round time. What is recorded here is which of the two is **binding**, because
+/// §3.5 requires that "the *binding* one is reported, so that a shard split is
+/// triggered by whichever resource is actually exhausted".
+model Shard {
+  id String @id @default(uuid())
+
+  /// The stable shard identity every other table's plain `shardId` column carries.
+  shardId String @unique
+
+  /// §3.5 — the OperatingRegion this shard is the partition of. Unique: see the note
+  /// above.
+  regionId String @unique
+  region   Region @relation(fields: [regionId], references: [id], onDelete: Restrict)
+
+  /// The Phase 3 leadership row this shard's fence lives on. Restrict, not Cascade: a
+  /// leadership record must not be destroyed by the deletion of the row that points at
+  /// it, because G1 reads the record and not the pointer.
+  leadership ShardLeadership @relation(fields: [shardId], references: [shardId], onDelete: Restrict)
+
+  /// ACTIVE · REBALANCING · DRAINING · RETIRED. CHECK-constrained in the migration.
+  ///
+  /// Only ACTIVE and REBALANCING admit new Legs at intake: a shard that is draining
+  /// still serves the work it holds, but routing more to it would enqueue work against
+  /// a coordinator that is giving its agents away.
+  state String @default("ACTIVE")
+
+  /// When the shard entered DRAINING, so a drain that never completes is visible as a
+  /// duration rather than as a state nobody timed.
+  drainingSince DateTime?
+
+  /// §3.5 — the observed membership count, maintained by the transactional handoff so
+  /// that "how big is this shard" is not a table scan on the availability path.
+  agentCount Int @default(0)
+
+  /// §3.5 — which of the two independent bounds is currently binding:
+  /// ROUND_WALL_CLOCK · SERIAL_COMMIT · NEITHER_EVALUATED. CHECK-constrained.
+  bindingBound String @default("NEITHER_EVALUATED")
+
+  /// The full sizing evaluation behind `bindingBound` — both bounds, their headroom,
+  /// and the inputs each was evaluated against — so a rebalance decision can be
+  /// re-derived rather than taken on trust.
+  sizingDetail    Json?
+  sizingCheckedAt DateTime?
+
+  /// §19.5's failover bookkeeping. `lastFailoverReconstructedLegs` is the metric the
+  /// specification requires to be "distinguishable from the reconciler's genuine orphan
+  /// repairs (§12.4), so that an expected consequence of failover is never mistaken for
+  /// a defect signal" — which is why it is a column here rather than a
+  /// `ReconcilerRepair` row.
+  lastLeadershipChangeAt           DateTime?
+  lastFailoverAt                   DateTime?
+  lastFailoverReconstructedLegs    Int?
+  lastFailoverRecoveredCommitments Int?
+
+  /// §19.5 — "the new leader runs a full reconciliation of the shard before resuming
+  /// rounds". Null means reconciliation has not completed since the last leadership
+  /// change, and the coordinator may not run a round.
+  roundsResumableAt DateTime?
+
+  memberships ShardMembership[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([state])
+  @@index([bindingBound])
+}
+
+/// §3.5 / §19.2 — the transactional record of which shard owns an Agent.
+///
+/// > Shard membership changes are explicit, transactional handoffs, never inferred from
+/// > position drift.
+///
+/// > Shard rebalancing […] migrates agents one at a time, advancing each migrated
+/// > agent's **`authority_epoch`** — the agent-scope fence (§10.3.1) — never a bulk
+/// > reassignment.
+///
+/// One row **per move**, not one per agent: the chain is a history, because a dispute
+/// about which coordinator commanded an agent at a given instant is answered by the
+/// membership at that instant and by nothing else. The partial unique index on
+/// `("agentId") WHERE "supersededAt" IS NULL` — hand-written in the migration — is the
+/// schema's statement of "exactly one shard at a time".
+///
+/// `authorityEpochBefore` and `authorityEpochAfter` are both recorded because migration
+/// correctness follows from guard G3: "an agent migrated mid-round has a changed
+/// `authority_epoch`, so the old shard's pending commitment fails its guard". A row that
+/// recorded only the new value could not show that the guard had anything to fail
+/// against.
+model ShardMembership {
+  id String @id @default(uuid())
+
+  agentId String
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  /// The shard this row places the agent in.
+  shardId String
+  shard   Shard  @relation(fields: [shardId], references: [shardId], onDelete: Restrict)
+
+  /// Null for the initial placement at commissioning; the previous shard for a
+  /// migration. A CHECK refuses a row whose two shards are the same — a migration to
+  /// the shard the agent is already in is not a migration, and would advance an
+  /// `authority_epoch` for nothing.
+  fromShardId String?
+
+  movedAt DateTime
+
+  /// Set when a later row takes over. Null on the current membership, which is what the
+  /// partial unique index keys on.
+  supersededAt DateTime?
+
+  /// §19.2 / §10.3.1 — the agent-scope fence across the handoff.
+  authorityEpochBefore BigInt
+  authorityEpochAfter  BigInt
+
+  /// COMMISSIONING · REBALANCE_SPLIT · REBALANCE_MERGE · REDISTRICTING · OPERATOR.
+  /// CHECK-constrained: a membership change with no stated cause is one nobody can
+  /// audit, and §22.3 makes shard definition a STRUCTURAL change class.
+  reason String
+
+  /// Who or what performed the handoff, for the audit.
+  movedBy String
+
+  /// The `SHARD_MIGRATE` outbox row written in **this** transaction (§4.1 rule 5). Null
+  /// only for the initial placement, which commands nothing because no agent is being
+  /// told its authority has changed.
+  outboxIdempotencyKey String?
+
+  detail Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([shardId, movedAt])
+  @@index([agentId, movedAt])
+  @@index([supersededAt])
+}
+
+/// §19.6 — the saga orchestrating a mission whose stops span regions.
+///
+/// > A mission whose stops span regions is decomposed at intake into per-region Legs
+/// > joined at **transfer points**, and orchestrated as a saga.
+/// > Compensation is explicit per step: if the downstream Leg becomes infeasible, the
+/// > upstream Leg is redirected or held at the transfer point, with the goods in a
+/// > defined, custodied location rather than in transit to nowhere.
+///
+/// `steps` holds the ordered per-region Legs and the transfer point joining each
+/// consecutive pair. `compensation` holds the per-step compensating action and its
+/// disposition — recorded rather than derived, because a compensation that is
+/// recomputed at the moment it is needed is a compensation nobody rehearsed.
+///
+/// `heldAtTransferPointId` is the field the failure mode §19.6 names is designed
+/// against: "goods stranded at a transfer point". It is a foreign key, so custody can
+/// only be held somewhere that has a modelled custodian.
+model CrossRegionSaga {
+  id     String @id @default(uuid())
+  sagaId String @unique
+
+  missionId String  @unique
+  mission   Mission @relation(fields: [missionId], references: [id], onDelete: Cascade)
+
+  /// PLANNED · IN_PROGRESS · COMPENSATING · COMPLETED · COMPENSATED · FAILED.
+  /// CHECK-constrained.
+  state String @default("PLANNED")
+
+  /// The ordered decomposition: per-region Legs and the transfer point joining each
+  /// consecutive pair.
+  steps Json
+
+  /// The index of the step currently in flight.
+  currentStepIndex Int @default(0)
+
+  /// Per-step compensating action and its disposition. NOT NULL once the saga is
+  /// compensating — a CHECK enforces it, because a compensation with no recorded plan
+  /// is the improvisation §19.6 exists to prevent.
+  compensation Json?
+
+  /// §19.6 — where the goods currently are when they are not in transit. Null while a
+  /// Leg is carrying them.
+  heldAtTransferPointId String?
+  heldAt                TransferPoint? @relation(fields: [heldAtTransferPointId], references: [id], onDelete: Restrict)
+  heldSince             DateTime?
+
+  openedAt DateTime
+  closedAt DateTime?
+
+  detail Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([state])
+  @@index([heldAtTransferPointId])
+  @@index([openedAt])
+}
+
+/// §19.6 — a transfer point: a Stop in both the upstream and the downstream Leg, with
+/// an explicit custody handoff and evidence.
+///
+/// > **The failure mode to design against is goods stranded at a transfer point.** A
+/// > transfer point MUST therefore have a defined custodian — a locker, a depot, a
+/// > staffed counter — and the saga MUST NOT release custody to an unattended location
+/// > unless that location is modelled as a custodian with its own capacity and security
+/// > properties.
+///
+/// `custodianType` and `custodianId` are **NOT NULL**, so "a defined custodian" is a
+/// property of the table rather than of every writer's diligence. `MODELLED_UNATTENDED`
+/// is admitted as a fourth kind precisely because the specification admits it — but the
+/// migration's CHECK requires it to carry the capacity and security properties that
+/// sentence conditions it on, so choosing it is a modelling act rather than an escape
+/// hatch.
+model TransferPoint {
+  id              String @id @default(uuid())
+  transferPointId String @unique
+
+  name String
+
+  /// The two regions this point joins. A CHECK refuses a row whose two regions are the
+  /// same: a transfer point inside one region joins nothing, and its Legs would both be
+  /// owned by the same shard, which needs no saga.
+  upstreamRegionId String
+  upstreamRegion   Region @relation("TransferPointUpstream", fields: [upstreamRegionId], references: [id], onDelete: Restrict)
+
+  downstreamRegionId String
+  downstreamRegion   Region @relation("TransferPointDownstream", fields: [downstreamRegionId], references: [id], onDelete: Restrict)
+
+  /// The Site the point sits in, where it is one. Optional: a kerbside locker is a
+  /// custodian without being a Site.
+  siteId String?
+  site   Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
+
+  /// LOCKER · DEPOT · STAFFED_COUNTER · MODELLED_UNATTENDED. CHECK-constrained.
+  custodianType String
+
+  /// The custodian's identity — §2.5 makes custody an accountable party, and "a locker"
+  /// is not one. This is *which* locker.
+  custodianId String
+
+  /// §19.6 — "its own capacity". How many concurrent handoffs this point can hold.
+  capacity Int
+
+  /// §19.6 — "and security properties". Required for MODELLED_UNATTENDED by a CHECK.
+  securityProperties Json?
+
+  lat Float?
+  lon Float?
+
+  sagasHolding CrossRegionSaga[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([upstreamRegionId, downstreamRegionId])
+  @@index([custodianType])
+  @@index([siteId])
+}
+
+//////////////////////////////////////////////////////
+// (o) PHASE 14 — SECURITY, GOVERNANCE, PRIVACY (§23)
+//////////////////////////////////////////////////////
+
+/// §23.2 — the per-device certificate mutual TLS authenticates an agent with.
+///
+/// > Mutual TLS with per-device certificates, private keys in a secure element where the
+/// > hardware provides one, automated rotation, and revocation checked at session
+/// > establishment **and** periodically during long sessions.
+///
+/// Three properties of the shape are load-bearing.
+///
+/// `fingerprint` is **unique** and is the lookup key, never the PEM. A PEM comparison is
+/// defeated by re-wrapping the same certificate at a different line length, and it would
+/// put a public key into every log line that reports a mismatch.
+///
+/// `agentId` is a plain string rather than a foreign key to `Agent`. Commissioning
+/// issues a certificate to a device, and §25 admits agents that have no `Robot` row and
+/// may not yet have an `Agent` row when their certificate is minted; a foreign key would
+/// make the certificate un-issuable until the projection existed, which inverts the
+/// order the two actually happen in.
+///
+/// `keyStorage` records where the private key lives **per device**, because "where the
+/// hardware provides one" is a per-device fact and a mixed fleet is the normal case.
+/// `UNKNOWN` is a distinct value from `SOFTWARE`: a device that has not reported is not
+/// the same as one that reported software storage, and collapsing them would over-report
+/// a security posture nobody measured.
+model AgentCertificate {
+  id String @id @default(uuid())
+
+  /// SHA-256 over the DER encoding, lower-case hex.
+  fingerprint String @unique
+
+  agentId String
+
+  serialNumber String?
+  subject      String?
+  issuer       String?
+
+  /// The public key, for the asymmetric command-signing scheme (§23.3). Never the
+  /// private key: a secure element exports a public key and never a secret, and a
+  /// column that could hold one would be a column somebody eventually puts one in.
+  publicKeyPem String?
+
+  notBefore DateTime?
+  notAfter  DateTime?
+
+  /// SECURE_ELEMENT · SOFTWARE · UNKNOWN. CHECK-constrained in the migration.
+  keyStorage String @default("UNKNOWN")
+
+  /// ACTIVE · SUPERSEDED · REVOKED. CHECK-constrained in the migration.
+  status String @default("ACTIVE")
+
+  revokedAt        DateTime?
+  revocationReason String?
+
+  /// Rotation lineage. Self-referential so a rotation is a chain that can be walked
+  /// backwards during an incident — "which certificate did this device hold in March"
+  /// is otherwise unanswerable once the row has been overwritten.
+  rotatedFromId String?           @unique
+  rotatedFrom   AgentCertificate? @relation("CertificateRotation", fields: [rotatedFromId], references: [id], onDelete: SetNull)
+  rotatedTo     AgentCertificate? @relation("CertificateRotation")
+
+  /// The last time the periodic revocation check of §23.2 examined this row. A column
+  /// rather than a metric: the question an auditor asks is "when was this specific
+  /// certificate last checked", and a histogram cannot answer it.
+  lastCheckedAt DateTime?
+
+  attestations CapabilityAttestation[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([agentId, status])
+  @@index([status, notAfter])
+}
+
+/// §23.2 — the signed firmware/hardware manifest a capability may be derived from.
+///
+/// > **Capabilities are never accepted from agent telemetry.** They derive from the
+/// > commissioning record plus a signed firmware/hardware attestation.
+///
+/// The manifest is stored **whole** alongside its digest, and the verification `outcome`
+/// is stored beside both — including the failures. An attestation that failed to verify
+/// is the row an investigation most wants, and a table that kept only the successes
+/// would answer "no attestation was presented" to a question whose true answer was
+/// "eleven were presented and none verified".
+model CapabilityAttestation {
+  id String @id @default(uuid())
+
+  agentId String
+
+  certificateId String?
+  certificate   AgentCertificate? @relation(fields: [certificateId], references: [id], onDelete: SetNull)
+
+  /// The content address of `manifest` under the module's canonical serialisation, so a
+  /// later dispute compares digests rather than re-serialising a JSON blob and hoping
+  /// the key order matched.
+  manifestHash String
+
+  manifest Json
+
+  signature   String
+  /// HMAC · ED25519. CHECK-constrained in the migration.
+  algorithm   String  @default("HMAC")
+  signerKeyId String?
+
+  issuedAt DateTime?
+  notAfter DateTime?
+
+  /// VALID · SIGNATURE_INVALID · EXPIRED · MALFORMED · UNKNOWN_SIGNER · AGENT_MISMATCH.
+  /// CHECK-constrained in the migration.
+  outcome    String
+  verifiedAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+
+  @@index([agentId, verifiedAt])
+  @@index([manifestHash])
+  @@index([outcome])
+}
+
+/// §23.7 — the separate, access-controlled identity store.
+///
+/// > No decision record or input snapshot stores an identifying value directly. Both
+/// > store a **stable surrogate key** into a separate, access-controlled **identity
+/// > store**, plus the *derived, non-identifying* quantities the decision actually
+/// > consumed.
+///
+/// The identifying fields live here as AES-256-GCM ciphertext — §23.7's "encryption at
+/// rest" — so a database backup that leaves the building is ciphertext, and an edited
+/// ciphertext fails to decrypt rather than decrypting to something else.
+///
+/// **Erasure tombstones this row and never deletes it.** `ciphertext`, `iv` and
+/// `authTag` are nulled and `erasedAt` is stamped; the `surrogateKey` survives as the
+/// opaque token §23.7 requires it to be. Deleting the row instead would make an erased
+/// key indistinguishable from a key that was never minted, and the Explanation API could
+/// no longer honestly answer `ERASED` rather than "unknown".
+///
+/// `retainUntil` is this record's own, **shorter** retention — "retention limits distinct
+/// from (and shorter than) the operational retention of the decision's technical
+/// content". Publish-time validation A5 enforces the ordering against
+/// `observability.full_retention`.
+model IdentityRecord {
+  id String @id @default(uuid())
+
+  /// `sk_<subjecttype>_<128 bits of hex>`, a keyed digest of the natural identifier.
+  /// Stable by construction, so the same address yields the same key across rounds
+  /// without a read-modify-write on the request path.
+  surrogateKey String @unique
+
+  /// TASK · STOP · PAYLOAD. CHECK-constrained in the migration.
+  subjectType String
+
+  /// The technical row this describes, for operator search and for a SUBJECT-scoped
+  /// erasure request. Nullable: a key may be minted before the row it will attach to.
+  subjectId String?
+
+  /// DIRECT_IDENTIFIER · LOCATION_IDENTIFIER · PAYLOAD_DESCRIPTOR — §23.7's field-level
+  /// classification, held at the record's strictest level so an analytical copy can
+  /// redact by class. CHECK-constrained in the migration.
+  classification String
+
+  /// The names of the sealed fields, in sorted order. Names are not values, and keeping
+  /// them in the clear is what lets an erasure report say *what* was erased without
+  /// decrypting anything.
+  fieldNames String[]
+
+  ciphertext String?
+  iv         String?
+  authTag    String?
+
+  erasedAt      DateTime?
+  erasedBy      String?
+  erasureReason String?
+
+  retainUntil DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([subjectType, subjectId])
+  @@index([erasedAt])
+  @@index([retainUntil])
+}
+
+/// §23.6 — the queryable half of the override record.
+///
+/// Two records exist for every override decision, deliberately. `AuditEvent` is the
+/// hash-chained, tamper-evident stream with a global order; this table is the one
+/// aggregations run over, because "how often has F9 been waived in region R this
+/// quarter" is a `GROUP BY` and a hash chain is not a thing one groups by.
+/// `auditEventHash` joins them, so a queried row can always be checked against the chain
+/// that cannot be edited.
+///
+/// **Refusals are rows too.** `granted` is false for a refused class I waiver, and that
+/// is exactly the row a later investigation wants: a table recording only successes
+/// would answer "nobody tried" to a question whose true answer was "somebody tried
+/// eleven times".
+model OverrideAudit {
+  id String @id @default(uuid())
+
+  actorId   String
+  actorRole String?
+
+  /// One of §23.4's high-privilege action classes, where the override was one.
+  actionClass String?
+
+  /// The specific predicate waived — §23.6 requires "the specific predicate", not a
+  /// category.
+  predicateId String?
+
+  /// The predicate's §7.2 class. CHECK-constrained to the five classes.
+  constraintClass String?
+
+  subjectType String?
+  subjectId   String?
+
+  /// The decision this override applied to, where it applied to one.
+  decisionId String?
+
+  reason           String?
+  secondApproverId String?
+
+  granted       Boolean
+  refusalReason String?
+
+  /// The `AuditEvent.hash` of the same event in the hash-chained stream.
+  auditEventHash String?
+
+  recordedAt DateTime @default(now())
+
+  @@index([actorId, recordedAt])
+  @@index([predicateId, recordedAt])
+  @@index([actionClass, recordedAt])
+  @@index([granted, recordedAt])
 }

@@ -127,10 +127,22 @@ describe("GET /api/config/versions", () => {
 });
 
 describe("POST /api/config/publish", () => {
-  test("returns 422 with the findings when validation rejects the configuration", async () => {
-    const response = await request(app)
-      .post("/api/config/publish")
+  // PHASE 14 — §23.4 names "safety-class config change" among the four highest-privilege
+  // actions, so the publish route now carries the action-class gate: an elevated role, a
+  // recorded reason, and a second approver. Every publish below therefore supplies the two
+  // headers; the gate's own refusals get their own tests underneath.
+  //
+  // The reason travels in a header rather than the body deliberately: the publish body is
+  // the *configuration*, and a field in it that the Config Service ignored would be a field
+  // somebody eventually tries to publish.
+  const authorised = (agent) =>
+    agent
       .set("Authorization", `Bearer ${token()}`)
+      .set("X-Override-Reason", "quarterly recalibration")
+      .set("X-Second-Approver", "safety-lead-2");
+
+  test("returns 422 with the findings when validation rejects the configuration", async () => {
+    const response = await authorised(request(app).post("/api/config/publish"))
       .send({ bindings: [{ level: "global", name: "agent.dedup_retention", value: 5 }] })
       .expect(422);
 
@@ -148,9 +160,7 @@ describe("POST /api/config/publish", () => {
     mockPrismaClient.configVersion.findUnique.mockResolvedValue({ version: 1, payload: {} });
     mockPrismaClient.configActiveVersion.upsert.mockResolvedValue({ id: "singleton", version: 1 });
 
-    const response = await request(app)
-      .post("/api/config/publish")
-      .set("Authorization", `Bearer ${token()}`)
+    const response = await authorised(request(app).post("/api/config/publish"))
       .send({
         bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }],
         approvals: [{ approverId: "safety-1", approvedAt: "2026-07-28T09:00:00Z" }],
@@ -164,9 +174,7 @@ describe("POST /api/config/publish", () => {
   });
 
   test("refuses an automated Safety-class change", async () => {
-    const response = await request(app)
-      .post("/api/config/publish")
-      .set("Authorization", `Bearer ${token()}`)
+    const response = await authorised(request(app).post("/api/config/publish"))
       .send({
         automated: true,
         bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }],
@@ -180,6 +188,59 @@ describe("POST /api/config/publish", () => {
     expect(response.body.findings.map((item) => item.message).join(" ")).toMatch(
       /No automated tuner may modify a Safety-class parameter/,
     );
+  });
+
+  // ── PHASE 14 — §23.4's gate on this route ──────────────────────────────────
+
+  test("a publish with no recorded reason is refused before validation runs", async () => {
+    const response = await request(app)
+      .post("/api/config/publish")
+      .set("Authorization", `Bearer ${token()}`)
+      .set("X-Second-Approver", "safety-lead-2")
+      .send({ bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }] })
+      .expect(400);
+
+    expect(response.body.refusal).toBe("NO_REASON");
+    // Before validation: the configuration was never evaluated, so no finding is
+    // returned and nothing was written.
+    expect(response.body.findings).toBeUndefined();
+    expect(mockPrismaClient.configVersion.create).not.toHaveBeenCalled();
+  });
+
+  test("a publish with no second approver is refused — §23.4's 'where configured a second approver'", async () => {
+    const response = await request(app)
+      .post("/api/config/publish")
+      .set("Authorization", `Bearer ${token()}`)
+      .set("X-Override-Reason", "quarterly recalibration")
+      .send({ bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }] })
+      .expect(400);
+
+    expect(response.body.refusal).toBe("SECOND_APPROVER_REQUIRED");
+  });
+
+  test("the second approver must be a distinct identity from the publisher", async () => {
+    const response = await request(app)
+      .post("/api/config/publish")
+      .set("Authorization", `Bearer ${token()}`)
+      .set("X-Override-Reason", "quarterly recalibration")
+      // The publisher approving themselves.
+      .set("X-Second-Approver", USER.id)
+      .send({ bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }] })
+      .expect(400);
+
+    expect(response.body.refusal).toBe("SECOND_APPROVER_NOT_DISTINCT");
+  });
+
+  test("the route gate does not replace §22.3's own two-person check on the parameter set", async () => {
+    // The gate is satisfied — reason and a distinct approver are present — and the publish
+    // is still refused, by S2, because the *change* touches a Safety-class parameter with
+    // only one distinct approver identity in `approvals`. §23.4's list is about the route;
+    // §22.3's rule is about the change, and one is not a substitute for the other.
+    const response = await authorised(request(app).post("/api/config/publish"))
+      .send({ bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }] })
+      .expect(422);
+
+    expect(response.body.findings.some((item) => item.id === "S2")).toBe(true);
   });
 });
 

@@ -1,0 +1,385 @@
+{
+  "note": "Golden replay corpus entry (§24.3). tierB is what was stored; reconstructionInput is what replay recomputes from Tier A + the pinned snapshot.",
+  "tierA": {
+    "decisionId": "shard-a:1770000000000:LEG-1",
+    "roundId": "shard-a:1770000000000",
+    "shardId": "shard-a",
+    "legId": "LEG-1",
+    "samplingRate": 0.5,
+    "samplingDraw": 0.15172022464685142
+  },
+  "tierB": {
+    "decisionId": "shard-a:1770000000000:LEG-1",
+    "roundId": "shard-a:1770000000000",
+    "shardId": "shard-a",
+    "decisionTime": "2026-02-02T02:40:00.000Z",
+    "writtenBecause": "SAMPLED",
+    "exemptionReason": null,
+    "candidateSet": [
+      {
+        "agentId": "AGT-001",
+        "discoveryTier": 1,
+        "availabilityClass": "READY",
+        "lowerBoundMilliCU": "1000",
+        "admitted": true
+      },
+      {
+        "agentId": "AGT-002",
+        "discoveryTier": 2,
+        "availabilityClass": "READY",
+        "lowerBoundMilliCU": "2000",
+        "admitted": true
+      },
+      {
+        "agentId": "AGT-003",
+        "discoveryTier": 0,
+        "availabilityClass": "READY",
+        "lowerBoundMilliCU": "3000",
+        "admitted": false
+      }
+    ],
+    "feasibility": [
+      {
+        "agentId": "AGT-001",
+        "admitted": true,
+        "bindingPredicateId": null,
+        "predicates": [
+          {
+            "predicateId": "F01",
+            "outcome": "PASS",
+            "observed": true,
+            "required": true,
+            "inputSource": "AGENT_STATE",
+            "observationAgeMs": 120,
+            "indeterminatePolicy": "DENY",
+            "margin": null,
+            "marginUnit": null
+          },
+          {
+            "predicateId": "F34",
+            "outcome": "PASS",
+            "observed": {
+              "bindingTier": "T2",
+              "marginWh": -12.5
+            },
+            "required": {
+              "tier": "T2"
+            },
+            "inputSource": "ENERGY_MODEL",
+            "observationAgeMs": 300,
+            "indeterminatePolicy": "DENY",
+            "margin": 0.31,
+            "marginUnit": "ratio"
+          }
+        ]
+      },
+      {
+        "agentId": "AGT-002",
+        "admitted": true,
+        "bindingPredicateId": null,
+        "predicates": [
+          {
+            "predicateId": "F01",
+            "outcome": "PASS",
+            "observed": true,
+            "required": true,
+            "inputSource": "AGENT_STATE",
+            "observationAgeMs": 120,
+            "indeterminatePolicy": "DENY",
+            "margin": null,
+            "marginUnit": null
+          },
+          {
+            "predicateId": "F34",
+            "outcome": "PASS",
+            "observed": {
+              "bindingTier": "T2",
+              "marginWh": -12.5
+            },
+            "required": {
+              "tier": "T2"
+            },
+            "inputSource": "ENERGY_MODEL",
+            "observationAgeMs": 300,
+            "indeterminatePolicy": "DENY",
+            "margin": 0.31,
+            "marginUnit": "ratio"
+          }
+        ]
+      },
+      {
+        "agentId": "AGT-003",
+        "admitted": false,
+        "bindingPredicateId": "F34",
+        "predicates": [
+          {
+            "predicateId": "F01",
+            "outcome": "PASS",
+            "observed": true,
+            "required": true,
+            "inputSource": "AGENT_STATE",
+            "observationAgeMs": 120,
+            "indeterminatePolicy": "DENY",
+            "margin": null,
+            "marginUnit": null
+          },
+          {
+            "predicateId": "F34",
+            "outcome": "FAIL",
+            "observed": {
+              "bindingTier": "T2",
+              "marginWh": -12.5
+            },
+            "required": {
+              "tier": "T2"
+            },
+            "inputSource": "ENERGY_MODEL",
+            "observationAgeMs": 300,
+            "indeterminatePolicy": "DENY",
+            "margin": -0.12,
+            "marginUnit": "ratio"
+          }
+        ]
+      }
+    ],
+    "costs": [
+      {
+        "agentId": "AGT-001",
+        "terms": {
+          "cDirect": "1200",
+          "cLifecycle": "200",
+          "cRisk": "100"
+        },
+        "totalMilliCU": "1500",
+        "unit": "milli-CU"
+      },
+      {
+        "agentId": "AGT-002",
+        "terms": {
+          "cDirect": "2000",
+          "cLifecycle": "300",
+          "cRisk": "200"
+        },
+        "totalMilliCU": "2500",
+        "unit": "milli-CU"
+      }
+    ],
+    "columnDetail": [
+      {
+        "identity": "col:AGT-001:LEG-1",
+        "agentId": "AGT-001",
+        "legIds": [
+          "LEG-1"
+        ],
+        "kept": true,
+        "prunedReason": null,
+        "gammaMilliCU": "1500",
+        "priceDecomposition": {
+          "cDirect": "1200",
+          "cLifecycle": "200",
+          "cRisk": "100"
+        },
+        "omittedTerms": []
+      },
+      {
+        "identity": "col:AGT-002:LEG-1",
+        "agentId": "AGT-002",
+        "legIds": [
+          "LEG-1"
+        ],
+        "kept": true,
+        "prunedReason": null,
+        "gammaMilliCU": "2500",
+        "priceDecomposition": {
+          "cDirect": "2000",
+          "cLifecycle": "300",
+          "cRisk": "200"
+        },
+        "omittedTerms": []
+      },
+      {
+        "identity": "col:pruned:LEG-1",
+        "agentId": "AGT-099",
+        "legIds": [
+          "LEG-1"
+        ],
+        "kept": false,
+        "prunedReason": "BUDGET",
+        "gammaMilliCU": "99999",
+        "priceDecomposition": null,
+        "omittedTerms": null
+      }
+    ],
+    "contentHash": "6b88902b149806fac8cbfb53c1a51dbf0b9cf184fdf74fb3cc083e14f9bc75c4",
+    "sizeBytes": 2726,
+    "retainUntil": null
+  },
+  "reconstructionInput": {
+    "roundId": "shard-a:1770000000000",
+    "shardId": "shard-a",
+    "decisionTimeMs": 1770000000000,
+    "decisionId": "shard-a:1770000000000:LEG-1",
+    "candidates": [
+      {
+        "agentId": "AGT-001",
+        "discoveryTier": 1,
+        "availabilityClass": "READY",
+        "lowerBoundMilliCU": "1000",
+        "gammaMilliCU": "1500",
+        "rejected": false,
+        "bindingPredicateId": null,
+        "breakdown": {
+          "cDirect": "1200",
+          "cRisk": "100",
+          "cLifecycle": "200"
+        },
+        "predicateResults": [
+          {
+            "predicateId": "F01",
+            "outcome": "PASS",
+            "observed": true,
+            "required": true,
+            "inputSource": "AGENT_STATE",
+            "observationAgeMs": 120,
+            "indeterminatePolicy": "DENY"
+          },
+          {
+            "predicateId": "F34",
+            "outcome": "PASS",
+            "observed": {
+              "bindingTier": "T2",
+              "marginWh": -12.5
+            },
+            "required": {
+              "tier": "T2"
+            },
+            "inputSource": "ENERGY_MODEL",
+            "observationAgeMs": 300,
+            "indeterminatePolicy": "DENY",
+            "margin": 0.31,
+            "marginUnit": "ratio"
+          }
+        ]
+      },
+      {
+        "agentId": "AGT-002",
+        "discoveryTier": 2,
+        "availabilityClass": "READY",
+        "lowerBoundMilliCU": "2000",
+        "gammaMilliCU": "2500",
+        "rejected": false,
+        "bindingPredicateId": null,
+        "breakdown": {
+          "cDirect": "2000",
+          "cRisk": "200",
+          "cLifecycle": "300"
+        },
+        "predicateResults": [
+          {
+            "predicateId": "F01",
+            "outcome": "PASS",
+            "observed": true,
+            "required": true,
+            "inputSource": "AGENT_STATE",
+            "observationAgeMs": 120,
+            "indeterminatePolicy": "DENY"
+          },
+          {
+            "predicateId": "F34",
+            "outcome": "PASS",
+            "observed": {
+              "bindingTier": "T2",
+              "marginWh": -12.5
+            },
+            "required": {
+              "tier": "T2"
+            },
+            "inputSource": "ENERGY_MODEL",
+            "observationAgeMs": 300,
+            "indeterminatePolicy": "DENY",
+            "margin": 0.31,
+            "marginUnit": "ratio"
+          }
+        ]
+      },
+      {
+        "agentId": "AGT-003",
+        "discoveryTier": 0,
+        "availabilityClass": "READY",
+        "lowerBoundMilliCU": "3000",
+        "rejected": true,
+        "bindingPredicateId": "F34",
+        "breakdown": null,
+        "predicateResults": [
+          {
+            "predicateId": "F01",
+            "outcome": "PASS",
+            "observed": true,
+            "required": true,
+            "inputSource": "AGENT_STATE",
+            "observationAgeMs": 120,
+            "indeterminatePolicy": "DENY"
+          },
+          {
+            "predicateId": "F34",
+            "outcome": "FAIL",
+            "observed": {
+              "bindingTier": "T2",
+              "marginWh": -12.5
+            },
+            "required": {
+              "tier": "T2"
+            },
+            "inputSource": "ENERGY_MODEL",
+            "observationAgeMs": 300,
+            "indeterminatePolicy": "DENY",
+            "margin": -0.12,
+            "marginUnit": "ratio"
+          }
+        ]
+      }
+    ],
+    "columns": [
+      {
+        "identity": "col:AGT-001:LEG-1",
+        "agentId": "AGT-001",
+        "legIds": [
+          "LEG-1"
+        ],
+        "gammaMilliCU": "1500",
+        "breakdown": {
+          "cDirect": "1200",
+          "cRisk": "100",
+          "cLifecycle": "200"
+        },
+        "omittedTerms": []
+      },
+      {
+        "identity": "col:AGT-002:LEG-1",
+        "agentId": "AGT-002",
+        "legIds": [
+          "LEG-1"
+        ],
+        "gammaMilliCU": "2500",
+        "breakdown": {
+          "cDirect": "2000",
+          "cRisk": "200",
+          "cLifecycle": "300"
+        },
+        "omittedTerms": []
+      }
+    ],
+    "pruned": [
+      {
+        "identity": "col:pruned:LEG-1",
+        "agentId": "AGT-099",
+        "legIds": [
+          "LEG-1"
+        ],
+        "reason": "BUDGET",
+        "gammaMilliCU": "99999",
+        "breakdown": null
+      }
+    ]
+  }
+}

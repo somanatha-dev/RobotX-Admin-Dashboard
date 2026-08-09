@@ -328,6 +328,17 @@ function isEnabled(state, name) {
 }
 
 /**
+ * The stated source every kill-switch entry carries (§22.4).
+ *
+ * The launch value is not a measurement and could not be one: §1.8 rule 3 fixes it
+ * directly, and the only thing that changes it is Phase 16, one switch at a time behind
+ * its own gate. Recording that is what distinguishes a derived value from a default
+ * nobody has looked at, which is the distinction §22.4 exists to draw.
+ */
+const DERIVATION =
+  "Stated source: §1.8 rule 3 fixes this value directly — \"Tier 0 plus Tier 1 ... is a complete, safe, shippable engine. Tier 2 mechanisms are then enabled one at a time.\" The launch value of every kill switch is therefore thrown, and it is DERIVED from that sentence rather than chosen: there is no measurement that could produce a different launch state, and Phase 16 is the only thing that changes it, one switch at a time behind its own gate.";
+
+/**
  * Register entries describing the switch set, so the switch states are governed by
  * the same register discipline as every other behavioural value (§22.1 rule 1) and
  * appear in the resolution-explain query.
@@ -349,6 +360,14 @@ function registerEntries() {
       owner: "SRE + Safety",
       blastRadius: definition.offLadder ? "region" : "shard",
       calibrationStatus: CALIBRATION_STATUS.DERIVED,
+      /**
+       * PHASE 15 — §22.4 defines `DERIVED` as "from a stated **accounting or measured
+       * source**", and `tools/gates/checkCalibration.js` refuses a Safety-class entry that
+       * claims the status without stating one. Every row here is Safety-class, so the
+       * source is stated once, here, rather than pasted into the register file where it
+       * would drift away from the generator.
+       */
+      derivation: DERIVATION,
       section: definition.section,
       description:
         `Kill switch for ${definition.capability}. Thrown (true) disables the mechanism and degrades to: ` +

@@ -66,11 +66,24 @@ const {
   PICKUP_WAIT_MS,
   DROP_WAIT_MS,
   RECONNECT_DELAY_MS,
+  // PHASE 7 — §14.6's modelled pack.
+  PACK_NOMINAL_WH,
+  CHARGE_POWER_CURVE,
+  CHARGE_CHARGER_CLASS,
+  CHARGE_PACK_TEMPERATURE_C,
+  CHARGE_CURVE_INTEGRATION_STEPS,
+  TARGET_SOC_FALLBACK,
 } = require("./constants");
 
 const fencing = require("../engine/commitment/fencing");
 const sequence = require("../engine/dispatch/sequence");
 const commandSigning = require("../engine/security/commandSigning");
+
+// PHASE 7 — §14.6 requires both sides to reason from identical inputs. The simulator
+// therefore integrates the **same module** the server plans charge durations with,
+// rather than a second implementation of the same curve that a future edit could
+// desynchronise. Importing it is the point, not an optimisation.
+const chargeCurve = require("../engine/energy/chargeCurve");
 
 // Redis key for persisting battery across restarts (separate from live-state key)
 const batteryKey = (robotId) => `vr:battery:${robotId}`;
@@ -145,6 +158,15 @@ class VirtualRobot {
     this._chargingPhase    = null;   // null | 'WAITING' | 'CHARGING'
     this._chargeWaitUntil  = null;
     this._pendingResume    = null;   // TASK_ASSIGN payload deferred while charging on low battery
+
+    // ── PHASE 7: §14.6's inputs, as the agent receives them ────────────────
+    // Both arrive on the offer and neither is computed here. §14.6: "the *agent*
+    // receives the reserve parameters and the target SoC as part of the offer, so the
+    // two sides reason from identical inputs by construction rather than by a shared
+    // constant that a future edit could desynchronise." Null until an offer supplies
+    // them, which is what makes the legacy path's behaviour unchanged.
+    this._publishedTargetSoc     = null;
+    this._energyReserveParams    = null;
 
     // ── Socket ────────────────────────────────────────────────────────────
     this.socket             = null;
@@ -862,19 +884,25 @@ class VirtualRobot {
       } catch { /* ignore */ }
     };
 
-    if (this.status === "CHARGING" && this.battery < CHARGING_INTERRUPT_BATTERY) {
+    // PHASE 7 — §14.6. Adopt the offer's published inputs *before* deciding, so the
+    // decision is taken on the same numbers the server planned with.
+    this._adoptEnergyInputs(envelope.payload);
+
+    const energy = this._assessOfferEnergy();
+
+    if (this.status === "CHARGING" && energy.belowInterruptCondition) {
       // The case §11.2 names: "the one deferral it can perform — holding an assignment
       // while charging — is invisible to the server". It is now visible, priced, and
       // re-optimised against alternatives next round.
       respond("OFFER_DEFER", {
         until: new Date(Date.now() + CHARGING_WAIT_MS).toISOString(),
-        reason: `CHARGING_BELOW_INTERRUPT_THRESHOLD:${this.battery.toFixed(1)}%`,
+        reason: energy.interruptReason,
       });
       return;
     }
 
-    if (this.battery <= BATTERY_CRITICAL_THRESHOLD) {
-      respond("OFFER_REJECT", { reason: `BATTERY_CRITICAL:${this.battery.toFixed(1)}%` });
+    if (energy.belowFloor) {
+      respond("OFFER_REJECT", { reason: energy.floorReason });
       return;
     }
 
@@ -1168,22 +1196,172 @@ class VirtualRobot {
     }
 
     if (this._chargingPhase === "CHARGING") {
-      this.battery = Math.min(100, this.battery + CHARGING_RATE_PER_TICK);
-      if (this.battery >= 100) {
-        this.battery = 100;
+      const targetPercent = this._targetSocPercent();
+      this.battery = Math.min(targetPercent, this.battery + this._chargeStepPercent());
+
+      if (this.battery >= targetPercent) {
+        this.battery = targetPercent;
         this.status  = "IDLE";
         this._clearCharging();
 
         const pending = this._pendingResume;
         this._pendingResume = null;
         if (pending) {
-          this.log.info(`[VR] ${this.robotId} fully charged → resuming deferred task ${pending.taskId}`);
+          this.log.info(
+            `[VR] ${this.robotId} reached target SoC ${targetPercent.toFixed(0)}% → resuming deferred task ${pending.taskId}`
+          );
           this._onTaskAssign(pending);
         } else {
-          this.log.info(`[VR] ${this.robotId} fully charged → IDLE`);
+          this.log.info(`[VR] ${this.robotId} reached target SoC ${targetPercent.toFixed(0)}% → IDLE`);
         }
       }
     }
+  }
+
+  /**
+   * PHASE 7 — §11.2 / §14.6. Adopt the reserve parameters and target SoC an offer
+   * carries.
+   *
+   * Both are inputs the agent did not choose. `energyReserveParams` is the server's own
+   * `reserves.compose()` stack in watt-hours, and `targetSoc` is the Charging
+   * Scheduler's published value. Adopting them is what replaces the shared 30 %
+   * constant: §14.6 preserves the baseline's threshold-sharing "in spirit and
+   * strengthens it" by putting the numbers on the wire rather than in a module both
+   * sides happen to import.
+   *
+   * An offer that carries neither leaves the previous values in place, so a legacy
+   * `TASK_ASSIGN` path continues to behave exactly as it did.
+   *
+   * @param {object} payload the OFFER payload
+   */
+  _adoptEnergyInputs(payload) {
+    if (!payload || typeof payload !== "object") return;
+    if (payload.energyReserveParams && typeof payload.energyReserveParams === "object") {
+      this._energyReserveParams = payload.energyReserveParams;
+    }
+    if (Number.isFinite(payload.targetSoc)) {
+      this._publishedTargetSoc = payload.targetSoc;
+    }
+  }
+
+  /**
+   * PHASE 7 — §14.1 / §14.5. The agent's own energy judgement about an offer.
+   *
+   * Where the server has supplied a reserve stack in **watt-hours**, the agent reasons
+   * in watt-hours: `E_floor` is the hardware protection floor and `E_floor + E_return`
+   * is the point below which finishing the mission strands it. That is the model §14.1
+   * replaced the percentage floor with, and an agent still comparing percentages would
+   * be the "shared constant that a future edit could desynchronise" §14.6 removes.
+   *
+   * Where no reserve stack has been published — every legacy `TASK_ASSIGN`, and any
+   * offer from a server not yet supplying them — it falls back to the legacy percentage
+   * thresholds unchanged. The fallback is stated rather than implicit: an agent that
+   * silently invented watt-hours from a percentage would be asserting a pack capacity
+   * nobody gave it.
+   *
+   * The two conditions carry **their own** reasons rather than one shared string,
+   * because they are answers to different questions and reach the server through
+   * different dispositions: a deferral says "not now, ask again", a rejection says "this
+   * agent cannot do this at all", and §11.2 reconciles the second against the server's
+   * energy model as a possible calibration defect. Collapsing them would report a
+   * charging agent's ordinary wait as a safety refusal.
+   *
+   * @returns {{ belowInterruptCondition: boolean, belowFloor: boolean,
+   *             interruptReason: string, floorReason: string, basis: string }}
+   */
+  _assessOfferEnergy() {
+    const params = this._energyReserveParams;
+    const packWh = params && Number.isFinite(params.packNominalWh) ? params.packNominalWh : null;
+    const floorWh = params && Number.isFinite(params.floorWh) ? params.floorWh : null;
+    const returnWh = params && Number.isFinite(params.returnWh) ? params.returnWh : null;
+
+    if (packWh !== null && packWh > 0 && floorWh !== null) {
+      // @structural percentage to fraction
+      const availableWh = (this.battery / 100) * packWh;
+      const floorPlusReturn = floorWh + (returnWh === null ? 0 : returnWh);
+      return {
+        basis: "MODELLED_WH",
+        belowFloor: availableWh <= floorWh,
+        // Interrupting a charge is permitted only above the layer that keeps a return
+        // viable; §14.6's full three-condition test is the server's, and the agent
+        // enforces the half it is the authority on — its own remaining energy.
+        belowInterruptCondition: availableWh < floorPlusReturn,
+        interruptReason: `BELOW_E_FLOOR_PLUS_E_RETURN:${availableWh.toFixed(0)}Wh<${floorPlusReturn}Wh`,
+        floorReason: `BELOW_E_FLOOR:${availableWh.toFixed(0)}Wh<${floorWh}Wh`,
+      };
+    }
+
+    return {
+      basis: "LEGACY_PERCENTAGE",
+      belowFloor: this.battery <= BATTERY_CRITICAL_THRESHOLD,
+      belowInterruptCondition: this.battery < CHARGING_INTERRUPT_BATTERY,
+      interruptReason: `CHARGING_BELOW_INTERRUPT_THRESHOLD:${this.battery.toFixed(1)}%`,
+      floorReason: `BATTERY_CRITICAL:${this.battery.toFixed(1)}%`,
+    };
+  }
+
+  /**
+   * PHASE 7 — §14.6. The state of charge this session is charging **to**.
+   *
+   * > **Decision: the Charging Scheduler owns and publishes target SoC. The assignment
+   * > engine treats the published value as an input constraint.**
+   *
+   * The agent is one more consumer of that decision, and it consumes it the same way:
+   * off the offer's `targetSoc` field where one was published, and off the class default
+   * where none was. It never computes one — a simulator that charged to a target it
+   * chose itself would be a third scheduler, and §14.6 exists because two were already
+   * one too many.
+   *
+   * @returns {number} target state of charge as a percentage
+   */
+  _targetSocPercent() {
+    const published = this._publishedTargetSoc;
+    const fraction = Number.isFinite(published) ? published : TARGET_SOC_FALLBACK;
+    return Math.max(0, Math.min(1, fraction)) * 100;
+  }
+
+  /**
+   * PHASE 7 — §14.6. Percentage points gained in one tick, from the **nonlinear** curve.
+   *
+   * > A linear rate — as the baseline's simulation uses — will systematically
+   * > underestimate time to full and overestimate fleet availability.
+   *
+   * The step is derived by inverting the same integral the server plans with: ask
+   * `chargeCurve` how long a small SoC increment takes at the current state of charge,
+   * and scale it to the tick. Near 100 % the curve's tail makes that increment take far
+   * longer than it does at 40 %, which is the behaviour a flat `%/tick` cannot produce
+   * and the reason `CHARGING_RATE_PER_TICK` is now only the legacy path's rate.
+   *
+   * If the curve cannot be evaluated the simulator falls back to the legacy linear rate
+   * rather than stalling: a simulator that stopped charging on a configuration gap would
+   * fail the run for a reason unrelated to what the run is testing.
+   *
+   * @returns {number} percentage points
+   */
+  _chargeStepPercent() {
+    const soc = Math.max(0, Math.min(1, this.battery / 100));
+    // @structural a probe increment small enough that the curve is locally flat over it
+    const probe = 0.01;
+    const to = Math.min(1, soc + probe);
+    if (to <= soc) return 0;
+
+    const integrated = chargeCurve.timeToChargeSeconds({
+      curve: CHARGE_POWER_CURVE,
+      fromSoc: soc,
+      toSoc: to,
+      tempC: CHARGE_PACK_TEMPERATURE_C,
+      chargerClass: CHARGE_CHARGER_CLASS,
+      packUsableWh: PACK_NOMINAL_WH,
+      steps: CHARGE_CURVE_INTEGRATION_STEPS,
+    });
+
+    if (!integrated.ok || !(integrated.seconds > 0)) return CHARGING_RATE_PER_TICK;
+
+    // @structural milliseconds per second
+    const tickSeconds = TELEMETRY_INTERVAL_MS / 1000;
+    const socGain = (to - soc) * (tickSeconds / integrated.seconds);
+    // @structural fraction to percentage
+    return socGain * 100;
   }
 
   // ── Per-tick simulation ────────────────────────────────────────────────────

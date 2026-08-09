@@ -1,0 +1,216 @@
+{
+  "note": "Golden replay corpus entry (§24.3). tierB is what was stored; reconstructionInput is what replay recomputes from Tier A + the pinned snapshot.",
+  "tierA": {
+    "decisionId": "shard-a:1770000000000:LEG-2",
+    "roundId": "shard-a:1770000000000",
+    "shardId": "shard-a",
+    "legId": "LEG-2",
+    "samplingRate": 0.5,
+    "samplingDraw": 0.5498493823688477
+  },
+  "tierB": {
+    "decisionId": "shard-a:1770000000000:LEG-2",
+    "roundId": "shard-a:1770000000000",
+    "shardId": "shard-a",
+    "decisionTime": "2026-02-02T02:40:00.000Z",
+    "writtenBecause": "SAMPLED",
+    "exemptionReason": null,
+    "candidateSet": [
+      {
+        "agentId": "AGT-004",
+        "discoveryTier": 1,
+        "availabilityClass": "READY",
+        "lowerBoundMilliCU": "4000",
+        "admitted": false
+      },
+      {
+        "agentId": "AGT-005",
+        "discoveryTier": 2,
+        "availabilityClass": "READY",
+        "lowerBoundMilliCU": "5000",
+        "admitted": false
+      }
+    ],
+    "feasibility": [
+      {
+        "agentId": "AGT-004",
+        "admitted": false,
+        "bindingPredicateId": "F22",
+        "predicates": [
+          {
+            "predicateId": "F01",
+            "outcome": "PASS",
+            "observed": true,
+            "required": true,
+            "inputSource": "AGENT_STATE",
+            "observationAgeMs": 120,
+            "indeterminatePolicy": "DENY",
+            "margin": null,
+            "marginUnit": null
+          },
+          {
+            "predicateId": "F34",
+            "outcome": "FAIL",
+            "observed": {
+              "bindingTier": "T2",
+              "marginWh": -12.5
+            },
+            "required": {
+              "tier": "T2"
+            },
+            "inputSource": "ENERGY_MODEL",
+            "observationAgeMs": 300,
+            "indeterminatePolicy": "DENY",
+            "margin": -0.12,
+            "marginUnit": "ratio"
+          }
+        ]
+      },
+      {
+        "agentId": "AGT-005",
+        "admitted": false,
+        "bindingPredicateId": "F34",
+        "predicates": [
+          {
+            "predicateId": "F01",
+            "outcome": "PASS",
+            "observed": true,
+            "required": true,
+            "inputSource": "AGENT_STATE",
+            "observationAgeMs": 120,
+            "indeterminatePolicy": "DENY",
+            "margin": null,
+            "marginUnit": null
+          },
+          {
+            "predicateId": "F34",
+            "outcome": "FAIL",
+            "observed": {
+              "bindingTier": "T2",
+              "marginWh": -12.5
+            },
+            "required": {
+              "tier": "T2"
+            },
+            "inputSource": "ENERGY_MODEL",
+            "observationAgeMs": 300,
+            "indeterminatePolicy": "DENY",
+            "margin": -0.12,
+            "marginUnit": "ratio"
+          }
+        ]
+      }
+    ],
+    "costs": [],
+    "columnDetail": [
+      {
+        "identity": "col:pruned:LEG-2",
+        "agentId": "AGT-099",
+        "legIds": [
+          "LEG-2"
+        ],
+        "kept": false,
+        "prunedReason": "BUDGET",
+        "gammaMilliCU": "99999",
+        "priceDecomposition": null,
+        "omittedTerms": null
+      }
+    ],
+    "contentHash": "fd589c7b415be462ff0aa966504a51b3ff9c82da660e85d2b5a98dd5ddbfa291",
+    "sizeBytes": 1451,
+    "retainUntil": null
+  },
+  "reconstructionInput": {
+    "roundId": "shard-a:1770000000000",
+    "shardId": "shard-a",
+    "decisionTimeMs": 1770000000000,
+    "decisionId": "shard-a:1770000000000:LEG-2",
+    "candidates": [
+      {
+        "agentId": "AGT-004",
+        "discoveryTier": 1,
+        "availabilityClass": "READY",
+        "lowerBoundMilliCU": "4000",
+        "rejected": true,
+        "bindingPredicateId": "F22",
+        "breakdown": null,
+        "predicateResults": [
+          {
+            "predicateId": "F01",
+            "outcome": "PASS",
+            "observed": true,
+            "required": true,
+            "inputSource": "AGENT_STATE",
+            "observationAgeMs": 120,
+            "indeterminatePolicy": "DENY"
+          },
+          {
+            "predicateId": "F34",
+            "outcome": "FAIL",
+            "observed": {
+              "bindingTier": "T2",
+              "marginWh": -12.5
+            },
+            "required": {
+              "tier": "T2"
+            },
+            "inputSource": "ENERGY_MODEL",
+            "observationAgeMs": 300,
+            "indeterminatePolicy": "DENY",
+            "margin": -0.12,
+            "marginUnit": "ratio"
+          }
+        ]
+      },
+      {
+        "agentId": "AGT-005",
+        "discoveryTier": 2,
+        "availabilityClass": "READY",
+        "lowerBoundMilliCU": "5000",
+        "rejected": true,
+        "bindingPredicateId": "F34",
+        "breakdown": null,
+        "predicateResults": [
+          {
+            "predicateId": "F01",
+            "outcome": "PASS",
+            "observed": true,
+            "required": true,
+            "inputSource": "AGENT_STATE",
+            "observationAgeMs": 120,
+            "indeterminatePolicy": "DENY"
+          },
+          {
+            "predicateId": "F34",
+            "outcome": "FAIL",
+            "observed": {
+              "bindingTier": "T2",
+              "marginWh": -12.5
+            },
+            "required": {
+              "tier": "T2"
+            },
+            "inputSource": "ENERGY_MODEL",
+            "observationAgeMs": 300,
+            "indeterminatePolicy": "DENY",
+            "margin": -0.12,
+            "marginUnit": "ratio"
+          }
+        ]
+      }
+    ],
+    "columns": [],
+    "pruned": [
+      {
+        "identity": "col:pruned:LEG-2",
+        "agentId": "AGT-099",
+        "legIds": [
+          "LEG-2"
+        ],
+        "reason": "BUDGET",
+        "gammaMilliCU": "99999",
+        "breakdown": null
+      }
+    ]
+  }
+}

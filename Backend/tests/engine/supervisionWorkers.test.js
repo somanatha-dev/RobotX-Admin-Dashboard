@@ -662,12 +662,25 @@ describe("what Phase 5 absorbs", () => {
     expect(source).toMatch(/reconciler owns §12\.4 row 9/);
   });
 
-  test("taskRecovery.service.js records its absorption and keeps its legacy behaviour", () => {
-    const source = fs.readFileSync(path.join(BACKEND_ROOT, "src", "services", "taskRecovery.service.js"), "utf8");
-    expect(source).toMatch(/absorbed into the reconciler's orphan scan/);
-    // Unchanged behaviour: the legacy export is still there and is still what recovers
-    // Redis state for the legacy dispatcher.
-    expect(require("../../src/services/taskRecovery.service").recoverActiveTasks).toBeInstanceOf(Function);
+  // PHASE 15 — the absorption completes. Phase 5 recorded that `taskRecovery.service.js`
+  // does §12.4 row 3 restricted to one trigger (a process restart), and §12.1's argument
+  // for why that restriction is the defect: "no component is responsible for noticing that
+  // a state has stopped progressing. Patching each trigger individually leaves the seventh
+  // undiscovered." The file is now gone and `server.js` calls nothing in its place —
+  // because the replacement is a continuous sweep under the shard leader, not a call site.
+  test("taskRecovery.service.js is retired and server.js has no boot-time recovery pass", () => {
+    expect(fs.existsSync(path.join(BACKEND_ROOT, "src", "services", "taskRecovery.service.js"))).toBe(false);
+    expect(() => require("../../src/services/taskRecovery.service")).toThrow(/Cannot find module/);
+
+    const server = fs.readFileSync(path.join(BACKEND_ROOT, "server.js"), "utf8");
+    const code = server.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    expect(code).not.toMatch(/recoverActiveTasks/);
+
+    // The trigger-independent replacement exists and is declared LEADER_ONLY: §19.3 admits
+    // one writer per shard, and a standby running the orphan scan would be a second.
+    const registry = require("../../src/workers/registry");
+    expect(registry.WORKER_BY_ID.reconciler.readiness).toBe(registry.READINESS.LEADER_ONLY);
+    expect(require("../../src/engine/supervision/reconciler").scanOrphanLegs).toBeInstanceOf(Function);
   });
 
   test("GET /api/legs/:legId/supervision is registered", () => {

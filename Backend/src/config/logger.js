@@ -242,7 +242,24 @@ rootLogger.socketOut = function logSocketOut(event, target, meta = {}) {
 };
 
 // ─── DTARO allocation report ──────────────────────────────────────────────────
-
+//
+// SUPERSEDED BY PHASE 6 — retires with the legacy dispatcher at Phase 15.
+//
+// §7.7 replaces this with structured rejection telemetry
+// (`src/engine/feasibility/rejectionTelemetry.js`), for a reason it states directly:
+// a rejection is evaluated as the tuple `(agent_id, predicate_id, observed_value,
+// required_value, input_source, observation_age)`, which "is stricter than logging a
+// message string, and it is what makes 'why did the fleet reject this mission'
+// queryable rather than grep-able".
+//
+// Two properties this function cannot have, and the engine's telemetry does:
+//   - the **binding-constraint distribution** per zone, mission class, and Leg purpose,
+//     exact over 100 % of decisions because tuples are aggregated before sampling;
+//   - **near-miss margins** as a quantile sketch, so "failing F34 by 3 %" and "failing
+//     by 60 %" are distinguishable — one is a config change, the other is capital spend.
+//
+// Left in place and unchanged: the legacy dispatcher still calls it, and no engine
+// module does.
 rootLogger.dtaro = function logDtaro({ candidates = [], results = [], rejected = [], winner } = {}) {
   if (isProd) {
     pinoBase.info({ winner: winner?.robotId, candidateCount: candidates.length }, "DTARO allocation");
@@ -277,6 +294,133 @@ rootLogger.dtaro = function logDtaro({ candidates = [], results = [], rejected =
 
   process.stdout.write(lines.join("\n") + "\n");
 };
+
+// ─── PHASE 11 — §21.7 tracing, structured logging, and log-volume discipline ──
+//
+// §21.7 states three rules, and the third is the one that has to be enforced by code
+// rather than by review:
+//
+//   - **One trace per Task**, spanning intake → queue → round → commit → dispatch →
+//     execution → settlement. `TRACE_FIELDS` is the correlation set that makes that
+//     one trace assemblable from lines emitted by six different subsystems.
+//   - **Structured logs only**, "with decision id, commitment id, mission id, agent id,
+//     and shard id as mandatory fields. Free-text messages are for humans reading a
+//     specific incident, never the primary carrier of information."
+//   - **Log volume discipline.** *"Per-candidate detail belongs in the decision record,
+//     not in the log stream; emitting full candidate sets to logs at fleet scale is a
+//     self-inflicted outage. Logs carry the round summary and anomalies."*
+//
+// `logger.round()` and `logger.anomaly()` are the engine's only log entry points, and
+// both **refuse** a payload carrying per-candidate detail. The refusal is loud in
+// development and test — where the mistake is made — and a silent drop of the offending
+// field in production, where throwing inside a logger would turn a logging defect into
+// an outage. That asymmetry is deliberate: the rule exists to prevent an outage, so
+// enforcing it must not cause one.
+
+/**
+ * The correlation fields §21.7 makes mandatory on every structured engine log line.
+ */
+const TRACE_FIELDS = ["traceId", "decisionId", "commitmentId", "missionId", "agentId", "shardId"];
+
+/**
+ * Field names that carry per-candidate detail. A payload containing any of these, with
+ * an array value, belongs in the decision record (Tier B, §21.2) and not in the log
+ * stream.
+ */
+const PER_CANDIDATE_FIELDS = new Set([
+  "candidates",
+  "candidateSet",
+  "rejected",
+  "rejections",
+  "predicates",
+  "predicateResults",
+  "costs",
+  "columns",
+  "columnDetail",
+  "feasibility",
+]);
+
+/**
+ * Strip per-candidate detail from a log payload, returning what was removed.
+ *
+ * Arrays only: a scalar `candidates: 47` is a *count*, which is exactly the round
+ * summary §21.7 says logs should carry, and removing it would be enforcing the opposite
+ * of the rule.
+ */
+function withoutPerCandidateDetail(meta) {
+  if (!meta || typeof meta !== "object") return { kept: meta, removed: [] };
+  const kept = {};
+  const removed = [];
+  for (const [key, value] of Object.entries(meta)) {
+    if (PER_CANDIDATE_FIELDS.has(key) && Array.isArray(value)) {
+      removed.push({ field: key, length: value.length });
+      // The count survives; the rows do not. An operator still sees that 200 candidates
+      // were evaluated, and the 200 rows are in Tier B where they can be queried.
+      kept[`${key}Count`] = value.length;
+      continue;
+    }
+    kept[key] = value;
+  }
+  return { kept, removed };
+}
+
+class LogVolumeDisciplineError extends Error {
+  constructor(removed) {
+    super(
+      `per-candidate detail (${removed.map((row) => `${row.field}[${row.length}]`).join(", ")}) was passed to the ` +
+        "log stream. §21.7: per-candidate detail belongs in the decision record, not in the log stream — " +
+        "emitting full candidate sets to logs at fleet scale is a self-inflicted outage. Write it to Tier B " +
+        "(src/engine/observability/tierB.js) instead.",
+    );
+    this.name = "LogVolumeDisciplineError";
+    this.removed = removed;
+  }
+}
+
+function emitStructured(level, kind, meta) {
+  const { kept, removed } = withoutPerCandidateDetail(meta);
+
+  if (removed.length > 0 && !isProd) throw new LogVolumeDisciplineError(removed);
+
+  const line = { kind, ...kept };
+  if (removed.length > 0) line.perCandidateDetailOmitted = removed;
+
+  if (isProd) {
+    pinoLog(level, "engine", kind, line);
+    return line;
+  }
+
+  printLine(level, "engine", kind, sanitise(line));
+  return line;
+}
+
+/**
+ * The round summary — one line per round, never one per candidate.
+ */
+rootLogger.round = function logRound(summary = {}) {
+  return emitStructured("info", "round", summary);
+};
+
+/**
+ * An anomaly. §21.7: "Logs carry the round summary and anomalies."
+ */
+rootLogger.anomaly = function logAnomaly(kind, meta = {}) {
+  return emitStructured("warn", `anomaly.${kind}`, meta);
+};
+
+/**
+ * Which mandatory correlation fields a payload is missing (§21.7). Returned rather than
+ * thrown: a line missing `agentId` because the event has no agent is correct, and only
+ * the caller knows which of the six apply to it.
+ */
+rootLogger.missingTraceFields = function missingTraceFields(meta = {}) {
+  return TRACE_FIELDS.filter((field) => meta[field] === undefined || meta[field] === null);
+};
+
+rootLogger.TRACE_FIELDS = TRACE_FIELDS;
+rootLogger.PER_CANDIDATE_FIELDS = PER_CANDIDATE_FIELDS;
+rootLogger.LogVolumeDisciplineError = LogVolumeDisciplineError;
+rootLogger.withoutPerCandidateDetail = withoutPerCandidateDetail;
 
 // ─── Simulation tick ─────────────────────────────────────────────────────────
 

@@ -428,17 +428,27 @@ async function initKv({ logger }) {
     //   > Demote `kv.reserveRobot` to advisory (§10.4) — **only after** the durable
     //   > path passes its gate.
     //
-    // `ENGINE_ENABLED` is false in every environment and the legacy dispatcher in
-    // `task.service.js` is still the only writer of assignments. For that caller
-    // this lock remains the *sole* exclusivity mechanism, and removing the throw
-    // today would delete the only protection the live path has, months before the
-    // Phase 15 cutover replaces it. The demotion is therefore expressed as an
-    // explicit opt-in: engine callers pass `{ advisory: true }` and get §10.4
-    // semantics (loss degrades throughput, never correctness); legacy callers pass
-    // nothing and get exactly the behaviour they had before this phase.
+    // ── PHASE 15 — the condition is met, and the default has flipped ────────
     //
-    // The default flips at Phase 15, when the legacy path is removed from the
-    // build rather than merely bypassed.
+    // The plan's Phase 15 Redis row: "Retire `robotReserve:*` reliance for
+    // correctness (it remains advisory)." The condition it was waiting on was the
+    // durable path being live, and the cutover satisfies it: the legacy dispatcher
+    // is removed from the build, `task.service.js` no longer reserves anything, and
+    // **no caller in this repository depends on this lock for exclusivity.** That
+    // job belongs entirely to `engine/commitment/commit.js` — a SERIALIZABLE
+    // transaction with `FOR UPDATE` row locks on the agent and the Leg, guards
+    // G1-G6, a per-commitment fencing token, and two schema backstops that hold
+    // even when application logic is defective.
+    //
+    // So `advisory` now defaults to **true**: §10.4's semantics, in which losing
+    // the lock degrades throughput and never correctness. The fail-closed throw is
+    // retained and reachable by passing `{ advisory: false }` explicitly, because
+    // deleting it would remove the ability to express "this caller has no other
+    // exclusivity mechanism" — and a future integration might. What it must never
+    // again be is the default, which is what made a cache outage able to halt
+    // allocation for a system whose §3.3 rule says the opposite:
+    //
+    //   > cache unavailability MUST NOT halt commitment.
     //
     // ── The retained legacy policy, unchanged ───────────────────────────────
     // FAIL-CLOSED POLICY (HR1) — for a non-advisory caller this must NOT silently
@@ -457,7 +467,10 @@ async function initKv({ logger }) {
     // genuinely correct and is still used.
     async reserveRobot(key, value, ttlSec, options) {
       const ex = typeof ttlSec === "number" && Number.isFinite(ttlSec) && ttlSec > 0 ? Math.floor(ttlSec) : 30;
-      const advisory = Boolean(options && options.advisory);
+      // PHASE 15 — advisory by default. Only a caller that explicitly passes
+      // `{ advisory: false }` — declaring that it has no other exclusivity mechanism —
+      // gets the fail-closed throw. No caller in this repository does.
+      const advisory = !options || options.advisory !== false;
 
       if (redisAvailable && redis) {
         try {
@@ -470,16 +483,22 @@ async function initKv({ logger }) {
         }
       }
 
-      if (advisory) {
-        // §10.4: "cache unavailability MUST NOT halt commitment". The caller is
-        // told it holds the advisory lock; the durable commit transaction is what
-        // decides the outcome, and it takes no cache dependency at all. Returning
-        // false here would be worse than returning true — it would halt the round
-        // on a cache outage, which is the baseline behaviour §10.4 removes.
-        return true;
-      }
-
+      // Reached only when the Redis attempt above did not answer. What happens next
+      // turns on *why*, and the two reasons are not the same fact:
+      //
+      //   - Redis was configured and is unreachable. The operator asked for a shared
+      //     lock and there is not one. An advisory caller is granted it (§10.4:
+      //     "cache unavailability MUST NOT halt commitment" — the durable commit
+      //     transaction decides the outcome and takes no cache dependency at all); a
+      //     caller that declared `{ advisory: false }` gets the fail-closed throw,
+      //     because it has told us this lock is its only exclusivity mechanism.
+      //   - Redis was never configured. The deployment is explicitly single-process,
+      //     so the memory-backed lock is genuinely a lock and is used — for advisory
+      //     and non-advisory callers alike. Short-circuiting an advisory caller to
+      //     `true` here would throw away a correct lock and is the ordering bug this
+      //     branch is written out longhand to prevent.
       if (redisConfigured) {
+        if (advisory) return true;
         const err = new Error(
           "Reservation lock unavailable: Redis is configured but unreachable. " +
           "Refusing to fall back to a process-local lock (would allow double-assignment across instances)."
