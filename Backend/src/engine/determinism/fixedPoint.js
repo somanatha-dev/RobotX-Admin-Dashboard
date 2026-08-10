@@ -29,6 +29,44 @@
  * negative (§6.4), and a rounding mode that treated their sign asymmetrically would
  * make the sign of a near-zero cost an artefact of the rounding rather than of the
  * model.
+ *
+ * ── The supported input representation, and why the scaling is not a multiply ──
+ * The conversion boundary accepts a JavaScript `number`. Every such value is a
+ * float64, and the values that actually reach it are of two kinds:
+ *
+ *   - **decimal quantities** — exchange rates and cost figures, which §1.3 requires
+ *     to be "traceable to an accounting figure", and which are written and reviewed
+ *     as decimals (`0.0035` CU·Wh⁻¹, a `-32.7615` CU credit); and
+ *   - **float estimates** produced by continuous arithmetic upstream, which §9.6
+ *     requirement 1 names explicitly.
+ *
+ * A float64 cannot hold most decimal fractions exactly, so `cu * 1000` is not the
+ * mathematical product: `-32.7615 * 1000` evaluates to `-32761.499999999996`, which
+ * sits *below* the half boundary the decimal quantity lands exactly on. Scaling by
+ * multiplication and then comparing against `0.5` therefore rounds a measurable
+ * fraction of exact half-boundary quantities **toward** zero — the opposite of the
+ * stated mode — and no epsilon fixes that without breaking a neighbouring case.
+ *
+ * The scaling is therefore performed **exactly, in base ten, with no float
+ * arithmetic at all.** `Number.prototype.toString` is specified by ECMA-262 to
+ * produce the shortest decimal that round-trips to the same float64 — a total,
+ * host-independent, deterministic function of the input. That decimal is parsed
+ * into an exact `(digits, exponent)` pair, the exponent is shifted by three (the
+ * milli- prefix is a *decimal* prefix), and the half-boundary test is the exact
+ * integer comparison `2·remainder ≥ denominator`. Every intermediate is a `BigInt`,
+ * so the mode holds for the whole supported domain rather than almost all of it.
+ *
+ * Two consequences worth stating, because they are behaviour and not detail:
+ *
+ *   - **Determinism is strengthened, not traded away.** The conversion has no
+ *     float intermediate left to vary, and `toString` is exactly specified, so two
+ *     conforming hosts agree by construction rather than by observation.
+ *   - **The representable range widens to the one §9.6 actually states.** The
+ *     previous implementation refused any result outside the float64 *safe integer*
+ *     range, because past that point the float intermediate could not represent the
+ *     result exactly. There is no float intermediate now, so the only bound left is
+ *     `int64` itself, enforced — as everywhere else in this module — by
+ *     `assertInt64`. Overflow remains an error and never a wrap.
  */
 
 /** @structural the milli- prefix: 1 CU is 1 000 milli-CU by definition of the unit */
@@ -37,8 +75,19 @@ const MILLI_PER_CU = 1000;
 /** @structural the milli- prefix, as the BigInt the arithmetic uses */
 const MILLI_PER_CU_BIG = 1000n;
 
-/** @structural the half-way point of the stated rounding mode */
-const ROUNDING_HALF = 0.5;
+/** @structural base ten: the radix a decimal literal and the milli- prefix are both written in */
+const DECIMAL_RADIX = 10;
+
+/** @structural base ten, as the BigInt the exact scaling uses */
+const DECIMAL_RADIX_BIG = 10n;
+
+/** @structural 10³ — the milli- prefix expressed as a shift of the decimal exponent */
+const MILLI_DECIMAL_EXPONENT = 3;
+
+/** @structural the numerator of ½, for the exact half-boundary test `2·remainder ≥ denominator` */
+const HALF_NUMERATOR_BIG = 2n;
+
+const DECIMAL_EXPONENT_SEPARATOR = /[eE]/;
 
 /** @structural int64 lower bound — the width §9.6 requirement 1 specifies */
 const INT64_MIN = -9223372036854775808n;
@@ -76,13 +125,88 @@ function assertInt64(value, operation) {
 }
 
 /**
- * Convert a float CU estimate into int64 milli-CU under the single specified
- * rounding mode.
+ * Decompose a finite `number` into the exact decimal triple
+ * `(negative, digits, exponent)` such that the value is
+ * `(negative ? −1 : 1) × digits × 10^exponent`, with no float arithmetic.
+ *
+ * The decimal read is `String(value)`, which ECMA-262 specifies as the shortest
+ * decimal that round-trips to the same float64. It is a total function with one
+ * answer per input on every conforming host, which is what makes the conversion
+ * above it replayable.
+ *
+ * @param {number} value finite
+ * @returns {{ negative: boolean, digits: bigint, exponent: number }}
+ */
+function decimalParts(value) {
+  let text = String(value);
+  let negative = false;
+  if (text.startsWith("-")) {
+    negative = true;
+    text = text.slice(1);
+  }
+
+  let exponent = 0;
+  const exponentAt = text.search(DECIMAL_EXPONENT_SEPARATOR);
+  if (exponentAt >= 0) {
+    exponent = Number.parseInt(text.slice(exponentAt + 1), DECIMAL_RADIX);
+    text = text.slice(0, exponentAt);
+  }
+
+  const pointAt = text.indexOf(".");
+  if (pointAt >= 0) {
+    exponent -= text.length - pointAt - 1;
+    text = text.slice(0, pointAt) + text.slice(pointAt + 1);
+  }
+
+  return { negative, digits: BigInt(text), exponent };
+}
+
+/**
+ * The module's **single rounding site**: scale a finite `number` by `10^shift` and
+ * round the result to a `BigInt` under `ROUND_HALF_AWAY_FROM_ZERO`, exactly.
+ *
+ * Both conversions in this module funnel through here, so the answer to "which
+ * rounding did this use?" is one function rather than one function per call site.
+ *
+ * @param {number} value finite
+ * @param {number} shift decimal exponent shift applied before rounding
+ * @returns {bigint}
+ */
+function roundScaledHalfAwayFromZero(value, shift) {
+  const { negative, digits, exponent } = decimalParts(value);
+  const shifted = exponent + shift;
+
+  let magnitude;
+  if (shifted >= 0) {
+    // The scaled value is already a whole number: there is nothing to round.
+    magnitude = digits * DECIMAL_RADIX_BIG ** BigInt(shifted);
+  } else {
+    const denominator = DECIMAL_RADIX_BIG ** BigInt(-shifted);
+    const quotient = digits / denominator;
+    const remainder = digits % denominator;
+    // Round half away from zero on the magnitude, by exact integer comparison.
+    // Deciding on the magnitude — with the sign reattached afterwards, never
+    // participating — is what makes the mode symmetric under negation by
+    // construction rather than by coincidence.
+    magnitude = HALF_NUMERATOR_BIG * remainder >= denominator ? quotient + 1n : quotient;
+  }
+
+  return negative ? -magnitude : magnitude;
+}
+
+/**
+ * Convert a CU quantity into int64 milli-CU under the single specified rounding
+ * mode, exactly.
+ *
+ * The conversion is the whole engine's one float→integer boundary, so it is the one
+ * place where "which rounding did this use?" is answered. See the module header for
+ * why the scaling is a decimal exponent shift rather than a multiplication by 1000.
  *
  * @param {number} cu cost in CU
  * @returns {bigint} milli-CU
  * @throws {TypeError} on a non-finite input — a cost that is NaN or infinite is a
  *   modelling error, and rounding it would hide that
+ * @throws {RangeError} on a quantity whose milli-CU value is outside int64
  */
 function toMilliCU(cu) {
   if (typeof cu !== "number" || !Number.isFinite(cu)) {
@@ -90,15 +214,7 @@ function toMilliCU(cu) {
       `toMilliCU received ${JSON.stringify(cu)}; a cost must be a finite number of CU (§1.3, §9.6)`,
     );
   }
-  const scaled = cu * MILLI_PER_CU;
-  const rounded = scaled >= 0 ? Math.floor(scaled + ROUNDING_HALF) : Math.ceil(scaled - ROUNDING_HALF);
-  if (!Number.isSafeInteger(rounded)) {
-    throw new RangeError(
-      `toMilliCU(${cu}) rounds to ${rounded}, which is outside the safe integer range; ` +
-        "the conversion boundary cannot represent it exactly (§9.6)",
-    );
-  }
-  return assertInt64(BigInt(rounded), "toMilliCU");
+  return assertInt64(roundScaledHalfAwayFromZero(cu, MILLI_DECIMAL_EXPONENT), "toMilliCU");
 }
 
 /**
@@ -193,7 +309,9 @@ function multiplyByCount(milliCU, count) {
  *
  * Used where an exchange rate or a dimensionless shaping factor multiplies an
  * already-priced quantity. The rounding happens exactly once, here, rather than
- * accumulating through a chain of float operations.
+ * accumulating through a chain of float operations, and it happens through the same
+ * single rounding site `toMilliCU` uses — so the module has one rounding mode in
+ * implementation as well as in name.
  *
  * @param {bigint} milliCU
  * @param {number} rate
@@ -205,11 +323,10 @@ function scaleByRate(milliCU, rate) {
     throw new TypeError(`scaleByRate received rate ${JSON.stringify(rate)}; a rate must be finite (§1.3)`);
   }
   const product = Number(milliCU) * rate;
-  const rounded = product >= 0 ? Math.floor(product + ROUNDING_HALF) : Math.ceil(product - ROUNDING_HALF);
-  if (!Number.isSafeInteger(rounded)) {
-    throw new RangeError(`scaleByRate(${milliCU}, ${rate}) is outside the safe integer range (§9.6)`);
+  if (!Number.isFinite(product)) {
+    throw new RangeError(`scaleByRate(${milliCU}, ${rate}) overflows the float64 product (§9.6)`);
   }
-  return assertInt64(BigInt(rounded), "scaleByRate");
+  return assertInt64(roundScaledHalfAwayFromZero(product, 0), "scaleByRate");
 }
 
 /**

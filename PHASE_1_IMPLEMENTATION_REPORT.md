@@ -1,9 +1,34 @@
 # Phase 1 — Configuration, units, and determinism substrate · Implementation Report
 
-**Phase:** 1 of 16 · **Status:** ✅ **COMPLETE — awaiting independent verification before Phase 2**
-**Date:** 2026-07-28 · **Branch:** `feature/dashboard` · **Baseline commit:** `e558243`
+**Phase:** 1 of 16 · **Status:** ✅ **COMPLETE — verified, remediated, and CLOSED**
+**Date:** 2026-07-28 · **Remediated and closed:** 2026-08-10 · **Branch:** `feature/dashboard`
 **Authority:** `IMPLEMENTATION_EXECUTION_PLAN.md` §3 "PHASE 1" and §7 "Phase 1" checklist
 **Specification:** `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` (FROZEN) — §1.3, §3.3, §3.5, §6.4, §8.6, §8.10, §9.6, §14.3, §14.5, §22, Appendix A
+
+> ### Read this first — the commit history, stated accurately
+>
+> | | |
+> |---|---|
+> | **Baseline commit** | `e558243` — **confirmed** as the direct parent of the commit Phase 1 landed in (`git rev-parse 4244b3d^` → `e558243…`). No commit sits between them. |
+> | **Phase 1 landing commit** | `4244b3d` |
+> | **What that commit actually contains** | Phase 0's deliverables **and** Phase 1's, **and** unrelated legacy-dispatcher fixes, all in one commit. `e558243` holds no file under `Backend/src/engine/`; `4244b3d` holds 51, spanning both phases. The dispatcher changes (`commandDispatcher.service.js`, `VirtualRobot.js`, `robot.handler.js`, `socket.server.js`, plus 4 new legacy test files) modify files that already existed at `e558243` and are **not** Phase 1 work. |
+> | **Consequence** | Phase 0 and Phase 1 are **not individually attributable from git history**. This is a recorded limitation, not something to be repaired by rewriting history. |
+> | **HEAD at independent verification** | `4244b3d` (2026-07-28) |
+> | **HEAD at remediation and closure** | `62d8141` (2026-08-10) — Phases 2–15 have landed since |
+> | **Legacy test baseline** | 169 tests, unchanged from Phase 0 and still green at closure |
+>
+> An earlier draft of `PHASE_1_INDEPENDENT_VERIFICATION.md` §0 stated that `e558243` "is not
+> HEAD's parent". That claim is incorrect — it is the parent — and is corrected in
+> `PHASE_1_REMEDIATION_AND_CLOSURE.md` §5 with the git evidence.
+
+> ### Remediation
+>
+> This report describes Phase 1 as delivered on 2026-07-28. Six defects found by independent
+> verification and by remediation have since been fixed, and the database gap this report
+> flagged as its largest residual risk has been discharged by real execution.
+> **See [`PHASE_1_REMEDIATION_AND_CLOSURE.md`](PHASE_1_REMEDIATION_AND_CLOSURE.md)** for the
+> per-finding record. Two items remain open by design: the §22.2 branch ambiguity (§15
+> assumption 2 below) and the §14.3 conservatism decision (§7.1 below).
 
 > **Phase 2 has NOT been started.** No `Agent`, no `Mission`/`Leg`/`Stop`, no `Commitment`,
 > no spatial hierarchy, no domain mappers, no backfill. `ENGINE_ENABLED` remains `false`
@@ -427,8 +452,8 @@ stated condition for Phase 1 being complete.
 
 | Item | Status |
 |---|---|
-| The migration applied against a live PostgreSQL | **Not run.** No database is reachable from this environment (`prisma migrate diff` returns `P1013` on the configured URL). The schema passes `prisma validate`; the SQL is hand-written in the style Prisma generates and was reviewed line by line against the models. **An independent verifier should apply it to a production-shaped dump before Phase 2 begins**, since Phase 2's migration builds on these tables |
-| The immutability triggers firing | **Not run**, for the same reason. They are plain `plpgsql` `BEFORE UPDATE OR DELETE` triggers |
+| The migration applied against a live PostgreSQL | ~~**Not run.**~~ **DISCHARGED 2026-08-10.** Applied and exercised against a disposable PostgreSQL 18.3 instance (PGlite — upstream PostgreSQL compiled to WASM, `plpgsql` included — installed outside the repository, in memory, destroyed on exit). **18/18 checks passed**: the migration applies, all five tables, three enums, 13 indexes and both foreign keys exist, normal inserts work, the singleton `CHECK` and the `ON DELETE RESTRICT` FK both fire. The project's shared Neon database was **not** used. See `PHASE_1_REMEDIATION_AND_CLOSURE.md` §8, including the two environmental limitations that remain (WASM build rather than the deployment platform; empty database rather than a production-shaped dump) |
+| The immutability triggers firing | ~~**Not run**~~ **DISCHARGED 2026-08-10.** `ConfigVersion` `UPDATE` and `DELETE` are both refused, with the intended message, and the published row survives both attempts unchanged. `ConfigScopeBinding` `UPDATE` is refused. Live execution also confirmed that the `ConfigScopeBinding` trigger covers `UPDATE` only — which is deliberate and stated in the migration's own comment — so a *direct* `DELETE` on a binding is accepted; recorded as an observation for the schema owner and **not** changed, since the migration is already applied and replay reads `ConfigVersion.payload` rather than these rows |
 | `energy.reserve_floor_wh`, `route.degraded_max_radius`, `candidate.max_radius_by_sla_class`, `ops.escalation_capacity`, and the 11 unset cost rates | **Deliberately unset** (`required: true`, resolving to `null`). Each is deployment-specific or awaits an accounting figure; each is refused at use rather than defaulted, because a fabricated exchange rate is worse than an absent one (§22.4). They are launch-gate items, not Phase 1 gaps |
 
 ---
@@ -447,14 +472,46 @@ overruled.
    specification prints them, with `time_window` last — a scheduled override, including
    a regime, is the most specific thing that can apply, which is what makes a regime
    able to move a parameter at all.
-3. **Twelve parameters were added that Appendix A does not tabulate.** Appendix A opens
-   *"Not exhaustive; it establishes the required form."* Every one of the twelve is read
-   by a named §22.1 rule-5 validation or a stated derivation — `plan.max_admissible_mission_duration`
-   (V1), `observability.input_snapshot_retention` (V6), the four §3.5 sizing inputs (V4),
-   `fleet.agent_count` and `fleet.missions_per_agent_year` (α derivation),
-   `energy.f_derate` and the two combined-conservatism outputs (§14.3), and
-   `config.cache_ttl`. They are collected in `supplementary.json` with the rule that
-   requires each.
+
+   **Still an open specification ambiguity, and its exposure has grown.** *(Updated
+   2026-08-10.)* §22.2 states precedence *along* each line and says nothing about
+   precedence *between* them; §22.2, §22.3, §22.4, §3.6 and every cross-reference to
+   §22.2 were re-read at remediation and **no authoritative rule resolving it exists**.
+   The linearisation therefore remains an implementation convention, and runtime
+   behaviour was deliberately **not** changed. At Phase 1's 148-entry register, no
+   parameter declared scopes in more than one branch, so the exposure was nil. At the
+   current 242-entry register **two parameters do** — `energy.model_residual_cv` (§14.5)
+   and `payload.packing_node_budget` (§15.3), both added by later phases, each declaring
+   `agent_class` *and* `mission_class`. The exposure is still latent (declaring a scope
+   is not binding at one), but it is no longer hypothetical. Five regression tests in
+   `configResolver.test.js` pin the current behaviour and guard the exact set of
+   parameters that can reach the ambiguity. See
+   `PHASE_1_REMEDIATION_AND_CLOSURE.md` §6.
+3. **Thirteen parameters were added that Appendix A does not tabulate.**
+   *(Corrected 2026-08-10 — this assumption previously said twelve and undercounted by one.
+   See `PHASE_1_REMEDIATION_AND_CLOSURE.md` §4.)* Appendix A opens *"Not exhaustive; it
+   establishes the required form."* Every one is read by a named §22.1 rule-5 validation or a
+   stated derivation.
+
+   **Twelve are collected in `supplementary.json`**, each with the rule that requires it —
+   `plan.max_admissible_mission_duration` (V1), `observability.input_snapshot_retention`
+   (V6), the four §3.5 sizing inputs (V4), `fleet.agent_count` and
+   `fleet.missions_per_agent_year` (α derivation), `energy.f_derate` and the two
+   combined-conservatism outputs (§14.3), and `config.cache_ttl`.
+
+   **The thirteenth is `cost.reference_agent_class`**, and it lives in `cost.json` rather
+   than `supplementary.json` — which is how it was missed. It is required by **§1.3**'s prose
+   ("1 CU ≡ the fully-loaded operating cost of one second of committed time of a reference
+   agent class, *where the reference class and its cost are configuration*
+   (`cost.reference_agent_class`, `cost.cu_per_currency_unit`)"), and is tabulated by neither
+   Appendix A nor §8.10. It is registered as `STRUCTURAL` / `UNCALIBRATED` / `required: true`,
+   which is correct; only this report's count was wrong. The parameter was **not** changed.
+
+   For completeness, since `cost.json` is described in §3.1 as holding §8.10's 29 entries:
+   it holds 28 of §8.10's 29 plus `cost.reference_agent_class`. The remaining §8.10 entry,
+   `candidate.optimality_tolerance_cu`, is registered in `appendixA.json` because Appendix A
+   tabulates it as well. Nothing is missing in either direction, which is what
+   `configRegister.test.js` asserts by parsing both of the specification's tables.
 4. **`plan.max_admissible_mission_duration` is seeded at 600 s.** V1 requires
    `value_horizon (1800) > commitment_horizon (900) + this`. 600 s is the largest value
    consistent with the specification's own defaults for the other two. It is a
@@ -497,7 +554,7 @@ overruled.
 | # | Item | Owner | Due |
 |---|---|---|---|
 | 1 | **Resolve the combined-conservatism finding (§7.1)** — the seeded register does not publish until it is settled | Safety | Before the first production publish; hard by Phase 7 |
-| 2 | Apply the migration to a production-shaped dump and exercise the immutability triggers (§14.3) | Verifier / SRE | Before Phase 2 |
+| 2 | ~~Apply the migration and exercise the immutability triggers (§14.3)~~ **DONE 2026-08-10** — 18/18 against a disposable PostgreSQL 18.3. *Residual:* applying it to a production-shaped dump on the deployment platform, which remains an SRE step before a production migration | Verifier / SRE | ~~Before Phase 2~~ Before a production migration |
 | 3 | Resolve the §1.8 / §22.5 kill-switch discrepancy (§7.3), carried from Phase 0 | Tech lead | Phase 16 |
 | 4 | Name the calibration owner and set the fleet-year energy budgets (blocking decision B8) | Ops / Finance / Safety | Phase 7 and the Phase 15 launch gate |
 | 5 | Supply the 15 `required` values still unset (§14.3) | Ops, Finance, Account management | Phase 15 launch gate |

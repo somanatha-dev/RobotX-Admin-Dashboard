@@ -1,5 +1,32 @@
 # Phase 2 — Independent Architecture Verification Report
 
+> ## ⚠️ SUPERSEDED IN PART — read `PHASE_2_REMEDIATION_AND_CLOSURE.md` first
+>
+> **Final Phase 2 status (2026-08-10): CLOSED WITH DOCUMENTED ENVIRONMENTAL LIMITATION.**
+>
+> This report is preserved verbatim. Its verdict — **PASS WITH MINOR ISSUES** — was correct on
+> the evidence available, and its Part 13 issue #1 named exactly the right condition for Phase 3.
+> That condition has now been met, and meeting it proved the report's own caution justified.
+>
+> | Part 13 issue | Final status |
+> |---|---|
+> | #1 Migration never executed against a live PostgreSQL | ✅ **DISCHARGED.** Disposable PostgreSQL 18.3; 21/21 migrations; 49/49 behavioural checks; legacy data md5-identical; `prisma migrate diff` shows **no Phase 2 object drifts** |
+> | #2 Schema line-count understated (~640 vs 879) | ⚠️ **NO LONGER INDEPENDENTLY CHECKABLE** — Phase 2 entered git history inside `cf9103f` together with Phases 3–5, so no Phase-2-only delta exists to measure. The substantive claim (zero deletions) re-confirmed as 0 |
+> | #3 `Agent`-as-a-table remains an interpretive reading | ⚠️ **VERIFIED / NO DEFECT** — live evidence now supports the reading (`Agent_robotDbId_key` enforces the 1:1; CASCADE fires; `Robot` gained no column), but it is still a reading, not a spec-stated fact |
+>
+> **Two defects this review could not have found were found by execution.** Part 6 credited the
+> backfill's spatial mirror as PASS on a structural reading. Against a real database it wrote
+> **nothing at all** — an unknown-argument failure from Phase 15's `indexing` field, and a
+> foreign-key violation from writing logical map ids into surrogate-key columns. Both are fixed
+> and regression-tested. The review's Part 6 reasoning was sound; the in-memory test double it
+> reasoned about was not faithful, exactly as the implementation report's §18 warned.
+>
+> **One new finding is out of Phase 2's scope:** `ConfigActiveVersion_version_fkey` exists in
+> Phase 1's migration but not in `schema.prisma` — the only schema drift in the repository.
+> Documented, not fixed; Phase 1 owns it. See remediation §8.
+>
+> Every test, suite, and gate count below is Phase-2-era; see remediation §10 for current figures.
+
 **Verifier role:** Independent Architecture Verification Engineer (did not implement Phase 2)
 **Date:** 2026-07-29 · **Branch:** `feature/dashboard` · **Working tree at verification:** `4244b3d` + uncommitted Phase 2 changes
 **Method:** Evidence re-derived from spec text, code execution, and byte-level diffs. The

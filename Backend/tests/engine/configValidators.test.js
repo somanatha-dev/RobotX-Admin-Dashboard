@@ -252,11 +252,125 @@ describe("per-parameter checks run before the cross-parameter ones", () => {
   });
 });
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   §14.3 combined conservatism — an OPEN Safety decision, held open on purpose.
+
+   Phase 1 independent verification, Part 12 issue 7.
+
+   The specification's own Appendix A defaults compose past the specification's own
+   Appendix A cap:
+
+       nominal  = f_derate 1.00 × charger_availability_margin 1.15
+                            × uncalibrated_reserve_factor 1.25          = 1.4375  ≤ 1.60 ✓
+       degraded = 1.4375 × route.degraded_reserve_factor 1.40           = 2.0125  > 1.60 ✗
+
+   V9 therefore rejects the seeded register as a publish. **This is not a defect and
+   it is not fixed here.** It is ADR-32 and §14.3 firing exactly as designed — "a
+   published combination exceeding `energy.max_combined_conservatism` is rejected at
+   publish time and requires an explicit Safety-class decision to raise, which is
+   where a deliberate choice to be very conservative belongs — stated once, rather
+   than assembled by accident from four reasonable-looking numbers."
+
+   Resolving it means choosing the fleet's intended total energy margin. That is a
+   Safety-class decision with a named owner, still open across the programme
+   (`PHASE_15_BLOCKER_RESOLUTION_PLAN.md` row 14 carries it as blocking, owner
+   Safety), and no implementation phase has the authority to take it.
+
+   Two things are asserted separately below, because collapsing them is how this
+   finding would get quietly buried:
+
+     1. **Validator correctness** — V9 fires on an over-cap product and stays silent
+        on an under-cap one, independently of what the register happens to be seeded
+        with. Tested against explicit bindings, above.
+     2. **Seeded-default publishability** — the register as shipped does *not*
+        publish, and the four factors and the cap still hold their Appendix A values.
+
+   The second is the one that must never be "fixed" into passing. If a future change
+   raises the cap or lowers a factor, these tests fail and force the change to be an
+   explicit, reviewed Safety decision rather than a silent edit.
+   ───────────────────────────────────────────────────────────────────────────── */
+
 describe("the seeded register, published as-is", () => {
   test("is rejected by exactly one blocking finding: the compounded degraded conservatism", () => {
     const result = service.validateCandidate({}).result;
     expect(result.ok).toBe(false);
     expect(blockingIds(result)).toEqual(["V9"]);
     expect(result.blocking[0].message).toMatch(/combined degraded energy conservatism 2\.0/);
+  });
+
+  test("the four §14.3 factors and the cap still hold their Appendix A values", () => {
+    // A guard against silently resolving the finding by editing a default. Each value
+    // is quoted from Appendix A; changing one is a Safety-class decision and must
+    // arrive with this test updated deliberately, not incidentally.
+    const entries = service.loadRegister().entries;
+    expect(entries.get("energy.f_derate").default).toBe(1.0);
+    expect(entries.get("energy.charger_availability_margin").default).toBe(1.15);
+    expect(entries.get("energy.uncalibrated_reserve_factor").default).toBe(1.25);
+    expect(entries.get("route.degraded_reserve_factor").default).toBe(1.4);
+    expect(entries.get("energy.max_combined_conservatism").default).toBe(1.6);
+
+    // All five are Safety-class, which is what makes raising any of them a §22.3
+    // two-person, non-automatable change rather than a tuning edit.
+    for (const name of [
+      "energy.f_derate",
+      "energy.charger_availability_margin",
+      "energy.uncalibrated_reserve_factor",
+      "route.degraded_reserve_factor",
+      "energy.max_combined_conservatism",
+    ]) {
+      expect(entries.get(name).changeClass).toBe("SAFETY");
+    }
+  });
+
+  test("the arithmetic §14.3 describes is the arithmetic the Config Service performs", () => {
+    const evidence = service.buildSnapshot({}).derivationEvidence.conservatism;
+    expect(evidence.nominal).toBeCloseTo(1.4375, 10);
+    expect(evidence.degraded).toBeCloseTo(2.0125, 10);
+    // The product is over the energy domain specifically — §14.3: "these factors all
+    // multiply the same quantity, a reserve in Wh".
+    expect(Object.keys(evidence.factors.nominal).sort()).toEqual([
+      "energy.charger_availability_margin",
+      "energy.f_derate",
+      "energy.uncalibrated_reserve_factor",
+    ]);
+    expect(Object.keys(evidence.factors.degradedOnly)).toEqual(["route.degraded_reserve_factor"]);
+    expect(evidence.nominal).toBeLessThanOrEqual(1.6);
+    expect(evidence.degraded).toBeGreaterThan(1.6);
+  });
+
+  test("V9's correctness does not depend on the seeded values — it tracks the cap", () => {
+    // Validator correctness, isolated from the seeded defaults: the same factors pass
+    // under a cap that admits them and fail under one that does not. This is what
+    // makes the seeded-register failure a *configuration* verdict rather than a bug.
+    expect(
+      service.validateCandidate({ bindings: [bind("energy.max_combined_conservatism", 2.1)] }).result.blocking,
+    ).not.toContainEqual(expect.objectContaining({ id: "V9" }));
+
+    expect(
+      service.validateCandidate({ bindings: [bind("energy.max_combined_conservatism", 2.0)] }).result.blocking,
+    ).toContainEqual(expect.objectContaining({ id: "V9" }));
+  });
+
+  test("the publish path — not merely the validator — refuses the seeded register", () => {
+    // The finding has to be load-bearing at the boundary an operator actually uses,
+    // or it is a report nobody is stopped by.
+    const store = {
+      configVersion: { create: jest.fn(), findFirst: jest.fn(async () => null), findUnique: jest.fn(), findMany: jest.fn(async () => []) },
+      configScopeBinding: { createMany: jest.fn() },
+      configActiveVersion: { upsert: jest.fn(), findUnique: jest.fn(async () => null) },
+      parameterRegisterEntry: { upsert: jest.fn() },
+      $transaction: jest.fn(async (callback) => callback(store)),
+    };
+
+    return service
+      .publish(store, { publishedBy: "ops-1", bindings: [] })
+      .then(() => {
+        throw new Error("the seeded register published; V9 did not block it");
+      })
+      .catch((error) => {
+        expect(error.name).toBe("ConfigValidationError");
+        expect(error.findings.some((item) => item.id === "V9")).toBe(true);
+        expect(store.configVersion.create).not.toHaveBeenCalled();
+      });
   });
 });

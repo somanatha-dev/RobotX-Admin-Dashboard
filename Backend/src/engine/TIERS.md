@@ -76,7 +76,7 @@ operable, defensible, and bounded.
 
 | ID | Mechanism | Spec | Owning module(s) | Invariants |
 |---|---|---|---|---|
-| T1-01 | Absolute CU units, dimensioned exchange rates, and the parameter register | §1.3, §22, Appendix A | `src/engine/cost/units.js`<br>`src/engine/cost/exchangeRates.js`<br>`src/engine/config/service.js`<br>`src/engine/config/resolver.js`<br>`src/engine/config/validators.js`<br>`src/engine/config/derived.js`<br>`src/engine/config/calibrationStatus.js`<br>`src/engine/config/killSwitches.js`<br>`src/engine/config/regimes.js`<br>`src/engine/config/register/` | I15 |
+| T1-01 | Absolute CU units, dimensioned exchange rates, and the parameter register | §1.3, §22, Appendix A | `src/engine/cost/units.js`<br>`src/engine/cost/exchangeRates.js`<br>`src/engine/config/service.js`<br>`src/engine/config/errors.js`<br>`src/engine/config/resolver.js`<br>`src/engine/config/validators.js`<br>`src/engine/config/derived.js`<br>`src/engine/config/calibrationStatus.js`<br>`src/engine/config/killSwitches.js`<br>`src/engine/config/regimes.js`<br>`src/engine/config/register/` | I15 |
 | T1-02 | Determinism and replayability of every decision | §9.6, T6 | `src/engine/determinism/fixedPoint.js`<br>`src/engine/determinism/ordering.js`<br>`src/engine/determinism/snapshot.js` | I10 |
 | T1-03 | The Tier A decision record and the Explanation API | §21.2, §21.3 | `src/engine/observability/decisionRecord.js`<br>`src/controllers/explain.controller.js`<br>`src/routes/explain.routes.js` | I10 |
 | T1-04 | The anti-starvation escalation ladder — where the anti-starvation guarantee lives | §17.4 | `src/engine/fairness/ladder.js`<br>`src/engine/fairness/operatorCapacity.js`<br>`src/engine/fairness/agentStarvation.js` | I13 |

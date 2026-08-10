@@ -233,6 +233,7 @@ const MECHANISMS = Object.freeze([
       "src/engine/cost/units.js",
       "src/engine/cost/exchangeRates.js",
       "src/engine/config/service.js",
+      "src/engine/config/errors.js",
       "src/engine/config/resolver.js",
       "src/engine/config/validators.js",
       "src/engine/config/derived.js",

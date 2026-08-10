@@ -56,6 +56,124 @@ describe("the §22.2 hierarchy", () => {
   });
 });
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   §22.2's post-`site` branch — a recorded, UNRESOLVED specification ambiguity.
+
+   Phase 1 independent verification, Part 4 / Part 12 issue 6.
+
+   §22.2 draws the hierarchy as a tree, not a list:
+
+       global → region → zone → site → agent_class → agent
+                                     → tenant → sla_class → mission_class
+                                     → time_window (scheduled overrides, incl. regimes)
+
+   Three lines branch after `site`. The specification states precedence *along* each
+   line and says nothing about precedence *between* them, and no other section of the
+   frozen specification resolves it (searched: §22.2 in full, §22.3, §22.4, §3.6, and
+   every other §22.2 cross-reference). Resolution nevertheless needs a total order, so
+   the implementation linearises the branches in the order the specification prints
+   them, with `time_window` last.
+
+   **This is an implementation convention, not a specification rule, and Phase 1 has
+   no authority to promote it into one.** These tests therefore pin the *current
+   behaviour* so it cannot drift silently — not because the order is known to be
+   right, but because an undocumented order that changes between releases would move
+   resolutions nobody decided to move.
+
+   ── What changed since the Phase 1 verification ──────────────────────────────
+   The verifier confirmed that at Phase 1's 148-entry register, no parameter declared
+   `scopes` in more than one branch, so the ambiguity had zero live exposure. That is
+   **no longer true** at the current register: `energy.model_residual_cv` (§14.5) and
+   `payload.packing_node_budget` (§15.3), both added by later phases, each declare
+   `agent_class` *and* `mission_class` — one level from each of the first two
+   branches. The exposure is still latent, because declaring a scope is not binding at
+   one and neither parameter is bound at both levels in any published version; but it
+   is no longer hypothetical, and the guard below is what will fail when it stops
+   being latent.
+
+   The decision this needs, stated so it can be taken by someone with the authority:
+   **when a parameter is bound at two levels in different post-`site` branches and a
+   resolution context addresses both, which branch wins?** Until that is answered, the
+   printed order stands and is asserted here.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+describe("§22.2 post-site branch precedence — preserved and pinned, not resolved", () => {
+  const BRANCHES = Object.freeze({
+    agent: ["agent_class", "agent"],
+    subject: ["tenant", "sla_class", "mission_class"],
+    scheduled: ["time_window"],
+  });
+
+  test("precedence WITHIN each branch is the specification's own printed order", () => {
+    // This part is not ambiguous: §22.2 states it directly, line by line.
+    for (const levels of Object.values(BRANCHES)) {
+      const ranks = levels.map((level) => SCOPE_ORDER.indexOf(level));
+      expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
+      expect(ranks.every((rank) => rank > SCOPE_ORDER.indexOf("site"))).toBe(true);
+    }
+  });
+
+  test("precedence BETWEEN branches is the linearisation, and it is the printed order", () => {
+    const rankOf = (level) => SCOPE_ORDER.indexOf(level);
+    // agent branch, then subject branch, then scheduled overrides — as printed.
+    expect(rankOf("agent")).toBeLessThan(rankOf("tenant"));
+    expect(rankOf("mission_class")).toBeLessThan(rankOf("time_window"));
+    // `time_window` last is the one part of the linearisation with a stated reason:
+    // a scheduled override, including a regime, must be able to move a parameter, and
+    // it cannot do that from anywhere but the most specific position.
+    expect(SCOPE_ORDER[SCOPE_ORDER.length - 1]).toBe("time_window");
+  });
+
+  test("a parameter bound in two branches at once resolves by the linearisation", () => {
+    // The behaviour the ambiguity governs, made explicit rather than left implicit.
+    // `mission_class` outranks `agent_class` here **only** because it is printed later,
+    // and that is exactly the decision the specification does not make.
+    const snapshot = service.buildSnapshot({
+      bindings: [
+        bind("agent_class", "porter-2", "energy.model_residual_cv", 0.11),
+        bind("mission_class", "delivery", "energy.model_residual_cv", 0.22),
+      ],
+    });
+    const explanation = snapshot.explain("energy.model_residual_cv", CONTEXT);
+    expect(explanation.level).toBe("mission_class");
+    expect(explanation.value).toBe(0.22);
+
+    // And the reverse context, addressing only the agent branch, resolves there —
+    // so the linearisation is a tie-break between branches, not a demotion of one.
+    const agentOnly = snapshot.explain("energy.model_residual_cv", { agent_class: "porter-2" });
+    expect(agentOnly.level).toBe("agent_class");
+    expect(agentOnly.value).toBe(0.11);
+  });
+
+  test("a scheduled override still wins over every branch, which is what lets a regime move a parameter", () => {
+    const snapshot = service.buildSnapshot({
+      bindings: [
+        bind("agent", "agent-77", "connectivity.max_heartbeat_age", 11),
+        bind("mission_class", "delivery", "connectivity.max_heartbeat_age", 12),
+        bind("time_window", "winter", "connectivity.max_heartbeat_age", 13),
+      ],
+    });
+    expect(snapshot.explain("connectivity.max_heartbeat_age", CONTEXT).level).toBe("time_window");
+  });
+
+  test("GUARD: reports which registered parameters can reach the ambiguity", () => {
+    // Not a prohibition — declaring scopes in two branches is legitimate and two
+    // parameters already do. This asserts the *count is known*, so that a future
+    // phase widening the exposure has to come past this test and read the paragraph
+    // above rather than discovering the ambiguity in production.
+    const spanning = [];
+    for (const [name, entry] of service.loadRegister().entries) {
+      const scopes = entry.scopes || [];
+      const branchesTouched = Object.values(BRANCHES).filter((levels) =>
+        levels.some((level) => scopes.includes(level)),
+      ).length;
+      if (branchesTouched > 1) spanning.push(name);
+    }
+
+    expect(spanning.sort()).toEqual(["energy.model_residual_cv", "payload.packing_node_budget"]);
+  });
+});
+
 describe("most-specific-wins resolution", () => {
   test("each level in turn overrides the one above it, and explain names the winner", () => {
     const levels = ["region", "zone", "site", "agent_class", "agent"];

@@ -1,5 +1,26 @@
 # Phase 2 — Domain model and schema · Implementation Report
 
+> ## ⚠️ SUPERSEDED IN PART — read `PHASE_2_REMEDIATION_AND_CLOSURE.md` first
+>
+> **Final Phase 2 status (2026-08-10): CLOSED WITH DOCUMENTED ENVIRONMENTAL LIMITATION.**
+>
+> This report is the **Phase-2-era record, preserved verbatim**. Since it was written the
+> migration has been executed against a live PostgreSQL 18.3, and that execution found **two
+> real defects in the spatial mirror that this report could not have known about** — both now
+> fixed and regression-tested. Three specific corrections to the text below:
+>
+> | Claim in this report | Corrected status |
+> |---|---|
+> | §14.3 / §17.1 / §18 — *the migration, the triggers, and the backfill were never run against a live PostgreSQL* | ✅ **All three now executed.** 21/21 migrations applied; 49/49 behavioural checks PASS; legacy data md5-identical before/after; backfill run with the real Prisma client |
+> | §7 / §14.2 — *the backfill mirrors the spatial map, fine and coarse* | ❌ **This did not work.** `backfillSpatialMirror` wrote **nothing**: it leaked Phase 15's `indexing` field into Prisma, and wrote logical map ids into foreign-key columns. Fixed; see remediation §2 |
+> | §4 — *`prisma/schema.prisma` +~640 lines* | ⚠️ **Not independently re-checkable** — Phase 2 was never committed in isolation (it entered history inside `cf9103f` with Phases 3–5). The load-bearing claim, **zero lines removed**, is re-confirmed as 0 |
+>
+> **Every test and gate count below is Phase-2-era and has moved.** The suite is now 145
+> suites / 6 363 tests; the legacy lane is 17 / 126, not 22 / 169 (Phase 15 retired four
+> modules). Full mapping in remediation §10.
+>
+> Nothing in this report has been deleted or rewritten to make it look correct.
+
 **Phase:** 2 of 16 · **Status:** ✅ **COMPLETE — awaiting independent verification before Phase 3**
 **Date:** 2026-07-28 · **Branch:** `feature/dashboard` · **Working tree at implementation:** `4244b3d`
 **Authority:** `IMPLEMENTATION_EXECUTION_PLAN.md` §3 "PHASE 2" and §7 "Phase 2" checklist

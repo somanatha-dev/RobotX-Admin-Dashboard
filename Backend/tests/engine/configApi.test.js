@@ -244,6 +244,120 @@ describe("POST /api/config/publish", () => {
   });
 });
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   REGRESSION — Phase 1 independent verification, Part 7 / Part 12 issue 2.
+
+   Each malformed body below previously produced `500 {"message":"Internal Server
+   Error"}` over real HTTP, because the module that detected the malformed input
+   threw a plain `Error` from inside `buildSnapshot()` — upstream of the
+   controller's `ConfigValidationError` boundary. An operator's typo in a kill-switch
+   name or a scope level, both entirely plausible mistakes, were reported as server
+   faults and bypassed the endpoint's own designed, tested 422-with-findings
+   contract.
+
+   The last two tests are the ones that keep the fix honest: an unexpected internal
+   fault must still be a 500, and no response may leak internals. A fix that widened
+   the catch until every error became a 422 would pass the first four and fail the
+   fifth.
+
+   Each test presents its own `X-Forwarded-For`, because the publish route's rate
+   limit is 10/minute per client and this group would otherwise exhaust the shared
+   bucket. The limit is production behaviour and is left exactly as it is.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+describe("POST /api/config/publish — malformed input follows the validation contract", () => {
+  let client = 0;
+  const publish = () => {
+    client += 1;
+    return request(app)
+      .post("/api/config/publish")
+      .set("Authorization", `Bearer ${token()}`)
+      .set("X-Override-Reason", "quarterly recalibration")
+      .set("X-Second-Approver", "safety-lead-2")
+      .set("X-Forwarded-For", `203.0.113.${client}`);
+  };
+
+  test("an unknown kill-switch name returns 422 with findings, not 500", async () => {
+    const response = await publish().send({ killSwitchState: { not_a_real_switch: true } }).expect(422);
+
+    expect(response.body.ok).toBe(false);
+    expect(response.body.findings.some((item) => /not_a_real_switch/.test(item.message))).toBe(true);
+    // An operator who mistyped a switch name needs the list of switches that exist.
+    expect(response.body.findings.some((item) => /Known switches/.test(item.message))).toBe(true);
+    expect(mockPrismaClient.configVersion.create).not.toHaveBeenCalled();
+  });
+
+  test("a kill-switch state of the wrong shape returns 422 with findings, not 500", async () => {
+    const response = await publish().send({ killSwitchState: "batch_solving" }).expect(422);
+    expect(response.body.findings.some((item) => /killSwitchState is a string/.test(item.message))).toBe(true);
+  });
+
+  test("a binding with an invalid scope level returns 422 with findings, not 500", async () => {
+    const response = await publish()
+      .send({ bindings: [{ level: "not_a_level", name: "solve.window_min", value: 600 }] })
+      .expect(422);
+
+    expect(response.body.findings.some((item) => /not_a_level/.test(item.message))).toBe(true);
+    // The response names the hierarchy, so the operator can correct it in one step.
+    expect(response.body.findings.some((item) => /global → region → zone → site/.test(item.message))).toBe(true);
+    expect(mockPrismaClient.configVersion.create).not.toHaveBeenCalled();
+  });
+
+  test("a binding of the wrong type returns 422 with findings, not 500", async () => {
+    const response = await publish().send({ bindings: ["solve.window_min=600"] }).expect(422);
+    expect(response.body.findings.some((item) => /a binding is a string/.test(item.message))).toBe(true);
+  });
+
+  test("a validation response leaks no stack trace and no internal path", async () => {
+    const response = await publish().send({ killSwitchState: { not_a_real_switch: true } }).expect(422);
+
+    const body = JSON.stringify(response.body);
+    expect(body).not.toMatch(/\bat \w+ \(/);
+    expect(body).not.toMatch(/src[\\/]+engine[\\/]+/);
+    expect(body).not.toMatch(/node_modules/);
+  });
+
+  test("a genuine unexpected internal error still returns 500, not 422", async () => {
+    mockPrismaClient.configVersion.findFirst.mockRejectedValue(new Error("connection terminated unexpectedly"));
+
+    const response = await publish()
+      .send({ bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }] })
+      .expect(500);
+
+    // Genericised: a fault report is not an invitation to enumerate internals, and it
+    // carries no findings, because nothing about the submission was found wanting.
+    expect(JSON.stringify(response.body)).not.toMatch(/connection terminated/);
+    expect(response.body.findings).toBeUndefined();
+  });
+
+  test("a well-formed publish still succeeds through the same boundary", async () => {
+    mockPrismaClient.configVersion.create.mockImplementation(async ({ data }) => ({
+      id: "cv-1",
+      publishedAt: new Date("2026-07-28T09:00:00Z"),
+      ...data,
+    }));
+    mockPrismaClient.configVersion.findUnique.mockResolvedValue({ version: 1, payload: {} });
+    mockPrismaClient.configActiveVersion.upsert.mockResolvedValue({ id: "singleton", version: 1 });
+
+    const response = await publish()
+      .send({
+        bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }],
+        approvals: [{ approverId: "safety-1", approvedAt: "2026-07-28T09:00:00Z" }],
+        killSwitchState: { batch_solving: true },
+      })
+      .expect(200);
+
+    expect(response.body).toMatchObject({ ok: true, version: 1, pinned: true });
+  });
+
+  test("a business-rule rejection still returns 422 with its own finding id", async () => {
+    const response = await publish()
+      .send({ bindings: [{ level: "global", name: "agent.dedup_retention", value: 5 }] })
+      .expect(422);
+    expect(response.body.findings.some((item) => item.id === "V5")).toBe(true);
+  });
+});
+
 describe("GET /health", () => {
   test("reports which configuration version the process is resolving against", async () => {
     const response = await request(app).get("/health").expect(200);

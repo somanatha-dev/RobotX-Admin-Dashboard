@@ -90,6 +90,7 @@ A 503 naming the state is honest; a queue nobody drains is not.
 | Item | Status | Authority |
 |---|---|---|
 | Phases 0–14 | Implemented and independently verified | `PHASE_*_INDEPENDENT_VERIFICATION.md` |
+| **Phases 1–2** | **Additionally remediated and closed**, each with its migration executed against a disposable PostgreSQL 18.3 rather than statically checked | `PHASE_1_REMEDIATION_AND_CLOSURE.md`, `PHASE_2_REMEDIATION_AND_CLOSURE.md` |
 | **Phase 15** (verification, gates, cutover) | **BLOCKED** | `PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md` §19 |
 | **Phase 16** (Tier 2 enablement) | **NOT READY — must not begin** | ibid. §20 |
 | **B1** (routing engine) — Step 1 | **BLOCKED** behind D1 (region definition) | ibid. §36, `PHASE_15_B1_ROUTING_DECISION_REPORT.md` |

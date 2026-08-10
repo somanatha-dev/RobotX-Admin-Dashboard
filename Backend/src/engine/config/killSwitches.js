@@ -53,6 +53,18 @@
  */
 
 const { CALIBRATION_STATUS } = require("./calibrationStatus");
+const { ConfigValidationError } = require("./errors");
+
+/**
+ * A malformed switch state is a caller error, so it is reported in the same finding
+ * shape `validators.js` emits and the REST boundary already renders.
+ *
+ * @param {string} message
+ * @returns {{ id: string, severity: string, rule: string, message: string }}
+ */
+function finding(message) {
+  return { id: "P5", severity: "BLOCKING", rule: "§22.5", message };
+}
 
 /**
  * The nine §22.5 switches, in the order of the supported monotone ladder. The
@@ -223,14 +235,40 @@ function defaultState() {
  * @returns {Record<string, boolean>}
  */
 function normaliseState(state) {
+  if (state !== undefined && state !== null && (typeof state !== "object" || Array.isArray(state))) {
+    throw new ConfigValidationError(
+      "killSwitchState must be an object mapping switch name to a boolean (§22.5)",
+      [
+        finding(
+          `killSwitchState is a ${Array.isArray(state) ? "array" : typeof state}; §22.5 pins the state of ` +
+            `each named switch, so it is an object of ${KILL_SWITCH_NAMES.length} optional boolean keys.`,
+        ),
+      ],
+    );
+  }
+
   const complete = defaultState();
+  const unrecognised = [];
   for (const [name, thrown] of Object.entries(state || {})) {
     if (!isKnownSwitch(name)) {
-      throw new Error(
-        `kill switch "${name}" is not recognised. Known switches: ${KILL_SWITCH_NAMES.join(", ")} (§22.5)`,
-      );
+      unrecognised.push(name);
+      continue;
     }
     complete[name] = Boolean(thrown);
+  }
+
+  // An operator's typo in a switch name is a plausible mistake and a validation
+  // outcome, not a server fault: it is reported by name, with the switches that do
+  // exist, rather than as an opaque failure (see `errors.js`).
+  if (unrecognised.length > 0) {
+    throw new ConfigValidationError(
+      `kill switch ${unrecognised.map((name) => `"${name}"`).join(", ")} is not recognised (§22.5)`,
+      unrecognised.map((name) =>
+        finding(
+          `kill switch "${name}" is not recognised. Known switches: ${KILL_SWITCH_NAMES.join(", ")} (§22.5).`,
+        ),
+      ),
+    );
   }
   return complete;
 }
@@ -322,7 +360,9 @@ function classify(state) {
  */
 function isEnabled(state, name) {
   if (!isKnownSwitch(name)) {
-    throw new Error(`kill switch "${name}" is not recognised (§22.5)`);
+    throw new ConfigValidationError(`kill switch "${name}" is not recognised (§22.5)`, [
+      finding(`kill switch "${name}" is not recognised. Known switches: ${KILL_SWITCH_NAMES.join(", ")} (§22.5).`),
+    ]);
   }
   return !normaliseState(state)[name];
 }

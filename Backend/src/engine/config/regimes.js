@@ -41,6 +41,7 @@
 
 const { CALIBRATION_STATUS, isKnownStatus } = require("./calibrationStatus");
 const { normaliseScopeLevel, isScopeLevel } = require("./resolver");
+const { ConfigValidationError } = require("./errors");
 
 /**
  * Regime lifecycle. Operator confirmation is required in **both** directions, so
@@ -232,11 +233,49 @@ function bindingsFor(regime) {
  * @throws {Error} when more than one regime is active
  */
 function activeRegime(regimes) {
-  const active = (regimes || []).filter((regime) => regime.state === REGIME_STATE.ACTIVE);
+  if (regimes !== undefined && regimes !== null && !Array.isArray(regimes)) {
+    throw new ConfigValidationError(`regimes must be an array; received ${typeof regimes} (§22.2)`, [
+      {
+        id: "P7",
+        severity: "BLOCKING",
+        rule: "§22.2",
+        message: `regimes is a ${typeof regimes}; a publish declares its regimes as an array (§22.2).`,
+      },
+    ]);
+  }
+
+  const declared = regimes || [];
+  const malformed = declared.filter((regime) => !regime || typeof regime !== "object" || Array.isArray(regime));
+  if (malformed.length > 0) {
+    throw new ConfigValidationError(`${malformed.length} declared regime(s) are not objects (§22.2)`, [
+      {
+        id: "P7",
+        severity: "BLOCKING",
+        rule: "§22.2",
+        message:
+          `${malformed.length} declared regime(s) are not objects. Each regime declares its trigger ` +
+          "condition, parameter deltas, entry and exit criteria, and owner (§22.2).",
+      },
+    ]);
+  }
+
+  const active = declared.filter((regime) => regime.state === REGIME_STATE.ACTIVE);
+  // Two simultaneously active regimes is a malformed submission the caller can fix,
+  // so it is a validation finding rather than a server fault (see `errors.js`).
   if (active.length > 1) {
-    throw new Error(
+    throw new ConfigValidationError(
       `${active.length} regimes are active simultaneously (${active.map((r) => r.name).join(", ")}). ` +
         "The round snapshot pins one active regime; two would make a decision unreplayable (§9.6, §22.2)",
+      [
+        {
+          id: "P7",
+          severity: "BLOCKING",
+          rule: "§9.6 · §22.2",
+          message:
+            `${active.length} regimes are active simultaneously (${active.map((r) => r.name).join(", ")}). ` +
+            "The round snapshot pins one active regime; two would make a decision unreplayable (§9.6, §22.2).",
+        },
+      ],
     );
   }
   return active.length === 1 ? active[0] : null;

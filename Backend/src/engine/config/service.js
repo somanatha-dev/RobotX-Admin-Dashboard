@@ -67,18 +67,14 @@ const SAFETY_CHANGE_CLASS = "SAFETY";
  * Raised when a publish is refused. Carries the findings so the caller — the REST
  * endpoint, a test, or an operator's tooling — can report *which* rule rejected it
  * rather than "invalid configuration".
+ *
+ * Defined in `errors.js` and re-exported here under the name callers already use.
+ * It has to live below this module because the modules that detect a malformed
+ * submission — `resolver`, `killSwitches`, `regimes` — are ones this module depends
+ * on, and they raise the same type so that a caller's malformed input reaches the
+ * REST boundary as the validation failure it is rather than as an unhandled fault.
  */
-class ConfigValidationError extends Error {
-  /**
-   * @param {string} message
-   * @param {object[]} findings
-   */
-  constructor(message, findings) {
-    super(message);
-    this.name = "ConfigValidationError";
-    this.findings = findings;
-  }
-}
+const { ConfigValidationError } = require("./errors");
 
 let cachedRegister = null;
 

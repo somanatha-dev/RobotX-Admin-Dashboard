@@ -104,13 +104,22 @@ function deriveSeed(roundId) {
 /**
  * Deep-freeze a plain object graph so a pinned snapshot cannot be mutated mid-round.
  *
+ * The node is frozen **before** its children are visited, not after. Freezing a
+ * parent does not prevent its children being frozen afterwards, so the result is
+ * identical for any acyclic graph — but it makes the `Object.isFrozen` short-circuit
+ * terminate a cycle instead of recursing until the stack overflows. A snapshot body
+ * is acyclic by construction today; a substrate function that dies on unexpected
+ * input rather than handling it is a defect waiting for the first caller who does
+ * not know that.
+ *
  * @param {*} value
  * @returns {*}
  */
 function deepFreeze(value) {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
+  Object.freeze(value);
   for (const key of Object.keys(value)) deepFreeze(value[key]);
-  return Object.freeze(value);
+  return value;
 }
 
 /**

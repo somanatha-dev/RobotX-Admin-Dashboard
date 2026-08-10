@@ -277,3 +277,36 @@ git log / git diff e558243 4244b3d --stat   # baseline citation and regression-p
 ```
 
 Working tree left clean; no scratch files or planted violations remain in the repository.
+
+---
+
+# ADDENDUM — Remediation outcome (2026-08-10)
+
+**Everything above this line is the original 2026-07-28 verification, preserved verbatim.**
+Nothing in it has been edited, softened, or removed, including the one claim that remediation
+found to be wrong. This addendum records what happened to each finding. The full per-finding
+record — root cause, fix, regression test, evidence — is
+[`PHASE_1_REMEDIATION_AND_CLOSURE.md`](PHASE_1_REMEDIATION_AND_CLOSURE.md).
+
+**Remediation HEAD:** `62d8141` (the verification HEAD `4244b3d` is four commits behind;
+Phases 2–15 have since landed).
+
+| Part 12 # | Finding | Outcome | Where |
+|---|---|---|---|
+| 1 | `toMilliCU()` misrounds exact-half-boundary decimals | ✅ **FIXED** — scaling replaced by an exact base-ten `BigInt` conversion with no float intermediate. Re-swept: **0 wrong in 800 000** half boundaries (was 5 900); **0 divergence** on 300 000 ordinary values; 13 regression tests | §1 |
+| 2 | `POST /api/config/publish` 500s on malformed input | ✅ **FIXED** — `ConfigValidationError` moved into its own module below the three modules that detect malformed input; each now raises it with structured findings. Proven by counterfactual: reverting one throw site reproduces the exact 500, restoring it passes 25/25. A genuine internal fault still returns 500 | §2 |
+| 3 | Exported functions lack direct coverage | ✅ **FIXED** — all 7 covered, 26 tests. Testing found a further real defect: `deepFreeze()` overflowed the stack on a cyclic graph; fixed by freezing before recursing | §3 |
+| 4 | `cost.reference_agent_class` undercounted | ✅ **DOCUMENTATION CORRECTED** — Assumption 3 now says thirteen and names it, its §1.3 source, and why it sits in `cost.json`. The parameter was not changed | §4 |
+| 5 | Baseline commit citation | ⚠️ **THIS REPORT'S CLAIM WAS THE INACCURATE ONE.** `git rev-parse 4244b3d^` returns `e558243` — it **is** the direct parent, and `git log e558243..4244b3d` shows exactly one commit. There is no intervening commit. The real, accurate finding is that `4244b3d` bundles Phase 0 + Phase 1 + unrelated legacy-dispatcher fixes in a single commit, so the two phases are not individually attributable from history. Corrected in the implementation report's header, with evidence | §5 |
+| 6 | §22.2 post-`site` branch linearisation | ⚠️ **PRESERVED, NOT RESOLVED** — no rule resolving it exists anywhere in the frozen specification, so runtime behaviour was deliberately left alone and the convention documented and pinned by 5 tests. **This report's "zero live exposure" no longer holds:** at the current register, `energy.model_residual_cv` and `payload.packing_node_budget` each declare `agent_class` *and* `mission_class`. Still latent, no longer hypothetical | §6 |
+| 7 | V9 rejects the seeded conservatism defaults | ⚠️ **VERIFIED / NO DEFECT — EXTERNAL SAFETY DECISION REQUIRED.** Arithmetic re-derived from Appendix A; the register still holds 1.00/1.15/1.25/1.40 and a 1.60 cap **unchanged**; V9 and the publish path both behave correctly. No authorised decision exists — `PHASE_15_BLOCKER_RESOLUTION_PLAN.md` row 14 still carries it open and blocking. 4 tests added to guard the defaults against a silent edit | §7 |
+| Part 6 | Immutability triggers not executed against a live instance | ✅ **EXECUTED** — **18/18** against a disposable PostgreSQL 18.3 (PGlite, in memory, installed outside the repository). `ConfigVersion` `UPDATE` and `DELETE` both refused with the intended message. The shared Neon database was not used; the local PG18 service was not used because it requires `scram-sha-256` and no credentials are on file — they were not guessed and `pg_hba.conf` was not modified | §8 |
+
+**Two findings remain open by design**, because closing either is outside any implementation
+phase's authority: the §22.2 ambiguity (architecture) and the §14.3 conservatism margin
+(Safety, blocking decision B8). **Two environmental limitations remain**: the migration was
+exercised on PostgreSQL-compiled-to-WASM rather than the deployment platform, and against an
+empty database rather than a production-shaped dump.
+
+The Part 12 verdict — **PASS WITH MINOR ISSUES** — stands, with all three implementation
+issues now fixed rather than carried.

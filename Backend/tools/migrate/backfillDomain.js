@@ -236,6 +236,72 @@ async function backfillWork(prisma, options) {
 }
 
 /**
+ * The columns `CellAssignment` actually has.
+ *
+ * The mirror builds its rows from this list rather than spreading
+ * `toConfigPayload`'s output. That payload is a *configuration* projection and later
+ * phases add fields to it that are not columns here — Phase 15 added `indexing` so
+ * the publish-time A6 check reads the map's own declaration. Spreading it reached
+ * Prisma as an unknown argument and the mirror wrote nothing at all.
+ *
+ * @structural a column whitelist, not a behavioural threshold
+ */
+const CELL_ASSIGNMENT_COLUMNS = ["cellId", "resolution", "regionId", "zoneId", "siteId"];
+
+/**
+ * Resolve the published map's logical unit ids to their database row ids (§3.6).
+ *
+ * Containment is *published* against logical identifiers (`RGN-BLR`, `ZN-RRNAGAR`),
+ * and that is the vocabulary the config payload and the resolver speak. The durable
+ * mirror's columns are foreign keys to `Region.id` / `Zone.id` / `Site.id`, so the
+ * two vocabularies have to be joined before a row is written. `prisma/seed.js`
+ * performs exactly this resolution when it publishes the map; the mirror must agree
+ * with it or every row it writes violates `CellAssignment_regionId_fkey`.
+ *
+ * `Zone` carries no logical-id column, so the map's own `name` is the join key —
+ * again the same key `prisma/seed.js` uses.
+ *
+ * A unit the map declares but the database does not carry is reported rather than
+ * written as a dangling id: the mirror mirrors a published map, and a map that is
+ * not published yet is not something to guess at (§3.6).
+ *
+ * @param {object} prisma
+ * @param {object} map
+ * @returns {Promise<{ regionIds: Map<string,string>, zoneIds: Map<string,string>,
+ *                     siteIds: Map<string,string>, problems: string[] }>}
+ */
+async function resolveSpatialUnitRows(prisma, map) {
+  const problems = [];
+  const regionIds = new Map();
+  const zoneIds = new Map();
+  const siteIds = new Map();
+
+  for (const region of map.regions || []) {
+    const key = String(region.id);
+    const row = await prisma.region.findUnique({ where: { regionId: key }, select: { id: true } });
+    if (row) regionIds.set(key, row.id);
+    else problems.push(`region "${key}" is declared by the map but has no Region row; publish the map before mirroring it`);
+  }
+
+  for (const site of map.sites || []) {
+    const key = String(site.id);
+    const row = await prisma.site.findUnique({ where: { siteId: key }, select: { id: true } });
+    if (row) siteIds.set(key, row.id);
+    else problems.push(`site "${key}" is declared by the map but has no Site row; publish the map before mirroring it`);
+  }
+
+  for (const zone of map.zones || []) {
+    const key = String(zone.id);
+    const name = zone.name === undefined || zone.name === null ? key : String(zone.name);
+    const row = await prisma.zone.findUnique({ where: { name }, select: { id: true } });
+    if (row) zoneIds.set(key, row.id);
+    else problems.push(`zone "${key}" (name "${name}") is declared by the map but has no Zone row; publish the map before mirroring it`);
+  }
+
+  return { regionIds, zoneIds, siteIds, problems };
+}
+
+/**
  * Mirror the published spatial map into `CellAssignment` (§3.6).
  *
  * The pinned configuration payload is authoritative; this table is its durable
@@ -267,19 +333,60 @@ async function backfillSpatialMirror(prisma, options) {
   // exactly these rows.
   const assignments = [...payload.cells, ...payload.coarseCells];
   const mapVersion = typeof settings.mapVersion === "number" ? settings.mapVersion : 0;
-  let cells = 0;
 
-  if (!settings.dryRun) {
-    for (const assignment of assignments) {
-      await prisma.cellAssignment.upsert({
-        where: { cellId_mapVersion: { cellId: assignment.cellId, mapVersion } },
-        create: { ...assignment, mapVersion },
-        update: { regionId: assignment.regionId, zoneId: assignment.zoneId, siteId: assignment.siteId, resolution: assignment.resolution },
-      });
-      cells += 1;
+  if (settings.dryRun) return { cells: assignments.length, skipped: false, problems: [] };
+
+  const resolved = await resolveSpatialUnitRows(prisma, map);
+  if (resolved.problems.length > 0) return { cells: 0, skipped: true, problems: resolved.problems };
+
+  // Build every row before writing any of it, for the same reason the invalid map is
+  // refused whole: a mirror missing the cells whose zone could not be resolved is a
+  // map that silently means something different from the one that was published.
+  const rows = [];
+  const problems = [];
+  for (const assignment of assignments) {
+    const row = { cellId: assignment.cellId, resolution: assignment.resolution, regionId: null, zoneId: null, siteId: null };
+
+    for (const [column, lookup, unit] of [
+      ["regionId", resolved.regionIds, "region"],
+      ["zoneId", resolved.zoneIds, "zone"],
+      ["siteId", resolved.siteIds, "site"],
+    ]) {
+      const logical = assignment[column];
+      if (!logical) continue;
+      const rowId = lookup.get(String(logical));
+      if (rowId === undefined) {
+        problems.push(`cell "${assignment.cellId}" names ${unit} "${logical}", which has no row to reference`);
+        continue;
+      }
+      row[column] = rowId;
     }
-  } else {
-    cells = assignments.length;
+
+    // `CellAssignment.regionId` is NOT NULL: a cell assigned to no region is not a
+    // containment statement, and writing one would make the mirror unreadable by the
+    // §18.5 rebuild that walks region → cell.
+    if (row.regionId === null) {
+      problems.push(`cell "${assignment.cellId}" resolves to no region; CellAssignment.regionId is required (§3.6)`);
+    }
+    rows.push(row);
+  }
+
+  if (problems.length > 0) return { cells: 0, skipped: true, problems };
+
+  let cells = 0;
+  for (const row of rows) {
+    const create = { mapVersion };
+    const update = {};
+    for (const column of CELL_ASSIGNMENT_COLUMNS) {
+      create[column] = row[column];
+      if (column !== "cellId") update[column] = row[column];
+    }
+    await prisma.cellAssignment.upsert({
+      where: { cellId_mapVersion: { cellId: row.cellId, mapVersion } },
+      create,
+      update,
+    });
+    cells += 1;
   }
 
   return { cells, skipped: false, problems: [] };
@@ -420,7 +527,9 @@ function formatReport(report) {
 
 module.exports = {
   DEFAULT_BATCH_SIZE,
+  CELL_ASSIGNMENT_COLUMNS,
   resolveRegionId,
+  resolveSpatialUnitRows,
   backfillAgents,
   backfillWork,
   backfillSpatialMirror,

@@ -168,6 +168,142 @@ describe("publish", () => {
   });
 });
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   §22.1 rule 5 — malformed submissions are validation failures, not server faults
+
+   REGRESSION — Phase 1 independent verification, Part 7 / Part 12 issue 2.
+
+   `killSwitches.normaliseState()`, `resolver.indexBindings()` and
+   `regimes.activeRegime()` all validate caller-supplied input, and all three run
+   inside `buildSnapshot()` — before the V1–V10 matrix. When they threw a plain
+   `Error`, the REST boundary could not tell an operator's typo from an internal
+   fault and returned `500`, bypassing the endpoint's own designed, tested
+   422-with-findings contract entirely.
+
+   The line these tests hold is a *two-sided* one, and both sides are asserted
+   below: malformed caller input must be a `ConfigValidationError` carrying
+   findings, and a genuine internal fault must still propagate untouched so it can
+   surface as a 500. A fix that converted every error into a 422 would satisfy the
+   first half and destroy the second.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+describe("malformed publish input is rejected as validation, not as a server fault", () => {
+  const submit = (request) =>
+    service.publish(createConfigStore().client, { publishedBy: "ops-1", bindings: BASELINE, ...request });
+
+  test("an unknown kill-switch name is a finding that names the switches that do exist", async () => {
+    const error = await expectRefused(
+      submit({ killSwitchState: { not_a_real_switch: true } }),
+      /kill switch "not_a_real_switch" is not recognised/,
+    );
+    expect(error.findings[0].rule).toBe("§22.5");
+    // The remedy is in the finding: an operator who mistyped a switch needs the list.
+    expect(error.findings[0].message).toMatch(/Known switches: .*opportunity_cost_term/);
+  });
+
+  test("every unknown switch name is reported at once, not one round-trip each", async () => {
+    const error = await expectRefused(
+      submit({ killSwitchState: { not_a_switch: true, also_not_a_switch: false } }),
+      /not_a_switch/,
+    );
+    expect(error.findings).toHaveLength(2);
+    expect(error.findings.map((item) => item.message).join("\n")).toMatch(/also_not_a_switch/);
+  });
+
+  test("a kill-switch state that is not an object at all is refused by shape", async () => {
+    await expectRefused(submit({ killSwitchState: "batch_solving" }), /killSwitchState is a string/);
+    await expectRefused(submit({ killSwitchState: ["batch_solving"] }), /killSwitchState is a array/);
+  });
+
+  test("a binding naming a scope level that is not a §22.2 level is a finding", async () => {
+    const error = await expectRefused(
+      submit({ bindings: [...BASELINE, bind("solve.window_min", 600, "not_a_level", "x")] }),
+      /names scope level "not_a_level"/,
+    );
+    expect(error.findings[0].rule).toBe("§22.2");
+    // The finding names the levels that do exist, in hierarchy order.
+    expect(error.findings[0].message).toMatch(/global → region → zone → site/);
+  });
+
+  test("a binding that is not an object is refused by shape rather than indexed as one", async () => {
+    await expectRefused(submit({ bindings: [...BASELINE, "solve.window_min=600"] }), /a binding is a string/);
+    await expectRefused(submit({ bindings: [...BASELINE, null] }), /a binding is a object/);
+  });
+
+  test("every malformed binding is reported at once", async () => {
+    const error = await expectRefused(
+      submit({
+        bindings: [
+          ...BASELINE,
+          bind("solve.window_min", 600, "not_a_level"),
+          bind("verify.arrival_radius", 8, "also_not_a_level"),
+        ],
+      }),
+      /not_a_level/,
+    );
+    expect(error.findings).toHaveLength(2);
+  });
+
+  test("two simultaneously active regimes are a finding, because the snapshot pins one", async () => {
+    const regime = (name) => ({ name, state: "ACTIVE", parameterDeltas: [] });
+    const error = await expectRefused(
+      submit({ regimes: [regime("first-snowfall"), regime("heatwave")] }),
+      /2 regimes are active simultaneously/,
+    );
+    expect(error.findings[0].message).toMatch(/would make a decision unreplayable/);
+  });
+
+  test("a malformed regimes collection is refused by shape", async () => {
+    await expectRefused(submit({ regimes: [42] }), /declared regime\(s\) are not objects/);
+  });
+
+  test("a well-formed publish is unaffected — the new checks reject nothing valid", async () => {
+    const store = createConfigStore();
+    const published = await service.publish(store.client, {
+      publishedBy: "ops-1",
+      bindings: BASELINE,
+      approvals: [{ approverId: "safety-1", approvedAt: "t" }],
+      killSwitchState: { batch_solving: false },
+    });
+    expect(published.version).toBe(1);
+  });
+
+  test("a business-rule violation still reaches the V-series and still returns its own finding", async () => {
+    // The point of the fix is that malformed input joins this contract, not that it
+    // replaces it: V5 must still be the thing that rejects a bad dedup retention.
+    const error = await expectRefused(
+      submit({ bindings: [...BASELINE, bind("agent.dedup_retention", 5)] }),
+      /dedup_retention/,
+    );
+    expect(error.findings.some((item) => item.id === "V5")).toBe(true);
+  });
+
+  test("a genuine internal fault is NOT converted into a validation finding", async () => {
+    // The other half of the contract. If the store fails, that is a server fault and
+    // must stay one — a fix that caught every Error would report a broken database as
+    // the operator's malformed input.
+    const store = createConfigStore();
+    const fault = new Error("connection terminated unexpectedly");
+    store.client.configVersion.create.mockRejectedValue(fault);
+
+    await expect(
+      service.publish(store.client, {
+        publishedBy: "ops-1",
+        bindings: BASELINE,
+        approvals: [{ approverId: "safety-1", approvedAt: "t" }],
+      }),
+    ).rejects.toThrow(/connection terminated unexpectedly/);
+
+    await expect(
+      service.publish(store.client, {
+        publishedBy: "ops-1",
+        bindings: BASELINE,
+        approvals: [{ approverId: "safety-1", approvedAt: "t" }],
+      }),
+    ).rejects.not.toMatchObject({ name: "ConfigValidationError" });
+  });
+});
+
 describe("§22.3 — Safety-class changes", () => {
   const safetyChange = [...BASELINE, bind("lease.duration", 90)];
 

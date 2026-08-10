@@ -27,6 +27,16 @@ const { SEED_SPATIAL_MAP } = require("../../prisma/seed");
    An in-memory store with the Prisma surface the backfill uses
    ═══════════════════════════════════════════════════════════════════════════ */
 
+/**
+ * The scalar columns `CellAssignment` really has, taken from the generated Prisma
+ * DMMF for that model. The store rejects anything else, because the real client does:
+ * a payload field that is not a column reaches Prisma as `Unknown argument` and the
+ * write fails outright. Without this the store accepted `indexing` — Phase 15's
+ * addition to the *config* payload — and the spatial mirror's total failure against a
+ * real database passed the engine lane green.
+ */
+const CELL_ASSIGNMENT_STORE_COLUMNS = ["id", "cellId", "resolution", "regionId", "zoneId", "siteId", "mapVersion", "createdAt"];
+
 function createStore(seed) {
   const tables = {
     robot: new Map(),
@@ -36,12 +46,16 @@ function createStore(seed) {
     leg: new Map(),
     stop: new Map(),
     region: new Map(),
+    site: new Map(),
+    zone: new Map(),
     cellAssignment: new Map(),
   };
 
   for (const robot of (seed && seed.robots) || []) tables.robot.set(robot.id, { ...robot });
   for (const task of (seed && seed.tasks) || []) tables.task.set(task.id, { ...task, missionIds: new Set() });
   for (const region of (seed && seed.regions) || []) tables.region.set(region.id, { ...region });
+  for (const site of (seed && seed.sites) || []) tables.site.set(site.id, { ...site });
+  for (const zone of (seed && seed.zones) || []) tables.zone.set(zone.id, { ...zone });
 
   const rows = (name) => [...tables[name].values()];
 
@@ -56,7 +70,24 @@ function createStore(seed) {
     return sorted.slice(start, start + take).map((row) => ({ ...row }));
   };
 
-  const upsert = (name) => async ({ where, create, update }) => {
+  /**
+   * Reject a payload key that is not a column of `name`, the way the real client does.
+   * @param {string} name
+   * @param {string[]|undefined} columns
+   * @param {object} payload
+   */
+  const assertColumns = (name, columns, payload) => {
+    if (!columns || !payload) return;
+    for (const key of Object.keys(payload)) {
+      if (!columns.includes(key)) {
+        throw new Error(`Unknown argument \`${key}\` on ${name}. Available options are the model's own columns.`);
+      }
+    }
+  };
+
+  const upsert = (name, columns) => async ({ where, create, update }) => {
+    assertColumns(name, columns, create);
+    assertColumns(name, columns, update);
     const key = where.id !== undefined ? where.id : keyOf(where);
     const existing = tables[name].get(key);
     if (existing) {
@@ -69,6 +100,12 @@ function createStore(seed) {
     applyRelations(name, created, create);
     tables[name].set(created.id !== undefined ? created.id : key, created);
     return { ...created };
+  };
+
+  const findUniqueBy = (name, field) => async (args) => {
+    const where = (args && args.where) || {};
+    const match = rows(name).find((row) => row[field] !== undefined && row[field] === where[field]);
+    return match ? { ...match } : null;
   };
 
   // Composite-key support for `cellAssignment`'s `cellId_mapVersion`.
@@ -141,8 +178,16 @@ function createStore(seed) {
       },
     },
     stop: { upsert: upsert("stop"), count: async () => tables.stop.size },
-    region: { findMany: async () => rows("region").map((row) => ({ ...row })) },
-    cellAssignment: { upsert: upsert("cellAssignment") },
+    region: {
+      findMany: async () => rows("region").map((row) => ({ ...row })),
+      findUnique: findUniqueBy("region", "regionId"),
+    },
+    // `Site` is keyed by its logical `siteId`; `Zone` has no logical-id column, so
+    // the published map's own name is the join key — the same resolution
+    // `prisma/seed.js` performs when it publishes the map.
+    site: { findUnique: findUniqueBy("site", "siteId") },
+    zone: { findUnique: findUniqueBy("zone", "name") },
+    cellAssignment: { upsert: upsert("cellAssignment", CELL_ASSIGNMENT_STORE_COLUMNS) },
     $transaction: async (fn) => fn(client),
     __tables: tables,
   };
@@ -166,8 +211,21 @@ function snapshotOf(store) {
   };
 }
 
-const SEED = {
+// The spatial units `SEED_SPATIAL_MAP` declares, as the database rows a published map
+// leaves behind. Row ids differ from the map's logical ids on purpose: that difference
+// is the whole reason the mirror has to resolve one to the other, and a fixture that
+// used the logical id as the primary key would hide the defect it is here to catch.
+const SEED_SPATIAL_ROWS = {
   regions: [{ id: "region-row-1", regionId: "RGN-BLR" }],
+  sites: [{ id: "site-row-1", siteId: "STE-RNSIT" }],
+  zones: [
+    { id: "zone-row-1", name: "Rajarajeshwari Nagar" },
+    { id: "zone-row-2", name: "RNSIT campus and approaches" },
+  ],
+};
+
+const SEED = {
+  ...SEED_SPATIAL_ROWS,
   robots: [
     { id: "robot-row-1", robotId: "RBT-001" },
     { id: "robot-row-2", robotId: "RBT-002" },
@@ -444,6 +502,113 @@ describe("tools/migrate/backfillDomain.js", () => {
   test("the spatial mirror carries every cell assignment, fine and coarse", async () => {
     const store = createStore(SEED);
     await backfill.run(store, { spatialMap: SEED_SPATIAL_MAP });
+    expect(store.__tables.cellAssignment.size).toBe(SEED_SPATIAL_MAP.cells.length);
+  });
+
+  /* ── Regression: Phase 2 remediation ─────────────────────────────────────────
+     Two defects the in-memory store used to hide, both of which made the spatial
+     mirror write nothing at all against a real PostgreSQL. Reproduced live against
+     a disposable instance before being fixed here.
+     ────────────────────────────────────────────────────────────────────────── */
+
+  test("regression: the mirror passes only real CellAssignment columns to the client", async () => {
+    // `toConfigPayload` carries Phase 15's `indexing` for the publish-time A6 check.
+    // Spreading the payload put it in the Prisma call, which failed the whole write
+    // with `Unknown argument \`indexing\``. Every written row must therefore be
+    // describable by the model's own columns and nothing else.
+    const store = createStore(SEED);
+    const report = await backfill.run(store, { spatialMap: SEED_SPATIAL_MAP });
+
+    expect(report.spatial.skipped).toBe(false);
+    expect(report.spatial.cells).toBe(SEED_SPATIAL_MAP.cells.length);
+    for (const row of store.__tables.cellAssignment.values()) {
+      expect(Object.keys(row).sort()).toEqual(
+        Object.keys(row)
+          .filter((key) => CELL_ASSIGNMENT_STORE_COLUMNS.includes(key))
+          .sort(),
+      );
+      expect(row).not.toHaveProperty("indexing");
+    }
+  });
+
+  test("regression: the mirror stores database row ids, not the map's logical ids", async () => {
+    // `CellAssignment.regionId/zoneId/siteId` are foreign keys to `Region.id`,
+    // `Zone.id` and `Site.id`. Writing the published map's logical ids violated
+    // `CellAssignment_regionId_fkey` on every row.
+    const store = createStore(SEED);
+    await backfill.run(store, { spatialMap: SEED_SPATIAL_MAP });
+
+    const written = [...store.__tables.cellAssignment.values()];
+    const byCell = new Map(written.map((row) => [row.cellId, row]));
+
+    // Region: every row resolves to the one Region row, never to "RGN-BLR".
+    for (const row of written) {
+      expect(row.regionId).toBe("region-row-1");
+      expect(row.regionId).not.toBe("RGN-BLR");
+    }
+
+    // Zone: the two fine cells of each zone resolve to that zone's own row.
+    expect(byCell.get("cell-rrnagar-fine-01").zoneId).toBe("zone-row-1");
+    expect(byCell.get("cell-rrnagar-fine-02").zoneId).toBe("zone-row-1");
+    expect(byCell.get("cell-rnsit-fine-01").zoneId).toBe("zone-row-2");
+    expect(byCell.get("cell-rnsit-fine-02").zoneId).toBe("zone-row-2");
+
+    // Site: resolved where the map names one, null where it does not.
+    expect(byCell.get("cell-rnsit-fine-01").siteId).toBe("site-row-1");
+    expect(byCell.get("cell-rrnagar-fine-01").siteId).toBeNull();
+
+    // The coarse cell spans zones by construction, so it names none (§6.2).
+    expect(byCell.get("cell-blr-coarse-01").resolution).toBe("COARSE");
+    expect(byCell.get("cell-blr-coarse-01").zoneId).toBeNull();
+    expect(byCell.get("cell-blr-coarse-01").regionId).toBe("region-row-1");
+  });
+
+  test("regression: a map whose units are not yet published is refused, not written with dangling ids", async () => {
+    // No Region/Zone/Site rows: the map is declared but not published. Writing it
+    // would mean rows pointing at ids nothing carries.
+    const store = createStore({ robots: SEED.robots, tasks: SEED.tasks });
+    const report = await backfill.run(store, { spatialMap: SEED_SPATIAL_MAP });
+
+    expect(report.spatial.skipped).toBe(true);
+    expect(report.spatial.problems.join(" ")).toMatch(/has no Region row/);
+    expect(store.__tables.cellAssignment.size).toBe(0);
+  });
+
+  test("regression: an unresolvable zone refuses the whole mirror rather than half of it", async () => {
+    // The region resolves and one zone does not. A mirror missing those cells is a
+    // map that means something different from the one that was published.
+    const store = createStore({
+      regions: SEED_SPATIAL_ROWS.regions,
+      sites: SEED_SPATIAL_ROWS.sites,
+      zones: [{ id: "zone-row-1", name: "Rajarajeshwari Nagar" }],
+      robots: SEED.robots,
+      tasks: SEED.tasks,
+    });
+    const report = await backfill.run(store, { spatialMap: SEED_SPATIAL_MAP });
+
+    expect(report.spatial.skipped).toBe(true);
+    expect(report.spatial.problems.join(" ")).toMatch(/RNSIT campus and approaches/);
+    expect(store.__tables.cellAssignment.size).toBe(0);
+  });
+
+  test("regression: resolveSpatialUnitRows joins each unit on the key the seed publishes it under", async () => {
+    const store = createStore(SEED);
+    const resolved = await backfill.resolveSpatialUnitRows(store, SEED_SPATIAL_MAP);
+
+    expect(resolved.problems).toEqual([]);
+    expect(resolved.regionIds.get("RGN-BLR")).toBe("region-row-1");
+    expect(resolved.siteIds.get("STE-RNSIT")).toBe("site-row-1");
+    expect(resolved.zoneIds.get("ZN-RRNAGAR")).toBe("zone-row-1");
+    expect(resolved.zoneIds.get("ZN-RNSIT")).toBe("zone-row-2");
+  });
+
+  test("regression: the mirror stays idempotent after resolution", async () => {
+    const store = createStore(SEED);
+    await backfill.run(store, { spatialMap: SEED_SPATIAL_MAP });
+    const first = snapshotOf(store);
+    await backfill.run(store, { spatialMap: SEED_SPATIAL_MAP });
+
+    expect(snapshotOf(store)).toEqual(first);
     expect(store.__tables.cellAssignment.size).toBe(SEED_SPATIAL_MAP.cells.length);
   });
 
