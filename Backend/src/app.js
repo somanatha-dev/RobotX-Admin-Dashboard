@@ -80,8 +80,9 @@ app.get("/health", async (req, res) => {
   }
 
   // Prisma connection-pool + query-wait metrics (previewFeatures=["metrics"]).
-  // Direct visibility into pool contention — the thing scale-architecture.md
-  // and the first benchmark run could only infer indirectly from latency.
+  // Direct visibility into pool contention — the thing
+  // docs/history/legacy-scale-architecture.md and the first benchmark run
+  // could only infer indirectly from latency.
   let prismaPool = null;
   try {
     const raw = await prisma?.$metrics?.json();

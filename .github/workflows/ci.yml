@@ -7,6 +7,30 @@ name: CI
 # a structural defect that no amount of passing tests makes acceptable, and finding
 # it after a twenty-minute test run trains people to skim the log. Each gate is its
 # own step so the failing rule is named in the job summary rather than buried.
+#
+# ── Reconciled after Phase 15 ───────────────────────────────────────────────
+# This file was still the Phase 0 artefact: it ran three of the build gates and two of
+# the five test lanes, while Phase 15's execution-plan row names the CI pipeline among
+# its "files to modify". Four gates and two lanes that exist, are green, and are named
+# as release gates by §24 were running nowhere. They are added below. No command was
+# altered and no gate was weakened — every step invokes an npm script that already
+# existed and already passed locally.
+#
+# TWO ARE DELIBERATELY ABSENT, and their absence is a decision rather than an oversight:
+#
+#   gate:calibration — an ORGANISATIONAL release gate, not a build gate. It fails today
+#     at 39 Safety-class parameters that are not DERIVED, which is correct (§22.4 makes
+#     them a launch prerequisite) and is blocked on naming a calibration owner (B8).
+#     `package.json` already separates the two sets: `gates` is the build set, and
+#     `release:gates` is the set `src/engine/cutover/gates.js` expects evidence from and
+#     is where calibration belongs. Reddening every pull request on a launch gate nobody
+#     can currently discharge would train people to ignore a red build, which is the one
+#     thing this pipeline's own header warns against.
+#
+#   safety:case — regenerates `docs/safety-case/SAFETY_CASE.md` in place. Asserting it
+#     has not drifted needs a verify mode the tool does not have (`--out` writes, there
+#     is no `--check`), and adding one is a change to a Phase 15 deliverable rather than
+#     CI wiring. Recorded as an option, not performed here.
 
 on:
   push:
@@ -28,7 +52,11 @@ jobs:
     name: Build gates
     runs-on: ubuntu-latest
     steps:
+      # Full history: the column-generation gate below diffs against the pull request's
+      # base commit, and the default shallow checkout does not contain it.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -49,6 +77,34 @@ jobs:
       # §1.5 T1 and T6 — type separation, and no wall-clock read in the decision path.
       - name: "Gate — design tenets (T1, T6)"
         run: npm run gate:tenets
+
+      # §23.7 — no identifying field is an input to any cost term or decision record.
+      - name: "Gate — identity isolation (§23.7)"
+        run: npm run gate:privacy
+
+      # §23.7 + §24.3 — Tier A alone still reproduces Tier B byte-for-byte over an
+      # ERASED corpus. A field whose erasure changes a replayed cost is an identifying
+      # field wrongly admitted into the decision path.
+      - name: "Gate — erasure reconstruction-equivalence (§24.3)"
+        run: npm run gate:erasure
+
+      # Phase 15 — the four retired modules stay retired. "Deleted" is a property of one
+      # commit; "absent" is a property of the build, and only this gate checks the latter.
+      - name: "Gate — legacy retirement (Phase 15)"
+        run: npm run gate:legacy
+
+      # §21.6 — a column-generation change must carry a counterfactual evaluator run.
+      # Reports NOT_REQUIRED and passes when the change does not touch generation.
+      #
+      # Pull-request-only, and the `--base` is not optional. §21.6 gates a *change*, and a
+      # change is a diff against a base. Without one the gate sees only the working tree —
+      # clean in any CI checkout — and would report NOT_REQUIRED on every single run: a gate
+      # in name only, which is precisely the defect `PHASE_11_INDEPENDENT_VERIFICATION.md`
+      # Finding 1 raised and this step exists to close. If the base ever stops resolving the
+      # gate fails closed rather than passing silently.
+      - name: "Gate — column-generation release gate (§21.6)"
+        if: github.event_name == 'pull_request'
+        run: npm run gate:columngen -- --base "${{ github.event.pull_request.base.sha }}"
 
       # A gate that has never failed is not known to work. These plant deliberate
       # violations and assert each gate reports them.
@@ -79,3 +135,15 @@ jobs:
       # The new engine's own suite.
       - name: "Lane — engine"
         run: npm run test:engine
+
+      # §24.5's fault-injection suite. Every scenario runs at capacity 1 AND 2, which
+      # §24.5 requires because "a chaos suite that only ever exercises one commitment per
+      # agent cannot detect" a fencing error. `chaos_capacity_1` and `chaos_capacity_2`
+      # are two of §24's release gates and neither was being run by CI.
+      - name: "Lane — chaos (§24.5)"
+        run: npm run test:chaos
+
+      # §24.6's scale, locality, soak-shape and overload suites against §20.1's targets.
+      # §20.1 calls that table "requirements for the release gate, not aspirations".
+      - name: "Lane — scale (§24.6)"
+        run: npm run test:scale

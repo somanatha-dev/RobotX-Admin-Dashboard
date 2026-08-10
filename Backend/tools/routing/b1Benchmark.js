@@ -102,8 +102,17 @@
  * *"The routing calls are injected as `route(cellId, profileKey)` so that this module carries
  * no dependency on the routing engine, whose selection is blocking decision B1."*
  *
+ * ── The readiness gate this tool now reports beside its rows (PHASE 15) ────
+ * `NOT_MEASURED` says nobody measured a row. It does not say **why**, and for four of B1's five
+ * closing steps the why is an external decision — D1's operating region, D3's fleet speed model,
+ * D8's extract vintage — that no amount of engineering moves. `b1Readiness.js` adds the two
+ * states this tool never had, `NOT_CONFIGURED` and `BLOCKED`, and answers one further question
+ * this file cannot: whether anything measured here is admissible as **Step 3 evidence** at all.
+ * While Step 1 is BLOCKED it is not, and the report says so above the numbers rather than below.
+ *
  * Usage:
  *   node tools/routing/b1Benchmark.js                        (reports the open decision)
+ *   node tools/routing/b1Benchmark.js --readiness [--json]   (the five-state readiness gate)
  *   node tools/routing/b1Benchmark.js --engine ./osrm.js [--json]
  * Exit 0 when every measured row is within its target or honestly unmeasured; 1 when a
  * supplied engine exceeds one.
@@ -115,6 +124,10 @@ const service = require("../../src/engine/config/service");
 const sli = require("../../src/engine/observability/sli");
 const cellPairCache = require("../../src/engine/routing/cellPairCache");
 const chargerCache = require("../../src/engine/routing/chargerReachabilityCache");
+// PHASE 15 — the readiness gate answers the question this tool's three verdicts cannot: not
+// "was this row measured?" but "may this step run at all, and is anything measured here
+// admissible as B1 evidence?" See `b1Readiness.js`'s header.
+const readiness = require("./b1Readiness");
 
 /** @structural the verdicts a measured row can receive */
 const VERDICT = Object.freeze({
@@ -629,6 +642,18 @@ async function main(argv) {
     return 0;
   }
 
+  // ── The readiness gate, resolved before anything is measured ─────────────
+  // It is computed here rather than printed at the end because `stepEvidenceAdmissible`
+  // qualifies every row below it: a number produced while Step 1 is BLOCKED is a property of
+  // this harness, and the report must say so in the same breath it reports the number.
+  const readinessReport = readiness.assess({ asOf: new Date().toISOString().slice(0, 10) });
+
+  if (argv.includes("--readiness")) {
+    // eslint-disable-next-line no-console
+    console.log(asJson ? JSON.stringify(readinessReport, null, 2) : readiness.format(readinessReport));
+    return 0;
+  }
+
   const { rows, problems } = resolveTargets();
 
   let engine = null;
@@ -665,19 +690,53 @@ async function main(argv) {
   }
 
   if (engine) {
-    const snapshot = service.defaultSnapshot();
-    measured = await measure(engine, {
-      cellPairTtl: snapshot.resolve("route.cell_pair_cache_ttl"),
-      cellPairMinHitRate: snapshot.resolve("route.cell_pair_min_hit_rate"),
-      chargerK: snapshot.resolve("route.charger_reachability_k"),
-      chargerTtl: snapshot.resolve("route.cell_pair_cache_ttl"),
-      intraCellOffsetM: snapshot.resolve("route.intra_cell_offset_m"),
-      // Profile constants belong to the adapter's mobility profile, not to the register:
-      // they describe the vehicle the candidate engine is routing, and a benchmark that
-      // resolved them from the engine's config would be measuring the config.
-      energyWhPerMetre: (engine.profile && engine.profile.energyWhPerMetre) || 0.05,
-      speedMetresPerSecond: (engine.profile && engine.profile.speedMetresPerSecond) || 5,
-    });
+    // ── The two fabricated constants that used to live here ──────────────────
+    // This block previously read `(engine.profile && engine.profile.energyWhPerMetre) || 0.05`
+    // and `… || 5`. Those are a Wh-per-metre consumption figure and a **fleet speed in metres
+    // per second** — the second is D3's central quantity, the very thing §36.6 records as
+    // undecided, and it was being supplied by this file to any adapter that declared none.
+    // `chargerReachabilityCache.buildEntry` divides the intra-cell offset by it and multiplies
+    // the distance by the other, so both reach the entries the return-leg rows are measured
+    // over. A default there is a speed model chosen by a benchmark harness.
+    //
+    // It is now required. An adapter that declares no profile is not measured, every row stays
+    // NOT_MEASURED, and NOT_MEASURED is not PASS. `contract.normaliseConfig` already requires
+    // `profile` of the three shipped candidates, so this refuses only a hand-written adapter
+    // passed by module path — which is exactly the path that could have been measured against
+    // an invented speed.
+    const profile = engine.profile;
+    const profileUsable =
+      profile &&
+      typeof profile === "object" &&
+      typeof profile.energyWhPerMetre === "number" &&
+      Number.isFinite(profile.energyWhPerMetre) &&
+      profile.energyWhPerMetre > 0 &&
+      typeof profile.speedMetresPerSecond === "number" &&
+      Number.isFinite(profile.speedMetresPerSecond) &&
+      profile.speedMetresPerSecond > 0;
+
+    if (!profileUsable) {
+      engineProblem =
+        `${engine.id || enginePath} declares no usable profile { energyWhPerMetre, speedMetresPerSecond }. ` +
+        "These describe the vehicle the candidate is routing and they come from the fleet's mobility model — " +
+        "decision D3, Product + Fleet Engineering. No default is substituted here: a benchmark that supplied its " +
+        "own robot speed would be measuring a speed nobody chose. Every row stays NOT_MEASURED, which is not PASS.";
+      engine = null;
+    } else {
+      const snapshot = service.defaultSnapshot();
+      measured = await measure(engine, {
+        cellPairTtl: snapshot.resolve("route.cell_pair_cache_ttl"),
+        cellPairMinHitRate: snapshot.resolve("route.cell_pair_min_hit_rate"),
+        chargerK: snapshot.resolve("route.charger_reachability_k"),
+        chargerTtl: snapshot.resolve("route.cell_pair_cache_ttl"),
+        intraCellOffsetM: snapshot.resolve("route.intra_cell_offset_m"),
+        // Profile constants belong to the adapter's mobility profile, not to the register:
+        // they describe the vehicle the candidate engine is routing, and a benchmark that
+        // resolved them from the engine's config would be measuring the config.
+        energyWhPerMetre: profile.energyWhPerMetre,
+        speedMetresPerSecond: profile.speedMetresPerSecond,
+      });
+    }
   }
 
   const results = verdicts(rows, measured);
@@ -708,6 +767,11 @@ async function main(argv) {
           engineProblem,
           provenance: PROVENANCE,
           gateEvidence: false,
+          // Which B1 steps may run, which external decision each blocked one waits on, and
+          // whether anything above is admissible as Step 3 evidence. `false` here is not a
+          // caveat on the numbers — it means the numbers are not about a candidate engine.
+          readiness: readinessReport,
+          stepEvidenceAdmissible: readinessReport.stepEvidenceAdmissible,
         },
         null,
         2,
@@ -774,6 +838,9 @@ async function main(argv) {
       console.log(`  ${row.status.padEnd(16)} ${row.id.padEnd(14)} ${row.reason}`);
     }
   }
+
+  // eslint-disable-next-line no-console
+  console.log(`\n${readiness.format(readinessReport)}`);
 
   // eslint-disable-next-line no-console
   console.log(`\n${PROVENANCE}`);

@@ -208,8 +208,8 @@ describe("the engine module tree", () => {
   // Phase 12's additions are §18's and §26's: the six named degraded modes with their
   // entry and exit events and their §26.2 matrix, the agent and infrastructure failure
   // catalogues, obstruction classification, §18.6's external escalation chain, and the
-  // Invariant Checker. `fairness/` remains forbidden — §17.4's ladder is its own phase's,
-  // and this list is what stops that work leaking backwards.
+  // Invariant Checker. `fairness/` remains forbidden — Phase 12's scope is §18 and §26, and
+  // §17 is no part of it. §17.4's Tier 1 ladder has no assigned phase (see PHASE_15_OWNED).
   const PHASE_12_OWNED = [
     "degraded/",
     "failure/",
@@ -236,7 +236,7 @@ describe("the engine module tree", () => {
   // `security/` is named file-by-file for the same reason `shard/` is —
   // `commandSigning.js` is Phase 4's, and a directory prefix would stop this walk catching
   // a Phase 15 module dropped into the same folder. `fairness/` remains forbidden: §17.4's
-  // ladder is its own phase's, and this list is what stops that work leaking backwards.
+  // Tier 1 ladder has no assigned phase (see PHASE_15_OWNED), and §17.2/§17.3 are Phase 16's.
   const PHASE_14_OWNED = [
     "security/sessionBinding.js",
     "security/attestation.js",
@@ -251,7 +251,19 @@ describe("the engine module tree", () => {
   // does ship the cutover machinery itself, which has to live somewhere. `cutover/` is
   // named file-by-file for the same reason `security/` is: a directory prefix would stop
   // this walk catching a Phase 16 module dropped into the same folder. `fairness/` remains
-  // forbidden, because §17.4's ladder and §17.3's repositioning are Phase 16's.
+  // forbidden in its entirety, but for **two different reasons**, and conflating them is what
+  // this comment previously did:
+  //
+  //   §17.2's `dutyCycle.js` and §17.3's `repositioning.js` are Tier 2 (T2-10, T2-11) and are
+  //     genuinely **Phase 16's** — `repositioning.js` is named in Phase 16's own Files to create.
+  //   §17.4's `ladder.js`, `operatorCapacity.js` and `agentStarvation.js` are **Tier 1** (T1-04,
+  //     invariant I13). §1.8 puts the anti-starvation *guarantee* in the ladder, and the execution
+  //     plan's §0.2 puts every Tier 1 mechanism in Phases 0–15. They are therefore **not Phase
+  //     16's** — they are refused here because the plan assigned them to *no* phase at all, which
+  //     is an open programme decision (execution plan §6.3), not a design choice.
+  //
+  // The refusal is identical; the reason is not, and the tier-split test below pins it so the
+  // distinction cannot decay back into "fairness/ is Phase 16's".
   //
   // `routing/inProcessCache.js` is the one exception to "no new capability", and it is
   // named here rather than under Phase 8 deliberately. It is a **B1 prerequisite**, not a
@@ -333,21 +345,89 @@ describe("the engine module tree", () => {
     // files did not exist — not because this walk would refuse them. It refuses them now, and
     // this is the proof, planted rather than asserted in prose.
     //
-    // §17.4's fairness ladder, §4.6's preemption, and §9.3's column-regime mechanisms (set
-    // partitioning, branch and bound, local search) are the five named Phase 16 mechanisms
-    // that would plausibly land inside a folder an earlier phase already owns.
+    // §4.8's preemption, §17.3's repositioning, and §9.3's column-regime mechanisms (set
+    // partitioning, branch and bound, local search) are five genuine Tier 2 / Phase 16
+    // mechanisms that would plausibly land inside a folder an earlier phase already owns.
+    //
+    // `fairness/ladder.js` stood in this list until the pre-Phase-16 reconciliation and has been
+    // replaced by `fairness/repositioning.js`. The ladder is Tier 1 (T1-04) — asserting it here
+    // as a *Phase 16* module encoded a false tier claim into a machine-checked expectation, which
+    // is the most durable way to be wrong. It is still refused by the walk, and the test directly
+    // below is what now pins that refusal to its real reason.
     const planted = [
       "solve/setPartitioning.js",
       "solve/branchAndBound.js",
       "solve/localSearch.js",
       "lifecycle/preemption.js",
-      "fairness/ladder.js",
+      "fairness/repositioning.js",
     ];
     expect(unownedAmong(planted).sort()).toEqual([...planted].sort());
 
     // Negative control: the rule that refuses those must still admit the real files, or the
     // test above would pass for the wrong reason — a predicate that refuses everything.
     expect(unownedAmong(["solve/costScaling.js", "lifecycle/transitions.js"])).toEqual([]);
+  });
+
+  describe("§17.4's anti-starvation ladder — T1-04, Tier 1, and owned by no phase", () => {
+    // The contradiction this suite exists to prevent recurring: three current documents filed a
+    // **Tier 1** mechanism under Phase 16, and one of them was the planted-violation list above.
+    // Nothing mechanical distinguished the two populations inside `fairness/`, so the refusal of
+    // `ladder.js` read as "Phase 16 owns it" when the truth is "no phase does".
+    //
+    // Authority chain, none of it invented here:
+    //   §1.8            — the §17.4 ladder is Tier 1: "where the anti-starvation guarantee lives"
+    //   TIERS.md T1-04  — the three modules, invariant I13
+    //   plan §0.2       — "Phases 0-15 deliver Tier 0 + Tier 1. Phase 16 enables Tier 2."
+    // Therefore Phase 16 is excluded. Which of Phases 0-15 owns it is NOT determined by any
+    // authoritative source and is NOT decided here.
+    const LADDER_MODULES = ["fairness/ladder.js", "fairness/operatorCapacity.js", "fairness/agentStarvation.js"];
+    const TIER_TWO_FAIRNESS = ["fairness/dutyCycle.js", "fairness/repositioning.js"];
+
+    test("the tier table classifies the ladder Tier 1 and the other fairness modules Tier 2", () => {
+      const { TIER, tierOf } = require("../../src/engine/guards/tierAssertions");
+
+      for (const module of LADDER_MODULES) {
+        expect({ module, tier: tierOf(`src/engine/${module}`) }).toEqual({
+          module,
+          tier: TIER.OPERATIONAL_INTEGRITY,
+        });
+      }
+      for (const module of TIER_TWO_FAIRNESS) {
+        expect({ module, tier: tierOf(`src/engine/${module}`) }).toEqual({
+          module,
+          tier: TIER.ALLOCATION_QUALITY,
+        });
+      }
+    });
+
+    test("T1-04 names exactly those three modules and carries I13", () => {
+      const { TIER, MECHANISMS } = require("../../src/engine/guards/tierAssertions");
+      const t104 = MECHANISMS.find((mechanism) => mechanism.id === "T1-04");
+
+      expect(t104).toBeDefined();
+      expect(t104.tier).toBe(TIER.OPERATIONAL_INTEGRITY);
+      expect(t104.invariants).toContain("I13");
+      expect([...t104.modules].sort()).toEqual(LADDER_MODULES.map((m) => `src/engine/${m}`).sort());
+    });
+
+    test("no phase claims the ladder, and it is absent from disk — an open decision, recorded", () => {
+      // Both halves matter. Unowned-and-absent is the honest state of an unassigned obligation.
+      // Unowned-and-present would be work landing with no phase accountable for it; owned-by-some
+      // -phase would mean the decision was taken, and it has not been.
+      expect(unownedAmong(LADDER_MODULES).sort()).toEqual([...LADDER_MODULES].sort());
+      for (const module of LADDER_MODULES) {
+        expect({ module, onDisk: fs.existsSync(path.join(ENGINE_ROOT, module)) }).toEqual({
+          module,
+          onDisk: false,
+        });
+      }
+    });
+
+    test("no phase list smuggles the ladder in under a directory prefix", () => {
+      // `fairness/` as a bare prefix in any PHASE_*_OWNED list would silently admit all five
+      // modules — the Tier 1 three and the Tier 2 two — and defeat both refusals at once.
+      expect(LANDED_PHASE_OWNED.filter((owned) => owned === "fairness/" || owned.startsWith("fairness/"))).toEqual([]);
+    });
   });
 
   test("Phase 1's own modules are all present", () => {

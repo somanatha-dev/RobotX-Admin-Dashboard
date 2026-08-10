@@ -33,6 +33,43 @@ for the correction are all recorded together (§21).
 | **3** | **2026-08-09** | **D1 decision-readiness audit** | **§30–§31** | §22.2 (contract refined, §30.1), §22.3 (D2 residual sharpened, §30.5 N23), §27 C/E/F (§30.7) |
 | **4** | **2026-08-09** | **D4 decision + implementation-readiness audit** | **§32–§33** | §22.5 (D4 scope sharpened, §32.1), §22.8 (D7 rider carried into the ADR text, §32.10), §30.6.2 (Step 2's contract split, §32.5) |
 | **5** | **2026-08-09** | **D4 ratified (ADR-33); B1 Step 2 implemented** | **§34–§35** | §32.9 (D4 now RATIFIED, §34.1), §32.11 (its "nothing was built" table superseded for the four rows D4 released, §34.7), §33 (superseded by §35) |
+| **6** | **2026-08-09** | **D1 closure attempt — evidence search, no evidence found** | **§36** | §22.2 (D1 re-verified OPEN against a *committed* tree, §36.1), §30.2 (candidate classification re-run and re-confirmed, §36.1), §31/§35 (superseded by §36.11) |
+| **7** | **2026-08-09** | **Engineering remediation — the D1/D3/D8 gates built, N21 closed, B1 readiness made explicit** | **§37** | §30.5.2 (**N21 CLOSED**, §37.2), §30.5.5 (V-1…V-13 now implemented rather than recorded, §37.2), §36.4 row "V-9/V-10 validators" (superseded — the conditional rule was resolvable from §6.2 without a new policy, §37.2.2), §36.8 (step table now machine-checked rather than asserted, §37.6) |
+| **8** | **2026-08-09** | **D3 decision-readiness audit — no code change** | **§38** | §22.4 (D3's "exact missing input" refined from a sentence into the nine-criterion contract of §38.7 and the request of §38.9), §22.7 (D6 re-tested against D3 and confirmed **separate**, §38.3), §36.6 (D3 status carried forward and made answerable, §38.9), §37.3 (the D3 validation audited by execution — correct, acceptance boundary recorded, **N31–N33** raised, §38.6), §37.12 (superseded by §38.12) |
+| **8.1** | **2026-08-10** | **Revision 8 reconciliation + D3 blocker lock — documentation only** | **§39** | §38.6.6 fourth item (**dismissal superseded** — the Prisma `@unique` argument does not reach the deployment seam, §39.2.2), §38.7 C4 (**now mechanically enforced** rather than recorded, §39.2.4), §38.7 C7 (**raised from a recorded nuance to an OPEN DECISION REQUIRED**, §39.3), §38.11 (**superseded** — two Backend paths did change under revision 8, §39.6), §38.12 (superseded by §39.7) |
+
+**Revision 8.1 changed exactly one file: this one.** It reconciles this record with the tree as it
+actually stands after revision 8's verification pass, which found and closed a **genuine C4
+fail-open in `assessD3`** — two distinct mobility models were able to derive one routing profile
+key and still report `D3: PASS`. That fix is real, it is a correctness fix, and §38 did not record
+it; §39.2 does. The same pass found that a model declaring **only** `INDOOR_GRAPH` or **only**
+`AIRSPACE_VOLUME` still reaches `D3: PASS` — which `ADR-33` makes ambiguous rather than wrong.
+**That one is not decided here** (§39.3): it is recorded as an open decision for the authority that
+owns `ADR-33`'s scope, and engineering does not pick the reading. **No D3 input, agent class,
+mobility value, speed value, unit, range, calibration status, payload mass, `:loaded` mass
+condition or D6 quantity was invented; no version, date or approver was fabricated; `ADR-33`, D1,
+D4, D6 and the solver were not touched; no readiness gate was weakened; no D3 input was created to
+make readiness pass; and B1 Step 1 was not run.** Full change-control record in §39.6.
+
+**Revision 7 changed source files and did not change a single decision.** It built the
+engineering that D1, D3 and D8 have been waiting behind — the region acceptance gate, the speed
+model's routability contract, the extract metadata contract and a five-state B1 readiness gate —
+so that when those decisions arrive they are accepted or refused mechanically, and so that until
+they arrive the repository says **BLOCKED** in code rather than only in this document. **No region,
+geometry, bounding box, extract, vintage, cadence, downtime budget, speed model, fleet class,
+threshold or calibration value was created or chosen; no engine was selected; `ADR-33` and D2 were
+not reopened.** Full change-control record in §37.10.
+
+**Revision 6 changed exactly one file: this one.** It searched the repository and the environment
+for a newly supplied authoritative D1 input — production deployment configuration, approved region
+configuration, approved GeoJSON, GIS files, deployment manifests, operations documentation, routing
+deployment configuration, region approval records, environment configuration, authoritative spatial
+artefacts — classified every candidate it found, and **found no authoritative operational input.**
+D1 is therefore **WAITING FOR OPERATIONS/COMMERCIAL DECISION**, and per the pass's own stopping
+rule **no region was created, no geometry created, no OSM extract created, no `Region` schema
+change made, no H3 resolution changed, no routing infrastructure created, no seed or demo artefact
+promoted, no engine selected or deployed, and `ADR-33` was not reopened or modified.** Full
+change-control record in §36.10.
 
 **Revision 5 is the first pass in this record that changed source files, and it did so because
 `docs/adr/ADR-33-b1-traversal-domain-scope.md` now exists.** D4 is ratified; its `## Consequences`
@@ -1480,6 +1517,11 @@ is the trap, not the evidence.
 | **Downstream** | The profile set → the hierarchy count (`models × 2 × regions`) → B1's procurement scope; §25.4's commissioning gate; five of the 39 calibration parameters that are per-class vendor/bench measurements |
 | **Exact closure condition** | One complete, reviewed parameter set per class admitted to production allocation. **The speed model is the blocking element**, because a contraction hierarchy is a precomputation over edge costs and a stub yields none |
 
+> **Refined, revision 8.** The closure condition above is correct and is not detailed enough to
+> act on. It is superseded in *precision only* — not in substance — by the nine criteria **C1–C9**
+> of §38.7, and the "exact missing input" row is expanded into the seven-item owner request of
+> §38.9. D3's status, owner and downstream are unchanged.
+
 ### 22.5 D4 — required traversal domains
 
 | | |
@@ -1515,6 +1557,13 @@ is the trap, not the evidence.
 | **External owner** | Architecture (shape) + Fleet Engineering (values) |
 | **Downstream** | The meaning of the `:loaded` hierarchy. **The profile split is implemented and the quantity that gives it meaning is absent**, so an engine would build two hierarchies of which one is defined by nothing. It doubles the hierarchy count for a distinction nothing can currently compute |
 | **Exact closure condition** | A schema decision (published under §22.1 rule 5 review) plus per-class values at commissioning |
+
+> **Re-tested against D3, revision 8 (§38.3).** D6 was examined for whether the architecture
+> requires mass/CoG *inside* the D3 submission. It does not: §2.2 tabulates six elements and mass
+> is not among them, and §2.2 already carries payload mass into the speed model as an **argument**
+> rather than a stored agent field. **D6 remains a separate decision with a different first owner**
+> (Architecture, for where the fields live). D3 closes without it; **B1 Step 1's `:loaded`
+> hierarchy does not** — §38.3, §38.5.4.
 
 ### 22.8 D7 — traversal-domain composition
 
@@ -4091,3 +4140,2094 @@ this pass did not modify that record; it implemented B1 Step 2 and updated the A
 routing engine was installed, no extract created, no region or vintage invented, no threshold or
 calibration value changed, no solver file touched, no test weakened, no engine selected, and no
 commit created.*
+
+---
+
+## 36. D1 Closure
+
+**Purpose of this pass.** §31 and §35 both make D1 the next action. This pass tested one question
+and only one: **has the authoritative operational input for D1 now been supplied to the repository
+or the environment?** It has not. What follows is the search, the classification of everything the
+search returned, the decision request restated with its ownership split, and the exact dependency
+state D1's absence leaves B1 in.
+
+**This section closes nothing.** It records that D1 cannot be closed, and it records that with
+evidence rather than by assertion.
+
+---
+
+### 36.1 Evidence Received
+
+**None.**
+
+#### 36.1.1 What was searched, and what each search returned
+
+Run against the working tree at `cbe540e` (2026-08-09), which is **clean** — the Phases 6–15 work
+that revisions 2–5 audited as an uncommitted tree is now committed, so for the first time in this
+record the search covers a committed baseline rather than a working set. Every result below is a
+command's output, not a reading.
+
+| # | Search target (per the closure brief) | Command / scope | Result |
+|---|---|---|---|
+| 1 | **GIS files** | `find` over the whole tree excluding `node_modules`, for `.geojson`, `.topojson`, `.osm`, `.pbf`, `.poly`, `.kml`, `.kmz`, `.shp`, `.shx`, `.dbf`, `.prj`, `.wkt`, `.gpkg`, `.gml` | **Zero files.** Unchanged from §30.2 row 12 |
+| 2 | **Approved GeoJSON** | Same, plus a content search for `Polygon` / `MultiPolygon` / `coordinates` outside `node_modules` | **No polygon literal anywhere.** The only GeoJSON handling is `services/mapbox.service.js:48–86`, which parses *route geometry returned by an external provider* — §30.2 row 9, classified **OBSOLETE**, marked **R** (retire) by the execution plan |
+| 3 | **Deployment manifests** | `find` for `docker-compose*`, `Dockerfile*`, `*.tf`, `Chart.yaml`, `values*.yaml`, `helmfile*`, `*.yml`, `*.yaml` | **One file exists in the entire tree: `.github/workflows/ci.yml`.** It contains no region, boundary, latitude, longitude, bbox or geographic key of any kind. There is no container manifest, no infrastructure-as-code, and no orchestration manifest to carry a region |
+| 4 | **Environment configuration** | Every `.env*` in the tree: `Backend/.env`, `Backend/.env.benchmark`, `Frontend/.env`; all keys enumerated | **No region, boundary, bbox, extent, latitude, longitude, CRS, EPSG or extract key.** The only geographic-adjacent keys are `MAPBOX_TOKEN` / `VITE_MAPBOX_TOKEN` / `VITE_MAPBOX_STYLE_3D` — credentials for the legacy metered provider §5.2 rules architecturally incompatible, not a region declaration |
+| 5 | **Routing deployment configuration** | `Backend/tools/routing/**`, `Backend/src/engine/routing/**` | The Step 2 adapters (`contract.js`, `transport.js`, `deployment.js`, `osrm.js`, `valhalla.js`, `graphhopper.js`, `inhouse.js`, `index.js`) and the two shipped caches. **`deployment.js` carries the region/extract identity as an opaque operator-supplied string, exactly as §34.10 recorded — it holds no value and invents none** |
+| 6 | **Approved region configuration** | Live probe of the Config Service, re-executed this pass | `spatial: null` · `shards: null` · `bindings size: 0` · `version: null`. **Nothing is published.** Identical to revisions 2, 3 and 5 |
+| 7 | **Region approval records** | `docs/adr/**`, and the integration register in `docs/adr/README.md` | **43 records; the integration register holds exactly one row — `ADR-33` (D4).** There is no ADR-34, no region record, and no region row in either register |
+| 8 | **Operations documentation** | `docs/runbooks/cutover.md`, `docs/runbooks/rollback.md`, `docs/safety-case/**` | No region declaration, no boundary, no extract procurement record |
+| 9 | **Authoritative spatial artefacts / schema** | `prisma/schema.prisma`, `prisma/migrations/**` | `model Region` (`schema.prisma:807–832`) carries `id`, `regionId`, `name`, `description` and relations — **and no boundary, bbox, polygon, geometry or CRS column.** 21 migration directories, newest `20260809090000_security_governance_privacy`; **no migration has been added since revision 3's audit, and none has ever created a geometry column** |
+| 10 | **Any region identifier at all** | `grep -rn "RGN-"` excluding `node_modules` | `prisma/seed.js:32–43` (`SEED_SPATIAL_MAP`) and two test files (`domainBackfill.test.js`, `spatialHierarchy.test.js`). **No third source** |
+
+#### 36.1.2 Classification of every candidate the search returned
+
+Classified per the closure brief's taxonomy. **Nothing on this list was promoted, adopted, copied
+into configuration, or treated as an answer.** Rows 1–14 restate §30.2's classification and are
+**re-verified against the committed tree this pass**; rows 15–17 are this pass's additions.
+
+| # | Candidate | Location | **Classification** | Why it is not authoritative |
+|---|---|---|---|---|
+| 1 | `SEED_SPATIAL_MAP` — `RGN-BLR` "Bengaluru operating region", 2 zones, 1 site, 4 FINE + 1 COARSE cells | `prisma/seed.js:31–44` | **TEST/SEED** | A Phase 2 §3.6 containment demonstration. Never published (`spatial === null`, re-verified this pass). **No geometry of any kind.** Cell ids are placeholder tokens, not H3 indices (§30.5.2). Four fine cells against §3.6's 10³–10⁵. **That it names Bengaluru is the trap, not the evidence** |
+| 2 | `Zone.minLat / maxLat / minLon / maxLon` | `schema.prisma:267–270` | **OBSOLETE** | The schema's own comment settles it: the bounding box *"is legacy DTARO state and is not what the engine resolves containment from"* (`schema.prisma:291–293`). Read only by a legacy point-in-bbox lookup |
+| 3 | Auto-generated quadrant zones — four boxes at `±0.005°` around a campus centre | `services/zoneManager.service.js:223–261` `seedDefaultZones()` | **DERIVED** (legacy, auto-fabricated) | **The most dangerous artefact on this list**: it is a bounding geometry the system invents for itself, from a point, inside a swallowed `try/catch`. It is legacy DTARO code outside the engine boundary and on no path that publishes engine configuration. It must never be mistaken for an operator-declared region |
+| 4 | `Campus.centerLat / centerLon` — `12.9023, 77.5186` | `schema.prisma:337–338`; `seed.js:116–117` | **DEMO** | A point, not a boundary. Legacy DTARO filter system |
+| 5 | `Location` hierarchy — `"india"`, `"karnataka"`, `"bengaluru"`, `"rr-nagar"` with optional lat/lon | `schema.prisma:164–185`; `seed.js:62–102` | **DEMO** | Nominal centroids for a UI filter tree. Not operational, not read by the engine |
+| 6 | Simulator spawn default `12.9023, 77.5183` | `simulation/SimulationEngine.js:65–66` | **DEMO** | A fallback spawn point for the virtual robot |
+| 7 | Test coordinates — `12.97/77.59`, `12.9x/77.6x`, and `51.5/−0.1` | `tests/engine/**` | **TEST/SEED** | Two different cities in one suite, deliberately — proof the code is region-agnostic, and proof these are not a declaration |
+| 8 | `WORLD_CENTER = [20, 0]` | `Frontend/src/features/maps/MapControl.jsx:27` | **DEMO** | A default map camera position for an empty dashboard |
+| 9 | `mapbox.service.js` GeoJSON handling | `services/mapbox.service.js:48–86` | **OBSOLETE** | External-provider route geometry. §5.2 makes a metered external API architecturally incompatible; the execution plan marks it **R** |
+| 10 | `CellAssignment.mapVersion`, default `0`, *"not a foreign key"* | `schema.prisma:885–904` | **DERIVED — unpopulated** | The only provenance hook that exists. **D8** owns what fills it |
+| 11 | `Site.graphZones` | `schema.prisma:846` | **UNKNOWN — and out of D1's scope** | §6.2's indoor/multi-level proximity partition. Column exists, empty. `ADR-33` excludes `INDOOR_GRAPH` from B1 |
+| 12 | GIS files | — | **NONE EXIST** | Search 1 above. Zero results |
+| 13 | Deployment / environment configuration | `.github/workflows/ci.yml`, three `.env` files | **NONE** | Searches 3 and 4 above. No geographic key of any kind |
+| 14 | Migration history | `prisma/migrations/**` | **NONE** | Search 9. No boundary, polygon, geometry or PostGIS column has ever existed |
+| 15 | **ADR integration register** | `docs/adr/README.md` | **NONE** | One row, `ADR-33` (D4). No region decision has been recorded by anyone |
+| 16 | **B1 adapter deployment descriptor** | `tools/routing/adapters/deployment.js` | **DERIVED — empty by construction** | It transports an operator-supplied extract/region identity as an opaque string. It is a *container* for D1's answer, not the answer, and it holds nothing |
+| 17 | **Commit `cbe540e`** (the Phase 15 commit, 2026-08-09) | `git show --stat HEAD` | **NONE** | It commits the Phases 6–15 working tree, including revision 5's adapters. **It adds no region, no geometry, no extract, no migration and no ADR-34** |
+
+```
+AUTHORITATIVE candidates:  0
+TEST/SEED:                 2       (rows 1, 7)
+DEMO:                      4       (rows 4, 5, 6, 8)
+DERIVED:                   3       (rows 3, 10, 16)
+OBSOLETE:                  2       (rows 2, 9)
+UNKNOWN:                   1       (row 11 — out of D1 scope)
+NONE EXIST / NONE:         5       (rows 12, 13, 14, 15, 17)
+```
+
+**Zero rows satisfy the D1 contract, and no row may be promoted.** `SEED_SPATIAL_MAP` and `RGN-BLR`
+were explicitly re-tested against the contract and explicitly rejected: they carry no geometry at
+all, so they cannot satisfy field 3 even if their identity were adopted, and no operational
+evidence anywhere in the tree establishes them as the approved operating region.
+
+---
+
+### 36.2 D1 Validation
+
+**NOT PERFORMED — there is nothing to validate.**
+
+The validation programme §30.5.5 specifies (V-1 … V-13: geometry type, ring closure,
+self-intersection, non-zero area, WGS-84 `[lon, lat]` axis order, stated CRS, `regionId` presence,
+non-empty cover, §3.6 cell cardinality, H3 validity, region non-overlap, charger containment,
+extract margin) requires a geometry as its input. **No geometry was received, so no check was run,
+and no check may be reported as passed.**
+
+Two consequences of *not* having run it are recorded so they are not lost:
+
+- **The N23 question stays open by default.** §30.5.4 shows §3.5's four region kinds are not all
+  compatible with H3 res 8 — 10³ fine cells is ≈737 km², so a *metro service area* fits §3.6's band
+  and a *site* or *campus* is up to four orders of magnitude below it. **Because D1 field 2 was not
+  supplied, the res-8 fitness check (G10) cannot be run and D2's residual cannot be closed.** D2 is
+  **not** reopened by this pass and its global value is untouched (`cells.js:181–184`, FINE 8 /
+  COARSE 5).
+- **N21 remains the standing risk.** `hierarchy.validate(SEED_SPATIAL_MAP).ok → true` with zero
+  problems, on a map whose every cell id is a placeholder token. **The publish path still cannot
+  mechanically reject a fabricated region**, and it should be tightened *before* the first spatial
+  map is published, not after.
+
+---
+
+### 36.3 D1 Decision
+
+```
+D1 STATUS:
+WAITING FOR OPERATIONS/COMMERCIAL DECISION
+```
+
+D1 is not partially decided and not derivable. It is an operational and commercial commitment with
+a §22.3 change class, and §3.5 deliberately defines *what* an OperatingRegion is — "a site, campus,
+depot catchment, or metro service area" — without ever selecting which one this deployment serves.
+
+#### 36.3.1 The exact five-field decision request
+
+Unchanged from §30.8, restated here in full because this section is the current front of the record.
+**One region is sufficient to unblock the critical path.**
+
+| # | Field | Format | Owner |
+|---|---|---|---|
+| **1** | **Region ID and name** — a stable identifier configuration will be keyed by, and a human-readable name | `regionId`: stable string; `name`: free text | **Operations** (Commercial confirms the name is the one the commitment is written against) |
+| **2** | **Region kind** — *site*, *campus*, *depot catchment*, or *metro service area* | One of those four words | **Operations** |
+| **3** | **The authoritative serviceable boundary** | **GeoJSON `Polygon` or `MultiPolygon`, WGS-84 (EPSG:4326), `[lon, lat]` order.** Holes permitted. A bounding box is accepted only as a degraded form | **Commercial** (what area we commit to serve) + **Operations** (what area we can actually operate) — **one geometry satisfying both** |
+| **4** | **The CRS the geometry is authored in** — only if it is *not* EPSG:4326 | An EPSG code | **Operations** (or whoever authored the file) |
+| **5** | **A version label and a date** for the geometry | Any stable label + an ISO date | **Operations** |
+
+#### 36.3.2 What each party must provide
+
+**OPERATIONS must provide:**
+
+- fields 1, 2, 4 and 5 outright;
+- the operational half of field 3 — the area the fleet can actually be operated in, which is what
+  makes the boundary a **shard partition** (§3.5: every Agent and every Leg belongs to exactly one
+  region at a time; region → shard is a function, `Shard.regionId @unique`, so regions **must not
+  overlap**);
+- the authoritative *file*, not a description of one.
+
+**COMMERCIAL must provide:**
+
+- the service-area commitment encoded in field 3 — because §7.5 **F33 makes this boundary
+  customer-visible**: a stop outside the serviceable set is refused, and a refused stop is a
+  refused mission. This is the half of D1 that cannot be delegated to Engineering under any
+  reading;
+- confirmation that the region's *name and identity* (field 1) are the ones the commercial
+  commitment is written against, since every decision record and every region-scoped parameter
+  binding will cite them.
+
+**ENGINEERING will derive afterward — and is explicitly *not* asking for any of it** (§30.4,
+G1–G12): the bounding box; the H3 res-8 fine-cell set and the res-5 coarse-cell set; the zone and
+site partition; `stop.serviceable`, the input F33 reads and which no production path writes today
+(N22); the routing extract extent; the cache key space and cell-pair population; charger and depot
+cell assignments; the §3.6 cardinality check and the D2 res-8 fitness re-check; the region
+validation artefact (via validators that already ship and already block). **Please do not send** a
+computed bounding box, a cell or grid list, zone subdivisions, charger or depot lists, or an H3
+resolution.
+
+**How many regions launch, and each region's expected missions per agent-hour, are D5 and do not
+hold this up.**
+
+---
+
+### 36.4 Derived Artifacts
+
+**NONE. Nothing was derived, and nothing could legitimately have been.**
+
+Every derivation in §30.4 takes D1's polygon as its first input. Assessed against the closure
+brief's own prohibitions:
+
+| Candidate artefact | Built? | Reason |
+|---|---|---|
+| A region record | **NO** | It would be an invented region |
+| Any geometry | **NO** | It would be fabricated |
+| An OSM extract | **NO** | There is no geometry to cut it against, and no vintage (**D8**) to cut it at |
+| A `Region` schema change (`regions[].boundary`) | **NO** | §22.1 rule 5 refuses a schema admitting an unreviewed shape, and §30.1.2 shows the shape is part of D1's own answer — possibly **no column at all**, since 20 of 21 consumers require no geometry |
+| Any H3 resolution change | **NO** | D2 is decided and is **not** reopened. Its residual is a *check*, and the check needs D1 |
+| Any routing infrastructure | **NO** | No engine deployed, configured or installed; no hierarchy built; no endpoint fabricated |
+| A polygon → H3 cover utility (G2/G3) | **NO** | It would have no input, and its only test data would be invented geometry |
+| V-9 / V-10 validators (**N21**) | **NO** | Both tighten a shipped, blocking publish-time validator; §6.2 permits non-geodesic tokens for site-local graph zones, so the correct rule is conditional and choosing that condition is Phase 9 / Architecture's call |
+| A `serviceable` producer (G5, **N22**) | **NO** | It is the derivation of a region that does not exist |
+| Promoting `SEED_SPATIAL_MAP` / `RGN-BLR` | **NO** | It is TEST/SEED data with no geometry. Promoting it would manufacture D1 |
+
+**Ownership was checked before this table was written, not after.**
+`IMPLEMENTATION_EXECUTION_PLAN.md:341` authorises the migration set `Region`, `Zone`, `Site`,
+`CellAssignment` — **with no boundary column** — and `:346` authorises *"region/zone/site/cell maps
+published as config (§3.6 — containment by assignment, not geometry)"*. The plan authorises
+**publishing a map**, not building a derivation tool ahead of one, and it authorises **no geometry
+column anywhere**. Nothing in §36 creates an artefact owned by another phase.
+
+---
+
+### 36.5 D1 → B1 Dependencies
+
+The chain, unchanged and re-confirmed. Each link's evidence is in §30.6.1; the state of each link
+is this pass's.
+
+```
+D1  authoritative serviceable boundary        ← ABSENT (§36.1)
+ │
+ ├─(a)─► bbox / cut geometry                  ← CANNOT BE DERIVED
+ │         │
+ │         ▼
+ │       OSM REGION EXTRACT                    ← DOES NOT EXIST
+ │         │        (also needs D8 for its vintage)
+ │         ▼
+ │       PER-PROFILE CONTRACTION HIERARCHIES   ← CANNOT BE BUILT
+ │         │        (also needs D3: no speed model ⇒ no edge costs)
+ │         ▼
+ │       ROUTING DEPLOYMENT — each candidate deployed against the extract
+ │         │                                    ← B1 STEP 1, BLOCKED
+ │         ▼
+ │       B1 STEP 3 — run the benchmark per candidate, record every row
+ │         │                                    ← BLOCKED, via Step 1
+ │         ▼
+ │       B1 STEP 4 — hierarchy build time, extract refresh cadence
+ │         │                                    ← BLOCKED by D1 and D8
+ │         ▼
+ │       B1 STEP 5 — ENGINE SELECTION on recorded evidence
+ │                                              ← BLOCKED, no evidence exists
+ │
+ ├─(b)─► H3 fine-cell set  ──►  routing cache key space (§20.3)
+ │         cell-pair population is O(|cells|²) and is not derivable without D1;
+ │         route.cell_pair_min_hit_rate cannot be evaluated in steady state
+ │
+ └─(c)─► charger-reachability precompute
+           chargerReachability.worker.js:16,63 — "every populated cell in the region".
+           No cell set ⇒ no population to precompute over.
+```
+
+**The chain has no alternative ordering.** The object B1 benchmarks does not exist until a geometry
+is supplied, so §22.2's *"there is no ordering in which the engine is chosen first"* stands.
+
+**Beyond B1**, D1's absence also holds: publishing a spatial map; publishing shard definitions
+(jointly with D5); D2's residual res-8 fitness check; `route.degraded_max_radius`, which awaits
+*"per-region straight-line-versus-network error measurements"*; spatially-correlated demand
+generation; and the eleven register entries whose `awaits` names a measurement **taken in a named,
+operating region** (§30.1.3). Not one of those eleven awaits a *geometry* — which remains the
+sharpest evidence that D1's runtime value is an identity and an operational commitment, and its
+geometric value is a procurement input for B1 alone.
+
+---
+
+### 36.6 D3 Status
+
+```
+D3: STILL OPEN — EXTERNAL DECISION (Product + Fleet Engineering)
+```
+
+> **Annotated, revision 8 (§38).** Everything below stands and nothing in it is superseded. What
+> §38 adds is the part this section did not attempt: the stage-by-stage contract (§38.1), the
+> field-level classification of what exists (§38.2), the D3/D6 boundary (§38.3), the nine closure
+> criteria (§38.7), and the exact request the owner can answer in one pass (§38.9). **D3's status
+> is unchanged — open, external, and answerable today.**
+
+Inspected this pass only far enough to answer the one question the brief asks — **can B1 Step 3
+start?** It cannot, and D1 is not the only reason.
+
+**Re-verified against the committed tree, by reading:**
+
+| Fact | Evidence |
+|---|---|
+| Exactly one `MobilityModel` exists, in the durable seed | `prisma/seed.js:231–244`, `MOB-SIDEWALK-DEFAULT` |
+| Its speed model is a stub whose own text defers to B1 | `seed.js:239`: `speedModel: { note: "Populated by the routing integration in Phases 7–9 (blocking decision B1)" }` |
+| The column is nullable and no other module writes it | `schema.prisma:983` `speedModel Json?`; the only other occurrence of `speedModel` under `src/` is the §2.2 element list at `domain/mobilityModel.js:34` |
+| Zero mobility models are in published configuration | `bindings.size === 0` (§36.1.1 row 6) |
+| Mass and centre of gravity are still absent | No mass or CoG field on `model MobilityModel` — **D6**, unchanged |
+
+**What remains, exactly:** the list of agent classes this deployment will operate and, per class,
+the six §2.2 elements **with a real speed model** — speed as a function of road class, gradient,
+surface, payload mass, congestion and weather — plus tare mass, laden mass and centre of gravity
+once **D6** decides where they live.
+
+**Why this blocks B1 Step 3 independently of D1:** a contraction hierarchy is a precomputation over
+edge **costs**. With no speed model there are no costs, so Step 1 cannot build hierarchies even if
+an extract existed, and Step 3 runs only against what Step 1 produces. **B1 Step 3 is behind both
+D1 and D3, and closing D1 alone would not release it.**
+
+**No speed model was invented, no mass or CoG value was invented, and the mobility model was not
+modified.** §25.4 makes a speculative model a commissioning-gate violation: *"a heterogeneous fleet
+with copy-pasted parameters will make confidently wrong cross-class comparisons, which is worse
+than not comparing at all."*
+
+**D3 is answerable today and is not behind D1 in either direction** — agent classes and speed
+models are not properties of a place. It is the second-highest-value open item after D1.
+
+---
+
+### 36.7 D8 Status
+
+```
+D8: STILL OPEN — EXTERNAL DECISION (Operations). NOT DECIDED BY THIS PASS.
+```
+
+**No value was chosen for any part of D8.** The brief asks only whether D8 is now *answerable*.
+Split by part:
+
+| D8 part | Answerable now? | Why |
+|---|---|---|
+| **Extract vintage** — which OSM snapshot the extract is cut from | **NO** | It is a property of an extract, and there is no extract because there is no region. It also has no recording site: `CellAssignment.mapVersion` defaults to `0` and is explicitly *"not a foreign key"*, and no map provenance record exists anywhere in the tree (re-verified this pass) |
+| **Refresh cadence** — how often the extract is re-cut | **NO** | *"How often **this** extract refreshes"* presupposes an extract, and the cadence trades against the region's actual rate of physical change — a property of the place D1 has not named |
+| **Re-contraction policy** — tolerable rebuild downtime | **PARTLY — the policy *shape* is answerable without D1** | *"What routing downtime is tolerable"* is an availability question Operations can answer without knowing the region. §5.2 requires the routing service colocated with the shard and **available throughout**, and a re-contraction is a rebuild, not a reload. **The number, however, cannot be fixed until the chosen engine's build time is measured — which is B1 Step 4** |
+
+**D8 therefore remains an external decision, and it is genuinely circular with B1 in one direction
+and with D1 in the other**: its cadence needs the region, its downtime budget needs the engine's
+build time, and B1 Step 4 needs its vintage. **The circularity is broken by D1, not by D8** — once
+a region exists, an extract can be cut at *some* stated vintage and Step 4 can measure against it,
+after which the cadence becomes a decision with real numbers under it.
+
+It also interacts with **B6**: `map.obstruction_class_max_age` awaits *"the region's measured map
+hazard-data publication cadence"* — one of the 39.
+
+---
+
+### 36.8 B1 Steps Released
+
+**NONE. This pass releases no B1 step.**
+
+| Step | Status | Blocked by | Changed by this pass? |
+|---|---|---|---|
+| **1** — deploy each candidate against the target region extract, hierarchies built | **BLOCKED** | **D1** (no extract) · **D3** (no speed model ⇒ no edge costs) | No |
+| **2** — one executable benchmark adapter per candidate | **COMPLETE** (revision 5) — OSRM, Valhalla, GraphHopper implemented; the in-house candidate correctly **NOT IMPLEMENTED**, no engine exists to adapt to and none was fabricated | — | **No. Not re-done, not modified, not re-verified by re-implementation** |
+| **3** — run the tool per candidate on representative hardware, record every row | **BLOCKED** | **D1** and **D3**, via Step 1 | No |
+| **4** — record hierarchy build time and extract refresh cadence per candidate | **BLOCKED** | **D1** · **D8** | No |
+| **5** — **ENGINE SELECTION** — choose on recorded evidence and write the B1 ADR | **BLOCKED** | Steps 1, 3, 4 — there is no evidence | No |
+
+**B1 work that can continue independently of D1 — the honest list:**
+
+- **Nothing further in B1 itself.** Step 2 was the only D1-independent step (§30.6.2), `ADR-33`
+  released it, and revision 5 completed it. **The D1-independent surface of B1 is now exhausted.**
+- Outside B1, and unchanged from §30.7: **D3** (answerable today, and it is one of Step 1's two
+  blockers) · **D6**'s schema shape · **B8**, naming the calibration owner, which gates 37 of the
+  39 and behind which 22 parameters have no other blocker · the **rollback rehearsal**, still the
+  earliest gate that can close and still time-sensitive against artefact retention · **Q-20.1**,
+  the §20.1 budget-composition ADR · **N16 / N17 / N18**, with N18 deadlined by the composition
+  root · **N21 / N22** once Phase 9 / Architecture authorises, and **N21 should land before the
+  first spatial map is published** · the 11 worker cadence parameters · the `locality` evidence
+  class · the §26 invariant-observation window · Ph14 F2 and the `privacySurrogateKeys` flake.
+
+**B1 is not "ready". D1's closure would not make it ready either** — it would release Step 1 only
+jointly with D3, and Step 5 remains behind Steps 1, 3 and 4 in every case.
+
+---
+
+### 36.9 Remaining Blockers
+
+| Blocker | Status | Owner | Behind |
+|---|---|---|---|
+| **D1** — target operating region and its authoritative boundary | **WAITING FOR OPERATIONS/COMMERCIAL DECISION** | Operations + Commercial | Nothing. **It is the front of the queue** |
+| **D3** — fleet agent classes and their mobility models, with real speed models | **OPEN — answerable today** | Product + Fleet Engineering | Nothing |
+| **D8** — extract vintage, refresh cadence, re-contraction window | **OPEN** | Operations | D1 (cadence, vintage) · B1 Step 4 (downtime budget) |
+| **D5** — region/shard count and each region's measured `r` | **OPEN** | Operations | D1 (count) · demand data (`r`) |
+| **D6** — where mass and centre of gravity are declared | **OPEN** — shape derivable, values external | Architecture + Fleet Engineering | Nothing (shape) · commissioning (values) |
+| **D7** — `traversalDomain` as a composition | **DEFERRED**, not decided — `ADR-33` rider 1 | Architecture | A modality outside `ADR-33`'s scope being admitted |
+| **D2 residual** — res-8 fitness for *this* region | **OPEN** | Engineering | **D1 field 2** (region kind) — §36.2, N23. **D2's global value is untouched and was not reopened** |
+| **B1 Steps 1, 3, 4, 5** | **BLOCKED** | Engineering + Infra | D1, D3, D8 |
+| **B8** — name the calibration owner | **OPEN — answerable today** | Engineering leadership | Nothing. Gates 37 of the 39 |
+| **N21** — the publish path cannot reject a fabricated region map | **OPEN** | Phase 9 / Architecture | Authorisation. **Should land before the first spatial map is published** |
+| **N22** — nothing writes `stop.serviceable` | **OPEN** | Phase 1 intake / Phase 9 | D1 (G5 is its producer) |
+| **`gate:calibration`** — 39 blocking Safety-class parameters | **RED, unchanged** | B8 + per-parameter owners | 37 not behind B1; 2 are |
+| Phase 8 `routing/client.js`, the composition root, `charger_reachability`, `scale_targets`, `shadow_agreement`, `invariants_enforced`, `soak` | **BLOCKED** | Phase 8 / Engineering | **B1**, hence D1 |
+
+**Nothing on this list was closed by this pass, and nothing on it moved.**
+
+---
+
+### 36.10 Change Control — Revision 6
+
+Captured before the first edit and again after, and compared rather than eyeballed.
+
+```
+BEFORE   git status --porcelain | wc -l   →  0        (clean tree at cbe540e)
+         git diff --stat                  →  (empty)
+
+AFTER    git status --porcelain           →   M PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md
+         git diff --stat                  →  1 file changed, 474 insertions(+)
+         git diff --numstat               →  474   0   PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md
+         git diff -U0 deleted lines       →  0
+         git diff -U0 hunks               →  2, both pure insertions (Revision History; §36)
+```
+
+**Expected outcome for a pass in which D1 was not supplied: only the consolidated report changes.
+That is exactly what happened.** The deletion count is **zero**, which mechanically proves that no
+prior line of this record was rewritten or removed — revision 6 is pure append, in the two places
+the revision discipline provides for: the Revision History table and a new trailing section.
+
+| Check | Result |
+|---|---|
+| New markdown report created | **No** — §36 appended to the same living record |
+| Historical evidence deleted | **No** — §1–§35 are byte-identical except the Revision History table, which gained row 6 and a revision-6 paragraph |
+| Region created | **No** |
+| Geometry created or invented | **No** |
+| Seed or demo data promoted (`SEED_SPATIAL_MAP`, `RGN-BLR`, `Campus.center*`, `seedDefaultZones()`) | **No** — classified and explicitly rejected |
+| OSM extract created or downloaded | **No** |
+| `Region` schema modified | **No** — `prisma/schema.prisma` untouched |
+| Migration added | **No** |
+| H3 resolutions modified | **No** — `cells.js` untouched; **D2 not reopened** |
+| Routing infrastructure created, engine installed, configured or deployed | **No** |
+| Engine selected | **NO** |
+| B1 adapter work redone or modified | **No** — `tools/routing/**` untouched |
+| Benchmark adapter contract modified | **No** |
+| `ADR-33` modified, reopened, or D4 re-audited | **No** — read only; not one byte changed |
+| New ADR created | **No** |
+| Solver, calibration, thresholds modified | **No** — no file under `src/engine/solve/`, `src/engine/config/register/` or any threshold touched |
+| Phase 16 code touched | **No** |
+| Tests weakened, skipped, added or deleted | **No** — no test file touched |
+| Commit created | **No** |
+
+**Verification not re-run, and deliberately so.** No source, test, tool, register or configuration
+file was modified, so the regression figure and the gate results are those of record and no new
+figure is claimed: **142 suites / 6 202 tests / 0 failures**; `gate:tenets` **PASS**,
+`gate:legacy` **PASS**, `gate:params` **PASS**; `routing:b1` exits 0 with every candidate
+`NOT_MEASURED`; `gate:calibration` **FAIL at 39**, correctly.
+
+**The read-only probes disclosed in full.** One `node -e` one-liner importing
+`src/engine/config/service.js` and calling `defaultSnapshot()`; the remainder were `find`, `grep`,
+`git status`, `git diff --stat`, `git log` and `git show --stat`. They write nothing, mutate
+nothing, and touch no database. They are diagnostics and they are not evidence for any gate.
+
+---
+
+### 36.11 Final Status — Revision 6
+
+```
+D1:                   WAITING FOR OPERATIONS/COMMERCIAL DECISION
+D3:                   STILL OPEN — EXTERNAL (Product + Fleet Engineering); blocks B1 Step 1 with D1
+D8:                   STILL OPEN — EXTERNAL (Operations); vintage and cadence behind D1,
+                      downtime budget behind B1 Step 4
+D4:                   RATIFIED (ADR-33, 2026-08-09) — not reopened
+D2:                   CLOSED globally (FINE 8 / COARSE 5) — not reopened; residual behind D1 field 2
+
+B1 STEP 2:            COMPLETE
+B1 NEXT RELEASED STEP: NONE — Step 1 remains blocked by D1 and D3
+B1 ENGINE SELECTION:  NOT YET PERFORMED
+B1:                   STILL BLOCKED (Steps 1, 3, 4, 5)
+PHASE 15:             STILL BLOCKED
+PHASE 16:             NOT READY
+```
+
+**NEXT ACTION — an external decision, not an engineering task:**
+
+> **Operations + Commercial: supply the five-field D1 decision of §36.3.1 — a stable `regionId` and
+> name, the region kind (one of *site* / *campus* / *depot catchment* / *metro service area*), the
+> authoritative serviceable boundary as a GeoJSON `Polygon` or `MultiPolygon` in WGS-84
+> (EPSG:4326), `[lon, lat]` order, the CRS if it is not EPSG:4326, and a version label with a
+> date.**
+>
+> It requires no vendor, no hardware, no budget and no engineering — one file and one paragraph.
+> Until it exists there is no extract, no contraction hierarchy, no benchmark run, no B1 ADR, no
+> routing client, no composition root and no shadow window; and the 14-day shadow at the end of
+> that chain is the longest irreducible wall-clock item in Phase 15.
+>
+> **Send D3 in parallel** — the agent classes and their real speed models — because Step 1 needs
+> both, and D3 is answerable today without knowing where we operate.
+
+---
+
+*End of Phase 15 Consolidated Remediation Report, revision 6. No new report was created — this is
+the same single living record revisions 1–5 wrote. D1 was not supplied and was therefore not
+closed: no region was created, no geometry invented, no seed or demo artefact promoted, no OSM
+extract created, no `Region` schema or H3 resolution changed, no routing infrastructure created,
+no engine selected or deployed, `ADR-33` was not reopened, D2 was not reopened, no threshold or
+calibration value was changed, no solver file was touched, no test was weakened, and no commit was
+created.*
+
+---
+
+## 37. Engineering Remediation — the Gates D1, D3 and D8 Were Waiting Behind
+
+**Purpose of this pass.** §36 established that the three open decisions have not been supplied and
+stopped there, correctly. This pass asks the complementary question: **of everything those
+decisions block, how much is actually an engineering deficiency that can be fixed now?**
+
+The answer turned out to be substantial, and it centres on a distinction §36 itself drew and then
+left unactioned. D1's *decision* is Operations + Commercial's. D1's **acceptance path** — the
+thirteen checks §30.5.5 records, none of which existed in code — is Engineering's, and building it
+requires no coordinate. The same split holds for D3 (the speed model is Product + Fleet
+Engineering's; refusing a stub before it reaches hierarchy construction is not) and for D8 (the
+vintage and cadence are Operations'; refusing a missing one is not).
+
+**This section closes one finding — N21 — and invents nothing.** Everything a decision owner must
+still supply is unchanged from §36.3.1 and is restated in §37.9.
+
+---
+
+### 37.1 What this pass changed, in one paragraph
+
+Six source files and one script entry; four test files added or extended. It implements the D1
+acceptance gate (V-1 … V-13), makes the publish path mechanically reject a fabricated region map,
+gives the speed model a routability contract distinct from its §2.2 structural one, gives extract
+metadata a vintage/cadence/downtime contract, adds a five-state B1 readiness gate that reports
+`BLOCKED` with an owner instead of a silent exit 0, and fixes two genuine defects found auditing
+the already-complete Step 2 work. **Regression: 144 suites / 6 265 tests / 0 failures** (was 142 /
+6 202). Every gate's result is unchanged, including `gate:calibration`'s **FAIL at 39**.
+
+---
+
+### 37.2 D1 — the engineering side, built; the decision, untouched
+
+#### 37.2.1 What existed before this pass
+
+§30.5.1 lists ten checks that already ship and block at publish. **Every one of them is about
+containment** — a zone naming a region, a cell naming a zone, region→shard being a function. Not
+one of them looks at a boundary, because no code path in the repository has ever accepted one.
+§30.5.5 records thirteen further checks the D1 gate *should* apply, and §36.2 records their state
+in one line: *"No geometry was received, so no check was run"* — but the checks did not exist
+either, so a geometry received tomorrow would have had nothing to be checked against.
+
+That is the deficiency this pass fixes, and it is the one the closure brief describes as
+*"engineering deficiencies that would prevent the system from safely accepting a legitimate D1
+decision later."*
+
+#### 37.2.2 `src/engine/spatial/regionBoundary.js` — V-1 … V-13, implemented
+
+| Check | §30.5.5 says | Now |
+|---|---|---|
+| **V-1** geometry is `Polygon` / `MultiPolygon` | required | implemented — a `Point`, `LineString`, `GeometryCollection` or `Feature` is refused with the reason (*only an areal geometry can be cut into a cover or an extract*) |
+| **V-2** rings closed, ≥ 4 positions | required | implemented, per ring, per polygon of a MultiPolygon |
+| **V-3** no self-intersection | required | implemented — pairwise segment crossing over each ring, collinear overlap included. **Runs before V-4 deliberately**: a symmetric bow-tie has a shoelace area of exactly zero, so an area-first order would report "encloses nothing" for a geometry whose real defect is an undefined interior |
+| **V-4** non-empty, non-zero area | required | implemented |
+| **V-5** WGS-84 range, `[lon, lat]` axis order | *"the single most common real-world error and the only check that catches it before the cover is silently wrong"* | implemented, and **deliberately one-sided**. What is provable is the converse — a second element outside ±90° cannot be a latitude — and that is what is asserted. Where the ordering is genuinely ambiguous **nothing is claimed and nothing is corrected**: a re-ordered geometry is a new authoritative file from its author, not an adjustment made by the consumer |
+| **V-6** CRS is EPSG:4326 or reprojection is explicit | required | implemented — and an **absent** CRS is a rejection, not an assumed 4326. §4.1 rule 3: state is never inferred from the absence of data, and a projected geometry read as degrees produces a plausible boundary in the wrong place |
+| **V-7** `regionId` present, unique, stable | *"already enforced"* at the map level | sharpened at the declaration level: an id that differs from its own trimmed form is two keys |
+| **V-8** derived cover non-empty | required | implemented over a **supplied** cover |
+| **V-9** fine-cell count in 10³–10⁵ or a recorded exception | *"Not currently enforced anywhere"* | implemented, with the exception required to be **stated** — an unstated exception and a defect look identical |
+| **V-10** every published cell id is a valid H3 index, except §6.2 site-local zones | *"Not currently enforced"* | implemented. See §37.2.3 — this is N21 |
+| **V-11** regions do not overlap | required | implemented — bbox pre-filter, then edge crossing, then containment-without-crossing (the case a bbox test alone misses). Report ordered by `regionId` so two runs produce identical text (§9.6) |
+| **V-12** every charger/depot cell lies in the region's cell set | *"does not exist"* | implemented as a **set-membership check over published cell ids**, not a point-in-polygon test — containment is by assignment (§3.6) |
+| **V-13** extract covers bbox + margin | *"cannot be written before B1"* | implemented **conditionally and honestly**: with no supplied margin it returns `NOT_CONFIGURED` and says why (*the margin's size is a property of the chosen engine's snapping and border behaviour, measured at B1 Step 1/3*). It never passes by default |
+
+**§36.4's refusal to build V-9/V-10 is superseded, and the reason it was made is answered rather
+than overruled.** §36.4 declined on the ground that *"§6.2 permits non-geodesic tokens for
+site-local graph zones, so the correct rule is conditional and choosing that condition is Phase 9 /
+Architecture's call."* That is right, and the conditional turned out to be resolvable **without
+choosing anything**: rather than inferring which cells are site-local, the rule requires the map to
+**declare** it. A cell may claim §6.2's exemption by carrying `indexing:
+"SITE_LOCAL_GRAPH_ZONE"` and naming its site; a cell that declares nothing is treated as geodesic
+and must be a valid H3 index. That is fail-closed per §4.1 rule 3, it invents no policy, and it
+leaves Architecture free to widen the exemption later without any check having pre-empted it.
+
+**What the module does not contain.** No coordinate, no bounding box, no polygon, no region id, no
+region kind, no default, no fallback. A test asserts it mechanically — the module's code holds no
+decimal-degree literal — because a file whose job is to validate regions is the easiest place in
+the tree for one to appear later without anybody noticing.
+
+#### 37.2.3 N21 — CLOSED
+
+§30.5.2 proved by execution that `hierarchy.validate(SEED_SPATIAL_MAP).ok → true` with zero
+problems on a map whose every cell id is a placeholder token, and concluded: *"the publish path
+would today accept a fabricated, geometry-free region map indistinguishable from a derived one.
+The guard that makes 'do not promote seed geometry' mechanical rather than a matter of reviewer
+diligence does not exist."* §36.2 restated it as the standing risk and added that it *"should be
+tightened before the first spatial map is published, not after."*
+
+It now exists, in two places and at two strengths:
+
+- **`hierarchy.validateForPublish(map)`** — `validate()` plus V-10, for a caller checking a map it
+  is *about to* publish.
+- **`validators.js` A6** — a **BLOCKING** publish-time finding, which is the one that is actually
+  load-bearing. `spatial.cells` is checked at H3 resolution 8 and `spatial.coarseCells` at
+  resolution 5, so a fine cell published at the coarse band — which silently changes the §20.3
+  cache key space and the §6.3 k-ring bounds while looking well-formed — is caught too.
+
+**`hierarchy.validate()` is deliberately unchanged.** It answers §3.6's containment question and
+was built against an opaque token *because B5 was open*, which `cells.js`'s own header states.
+Tightening it would break the durable `CellAssignment` mirror and the seed for a reason that
+belongs at publish time. The two functions now answer the two different questions the two moments
+ask, and a test asserts both halves: the token map still passes containment, and it can no longer
+be published.
+
+A6 **passes vacuously on an absent map**, exactly as V8 does. D1 is undecided, `snapshot.spatial`
+is `null`, and an absent map is not an invalid one.
+
+#### 37.2.4 What was still not done, and why
+
+No region was created. No geometry, bounding box, OSM extract, `Region` schema change, migration,
+H3 resolution change or routing infrastructure. `SEED_SPATIAL_MAP` and `RGN-BLR` were not promoted
+— and a test now asserts that supplying the seeded region *as* a D1 answer is **refused**, because
+it carries no boundary. **The polygon → H3 cover derivation (G2/G3) was still not built**, and
+§36.4's reasoning for that stands unchanged: it would have no input, and its only test data would
+be invented geometry. A cover is **validated** here; it is never computed here.
+
+---
+
+### 37.3 D3 — the contract hardened; no speed model invented
+
+#### 37.3.1 The defect
+
+`validateModel()` requires all six §2.2 elements to be **declared**, and the seeded
+`MOB-SIDEWALK-DEFAULT` declares all six. Its `speedModel` is
+`{ note: "Populated by the routing integration in Phases 7–9 (blocking decision B1)" }`. It is an
+object, so every "is it declared?" check passes, and it contains nothing a routing engine could
+weight an edge with. **A stub that reads as present is more dangerous than an absent field, because
+absence is at least visible.**
+
+#### 37.3.2 What was added
+
+`speedModelStatus(model)` classifies against §2.2's own six factors — *"speed as a function of road
+class, gradient, surface, payload mass, congestion, and weather"* — into `ABSENT`, `STUB`,
+`INCOMPLETE` or `DECLARED`. `validateRoutingReadiness(model)` is the B1 Step 1 question:
+`validateModel()` plus "and can this weight an edge?"
+
+**No value is read, checked, defaulted or ranged.** The classification asks only whether the
+declaration *addresses* each factor, which is the difference between a model and a placeholder and
+is checkable without knowing a number. A factor declared as an opaque object is `DECLARED` and its
+contents are never inspected — because a speed, a gradient response, a congestion coefficient and a
+weather coefficient are D3's, and §25.4 makes inventing one a commissioning-gate violation: *"a
+heterogeneous fleet with copy-pasted parameters will make confidently wrong cross-class
+comparisons, which is worse than not comparing at all."* A test asserts the module exports no
+number at all, which is the mechanical form of that promise.
+
+**`validateModel()` is unchanged**, so `ADR-33` rider 2 — *"the Phase 8 routing client MUST call
+`validateModel()` before it keys"* — is unaffected. The new check is stricter and separate, not a
+redefinition.
+
+> **Audited by execution, revision 8 (§38.6).** Both functions were driven against adversarial
+> declarations. `ABSENT`, `STUB`, malformed and `INCOMPLETE` are all refused, as intended; value-
+> level defects (`"TBD"`, `NaN`, `Infinity`, negative, zero) reach `DECLARED`. **That boundary is
+> the architecture's, not a defect** — §2.2 states no representation for the speed model, so a
+> value check would have to invent one — and it is recorded as closure criterion **C6** instead of
+> patched around. **No change was made to either function.** §38.6.3 states the reasoning in full.
+
+#### 37.3.3 The fabricated speed the benchmark was supplying
+
+Found auditing the harness rather than the adapters. `b1Benchmark.js` read:
+
+```js
+energyWhPerMetre: (engine.profile && engine.profile.energyWhPerMetre) || 0.05,
+speedMetresPerSecond: (engine.profile && engine.profile.speedMetresPerSecond) || 5,
+```
+
+`5` is **a fleet speed in metres per second** — D3's central quantity, the one §36.6 records as
+undecided — supplied by a benchmark harness to any adapter that declared none.
+`chargerReachabilityCache.buildEntry` computes `travelSeconds + intraCellOffsetM /
+speedMetresPerSecond` and `distanceM × energyWhPerMetre`, so both reached the entries the
+return-leg rows were measured over.
+
+It is now **required**. An adapter declaring no usable profile is not measured; every row stays
+`NOT_MEASURED`, and the message names D3 and its owner. `contract.normaliseConfig` already required
+`profile` of the three shipped candidates, so this refuses only a hand-written adapter passed by
+module path — which is precisely the path that could have been measured against an invented speed.
+A zero profile is refused for the same reason: `0` would not fail loudly, it would produce
+`Infinity` inside the intra-cell correction and surface as an empty cache.
+
+---
+
+### 37.4 D8 — the contract hardened; no value chosen
+
+§36.7 splits D8 into three parts and records that none has a recording site anywhere in the tree:
+*"`CellAssignment.mapVersion` defaults to `0` and is explicitly 'not a foreign key', and no map
+provenance record exists anywhere."* There is now one, in the readiness gate's extract block, and
+all five of its fields are **required and operator-supplied**:
+
+| Field | D8 part | Refused when absent, with |
+|---|---|---|
+| `identity`, `source` | — | *a stable name every measurement is attributed to; where the snapshot came from, so a re-cut can be reproduced* |
+| `vintage` (ISO date) | **part 1** | *never inferred from a file timestamp: a copied file has a new timestamp and the same vintage* |
+| `refreshCadenceDays` | **part 2** | *it trades against the region's real rate of physical change and is Operations', not Engineering's. No cadence is chosen here* |
+| `recontractionDowntimeBudgetSeconds` | **part 3** | *§5.2 requires the routing service available throughout and a re-contraction is a rebuild, not a reload. The number is Operations' to state and Step 4's to measure against* |
+
+**Staleness cannot silently pass.** With every field present, an extract older than its own stated
+cadence is `FAIL` — the failure is silent by construction otherwise, because a stale extract still
+answers every query, over a map the region no longer has. With no evaluation date supplied it is
+`NOT_MEASURED`, never `PASS`. The evaluation date is a **parameter, not a clock read**: a readiness
+report that changed because it ran at a different minute would not be reproducible, and §9.6's
+determinism discipline applies to a tool's output as much as to a round's.
+
+**No cadence, vintage or downtime budget was chosen.**
+
+The adapter layer's `deployment` block was hardened in the smaller, matching way: its four fields
+are still carried opaquely, but a **placeholder** in one is now refused. "TBD" satisfies "a
+non-empty string" and satisfies nothing else — it would reach the adapter's `description`, reach
+the Step 5 record, and read there as though somebody had answered. The token list is deliberately
+narrow and excludes `"none"` and `"not built"`, which are the *truthful* answers for a candidate
+Step 1 has not deployed; a check that refused an honest negative would only teach operators to
+write something that reads better.
+
+---
+
+### 37.5 B1 Step 2 — audited, not rewritten; two real defects found
+
+Per the brief, the shipped adapters were audited rather than restyled. **No adapter was rewritten,
+no engine capability was reinterpreted, and GraphHopper's lack of a native matrix endpoint remains
+a recorded capability fact with no recommendation attached to it.**
+
+What the audit confirmed as already correct: OSRM's `NoSegment`/`NoRoute` split, Valhalla's
+`to_index` keying and its explicit `units` check, GraphHopper's index-ordered fan-out, the
+`NOT_MEASURED` vs `PASS`/`FAIL` semantics, whole-query timeout budgeting, `assertSelfHosted`,
+N29's required spread source, and the `inhouse` candidate's correct `NOT_IMPLEMENTED`.
+
+Two defects were found, and both are fixed:
+
+**Defect 1 — a host-dependent total order (§9.6, R10).** `contract.nearestK` broke a distance tie
+with `chargerId.localeCompare(...)`, and so did `chargerReachabilityCache.buildEntry`.
+`determinism/ordering.js`'s header rules that out in as many words: *"`localeCompare` depends on
+the host's ICU data and collation locale … A total order whose result depends on where it ran is
+not a total order for replay purposes."* It is load-bearing rather than theoretical because the
+order decides **which chargers survive the truncation to `k`** — two chargers at an identical
+distance and duration is not an edge case, and a build machine and a shard that truncated a tie
+differently would write two different entries under one cache key, surfacing only as an unexplained
+replay diff. Both now use `compareStrings`. The regression test uses `"a"` versus `"B"`, which ICU
+and code-unit order disagree about.
+
+**Defect 2 — the fabricated profile fallback**, §37.3.3.
+
+Neither correction touches the frozen contract or `ADR-33`.
+
+---
+
+### 37.6 B1 readiness — five states, and a step table that is now machine-checked
+
+`b1Benchmark.js` had three verdicts, none of which distinguishes *"nobody has measured this"* from
+*"this cannot be measured until Operations declares a region."* Both exit 0, and a command that
+exits 0 is read as green. §36.8's step table said the right thing **in this document only**;
+nothing in code said it, so nothing in code could stop a future pass reporting a stub run as Step 3
+evidence.
+
+`tools/routing/b1Readiness.js` (`npm run routing:readiness`, and printed inside `routing:b1`) adds
+the two missing states and computes §36.8's table from repository state. Run against the repository
+as it stands today:
+
+```
+OVERALL: BLOCKED
+
+BLOCKED   D1  [Operations + Commercial]      no authoritative operating region has been declared
+BLOCKED   D3  [Product + Fleet Engineering]  no fleet speed model exists — edge costs cannot be derived
+BLOCKED   D8  [Operations]                   vintage, cadence and re-contraction budget all undecided
+
+BLOCKED   step 1  BLOCKED — authoritative operating region unavailable;
+                  fleet mobility/speed model unavailable          blocked by: D1, D3
+PASS      step 2  3 adapters implemented (osrm, valhalla, graphhopper);
+                  1 correctly NOT_IMPLEMENTED (inhouse)
+BLOCKED   step 3  BLOCKED via Step 1 — nothing deployed to measure blocked by: D1, D3
+BLOCKED   step 4  BLOCKED — extract vintage/refresh decision unavailable;
+                  authoritative operating region unavailable      blocked by: D1, D8
+BLOCKED   step 5  BLOCKED — no recorded evidence exists           blocked by: D1, D3, D8, Steps 1, 3, 4
+
+A benchmark run now would NOT be admissible as B1 Step 3 evidence.
+NO ENGINE IS SELECTED, RANKED OR RECOMMENDED BY THIS TOOL.
+```
+
+Three properties are worth naming:
+
+- **`stepEvidenceAdmissible: false`** is carried into the benchmark's JSON and printed above its
+  rows. It is what stops a number produced against a stub, on a build machine, over no extract,
+  being quoted later as the evidence B1's decision was made on.
+- **Step 5 is `BLOCKED` even when D1, D3 and D8 are all supplied**, because §6.1 makes B1 a
+  decision on recorded evidence and Steps 1, 3 and 4 have none. A test asserts exactly this.
+- **The gate exits 0 always.** A missing decision is not a build failure, and making it one would
+  only teach people to stop running the command.
+
+The gate reads the operator's answers through the **one existing seam**, `ROUTING_B1_DEPLOYMENT`,
+extended with `region`, `cover`, `chargers`, `mobility` and `extract` keys. Nothing in `Backend/`
+ships such a file and this pass did not write one.
+
+---
+
+### 37.7 D2 — not reopened, and its residual is now runnable
+
+`cells.js:181–184` is byte-identical: **FINE 8 / COARSE 5**, unchanged and not reopened.
+
+What §36.2 records as the open residual — *"because D1 field 2 was not supplied, the res-8 fitness
+check (G10) cannot be run and D2's residual cannot be closed"* — is now **implemented and waiting
+for its input**. `d2ResidualCheck({ kind, fineCellCount })` returns `NOT_CONFIGURED` today, and
+when D1 arrives it answers in one comparison: inside §3.6's 10³–10⁵ band the residual closes;
+outside it, the check reports the N23 tension and states that resolving it — a finer resolution, or
+§6.2's per-region override that `cells.js` does not have — is **Architecture's, on this evidence,
+not resolved here**.
+
+It is reported **beside** D1's verdict rather than counted among D1's problems. An out-of-band
+cover is already V-9's finding against the cover, and charging an Architecture question to the
+people who supplied a perfectly valid boundary would send the question to the wrong desk.
+
+---
+
+### 37.8 Evidence table
+
+| ISSUE | STATUS BEFORE | ACTION | STATUS AFTER | EVIDENCE |
+|---|---|---|---|---|
+| **N21** — publish path cannot reject a fabricated region map | **OPEN**, standing risk (§30.5.2, §36.2) | V-10 implemented; `hierarchy.validateForPublish`; `validators.js` **A6**, BLOCKING | **CLOSED** | `spatialRegionBoundary.test.js` — the token map is refused at publish, the derived one accepted, absent map still vacuous |
+| **V-1 … V-7** — D1 geometry acceptance | **recorded, not implemented** (§30.5.5) | `spatial/regionBoundary.js` | **IMPLEMENTED** | 12 tests; one fixture per check |
+| **V-5** axis order — the silent-wrong-answer check | **not implemented** | one-sided provable check; never auto-corrects | **IMPLEMENTED** | `V-5 — AXIS ORDER` test |
+| **V-8, V-9** — cover emptiness and §3.6 cardinality | *"not currently enforced anywhere"* | implemented; exception must be recorded | **IMPLEMENTED** | cover tests |
+| **V-11, V-12** — region overlap, charger containment | *"do not exist"* | implemented | **IMPLEMENTED** | overlap incl. containment-without-crossing; V-12 as set membership |
+| **V-13** — extract margin | *"cannot be written before B1"* | implemented conditionally; `NOT_CONFIGURED` without a margin | **IMPLEMENTED, HONESTLY GATED** | V-13 tests |
+| **D2 residual (N23)** | **unrunnable** (§36.2) | `d2ResidualCheck` implemented | **RUNNABLE ON D1 ARRIVAL** — D2 untouched | residual tests; `H3_RESOLUTION` asserted 8/5 |
+| **D3 stub reaching routing** | `validateModel` accepts the stub; nothing stricter existed | `speedModelStatus` + `validateRoutingReadiness` | **REFUSED** | seeded stub classified `STUB`, `routable: false` |
+| **D3 speed fabricated by the harness** | `\|\| 5` m/s, `\|\| 0.05` Wh/m | fallbacks removed; profile required | **REFUSED** | profileless and zero-profile adapter fixtures → `NOT_MEASURED` |
+| **D8 has no recording site** | *"no map provenance record exists anywhere"* (§36.7) | five required extract fields; staleness evaluated | **CONTRACT EXISTS; VALUES STILL D8's** | each field named on absence; stale extract `FAIL` |
+| **D8 placeholders in the adapter deployment block** | any non-empty string accepted | narrow placeholder refusal | **REFUSED** | "TBD"/"n/a"/"unknown" rejected; "none"/"not built" accepted |
+| **B1 step status** | asserted in this document only (§36.8) | five-state readiness gate | **MACHINE-CHECKED** | `routingB1Readiness.test.js` |
+| **A blocked run reading as evidence** | nothing marked it | `stepEvidenceAdmissible` | **MARKED INADMISSIBLE** | benchmark JSON + stdout |
+| **`nearestK` / `buildEntry` tie-break** | `localeCompare` — host-dependent (§9.6, R10) | `compareStrings` | **FIXED** | `"a"` vs `"B"` regression, incl. truncation |
+| **D1 decision** | **OPEN** | *nothing* | **STILL OPEN** | no region, geometry, bbox or extract created |
+| **D3 decision** | **OPEN** | *nothing* | **STILL OPEN** | no speed, mass, CoG or coefficient chosen |
+| **D8 decision** | **OPEN** | *nothing* | **STILL OPEN** | no vintage, cadence or budget chosen |
+| **B1 Steps 1, 3, 4, 5** | **BLOCKED** | *nothing released* | **STILL BLOCKED** | readiness gate |
+| **Engine selection** | **NOT PERFORMED** | *nothing* | **STILL NOT PERFORMED** | `engineSelected: false`, asserted |
+
+---
+
+### 37.9 Remaining blockers — why engineering cannot solve them, and what unblocks
+
+**D1 — the target operating region.** *Owner: Operations + Commercial.* It is a commercial
+commitment about where we serve and an operational commitment about where we can run; §7.5 F33
+makes the boundary customer-visible, so a stop outside it is a refused mission. No amount of code
+produces it. **Exact input:** the five fields of §36.3.1 — a stable `regionId` and name; the kind
+(*site* / *campus* / *depot catchment* / *metro service area*); the serviceable boundary as a
+GeoJSON `Polygon` or `MultiPolygon` in WGS-84 `[lon, lat]`; the CRS if not EPSG:4326; a version
+label and an ISO date. **Unblocks:** the extract cut, the H3 cover, the cache key space, charger
+precompute, `stop.serviceable`, D2's residual, the spatial map publish, and — jointly with D3 — B1
+Step 1. It requires no vendor, no hardware, no budget and no engineering: one file and one
+paragraph.
+
+**D3 — the fleet's agent classes and their mobility models.** *Owner: Product + Fleet Engineering.*
+A speed model is a measured property of real hardware. **Exact input:** the agent classes this
+deployment operates and, per class, §2.2's six elements with a real speed model over road class,
+gradient, surface, payload mass, congestion and weather. **Unblocks:** routing edge costs, hence
+per-profile contraction hierarchies, hence B1 Step 1 jointly with D1. **Answerable today** — it is
+not a property of a place and does not wait on D1.
+
+**D8 — extract vintage, refresh cadence, re-contraction window.** *Owner: Operations.* **Exact
+input:** the OSM snapshot date the extract is cut from; how often it is re-cut; the routing
+downtime a rebuild may take. **Unblocks:** B1 Step 4. Its vintage and cadence trail D1; its
+downtime budget's *number* trails Step 4's measurement, though the policy shape does not.
+
+**Also unchanged and untouched by this pass:** D5, D6, D7 (deferred by `ADR-33` rider 1), **B8**
+(the calibration owner, gating 37 of the 39), N22 (`stop.serviceable` has no producer — it is G5,
+and G5 is a derivation of a region that does not exist), N16/N17/N18, Q-20.1, the rollback
+rehearsal, the `locality` evidence class, and the 11 worker cadence parameters.
+
+---
+
+### 37.10 Change control — Revision 7
+
+```
+BEFORE   git status --porcelain  ->  M PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md   (revision 6)
+AFTER    16 paths: 10 modified, 6 added
+```
+
+**Modified (10)**
+
+| File | Change |
+|---|---|
+| `src/engine/spatial/hierarchy.js` | `validateForPublish()` added; `toConfigPayload` carries `indexing`. **`validate()` unchanged** |
+| `src/engine/config/validators.js` | **A6** added, BLOCKING, wired into `validatePublish`, vacuous on an absent map |
+| `src/engine/domain/mobilityModel.js` | `SPEED_MODEL_FACTORS`, `SPEED_MODEL_STATUS`, `speedModelStatus()`, `validateRoutingReadiness()`. **`validateModel()` unchanged** |
+| `src/engine/routing/chargerReachabilityCache.js` | `localeCompare` → `compareStrings` in `buildEntry` |
+| `tools/routing/adapters/contract.js` | `nearestK` determinism fix; placeholder refusal in `normaliseDeployment` |
+| `tools/routing/b1Benchmark.js` | readiness printed and carried in JSON; `--readiness`; **fabricated profile fallbacks removed** |
+| `package.json` | `routing:readiness` script |
+| `tests/engine/configValidators.test.js` | V8 fixtures `"c1"`/`"c2"` → real H3 indices — see below |
+| `tests/engine/routingB1Adapters.test.js` | one assertion narrowed — see below; two defect regressions added |
+| `tests/engine/routingB1Benchmark.test.js` | profile-refusal tests added |
+
+**Added (6)** — `src/engine/spatial/regionBoundary.js`, `tools/routing/b1Readiness.js`,
+`tests/engine/spatialRegionBoundary.test.js`, `tests/engine/routingB1Readiness.test.js`,
+`tests/engine/helpers/profilelessRoutingAdapter.js`,
+`tests/engine/helpers/zeroProfileRoutingAdapter.js`.
+
+**The two existing-test changes, disclosed because they are the ones that could hide a weakening.**
+
+1. `configValidators.test.js` — three V8 fixtures published `"c1"` and `"c2"` as **fine cells**.
+   Under the B5-settled contract those fixtures were invalid, which is exactly what A6 now says, so
+   they were **corrected rather than the check relaxed**: they use `cells.cellForPoint(0, 0, FINE)`
+   and `(0, 30, FINE)` — two arbitrary equator points, minted through the module rather than pasted
+   as tokens, chosen because nothing operates there and nobody could read them as a deployment
+   decision. V8's rule is about containment and is testable at any cell id that is a real one.
+   **All four V8 assertions are unchanged in strength.**
+2. `routingB1Adapters.test.js` — one assertion read `expect(printed).not.toMatch(/\bPASS\b\s+\w/)`,
+   i.e. *"the word PASS appears nowhere in this report"*. The readiness gate's step 2 legitimately
+   reads `PASS`. The assertion was **narrowed to what it was protecting and made stronger in the
+   process**: it now walks `benchmark.ROWS` and asserts **each named §20.1 row** is printed
+   `NOT_MEASURED`, and additionally asserts step 1 is `BLOCKED` and that the report says a run is
+   inadmissible as Step 3 evidence.
+
+**No test was deleted, skipped or weakened.** Net test count **+63**.
+
+| Check | Result |
+|---|---|
+| New markdown report created | **No** — §37 appended to the same living record |
+| Historical evidence deleted or rewritten | **No** — §1–§36 unchanged but for the Revision History gaining row 7 |
+| Region / geometry / bbox / OSM extract created | **No** |
+| `SEED_SPATIAL_MAP` or `RGN-BLR` promoted | **No** — and supplying it as a D1 answer is now **refused**, with a test |
+| Speed / mass / CoG / congestion / weather / gradient value chosen | **No** — the module exports no number, asserted |
+| Extract vintage / refresh cadence / downtime budget chosen | **No** |
+| Prisma schema or migration changed | **No** |
+| H3 resolutions changed; D2 reopened | **No** — `cells.js` untouched |
+| `ADR-33` modified or reopened; new ADR created | **No** |
+| Routing engine installed, deployed or configured | **No** |
+| **Engine selected, ranked or recommended** | **NO** |
+| Threshold, calibration value or register entry changed | **No** — `gate:params` PASS at 242 parameters, unchanged |
+| Solver file touched | **No** |
+| Phase 16 code touched | **No** |
+| Commit created | **No** |
+
+---
+
+### 37.11 Tests run, and tests not run
+
+**Run, after each logical change and then in full:**
+
+| Suite / gate | Result |
+|---|---|
+| **Full regression** (`npx jest --runInBand`) | **144 suites / 6 265 tests / 0 failures** (was 142 / 6 202) |
+| `gate:tiers` | **PASS** — 276 modules, 382 governed edges |
+| `gate:params` | **PASS** — 182 modules against 242 parameters, no bare constants |
+| `gate:tenets` | **PASS** — 273 modules |
+| `gate:privacy` | **PASS** |
+| `gate:erasure` | **PASS** — 3 decisions reproduced byte for byte |
+| `gate:legacy` | **PASS** — 4 retired modules absent across 300 files |
+| `gate:calibration` | **FAIL at 39 — correctly, and unchanged.** B8, not this pass |
+| `routing:b1` | exit **0**, every row `NOT_MEASURED`, readiness `BLOCKED` |
+| `routing:readiness` (new) | exit **0**, `OVERALL: BLOCKED` |
+| `sim:fidelity` | `NOT_MEASURED`, unchanged |
+| `safety:case` | **PASS** — 12 hazards, 38 predicates, 22 invariants; regenerated output byte-identical |
+
+`gate:params` initially failed on nine geometry constants in the new module — ring minimums,
+orientation codes, the shoelace divisor, WGS-84 range bounds. Each was annotated `@structural`
+with its reason, which is what the gate asks for; **no parameter was registered and no value was
+invented to satisfy it.**
+
+**Not run, and why:**
+
+- **B1 Steps 1, 3, 4, 5** — blocked by D1, D3 and D8. Running them would require deploying an
+  engine over an extract that does not exist.
+- **The rollback rehearsal, the 14-day shadow window, the soak** — unchanged from §12, §15 and
+  §36.9; none is this pass's and none is unblocked by it.
+- **Any measurement against a real routing engine** — none is deployed, and none was installed.
+
+---
+
+### 37.12 Final status — Revision 7
+
+> **Superseded by §38.12 (revision 8) for D3's line only.** Every other line below is unchanged
+> and was re-verified this pass. D3 moves from *"still open — external"* to **READY FOR PRODUCT +
+> FLEET DECISION**: the decision itself is still open and still external, and what changed is that
+> it is now precisely answerable (§38.9) and mechanically checkable on arrival (§38.7).
+
+```
+D1:                    WAITING FOR OPERATIONS/COMMERCIAL DECISION — unchanged
+                       (its ACCEPTANCE PATH is now built: V-1 ... V-13)
+D3:                    STILL OPEN — EXTERNAL (Product + Fleet Engineering)
+                       (a stub can no longer reach hierarchy construction or a measurement)
+D8:                    STILL OPEN — EXTERNAL (Operations)
+                       (extract metadata now has a contract and a staleness check)
+D4:                    RATIFIED (ADR-33) — not reopened
+D2:                    CLOSED globally (FINE 8 / COARSE 5) — not reopened;
+                       residual now IMPLEMENTED and awaiting D1 field 2
+
+N21:                   CLOSED — the publish path mechanically rejects a fabricated region map
+
+B1 STEP 1:             BLOCKED (D1, D3) — and it now says so, with owners
+B1 STEP 2:             COMPLETE — audited this pass; two defects found and fixed
+B1 STEPS 3, 4, 5:      BLOCKED
+B1 ENGINE SELECTION:   NOT PERFORMED
+B1:                    STILL BLOCKED
+PHASE 15:              STILL BLOCKED
+PHASE 16:              NOT READY
+```
+
+**Is B1 Step 1 now genuinely executable? No.** It needs a deployed engine over a real extract with
+per-profile hierarchies built, and that needs D1 and D3. What changed is that the repository now
+*refuses* to pretend otherwise, and that a legitimate D1 or D3 answer will be validated on arrival
+instead of being taken on trust.
+
+**Is Phase 15 complete? No.** `gate:calibration` is RED at 39, B1 is blocked, and the shadow, soak
+and rollback evidence classes are unchanged.
+
+**Is Phase 16 ready? No.** Its prerequisite is Phase 15, which is blocked.
+
+**NEXT ACTION — still an external decision, not an engineering task:**
+
+> **Operations + Commercial: supply the five-field D1 decision of §36.3.1.** It now has somewhere
+> to go and something to check it: put it in the `region` block of a `ROUTING_B1_DEPLOYMENT` module
+> and run `npm run routing:readiness`, which will validate it against V-1 … V-13 and report exactly
+> which B1 steps it releases.
+>
+> **Send D3 in parallel** — the agent classes and their real speed models — because Step 1 needs
+> both, and D3 is answerable today without knowing where we operate.
+
+---
+
+*End of Phase 15 Consolidated Remediation Report, revision 7. No new report was created — this is
+the same single living record revisions 1–6 wrote. This pass fixed engineering and decided nothing:
+no region, geometry, bounding box, OSM extract, spatial map, speed model, fleet class, mass, CoG,
+congestion, weather or gradient coefficient, extract vintage, refresh cadence, downtime budget,
+routing threshold, calibration value or benchmark result was created or chosen; no engine was
+selected, ranked, recommended, installed or deployed; no seed or demo artefact was promoted;
+`ADR-33` was not reopened; D2's global value was not touched; the Prisma schema and migrations were
+not changed; no test was weakened, skipped or deleted; and no commit was created.*
+
+---
+
+## 38. D3 Decision Readiness
+
+**Purpose of this pass.** §36.6 and §37.3 established that D3 is open and that a stub can no
+longer reach hierarchy construction. Neither answered the question this pass asks: **what,
+exactly, must Product + Fleet Engineering hand over, in what form, and how will we know the
+answer is complete?** D3 has been carried as "the fleet's agent classes and their mobility
+models" since §22.4, which is true and is not answerable as written — it does not say which
+fields, in what units, under which names, at what layer, or what engineering will derive
+afterwards.
+
+**This pass decides nothing and implements nothing.** No speed, coefficient, mass, centre of
+gravity, agent class, routing profile, congestion factor, weather factor, surface coefficient or
+gradient coefficient is chosen, defaulted, ranged or suggested anywhere below. The single
+deliverable is that D3 becomes **precisely answerable** by its owner. Everything the owner must
+supply is stated in §38.9; everything engineering derives afterwards is stated beside it so that
+the owner is not asked for it.
+
+**No source file was changed.** §38.6 audits the D3 validation implemented in revision 7 against
+the frozen architecture and records where its acceptance boundary lies, including three
+observations (**N31–N33**) that are properties of the *contract*, not defects in that validation.
+The reasoning for making no change is stated in full rather than asserted.
+
+---
+
+### 38.1 D3 Contract
+
+The trace runs from the decision to the artefact B1 Step 1 needs. Each stage is read from the
+working tree; nothing below is inferred from a name.
+
+#### 38.1.1 Stage-by-stage
+
+| # | Stage | INPUT | OUTPUT | OWNER | DEPENDENCY | VALIDATION |
+|---|---|---|---|---|---|---|
+| 1 | **Fleet agent classes** (`AgentClass`, `schema.prisma:1115–1140`) | The list of classes this deployment will operate at launch: `classId`, `name`, hardware revision, firmware version set | One `AgentClass` row per class, each pointing at **one** `MobilityModel` (`mobilityModelId`, nullable FK) | **Product** — which classes exist. Fleet Engineering — each class's parameters | None. **Not behind D1**: a class is a property of hardware, not of a place | §25.4's commissioning gate: *"an agent class without a complete, reviewed parameter set cannot be admitted to production allocation."* **No code implements that gate today** — recorded, not built (§38.6.5) |
+| 2 | **MobilityModel** (§2.2; `schema.prisma:976–992`) | Per model: the six §2.2 elements — traversal domain, permission set, speed model, kinematic limits, envelope constraints, dimensional footprint | One `MobilityModel` row per distinct locomotion behaviour. **Many classes may share one model** (the FK is class → model), so the profile count is driven by *distinct models*, not by class count | **Fleet Engineering** (values); **Architecture** (where a field lives, when §2.2 tabulates none — that is D6) | Stage 1 | `domain/mobilityModel.validateModel()` (`:112–138`) — all six elements declared and at least one recognised traversal domain. Structural only, by design: *"an absent element is a gap, not a permissive default"* |
+| 3 | **`traversalDomains()`** (`mobilityModel.js:72–77`) | `model.traversalDomain` — a single value or a composition | A de-duplicated, code-unit-sorted array over `SIDEWALK_GRAPH`, `ROAD_GRAPH`, `INDOOR_GRAPH`, `AIRSPACE_VOLUME` | **Engineering** — pure derivation. The *set* is D3's; the normalisation is not | Stage 2 | Unrecognised values are filtered out, not rejected — the function is **total**. An empty result is caught one level up by `validateModel()`. `ADR-33` bounds which members B1's engine must serve; a declared `INDOOR_GRAPH` or `AIRSPACE_VOLUME` class is **outside B1's scope**, not invalid (§38.7 criterion C7) |
+| 4 | **`routingProfileKey()`** (`mobilityModel.js:95–100`) | `{ modelId, traversalDomain }` + `{ loaded }` | `` `${modelId}:${domains.join("+")}:${loaded?"loaded":"unloaded"}` `` — the `profile` component of §20.3's cache keys | **Engineering** — derived, never stored beside the model, *"so that a model change cannot leave a cache keyed under a profile that no longer describes it"* | Stages 2–3 | **Total by construction**: an absent `modelId` or unrecognised domain yields `unknown:unknown:*`. `ADR-33` rider 2 therefore requires the Phase 8 client to call `validateModel()` **before** it keys. Enforced at the benchmark boundary at `adapters/contract.js:441–447` |
+| 5 | **`speedModel`** (§2.2; `mobilityModel.js:159`, `:188–237`) | Achievable speed as a function of road class, gradient, surface, payload mass, congestion, weather | The declaration a routing engine's profile is compiled from | **Product + Fleet Engineering. This is D3's blocking element** | Stage 2 | `speedModelStatus()` → `ABSENT` / `STUB` / `INCOMPLETE` / `DECLARED`, on *whether each factor is addressed*, never on a value. `validateRoutingReadiness()` (`:261–274`) refuses anything below `DECLARED` |
+| 6 | **Routing edge costs** | The speed model evaluated over the extract's edges, gated by the permission set and the kinematic gradient limit | A weight per edge per profile | **Engineering**, inside the procured engine — but it computes nothing without stage 5 | Stages 2–5 **and D1** (there is no extract without a region) | §20.3 item 6 splits this: the hierarchy is built over **free-flow** cost; **congestion is a multiplier layer** *"on cached free-flow times, updated per time bucket per road class, rather than re-routing on every congestion update"* (§38.4.2) |
+| 7 | **Contraction hierarchy** (§20.3 item 5) | Edge costs, per profile, per region extract | One precomputed hierarchy per `(profile, region)` — *"the precomputation is the optimisation"* | **Engineering / the procured engine** | Stage 6 | Count = (distinct mobility models) × 2 × (regions). Every factor is external: models are D3, regions are D1 |
+| 8 | **B1 Step 1** (`b1Benchmark.js:599`) | A deployed candidate engine over the target extract with per-profile hierarchies **built** | The precondition Steps 3, 4 and 5 measure against | **Engineering**, once D1 and D3 exist | Stages 1–7 | `b1Readiness.js:379–402` — `BLOCKED`, `blockedBy: ["D1","D3"]`, re-run this pass (§38.11) |
+
+#### 38.1.2 The two consumers that are behind D3 and *not* behind routing
+
+The trace above is B1's. Two shipped modules read the MobilityModel on a path that never touches
+a routing engine, and both are blocked by D3 alone:
+
+| Consumer | What it reads | Consequence today |
+|---|---|---|
+| **§6.4's admissible lower bound** — `candidates/lowerBound.js:79–81, 113–114, 146` | `agent.mobilityModel.kinematicLimits.maxSpeedMs` | Absent ⇒ `missing: ["agent.mobilityModel.kinematicLimits.maxSpeedMs"]` and `LB` is not computed, so §6.4 pruning cannot run. The module's own admissibility argument (`:24`) is that *"`maxSpeedMs` is declared as an upper bound on achievable speed, so dividing by it cannot overstate the fastest possible travel time"* — which makes **speed model ≤ `maxSpeedMs`** a correctness requirement, not a style preference (§38.7 criterion C5) |
+| **§6.3's cell expansion** — `candidates/expansion.js:138, 153` | `fleetBestCase.maxSpeedMs`, assembled across classes at `diagnostics.controller.js:625–643` | The fleet-wide best case is `null` while no class declares the field, so the k-ring bound has no speed to divide by |
+
+**This is the part of D3 that is not about routing at all**, and it is why D3 is worth answering
+even on a day when D1 has not moved.
+
+#### 38.1.3 The three feasibility predicates that read §2.2 elements directly
+
+Recorded because they fix the **field vocabulary** a D3 submission must use — these names are
+already shipped and a submission using different ones reads as absent:
+
+| Predicate | Reads | Behaviour when the field is absent |
+|---|---|---|
+| **F28** — route uses only permitted surface classes (`f28.js:59`, `:76–95`) | `permissionSet.surfaceClasses` (array); and `routingProfileKey(model, { loaded })` must equal `route.profileKey` | `ABSENT` → Class I → **DENY** |
+| **F29** — dimensional passage (`f29.js:45–51`, `:69–81`) | `dimensionalFootprint.widthMm`, `.heightMm`; `envelopeConstraints.maxKerbHeightMm`, `.maxGradientPct`; plan-side `peakLoadedMassKg` | The binding dimension is skipped or reported indeterminate → **DENY** |
+| **F31** — environmental envelope (`f31.js:49–58`, `:103–133`) | `envelopeConstraints.environmental` — a map `{ variableName: { max?, min?, unit? } }`, iterated by sorted key, each matched against a forecast variable of the same name | `ABSENT` → **DENY** |
+
+---
+
+### 38.2 Existing Mobility Data
+
+Everything that exists, classified. **AUTHORITATIVE** means published configuration or a
+reviewed production record; **SEED/DEMO** means a Phase 2 fixture; **DERIVED** means computed by
+shipped code from something else; **STUB** means present and empty of content; **MISSING** means
+no value and no place to put one.
+
+#### 38.2.1 The one model in the tree
+
+`prisma/seed.js:231–245`, `MOB-SIDEWALK-DEFAULT`, attached to `AC-SIDEWALK-DEFAULT`:
+
+| Field | Declared value | Class | Evidence / why |
+|---|---|---|---|
+| `AgentClass.classId` = `AC-SIDEWALK-DEFAULT` | present | **SEED/DEMO** | A Phase 2 fixture *"so that a backfilled Agent has a class to key its model-specific parameter sets from"* (`seed.js:222–228`). Its own comment: *"declarative placeholders, not calibrated values"* |
+| `modelId` = `MOB-SIDEWALK-DEFAULT` | present | **SEED/DEMO** | Same fixture. It is the first component of every routing profile key, so promoting it would name production cache entries after a demo row |
+| `traversalDomain` = `"SIDEWALK_GRAPH"` | present, scalar | **SEED/DEMO** | A recognised value, but a declaration about a fleet nobody has stated. Column is scalar `String` (`schema.prisma:981`) — a §25.3 composition cannot be stored, which is **D7**, deferred by `ADR-33` rider 1 |
+| `permissionSet.roadClasses` = `["footway","path","service"]` | present | **SEED/DEMO** | Not read by any consumer of `permissionSet` |
+| `permissionSet.surfaceClasses` | — | **MISSING** | **F28 reads exactly this field** (`f28.js:59`) and returns `ABSENT` → DENY without it. §2.2 lists surface types under the permission set |
+| `permissionSet` — gradients, kerb heights, restricted areas, airspace classes | — | **MISSING** | §2.2 tabulates all of them |
+| `speedModel` = `{ note: "Populated by the routing integration in Phases 7–9 (blocking decision B1)" }` | present | **STUB** | Classified `STUB` by `speedModelStatus()` — verified by execution this pass (§38.6.2). Zero of the six factors addressed |
+| `kinematicLimits.maxSpeedMps` = `1.5` | present | **SEED/DEMO**, and **MISSING** to its consumers | Every consumer of the §2.2 element reads **`maxSpeedMs`** — `lowerBound.js:80`, `expansion.js:138`, `verification.js:214`, `diagnostics.controller.js:632`. The seeded spelling is read by none of them. **N31**, §38.6.6 |
+| `kinematicLimits.maxGradient` = `0.08` | present | **SEED/DEMO**, and **MISSING** to its consumer | F29 reads the gradient limit as `envelopeConstraints.maxGradientPct` (`f29.js:49`, `:79`), a different element and a different name. **N32**, §38.6.6 |
+| `kinematicLimits` — acceleration, braking distance (payload-dependent), turning radius | — | **MISSING** | §2.2 tabulates all three. Braking distance is explicitly payload-dependent, which ties it to D6 |
+| `envelopeConstraints` = `{ maxWindMps: null, minVisibilityM: null }` | declared, both `null` | **STUB** | Declared-and-null passes `validateModel()` by design. F31 reads `envelopeConstraints.environmental` and finds nothing → DENY |
+| `envelopeConstraints.maxKerbHeightMm`, `.maxGradientPct` | — | **MISSING** | F29's two `atLeast: false` limits |
+| `dimensionalFootprint` = `{ widthMm: 600, heightMm: 900, lengthMm: 800 }` | present | **SEED/DEMO** | The one element that is complete *in shape*: F29 reads `widthMm` and `heightMm` and finds them |
+| **Tare mass, laden mass** | — | **MISSING** | No column on `model MobilityModel` (`schema.prisma:976–992`). **D6** |
+| **Centre of gravity** | — | **MISSING** | Same. What exists elsewhere is a different quantity: `ContainerModel.totalMassLimitKg` (a payload limit, §15.2) and the container CoG envelope read by F24 (`f24.js:51`) |
+| **Published configuration binding** | — | **MISSING** | `bindings.size === 0` (§36.1.1 row 6). **Nothing in the tree publishes a MobilityModel at all** — see §38.6.5 |
+
+#### 38.2.2 What is DERIVED, and therefore must not be asked of the owner
+
+| Artefact | Derived by | From |
+|---|---|---|
+| The normalised, sorted domain list | `traversalDomains()` (`mobilityModel.js:72–77`) | `traversalDomain` |
+| The routing profile key | `routingProfileKey()` (`:95–100`) | `modelId`, domains, `loaded` |
+| The profile **set** and the hierarchy **count** | arithmetic: distinct models × 2 × regions | D3 + D1 |
+| The `speedModel` readiness verdict | `speedModelStatus()` / `validateRoutingReadiness()` | the declaration alone |
+| The D3 gate verdict and which B1 steps it releases | `b1Readiness.assessD3()` / `assessSteps()` | the supplied `mobility` block |
+
+#### 38.2.3 The classification in one line
+
+**Zero fields are AUTHORITATIVE. One element is a STUB, one is declared-null, four fields are
+SEED/DEMO, and everything a routing engine or a Tier 0 predicate actually reads is MISSING.**
+The seeded model is not a partial answer to D3 that needs topping up; it is a Phase 2 fixture
+that satisfies a structural check, and §12's verdict stands: *"an honest blocker is preferable to
+an invented configuration."* **Nothing in it was promoted this pass.**
+
+---
+
+### 38.3 D3 vs D6 Boundary
+
+**D6 must remain a separate decision. It is not merged here, and it should not be merged.**
+
+**Why they are genuinely different questions.** §2.2 tabulates six elements and mass is not one
+of them; there is no mass or CoG column on `MobilityModel`. D6 is therefore first an
+**Architecture** question — *where do tare mass, laden mass and centre of gravity live?* — and
+only then a Fleet Engineering question about values. D3 asks Product which classes exist and
+Fleet Engineering for §2.2's six elements per class. Different question, different first owner,
+different change class: D6 changes a published schema and falls under §22.1 rule 5's refusal of
+*"a published schema that admits an unreviewed shape"*; D3 does not change a schema at all.
+
+**Where the architecture does couple them, precisely.** Three couplings exist and none of them
+makes mass part of the D3 submission:
+
+1. **§2.2 already carries payload mass into the speed model** — *"speed as a function of … payload
+   mass …"*. Payload mass is an **argument** of D3's function, not a stored agent property. Its
+   value at query time comes from the plan's load state (§15.4; `payload/loadState.js`;
+   `plan.peakLoadedMassKg` as F29 reads it), not from the MobilityModel.
+2. **§15.5 makes mass and CoG a gradient gate** — *"mass and CoG limit traversable inclines, which
+   is a routing constraint, so the routing query for a loaded leg differs from the unloaded one"*
+   — which is what makes `:loaded` a distinct profile (`mobilityModel.js:87–90`). That is a
+   constraint on **which edges are admissible under load**, and it is the one place a routing
+   input genuinely needs D6's numbers.
+3. **§2.2's kinematic limits include braking distance "(payload-dependent)"**, which is a D3 field
+   whose value is a function of a D6 quantity.
+
+**The consequence, stated exactly:**
+
+| Question | Answer |
+|---|---|
+| Can D3 be *submitted* without D6? | **Yes.** All six §2.2 elements are declarable without a mass column |
+| Can D3 be *validated* without D6? | **Yes.** `validateRoutingReadiness()` reads no mass and asserts none |
+| Can D3 *close* without D6? | **Yes** — see §38.7. D6 is not among its criteria |
+| Can B1 Step 1 build a **meaningful `:loaded` hierarchy** without D6? | **No.** The loaded hierarchy is built at a stated total mass with a stated CoG; without them an engine builds two hierarchies of which one is defined by nothing (§22.7) |
+
+**So D6 is not a D3 blocker; it is a B1 Step 1 blocker that D3 does not remove.** §36.9's list of
+what blocks Step 1 names D1 and D3; this pass adds the observation that D6's absence does not
+block the *decision* D3, and that the `:loaded` half of the profile split is defined by D6 rather
+than by D3.
+
+**One operational note that is not a merge.** Fleet Engineering holds the values for both D3's
+six elements and D6's masses. Collecting them in the same conversation costs nothing and is
+sensible. **Recording them as one decision is not** — D6's shape is Architecture's and is
+reviewed under §22.1 rule 5, and folding it into D3 would let a schema change ride in on a
+parameter submission. The two are requested side by side in §38.9 and remain separately owned,
+separately recorded and separately closed.
+
+---
+
+### 38.4 Speed Model Requirements
+
+#### 38.4.1 What the architecture states, and what it does not
+
+**§2.2 states one sentence about the speed model's form:** *"Achievable speed as a function of
+road class, gradient, surface, payload mass, congestion, and weather."*
+
+**It specifies no mathematical form.** There is no functional family, no coefficient set, no
+interpolation rule, no unit, no domain and no valid range anywhere in the frozen architecture.
+This is stated explicitly rather than filled in: **engineering does not know, and must not
+choose, whether a factor is a multiplier, a lookup table, a piecewise curve, or a fitted
+function.** Any of those satisfies §2.2. `mobilityModel.js:144–158` already records this as the
+reason its check asks only whether a factor is *addressed*.
+
+**What the architecture does fix** — three structural properties, each read from a frozen
+section and none of them a value:
+
+| # | Property | Source | Consequence for the submission |
+|---|---|---|---|
+| **S1** | **All six factors, no permissive default.** An omitted factor is a gap, not "no effect" | §2.2 + §2.7 (*state is never inferred from the absence of data*) | A submission addressing five of six is `INCOMPLETE` and is refused today (§38.6.2) |
+| **S2** | **Free-flow and congestion are different layers.** §20.3 item 6: *"Congestion as a multiplier layer on cached free-flow times, updated per time bucket per road class, rather than re-routing on every congestion update"* | §20.3 item 6, with item 5's hierarchy | The hierarchy is precomputed over **free-flow** cost — road class, gradient, surface, payload mass. Congestion is supplied **per time bucket per road class** and applied to cached times. The submission should give the two separately, because they are consumed at different layers |
+| **S3** | **Determinism.** A speed model evaluation is a pure function of its stated inputs — no clock read, no ambient state | §9.6; `adapters/contract.js` refuses an adapter that derives a time bucket, *"which §32.5 forbids outright"* | Congestion and weather enter as **inputs carried by the query**, not as conditions the model reads for itself |
+
+**Where the architecture is silent, and it is recorded as silence:** §20.3 says where congestion
+is applied and says nothing about **weather**. Weather appears in §2.2 as a speed factor and in
+§2.2's envelope constraints as a *feasibility* limit that F31 enforces against a pinned forecast.
+Which layer the weather *speed* factor is applied at — baked into a profile, a multiplier like
+congestion, or a query-time input — **is not stated by the frozen architecture and is not decided
+here.** It is raised as an explicit question in §38.9 item 6 rather than resolved, because
+resolving it would fix the shape of an interface the specification leaves open.
+
+#### 38.4.2 The cache-key consequence, derived rather than invented
+
+§20.3 item 2 keys the cell-pair cache `(origin_cell, destination_cell, mobility_profile,
+time_bucket)` — implemented byte-for-byte at `routing/cellPairCache.js:50, 85` — and §20.3 item 3
+keys the charger cache `(destination_cell, mobility_profile, time_bucket,
+charger_availability_version)` (`chargerReachabilityCache.js:86, 103`). **Neither key carries
+congestion or weather.**
+
+Therefore, for a cached entry to mean one thing:
+
+> Any speed factor that is **not** resolvable from `(profile, time bucket)` — plus the region, which
+> is fixed per shard — must be applied **outside** the cached layer, or entries computed under one
+> condition will be reused under another.
+
+Congestion already satisfies this: §20.3 item 6 puts it per time bucket per road class, on top of
+the cached free-flow time. **Weather does not have a stated answer**, and this is the concrete
+reason the question in §38.9 item 6 has to be asked rather than assumed. Recorded as **N33**.
+
+#### 38.4.3 Units, domain and validation the submission must carry
+
+Not invented — each is required by a frozen section:
+
+| Requirement | Source | Note |
+|---|---|---|
+| **A stated unit for every quantity** | §22.1 rule 2: every parameter has *"name, type, unit, valid range, default, scope levels, owner, description, change class, and blast radius"* | The engine's speed vocabulary is metres per second throughout (`kinematicLimits.maxSpeedMs`, `b1Benchmark.js:737` `speedMetresPerSecond`, `route.intra_cell_offset_m`). **The unit is the owner's to state; m/s is what the consumers read** |
+| **A stated valid range per quantity** | §22.1 rule 2 | Engineering cannot supply one without knowing the representation — this is the missing half of §38.6's acceptance boundary |
+| **A stated domain per factor** | §2.2 + the extract | The road-class vocabulary must be the one the OSM extract classifies and the one `permissionSet` names; the surface vocabulary must be the one F28 compares against `route.surfaceClasses` |
+| **A calibration status per value** | §22.4: *"every register entry carries a calibration status"* — `DERIVED` / `PROVISIONAL` / `UNCALIBRATED`, and a `PROVISIONAL` entry *"must name the data it awaits and a date"* | A measured speed model is `DERIVED`; a datasheet figure pending bench validation is `PROVISIONAL` **with its awaited data named**. §1.8/§22.4's launch gate then applies per tier |
+| **Consistency with the kinematic ceiling** | §6.4 admissibility, via `lowerBound.js:24` | **The speed model's output must never exceed `kinematicLimits.maxSpeedMs`** anywhere on its domain, or §6.4's lower bound stops being admissible and pruning stops preserving optimality. This is a correctness constraint, not a convention (§38.7 criterion C5) |
+
+---
+
+### 38.5 Loaded / Unloaded Semantics
+
+#### 38.5.1 What is already implemented, verified this pass
+
+`routingProfileKey()` **already encodes the distinction** — it is the third key component, and it
+is the only load-related bit anywhere in the key:
+
+```
+routingProfileKey({ modelId: "X", traversalDomain: "SIDEWALK_GRAPH" }, { loaded: true })
+  → "X:SIDEWALK_GRAPH:loaded"
+routingProfileKey({ modelId: "X", traversalDomain: "SIDEWALK_GRAPH" }, {})
+  → "X:SIDEWALK_GRAPH:unloaded"
+```
+
+(Executed against the shipped function this pass.) `F28` consumes it at `f28.js:76` as
+`routingProfileKey(model, { loaded: route.loaded === true })` and reports `INDETERMINATE` when
+the route's key does not match — *"its surface classes were selected against different
+constraints, so this predicate cannot certify them."*
+
+#### 38.5.2 Are two profiles required?
+
+**Yes, and the requirement is §15.5's, not an implementation choice:** *"mass and CoG limit
+traversable inclines, which is a routing constraint, so the routing query for a loaded leg
+differs from the unloaded one."* `mobilityModel.js:87–90` cites exactly that sentence. Two
+profiles per model ⇒ two contraction hierarchies per model per region.
+
+#### 38.5.3 What actually differs between them
+
+| Question | Answer, from the frozen architecture |
+|---|---|
+| Does the **speed model itself** change? | **No.** §2.2 makes payload mass a **factor of the one speed model**. Loaded and unloaded are the same function evaluated at two different payload masses. The owner supplies **one speed model per class**, not two |
+| Does the **admissible edge set** change? | **Yes.** §15.5 — mass and CoG limit traversable inclines, so a gradient admissible unloaded may be inadmissible loaded. This is what makes the two hierarchies genuinely different graphs rather than two weightings |
+| Does **braking** change? | **Yes**, and §2.2 says so: braking distance is *"(payload-dependent)"*, and §15.5 adds *"longer stopping distance, which may bar certain routes for a heavy load"* |
+| Where does the difference **come from**? | **Payload mass and CoG** — i.e. from **D6's quantities**, evaluated through D3's model. Neither decision alone defines it |
+
+#### 38.5.4 The one genuine ambiguity, recorded and not resolved
+
+**The key carries one bit, so `:loaded` denotes exactly one mass condition per model.** Nothing
+in the frozen architecture states which condition that is — the class's rated payload, a typical
+laden mass, or a worst case. §15.4 makes load state vary *per stop* along a plan, so a per-mission
+mass cannot be what a precomputed hierarchy is cut at; a single representative point must be
+chosen.
+
+**This pass does not choose it.** Choosing it would set the meaning of every `:loaded` cache entry
+and every loaded-leg ETA in the system. It is asked as §38.9 item 5. It is the sharpest question
+in the whole D3/D6 package and it has not been asked before in this document.
+
+#### 38.5.5 Exact owner input for the loaded/unloaded split
+
+1. **One speed model per class** whose payload-mass factor is defined across the class's whole
+   admissible payload range (not two speed models).
+2. **The representative loaded mass condition** the `:loaded` profile is cut at, per class
+   (§38.5.4) — with its unit.
+3. **The mass and CoG values that gate gradient under load** — *these are D6's*, requested beside
+   D3 in §38.9 and recorded separately.
+
+**No mass, payload figure, gradient limit or profile count is proposed anywhere above.**
+
+---
+
+### 38.6 Validation
+
+Revision 7 added `speedModelStatus()` and `validateRoutingReadiness()` (§37.3). This pass audits
+them by execution rather than by reading, against the brief's list of things that must not be
+accidentally accepted.
+
+#### 38.6.1 What was run
+
+The four shipped functions — `speedModelStatus`, `validateRoutingReadiness`, `routingProfileKey`
+and `b1Readiness.assessD3` — were driven from an ad-hoc harness against adversarial declarations.
+**No test was added, weakened or changed, and no source file was touched.** The existing suites
+were re-run unchanged: `domainModel.test.js` + `routingB1Readiness.test.js` → **81 tests, 0
+failures**.
+
+#### 38.6.2 The acceptance boundary, measured
+
+| Declaration | `speedModelStatus` | `routable` | Correct? |
+|---|---|---|---|
+| The seeded stub `{ note: "…" }` | **`STUB`** | **false** | **Yes** — the case §37.3 was built for |
+| `speedModel` absent / `null` | **`ABSENT`** | **false** | **Yes** |
+| `speedModel` an array or a scalar | **`ABSENT`** | **false** | **Yes** — *"§2.2's speed model is a declaration of speed as a function of six named factors"* |
+| Five of six factors addressed | **`INCOMPLETE`** | **false** | **Yes** — §2.7, an omitted factor is a gap |
+| Six factors, values `"TBD"` | `DECLARED` | true | **See §38.6.3** |
+| Six factors, values `NaN` | `DECLARED` | true | **See §38.6.3** |
+| Six factors, values `Infinity` | `DECLARED` | true | **See §38.6.3** |
+| Six factors, values negative | `DECLARED` | true | **See §38.6.3** |
+| Six factors, values `0` / `""` / `false` / `{}` | `DECLARED` | true | **See §38.6.3** |
+| No `mobility` block supplied at all | gate → **`BLOCKED`**, owner named | — | **Yes** |
+| Empty `mobility: []` | gate → **`BLOCKED`** | — | **Yes** |
+
+Also verified: **the module exports no number at all** (`Object.entries(mobilityModel).filter(([,v]) => typeof v === "number")` → `[]`), which is the mechanical form of §37.3.2's promise that no speed is chosen here.
+
+**So: stub, missing, malformed and incomplete declarations are all refused. Value-level defects —
+placeholder tokens, `NaN`, `Infinity`, negative and zero — reach `DECLARED`.**
+
+#### 38.6.3 Why that is the contract's boundary and not a defect to fix here
+
+The brief's rule is that a stronger check is added only where *"the frozen architecture already
+requires the stronger validation"*, and not as an arbitrary business constraint. Applying that
+test honestly:
+
+1. **A value check requires a representation, and the architecture states none** (§38.4.1). To
+   reject a negative speed, code must know that `speedModel.roadClass` holds a speed rather than a
+   multiplier, a table, a curve id or a nested structure. Deciding that is deciding D3's
+   submission format — the exact thing §25.4 forbids engineering from doing: *"a heterogeneous
+   fleet with copy-pasted parameters will make confidently wrong cross-class comparisons."* A
+   validator that assumes a shape is a weaker version of inventing one.
+2. **`NaN` and `±Infinity` are the closest call**, because no representation admits them as a
+   value, and precedent exists — `b1Benchmark.js:707–716` requires finite positive profile
+   constants, and §37.4's D8 block refuses the placeholder tokens `"TBD"` / `"n/a"` / `"unknown"`.
+   The difference is that both of those check a **field whose type is fixed by this repository**;
+   `speedModel`'s leaves are typed by a decision that has not been taken. A leaf-walking `NaN`
+   scan must first decide that a numeric leaf anywhere in the declaration is a value — a small
+   representational assumption, but a real one, and it would be made **before** the owner states
+   the representation.
+3. **The stronger check has a defined home, and it is not this function.** §22.1 rule 5 puts
+   value validation at **publish** — *"invalid configuration is rejected at publish time, not
+   discovered at decision time"* — and §25.4 puts class-parameter completeness at the
+   **commissioning gate**. Neither exists for a MobilityModel yet (§38.6.5), and building either
+   before the representation is known would build it against a guess.
+
+**Conclusion: no source change was made.** The correct sequence is stated instead as closure
+criterion **C6** in §38.7: the owner supplies the representation, the units and the valid ranges
+(§22.1 rule 2 already requires all three), and *then* the range check is mechanical and
+non-inventive. Recording this is more useful than a check that would have to be rewritten the day
+D3 arrives.
+
+#### 38.6.4 What `validateRoutingReadiness()` does **not** claim, correctly
+
+- It does not assert any value is *right* — `speedModelStatus`'s own `DECLARED` reason says so:
+  *"Whether its VALUES are the fleet's is commissioning evidence, which this check cannot and does
+  not assert."*
+- It does not replace `validateModel()`. `ADR-33` rider 2 — the Phase 8 client must call
+  `validateModel()` before it keys — is unaffected; `validateRoutingReadiness()` starts from
+  `validateModel()`'s problems and adds one question (`mobilityModel.js:262`).
+- It does not select, rank or recommend anything.
+
+#### 38.6.5 Two structural gaps in the *enforcement path*, recorded not built
+
+| Gap | Evidence | Why it is not closed here |
+|---|---|---|
+| **A MobilityModel is never published as configuration.** `config/validators.js` validates spatial maps, shard definitions and the parameter register; there is **no publish path for a mobility model at all**, so §22.1 rule 5's *"rejected at publish time"* has no site to act at for D3's data | `bindings.size === 0`; no mobility branch in `validatePublish()` (`validators.js:971+`) | Building one requires the submission's shape — §38.6.3 item 3. It is the natural home for C6's range checks once D3 lands |
+| **§25.4's commissioning gate is not implemented.** *"An agent class without a complete, reviewed parameter set cannot be admitted to production allocation"* is enforced by no code | Grep: no consumer gates admission on class-parameter completeness | It gates *admission to allocation*, not B1, and its input set spans §14.2 energy, §16 reliability and §8's `λ_time` as well as §2.2 — i.e. it is broader than D3 and is B8's neighbourhood, not this pass's |
+
+#### 38.6.6 Three observations that are contract facts, not validation defects
+
+**N31 — the §2.2 kinematic speed limit has two spellings, and the seed uses the one nothing
+reads.** Consumers of the model element read `kinematicLimits.maxSpeedMs` (`lowerBound.js:80`,
+`expansion.js:138`, `verification.js:214`, `diagnostics.controller.js:632`). The seeded model
+declares `kinematicLimits.maxSpeedMps` (`seed.js:240`). The separate `maxSpeedMps` parameter at
+`security/trustBoundaries.js:154, 197` is fed from a **legacy `Robot` projection**
+(`telemetry.handler.js:98–100`, *"absent on a legacy `Robot` row"*), not from the MobilityModel,
+so the two names live in different layers and no shipped code path is broken today. **Impact on
+D3:** a submission using the seed's spelling would leave §6.4's lower bound reporting
+`missing: agent.mobilityModel.kinematicLimits.maxSpeedMs`. The field name is therefore stated
+explicitly in §38.9. **Not fixed here:** the seed is a demo fixture, D3 supplies the production
+model, and §13 of this pass's brief excludes schema and seed changes.
+
+**N32 — the max-gradient limit is read from a different §2.2 element than the one §2.2 tabulates
+it under, and its name and its declared unit disagree.** §2.2 lists *max gradient* under
+**kinematic limits**; F29 reads it as `envelopeConstraints.maxGradientPct` (`f29.js:49`, `:79`).
+The seed declares `kinematicLimits.maxGradient: 0.08` — the §2.2 placement, a third name, and a
+ratio. F29's own dimension table declares that field's unit as `"ratio"` while naming it `Pct`
+(`f29.js:49`), so `8` and `0.08` differ by 100× with nothing to distinguish them. F29 compares a
+route-supplied constriction against the model-supplied limit, so **the internal comparison is
+consistent**; the exposure is a cross-provider unit mismatch between whoever supplies route
+constrictions and whoever supplies the model. **Not fixed here:** which element the gradient limit
+belongs to is an Architecture question of exactly D6's class, and §13 excludes changing routing
+or feasibility logic in this pass. **Impact on D3:** the submission must state the gradient limit
+**with its unit explicitly**, per §22.1 rule 2 — §38.9 item 3.
+
+**N33 — no cache key carries weather, and the architecture does not say which layer the weather
+speed factor applies at.** §38.4.2. **Impact on D3:** asked as §38.9 item 6; not resolved here,
+because resolving it fixes an interface the specification leaves open.
+
+**A fourth item, checked and dismissed as a finding:** `assessD3` accepts two supplied models with
+the same `modelId`, and both then key identically (`X:SIDEWALK_GRAPH:unloaded`), which would share
+cache entries — the same failure class `ADR-33` rider 2 names for *broken* models. It is **not**
+recorded as a defect because `MobilityModel.modelId` is `@unique` at `schema.prisma:978`, so the
+durable store refuses it; the only way to produce it is a hand-written `ROUTING_B1_DEPLOYMENT`
+module, and that path already carries the operator's own review. It is stated as closure criterion
+**C4** instead.
+
+> **⛔ SUPERSEDED (revision 8.1) — this dismissal was wrong, and the fail-open it dismissed has
+> been closed in code. See §39.2.** The dismissal rests on a constraint that never executes on
+> the path `assessD3` reads: `ROUTING_B1_DEPLOYMENT` is a hand-written module the durable store
+> never sees, so Prisma's `@unique` cannot refuse anything on it, and "the operator's own review"
+> is not a mechanical check — it is the thing a readiness gate exists to not depend on. Without a
+> set-level check a colliding set reported `D3: PASS` and **released B1 Step 1**. `assessD3` now
+> enforces the invariant directly (§39.2.3), and C4 is a mechanically enforced readiness
+> invariant rather than a criterion recorded for a later reader (§39.2.4). The paragraph above is
+> retained because this record annotates rather than deletes; **it is not the current state.**
+
+---
+
+### 38.7 D3 Closure Criteria
+
+**D3 is CLOSED when, and only when, all nine hold.** Each names its check.
+
+| # | Criterion | How it is checked |
+|---|---|---|
+| **C1** | **The class list is supplied and approved.** Every agent class this deployment will operate at launch, each with a stable `classId` and a human name, approved by Product | Recorded in the decision; `AgentClass` rows exist |
+| **C2** | **Every §2.2 element is supplied per distinct mobility model**, in the field names the shipped consumers read — `permissionSet.surfaceClasses`; `kinematicLimits.maxSpeedMs`; `dimensionalFootprint.widthMm/.heightMm`; `envelopeConstraints.environmental` as a `{ variable: { max?, min?, unit? } }` map, plus `maxKerbHeightMm` and the gradient limit (N32) | `validateModel()` for the six elements; §38.1.3's table for the names |
+| **C3** | **The speed model is complete** — all six §2.2 factors addressed, with the free-flow component separable from the congestion layer (§20.3 item 6, S2) | `speedModelStatus()` → `DECLARED`; `validateRoutingReadiness()` → `routable: true` |
+| **C4** | **`routingProfileKey()` is deterministic and collision-free across the supplied set** — every model has a non-empty `modelId`, every declared domain is recognised, and no two models key identically | **MACHINE-CHECKED since revision 8.1 (§39.2).** `assessD3` groups the supplied models by derived profile key and returns `D3: FAIL` — blocking Step 1 — on any group of more than one (`b1Readiness.js:248–284`). `validateModel()` continues to refuse the `unknown:unknown:*` case (`ADR-33` rider 2) |
+| **C5** | **The speed model is consistent with the kinematic ceiling** — its output never exceeds `kinematicLimits.maxSpeedMs` anywhere on its domain | §6.4 admissibility (`lowerBound.js:24`). Mechanical once C6 fixes the representation |
+| **C6** | **Every quantity carries a unit, a valid range and a calibration status** (§22.1 rule 2, §22.4), and a `PROVISIONAL` one names the data it awaits and a date | The submission itself; §22.4's launch gate then applies per tier |
+| **C7** | **The declared traversal domains are compatible with `ADR-33`.** Every model B1's engine must serve declares `SIDEWALK_GRAPH` and/or `ROAD_GRAPH`. A class declaring `INDOOR_GRAPH` or `AIRSPACE_VOLUME` is **not invalid** — it is **outside B1's scope**, and it reopens D4/D7 rather than failing D3 | ⚠️ **NOT MACHINE-CHECKED, AND THE CRITERION ITSELF IS NOW AN OPEN DECISION — see §39.3.** Measured behaviour today: a model declaring **only** `INDOOR_GRAPH` or **only** `AIRSPACE_VOLUME` reaches `D3: PASS` and releases Step 1 jointly with D1. Whether that is correct, or whether such a set must block Step 1 until D4/D7 is reopened, is a reading of `ADR-33`'s scope. **Engineering does not choose it and has not implemented either reading.** The sentence in the criterion column is revision 8's reading, retained as the *incumbent* one, not as a ratified decision |
+| **C8** | **No stub, placeholder or seed value survives.** `MOB-SIDEWALK-DEFAULT` is not submitted, adapted or renamed into the answer; no factor is a note, a `"TBD"`, or an empty object | `speedModelStatus()` catches the stub shape; the placeholder and range cases are C6's, checkable once the representation exists (§38.6.3) |
+| **C9** | **The configuration is reproducible** — a version label and an ISO date on the submission, a named approver per class, and the values recorded where they can be re-read | §22.1 rules 3–4: *"versioned, immutable once published, and referenced by version in every decision record"*; §9.6 replay |
+
+**Explicitly NOT closure criteria for D3:**
+
+- **D1.** D3 is not behind it in either direction: an agent class is a property of hardware, not
+  of a place. §36.6 records this and it is re-confirmed.
+- **D6.** §38.3 — D3 closes without it; the `:loaded` hierarchy does not.
+- **D8, D5, D2, D7.** None is an input to any of C1–C9.
+- **A published spatial map, an extract, or a deployed engine.** All of those are downstream.
+
+---
+
+### 38.8 D3 → B1 Dependency
+
+#### 38.8.1 What D3 releases, exactly
+
+```
+D3  (agent classes + per-class §2.2 elements, speed model complete)
+ │
+ ├──► the PROFILE SET            routingProfileKey() over the supplied models × {loaded, unloaded}
+ │       │                       — count = distinct models × 2   (models, not classes: the FK is
+ │       │                         class → model, schema.prisma:1123)
+ │       ▼
+ ├──► EDGE COSTS                 free-flow speed over road class / gradient / surface / payload
+ │       │                       mass, gated by permissionSet and the gradient limit
+ │       │                       [congestion is NOT here — §20.3 item 6 applies it as a
+ │       │                        per-time-bucket, per-road-class multiplier on cached times]
+ │       ▼
+ ├──► PER-PROFILE CONTRACTION HIERARCHIES        count = distinct models × 2 × regions
+ │       │                                                                   └── D1
+ │       ▼
+ │    B1 STEP 1  ── still requires D1's extract ──►  BLOCKED until BOTH
+ │
+ ├──► §6.4's admissible lower bound        kinematicLimits.maxSpeedMs — needs no engine, no
+ │                                         extract and no region  ◄── RELEASED BY D3 ALONE
+ ├──► §6.3's cell expansion                fleetBestCase.maxSpeedMs  ◄── RELEASED BY D3 ALONE
+ │
+ ├──► F28 / F29 / F31 stop failing on an absent model      (they still need route attribution,
+ │                                                          which is Phase 8 + B6)
+ └──► §25.4's commissioning gate becomes evaluable         (it is not implemented — §38.6.5)
+```
+
+#### 38.8.2 What D3 does **not** release
+
+**D3 alone releases no B1 step.** Stated as the gate computes it (`b1Readiness.js:373–448`):
+
+| B1 step | Blocked by, today | After D3 alone | Why |
+|---|---|---|---|
+| **Step 1** — deploy candidates, hierarchies built | **D1, D3** | **D1** | There is no extract without a region. `ADR-33`: one OSM extract per region |
+| **Step 2** — one adapter per candidate | — | — | **COMPLETE**; region-agnostic by construction, released by `ADR-33` |
+| **Step 3** — run the benchmark, record every row | **D1, D3** (via Step 1) | **D1** | Nothing deployed to measure |
+| **Step 4** — build time and refresh cadence | **D1, D8** | **D1, D8** | **D3 changes nothing here** |
+| **Step 5** — engine selection + ADR | **D1, D3, D8, Steps 1/3/4** | **D1, D8, Steps 1/3/4** | §6.1 makes B1 a decision on **recorded evidence**; Steps 1, 3, 4 have none |
+
+**What remains blocked by D1 after D3 closes:** the extract itself, the H3 cover, `stop.serviceable`
+(N22), D2's residual (N23), the spatial-map publish, and B1 Steps 1, 3, 4 and 5. **What remains
+blocked by D8:** Step 4, and the extract-provenance record.
+
+**And so:** D3 is necessary for Step 1 and not sufficient for any step. That is the honest form of
+the claim, and it is why §38.10 keeps the three requests in flight at once.
+
+---
+
+### 38.9 Exact Product/Fleet Decision Request
+
+**To: Product (which classes) + Fleet Engineering (each class's parameters).
+Copy: Architecture (items 5 and 6 touch D6 and an open interface).**
+
+> **We need the fleet's agent classes and, per class, its mobility model. We are not asking you to
+> choose an engine, a routing profile format, a cache key, or a threshold — those are ours.**
+
+**1 · Which agent classes will this deployment operate at launch?**
+For each: a stable class id, a human name, hardware revision, and firmware version set.
+*Note: classes may share one mobility model. Two classes that move identically cost one routing
+profile pair, not two — so tell us which classes share a model.*
+
+**2 · Per distinct mobility model, the six §2.2 elements.** Field names in brackets are the ones
+our shipped code reads; please use them.
+
+| § | Element | What we need | Unit |
+|---|---|---|---|
+| a | **Traversal domain** | Which network the class uses: sidewalk graph, road graph, indoor graph, airspace volume, or a composition | — |
+| b | **Permission set** | Road classes, **surface types** [`permissionSet.surfaceClasses`], permitted gradients, kerb heights, stair capability, restricted areas, airspace classes | state per field |
+| c | **Speed model** | Item 3 below | item 3 |
+| d | **Kinematic limits** | Max speed [`kinematicLimits.maxSpeedMs`], acceleration, braking distance (state it loaded and unloaded), turning radius, max gradient | m/s, m/s², m, m, state yours |
+| e | **Envelope constraints** | Wind, temperature, visibility, precipitation and any other limit, as `{ variable: { max, min, unit } }` [`envelopeConstraints.environmental`], plus max kerb height [`maxKerbHeightMm`] and the max traversable gradient — **with its unit stated explicitly** | per variable |
+| f | **Dimensional footprint** | Width, height, length [`dimensionalFootprint.widthMm/.heightMm/.lengthMm`] | mm |
+
+**3 · The speed model, per class.** §2.2 requires achievable speed as a function of **road class,
+gradient, surface, payload mass, congestion and weather** — all six. Acceptable representations:
+a lookup table, a set of multipliers on a base speed, a piecewise curve, or a fitted function —
+**you choose the representation; state it, and state its unit and valid range for every quantity**
+(m/s is what our consumers read). Two structural requirements from our side:
+
+- Please give the **free-flow** part (road class, gradient, surface, payload mass) separately from
+  the **congestion** part. We apply congestion as a multiplier per time bucket per road class on
+  top of cached free-flow times (§20.3 item 6); only the free-flow part is precomputed into the
+  routing hierarchies.
+- The speed model's output must never exceed the class's max speed in item 2(d). Our candidate
+  pruning divides by that ceiling and would stop being provably correct if the model could beat it.
+
+**4 · Calibration status per value** (§22.4): `DERIVED` (state the source — bench run, vendor
+datasheet, field measurement), `PROVISIONAL` (state the data it awaits **and a date**), or
+`UNCALIBRATED`. A datasheet figure is a perfectly good starting point **provided it is labelled as
+one**; an unlabelled one is what §22.4 says loses operator trust.
+
+**5 · The loaded profile's mass condition** *(this one is new, and it is the sharpest question
+here)*. We build two routing profiles per model — `loaded` and `unloaded` — because §15.5 says mass
+and CoG limit traversable inclines. The key carries one bit, so **`loaded` must mean exactly one
+mass condition per class**: rated payload? typical laden mass? worst case? **Tell us which, with
+the mass.** We will not choose it, because that choice sets the meaning of every loaded-leg ETA in
+the system.
+
+**6 · One interface question for Architecture, not for you to resolve alone:** weather appears in
+§2.2 both as a speed factor and as an envelope limit, and §20.3 states the layer for congestion
+but not for weather. Is the weather speed effect (a) baked into a profile, (b) a multiplier like
+congestion, or (c) a query-time input? Our caches key on `(cells, profile, time bucket)` and carry
+no weather term, so the answer changes where it is applied. Answering (b) or (c) needs no numbers
+from you today.
+
+**7 · Alongside, and recorded as a separate decision — D6, owned by Architecture (shape) + you
+(values):** tare mass, laden mass and centre of gravity per class, with units. There is no field
+for these on the model today; Architecture decides where they live. **Item 5 above cannot be fully
+acted on without them**, which is why they are collected together and recorded apart.
+
+**Ownership and version:** a named approver per class, a version label, and an ISO date. Values
+are immutable once published and are referenced by version in every decision record (§22.1 rules
+3–4), so a later change is a new version rather than an edit.
+
+**What we derive automatically once you answer — please do not supply any of it:**
+
+| Derived | By |
+|---|---|
+| The routing profile key per model and load state | `routingProfileKey()` |
+| The normalised, sorted traversal-domain list | `traversalDomains()` |
+| The profile set and the contraction-hierarchy count | distinct models × 2 × regions |
+| The completeness verdict and which B1 steps it releases | `npm run routing:readiness` |
+| Cache keys, k-ring bounds, pruning bounds, ETA arithmetic | the engine |
+| The routing engine itself | **B1 Step 5**, on recorded evidence, in an ADR |
+
+**Where to put the answer so it is checked on arrival:** the `mobility` block of a
+`ROUTING_B1_DEPLOYMENT` module (`tools/routing/adapters/deployment.js`), then
+`npm run routing:readiness`. The gate reports `D3: PASS` or names exactly what is missing, per
+model. Nothing in this repository ships such a file and none was written.
+
+---
+
+### 38.10 Parallel Decisions — D1, D3, D8 stay separate
+
+The three open decisions have different owners, different inputs and different downstreams.
+**They are not merged, and none of them waits on another to be *asked*:**
+
+| Decision | Owner | Asked now? | Waits on | Releases |
+|---|---|---|---|---|
+| **D1** — target OperatingRegion(s) and boundary | **Operations + Commercial** | **Yes** — §36.3.1's five fields, unchanged | Nothing | The extract, the cover, D2's residual, `stop.serviceable`; jointly with D3, Step 1 |
+| **D3** — agent classes and mobility models | **Product + Fleet Engineering** | **Yes** — §38.9 | Nothing. **Answerable today** | The profile set, edge costs, §6.4's LB and §6.3's expansion; jointly with D1, Step 1 |
+| **D8** — extract vintage, refresh cadence, re-contraction window | **Operations** | **Partly** — the downtime *policy shape* now; the vintage and cadence trail D1, the budget's number trails Step 4 (§36.7) | D1 (parts 1–2); Step 4 (part 3's number) | Step 4 |
+
+**D6** rides with D3's request as a separately-recorded Architecture + Fleet Engineering decision
+(§38.3), and **D4 is closed** (`ADR-33`). Sending D1 and D3 on the same day to different desks is
+the fastest path to Step 1, and neither desk can answer the other's question.
+
+---
+
+### 38.11 Change Control — Revision 8
+
+> **⛔ SUPERSEDED (revision 8.1). Two Backend paths *did* change under revision 8, after this
+> section was written: `tools/routing/b1Readiness.js` and `tests/engine/routingB1Readiness.test.js`
+> (the C4 fix, §39.2). The record below is not the current state.** It is retained because the
+> *reason* it drifted is itself a finding: both paths are **untracked**, so `git status --porcelain`
+> reported them as `??` before and after, and `git diff --stat` — which reports tracked
+> modifications only — could not see a content change to either. The two commands this section
+> relies on are structurally blind to edits inside untracked files, and every change-control
+> record in this document that used them alone carries the same blind spot. The corrected record,
+> and the check that closes the blind spot, are in §39.6.
+
+```
+BEFORE   git status --porcelain
+         M  Backend/package.json
+         M  Backend/src/engine/config/validators.js
+         M  Backend/src/engine/domain/mobilityModel.js
+         M  Backend/src/engine/routing/chargerReachabilityCache.js
+         M  Backend/src/engine/spatial/hierarchy.js
+         M  Backend/tests/engine/configValidators.test.js
+         M  Backend/tests/engine/routingB1Adapters.test.js
+         M  Backend/tests/engine/routingB1Benchmark.test.js
+         M  Backend/tools/routing/adapters/contract.js
+         M  Backend/tools/routing/b1Benchmark.js
+         M  PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md
+         ?? Backend/src/engine/spatial/regionBoundary.js
+         ?? Backend/tests/engine/helpers/profilelessRoutingAdapter.js
+         ?? Backend/tests/engine/helpers/zeroProfileRoutingAdapter.js
+         ?? Backend/tests/engine/routingB1Readiness.test.js
+         ?? Backend/tests/engine/spatialRegionBoundary.test.js
+         ?? Backend/tools/routing/b1Readiness.js
+         (revision 7's 16 paths, unchanged by this pass)
+
+AFTER    identical, except:
+         M  PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md   (this section)
+
+         git diff --stat  →  no Backend/ path differs from its revision-7 state.
+```
+
+**No source file, test, fixture, schema, migration, seed, register entry or ADR was changed.**
+The audit of §38.6 found the D3 readiness validation **correct against the frozen architecture**;
+its acceptance boundary at the value level is a consequence of the architecture stating no
+representation, and is recorded as closure criterion C6 rather than patched around.
+
+| Did this pass … | |
+|---|---|
+| Invent a speed, coefficient, payload, mass, CoG, congestion, weather, surface or gradient value | **No** — and the module still exports no number, re-asserted by execution |
+| Invent an agent class or a routing profile | **No** |
+| Promote `MOB-SIDEWALK-DEFAULT` or `AC-SIDEWALK-DEFAULT` | **No** |
+| Modify the MobilityModel schema, routing logic, benchmark, calibration, adapters, D1, D8, `ADR-33` or the H3 resolutions | **No** |
+| Merge D3 with D6, D1 or D8 | **No** — §38.3, §38.10 |
+| Implement B1 Step 1, or select/rank/recommend an engine | **No** |
+| Create a new markdown report | **No** — this is §38 of the same living record |
+| Create a commit | **No** |
+
+**Verification re-run this pass (nothing changed, so nothing was expected to move):**
+
+| Check | Result |
+|---|---|
+| `domainModel.test.js` + `routingB1Readiness.test.js` | **2 suites / 81 tests / 0 failures** |
+| `npm run routing:readiness` | exit **0** · `OVERALL: BLOCKED` · D1 `BLOCKED`, D3 `BLOCKED`, D8 `BLOCKED` · Step 2 `PASS`, Steps 1/3/4/5 `BLOCKED` · `stepEvidenceAdmissible: false` |
+| Full regression, gates | **Unchanged from §37.11** — 144 suites / 6 265 tests / 0 failures; `gate:calibration` **FAIL at 39**; `routing:b1` `NOT_MEASURED`. No source changed, so no gate result could change |
+
+---
+
+### 38.12 Final Status — Revision 8
+
+> **Superseded by §39.7 (revision 8.1).** Every decision status below still holds; what changed is
+> that D3's line is now qualified by a machine-enforced C4 (§39.2) and an open C7 (§39.3), and
+> that "no source change" is no longer true of revision 8 as a whole (§39.6).
+
+```
+D1:                    WAITING FOR OPERATIONS + COMMERCIAL
+
+D3:                    READY FOR PRODUCT + FLEET DECISION
+                       (contract traced §38.1; input contract exact §38.9;
+                        closure criteria C1–C9 §38.7; validation audited §38.6 —
+                        no defect, no source change)
+
+D8:                    WAITING FOR OPERATIONS
+
+D6:                    OPEN, SEPARATE — Architecture (shape) + Fleet Engineering (values).
+                       Not a D3 blocker; it is the :loaded hierarchy's meaning
+D4:                    RATIFIED (ADR-33) — not reopened
+D2:                    CLOSED globally (FINE 8 / COARSE 5) — not reopened
+
+B1 STEP 2:             COMPLETE
+B1 STEP 1:             BLOCKED BY D1 + D3
+B1 STEPS 3, 4, 5:      BLOCKED
+B1 ENGINE SELECTION:   NOT PERFORMED
+
+PHASE 15:              STILL BLOCKED
+PHASE 16:              NOT READY
+```
+
+**NEXT ACTION:**
+
+> **Product + Fleet Engineering: answer the seven-item D3 request in §38.9.** Which agent classes
+> operate at launch and which share a mobility model; per distinct model the six §2.2 elements in
+> the field names listed; a complete speed model over road class, gradient, surface, payload mass,
+> congestion and weather, with its **representation, units and valid ranges stated by you** and its
+> free-flow part separable from its congestion part; a calibration status per value; **the single
+> mass condition the `:loaded` profile means**; the weather-layer question routed to Architecture;
+> and — recorded separately as **D6** — tare mass, laden mass and CoG. Version label, ISO date and
+> a named approver per class.
+>
+> Put it in the `mobility` block of a `ROUTING_B1_DEPLOYMENT` module and run
+> `npm run routing:readiness`: it will report `D3: PASS` or name exactly what is missing, per
+> model, without choosing anything.
+>
+> **In parallel, unchanged and to different desks:** D1's five fields to Operations + Commercial
+> (§36.3.1) — B1 Step 1 needs both — and D8's downtime policy shape to Operations (§36.7).
+
+**Does this close D3? No.** D3 is a decision and this pass has no authority to take it. What
+changed is that it can now be answered in one pass by the people who own it, checked mechanically
+on arrival, and closed against nine stated criteria instead of a sentence.
+
+---
+
+*End of revision 8. No new report was created — this is §38 of the same single living record
+revisions 1–7 wrote. This pass decided nothing and implemented nothing: no speed, coefficient,
+payload value, mass, centre of gravity, congestion factor, weather factor, surface coefficient,
+gradient coefficient, agent class, routing profile, region, extract, vintage, cadence, threshold
+or calibration value was created, chosen, defaulted or suggested; no seed or demo artefact was
+promoted; no engine was selected, ranked or recommended; the MobilityModel schema, routing logic,
+benchmark, calibration register, routing adapters, `ADR-33`, the H3 resolutions and decisions D1
+and D8 were not touched; D3 was not merged with D6; no test was weakened, skipped or deleted; no
+source file was changed at all; and no commit was created.*
+
+> **⛔ One clause of the paragraph above is superseded (revision 8.1): "no source file was changed
+> at all" is false of revision 8 taken as a whole.** Its verification pass changed
+> `tools/routing/b1Readiness.js` and `tests/engine/routingB1Readiness.test.js` to close the C4
+> fail-open (§39.2). **Every other clause still holds and was re-verified in §39.6:** nothing was
+> decided, no value was invented, no gate was weakened, no engine was selected and no commit was
+> created. The change was a set-level consistency check over keys the operator supplies — it
+> chose nothing.
+
+---
+
+## 39. Revision 8 Reconciliation — C4 Closed in Code, C7 Escalated as an Open Decision
+
+**Purpose of this pass.** Revision 8's verification found two things after §38 was written, and
+§38 records neither. One is a **genuine correctness fix already applied** — the C4 fail-open in
+`assessD3`. The other is a **genuine ambiguity that engineering must not resolve** — C7's
+`ADR-33` scope reading. This section reconciles the authoritative record with the tree, and makes
+the remaining D3 blockers explicit rather than implicit.
+
+**This pass changes documentation only.** No source file, test, schema, seed, adapter, ADR or
+configuration was modified in it. **No Product or Fleet decision is taken here**, and nothing on
+the list §38 refuses to invent is invented: no agent class, no mobility value, no speed value,
+range or unit, no calibration status, no meaning for `:loaded`, no payload mass, no D6 quantity,
+no D3 version, date or approver. **C7 is not decided.** `ADR-33`, D1, D4, D6 and the solver are
+untouched, no routing engine is deployed, selected or ranked, no readiness gate is weakened, no
+D3 input is fabricated to make readiness pass, and B1 Step 1 was not run.
+
+---
+
+### 39.1 The two statements in §38 that were false, and why the record drifted
+
+| §38 statement | Status | Correct statement |
+|---|---|---|
+| §38.6.6's fourth item: two models keying identically is *"**not** recorded as a defect"* because `MobilityModel.modelId` is `@unique` | **SUPERSEDED** | It was a **fail-open on the only path `assessD3` reads**. The Prisma constraint never executes there (§39.2.2). It is now enforced mechanically (§39.2.3) |
+| §38.11: *"no `Backend/` path differs from its revision-7 state"* | **SUPERSEDED** | **Two do**: `tools/routing/b1Readiness.js` and `tests/engine/routingB1Readiness.test.js` (§39.6) |
+
+**Why the second one drifted is worth recording, because it is a method defect and not a typing
+error.** Both changed paths are **untracked**. `git status --porcelain` reported them `??` before
+the change and `??` after; `git diff --stat` reports tracked modifications only and therefore
+cannot see a content edit inside an untracked file. §38.11's two commands were **structurally
+incapable** of detecting the change they were run to detect. Every change-control record in this
+document that relies on those two commands alone inherits the same blind spot for the six
+untracked paths revision 7 introduced. §39.6 records file size and modification time alongside
+them, which is what closes it.
+
+---
+
+### 39.2 C4 — from a dismissed concern to a mechanically enforced readiness invariant
+
+#### 39.2.1 What the fail-open was
+
+`routingProfileKey()` is the **first component of every §20.3 cache key** (`cellPairCache.js:50,
+85`; `chargerReachabilityCache.js:86, 103`) and it names **one contraction hierarchy per region**
+(§20.3 item 5). Two *distinct, individually well-formed* mobility models that derive the **same**
+key therefore share one hierarchy and one set of cached travel times: **one model's edge costs are
+served for the other**, silently, for every query and every ETA under that key.
+
+`validateRoutingReadiness()` cannot see this, and that is not a defect in it: collision-freedom is
+a property **of the supplied set**, not of any model in it. Each colliding model passes every
+per-model check. Before the fix, `assessD3` reported `D3: PASS` on such a set and — through
+`assessSteps` — **released B1 Step 1**. That is a fail-open in the precise sense: the gate's
+answer was `PASS` on an input that violates the invariant the gate exists to protect.
+
+This is the failure class `ADR-33` rider 2 already names, reached from the other side. Rider 2
+guards a **broken** model keying `unknown:unknown:*`; C4 guards **two well-formed** models keying
+identically.
+
+#### 39.2.2 Why the §38.6.6 dismissal is superseded — the argument, in four steps
+
+1. **`ROUTING_B1_DEPLOYMENT` is a hand-written deployment seam.** `adapters/deployment.js:17-48`
+   defines it as *"one module the operator writes"*, named by one environment variable and loaded
+   with `require()`. It is a file on disk, not a row.
+2. **`assessD3` reads that seam directly.** `b1Readiness.js:218-219` takes `config.mobility` from
+   the loaded deployment module and reads nothing else. There is no Prisma client, no query and no
+   database on this path.
+3. **A Prisma `@unique` constraint is therefore not evidence for C4.** `schema.prisma:978`
+   constrains rows in `MobilityModel`. It cannot constrain a JavaScript array literal that the
+   durable store never sees. The dismissal argued from a constraint that does not execute where
+   the check was needed — the two live in different layers, which is exactly the distinction §38's
+   own **N31** draws for `maxSpeedMps`.
+4. **"That path already carries the operator's own review" is not a mechanical check.** §22.1
+   rule 5's discipline is that *"invalid configuration is rejected at publish time, not discovered
+   at decision time"*; §37's whole purpose was to make the repository say `BLOCKED` **in code**
+   rather than only in this document. Deferring a set-level invariant to human review of a
+   hand-written file inverts both.
+
+**The readiness layer is the correct home** because it is the only layer that sees the set, and
+because it is the layer that releases Step 1.
+
+#### 39.2.3 The exact change, scope-bounded
+
+**Two files. Nothing else.**
+
+| Path | Change |
+|---|---|
+| `tools/routing/b1Readiness.js` — `assessD3`, lines `248-284` | After the existing per-model readiness loop, group the already-derived `profileKey` values into a `Map`, and emit one problem per group of size > 1 naming the colliding `modelId`s and the shared key. Those problems join the existing `problems` array, so the existing verdict rule (`problems.length === 0 ? PASS : FAIL`) carries them, and the existing `assessSteps` wiring re-blocks Step 1 with `blockedBy: ["D3"]`. The summary line gained a collision clause |
+| `tests/engine/routingB1Readiness.test.js` — lines `270-298` | Two tests: (a) two models under one `modelId`, both individually `routable`, ⇒ `D3: FAIL`, problem text matches `/derive the same routing profile key/` and `/§38\.7 C4/`, **Step 1 `BLOCKED` by `["D3"]`**, `stepEvidenceAdmissible: false`; (b) two **distinct** models key distinctly ⇒ `D3: PASS` — the check refuses collisions, not plurality |
+
+**What the change does NOT do — stated so its scope is not overread:**
+
+- It **supplies nothing**: no `modelId`, no traversal domain, no value, no default. It compares
+  keys derived from what the operator wrote.
+- It does **not** touch `routingProfileKey()`, `traversalDomains()`, `validateModel()`,
+  `speedModelStatus()` or `validateRoutingReadiness()`. `domain/mobilityModel.js` is byte-identical
+  to its revision-7 state, and still exports no number.
+- It does **not** check `modelId` uniqueness as such. It checks **derived-key** uniqueness, which
+  is the property that matters: two entries sharing a `modelId` but declaring different traversal
+  domains key distinctly and pass, because they cannot collide on a cache key or a hierarchy. The
+  check guards routing correctness, not identifier hygiene.
+- It compares the `:unloaded` key only, and this is sufficient rather than partial: the load bit is
+  a fixed suffix on an otherwise identical string, so two models collide under `:loaded` **exactly
+  when** they collide under `:unloaded`.
+- It does **not** address any other C-criterion. C5, C6, C7, C8's value cases and C9 are untouched
+  by it (§39.5).
+- It does **not** change the schema, the seed, the adapters, the benchmark, `ADR-33`, D1, D6 or D8,
+  and it weakens no gate: it can only turn a `PASS` into a `FAIL`, never the reverse.
+
+#### 39.2.4 C4's status
+
+**C4 is no longer a dismissed concern and is no longer merely a criterion recorded for a future
+reader. It is a mechanically enforced readiness invariant.** A colliding set now reports
+`D3: FAIL`, Step 1 reports `BLOCKED` with `blockedBy: ["D3"]`, and `stepEvidenceAdmissible` is
+`false`. §38.7's C4 row is annotated accordingly.
+
+**This closure required no decision from anybody.** That is what separates it from C7: comparing
+supplied keys for equality encodes no policy, no scope reading and no value — which is why it was
+correct to fix it here, and correct not to fix C7 here.
+
+---
+
+### 39.3 C7 — OPEN DECISION REQUIRED FROM THE APPROPRIATE AUTHORITY
+
+**This pass does not resolve C7 and does not implement either reading.** It states the question
+precisely enough to be answered by the authority that owns it.
+
+#### 39.3.1 What the current behaviour is — measured, not inferred
+
+Driven against the shipped `assessD3` this pass, with one model declaring all six §2.2 elements
+and a six-factor speed model, varying only `traversalDomain`:
+
+| Declared traversal domain | `assessD3` | Derived profile key | Consequence |
+|---|---|---|---|
+| `SIDEWALK_GRAPH` | **PASS** | `...:SIDEWALK_GRAPH:unloaded` | Step 1 released jointly with D1 |
+| `ROAD_GRAPH` | **PASS** | `...:ROAD_GRAPH:unloaded` | Step 1 released jointly with D1 |
+| **`INDOOR_GRAPH`** | **PASS** | `...:INDOOR_GRAPH:unloaded` | **Step 1 released jointly with D1** |
+| **`AIRSPACE_VOLUME`** | **PASS** | `...:AIRSPACE_VOLUME:unloaded` | **Step 1 released jointly with D1** |
+
+So: **a fleet declaring only domains that `ADR-33` places outside B1's normal routing scope
+currently satisfies D3 and, with D1, releases B1 Step 1.** No code anywhere compares a declared
+domain against `ADR-33`'s scope — `isTraversalDomain()` (`mobilityModel.js:60-62`) recognises all
+four members of §2.2's vocabulary equally, and `traversalDomains()` normalises them equally.
+
+#### 39.3.2 Why `ADR-33` creates the ambiguity rather than settling it
+
+`ADR-33` bounds which traversal domains B1's engine must serve, and its rider 3 makes that scope
+*conditional on outdoor operation*; rider 1 defers composition to **D7**. §38.7's C7 reads this as:
+such a class is *"**not invalid** — it is **outside B1's scope**, and it reopens D4/D7 rather than
+failing D3."*
+
+**Both of the following are consistent with that text, and they produce opposite gate behaviour:**
+
+| | Reading | What D3 should report | What Step 1 should do |
+|---|---|---|---|
+| **(a) Scope-tolerant** | D3 is a question about the **fleet**, not about B1. A model outside B1's scope is a valid D3 answer; B1 simply serves the in-scope subset | `PASS` — today's behaviour | Released, **scoped to the outdoor subset**, with the out-of-scope models named in the report so nobody reads Step 1 as covering them |
+| **(b) Scope-strict** | The readiness gate is **B1's** gate. A supplied set containing a model B1's engine cannot serve is not a set Step 1 can be run against until D4/D7 answers what serves that domain | `PASS` with an explicit out-of-scope finding, or a distinct state — but **not** a silent release | **Blocked**, or blocked for the affected models, pending the D4/D7 reopening C7's own text anticipates |
+
+The ambiguity is not in the code; it is in **what "outside B1's scope" obliges the gate to do**.
+§38.7 says such a model *"reopens D4/D7"* — but nothing states whether Step 1 may proceed **while**
+D4/D7 is reopened. Today it silently may.
+
+#### 39.3.3 The decision that must be made
+
+> **When a D3 submission declares a mobility model whose traversal domains lie outside `ADR-33`'s
+> B1 routing scope, must the B1 readiness gate (i) pass and release Step 1 for the in-scope
+> subset, (ii) pass but withhold Step 1 until D4/D7 is reopened, or (iii) fail D3?**
+>
+> And, dependent on that: **is the out-of-scope model's presence sufficient to reopen D4/D7 by
+> itself, or only if B1's engine is expected to serve it?**
+
+#### 39.3.4 Which authority must make it, and why not engineering
+
+**Owner: the authority that owns `ADR-33` / D4's scope — Architecture, through the ADR process**
+(with D7's composition question in the same neighbourhood, `ADR-33` rider 1). Not Product, not
+Fleet Engineering: they answer *which classes exist and how they move*, and a correct D3 answer
+may legitimately contain an indoor or aerial class. Not Operations: no region term appears.
+
+**Engineering must not choose, for a stated reason rather than as deference.** Every available
+implementation *is* the decision:
+
+- implementing (b) or (c) tightens a readiness gate against a rule `ADR-33` does not state, which
+  is §22.1's *"a published schema that admits an unreviewed shape"* run in reverse — a gate that
+  refuses a shape no ADR refuses;
+- implementing (a) explicitly — even as a report line — ratifies a scope reading in code and
+  silently answers the D4/D7 reopening question;
+- leaving it is also not neutral, and this section exists so that it is **recorded** rather than
+  defaulted. **The current behaviour is the incumbent reading, not a ratified one.**
+
+Amending `ADR-33`'s scope is an ADR-process change. **`ADR-33` was not modified, not reopened and
+not reinterpreted by this pass.**
+
+#### 39.3.5 What is deliberately not built
+
+No domain-scope check, no new readiness state, no report line, no test asserting either reading.
+Per this pass's own rule: **C7 is not implemented until the governing ADR/scope decision exists.**
+When it does, the check is mechanical and non-inventive — `traversalDomains()` already yields the
+normalised set, and the only missing input is which verdict the decision assigns to it.
+
+---
+
+### 39.4 The four decision surfaces stay separate
+
+Recorded because C4's fix and C7's escalation both touch the mobility model, and the four must not
+collapse into "the mobility question":
+
+| Surface | Question | Owner | Status | Not to be answered by |
+|---|---|---|---|---|
+| **D3 — product/fleet inputs** | Which agent classes operate at launch; per distinct model, §2.2's six elements and a complete speed model | **Product** (classes) + **Fleet Engineering** (parameters) | **BLOCKED** — not supplied (§39.7) | Engineering, Architecture |
+| **D6 — engineering mass / CoG** | Where tare mass, laden mass and centre of gravity live, and their values | **Architecture** (shape) + **Fleet Engineering** (values) | **OPEN, SEPARATE.** Not a D3 blocker; it is the `:loaded` hierarchy's meaning (§38.3) | D3's submission — folding it in would let a schema change ride on a parameter submission |
+| **Weather layer** | Is the weather *speed* factor baked into a profile, a congestion-like multiplier, or a query-time input? (§38.4.2, **N33**) | **Architecture** | **OPEN** — the caches key `(cells, profile, bucket)` and carry no weather term | Fleet Engineering; it needs no numbers from them |
+| **`ADR-33` / D4 scope — C7** | What a non-B1 traversal domain obliges the readiness gate to do (§39.3) | **Architecture, via the ADR process** | **OPEN DECISION REQUIRED** | Engineering, Product, Fleet Engineering |
+
+**None of the four was merged, and none was answered here.** D4 remains RATIFIED and unmodified;
+D1, D6 and the solver were not touched.
+
+---
+
+### 39.5 Remaining D3 contract gaps — identified, not filled
+
+**No D3 schema field was added to make the seven-item request look more complete.** Each gap below
+is recorded as a contract/implementation gap awaiting the appropriate decision or clarification.
+Verified this pass by inspecting the seam `assessD3` reads (`b1Readiness.js:20-75`,
+`adapters/deployment.js:17-48`) and the verdict it returns.
+
+| # | Gap | Where it should live | Verified state today | What unblocks it |
+|---|---|---|---|---|
+| **G1** | **The agent-class decision (C1) has no machine-checked home.** The seam's `mobility` block is *one entry per distinct model*, by design (`b1Readiness.js:56-60`). The class list, and which classes share a model, are checked by nothing | An `agentClasses` block, or the durable `AgentClass` rows plus §25.4's commissioning gate | `assessD3` reads `config.mobility` only; no class list and no class→model mapping is read or required | **Product's C1 answer**, plus a contract clarification on where the class list is recorded. §25.4's gate is unimplemented (§38.6.5) and is broader than D3 |
+| **G2** | **Calibration status (C6) has no field.** §22.4 requires `DERIVED` / `PROVISIONAL` / `UNCALIBRATED` per value, with a `PROVISIONAL` entry naming the data it awaits and a date | Beside each supplied quantity, once its representation exists | No calibration field is read or required anywhere in the D3 path | **Fleet Engineering's C6 answer**, which fixes the representation; the check is mechanical afterwards (§38.6.3) |
+| **G3** | **The `:loaded` mass condition has no field and no stated meaning.** The key carries one bit, so `:loaded` denotes exactly one mass condition per model, and nothing states which (§38.5.4) | The model, or D6's home once Architecture places mass | `routingProfileKey()` takes `{ loaded }` as a caller-supplied boolean; no mass condition is declared, stored or checked | **§38.9 item 5** (Product + Fleet Engineering), which cannot be fully acted on without **D6** |
+| **G4** | **C9's reproducibility metadata is outside the machine-checked D3 representation.** §22.1 rules 3-4 require a version label, an ISO date and a named approver | The `mobility` block, or a submission header | Confirmed by execution: `assessD3`'s per-model record is `{ modelId, profileKey, routable, speedModelStatus, problems }` and its verdict is `{ decision, owner, status, summary, problems, models }` — **no version, date or approver is read, stored or required.** The `region` block carries `version`/`versionDate`; the `mobility` block carries no analogue | A **contract clarification** on where D3's version metadata is recorded, then a mechanical check. **No version, date or approver was invented, defaulted or placeholder-filled here** |
+| **G5** | **C5 and C6's value-level checks remain unbuildable.** The speed model's output must never exceed `kinematicLimits.maxSpeedMs` (C5); every quantity needs a unit and a valid range (C6) | `validateRoutingReadiness()`, or a publish path | Value-level defects still reach `DECLARED` (§38.6.2), for the reason §38.6.3 gives: the architecture states no representation | **The owner's C6 answer.** Unchanged by revision 8.1 and deliberately not patched around |
+| **G6** | **A MobilityModel is still never published as configuration**, so §22.1 rule 5's *"rejected at publish time"* has no site to act at for D3's data | `config/validators.js` `validatePublish()` | `bindings.size === 0`; no mobility branch | The representation (G2/G5), then the publish path — the natural home for C6's range checks |
+
+**G1, G2 and G3 are exactly the three missing homes §38 identified — the agent-class decision, the
+calibration status and the `:loaded` mass condition — and they remain open.** Nothing was added to
+close them cosmetically.
+
+---
+
+### 39.6 Change Control — Revision 8.1
+
+**The corrected revision-8 record.** `git status --porcelain` is unchanged from §38.11's BEFORE
+block — all 16 paths, same states — because both changed paths are untracked. Size and
+modification time are recorded alongside it, which is what §38.11's two commands could not see:
+
+```
+REVISION 7 BATCH  (unchanged, 2026-08-09 21:36-21:56)
+    package.json - config/validators.js - domain/mobilityModel.js -
+    routing/chargerReachabilityCache.js - spatial/hierarchy.js - spatial/regionBoundary.js -
+    configValidators.test.js - routingB1Adapters.test.js - routingB1Benchmark.test.js -
+    spatialRegionBoundary.test.js - helpers/profilelessRoutingAdapter.js -
+    helpers/zeroProfileRoutingAdapter.js - adapters/contract.js - b1Benchmark.js
+
+REVISION 8 - C4 fix, the two paths §38.11 missed
+    M(untracked)  Backend/tools/routing/b1Readiness.js               32 246 B   2026-08-09 23:19:10
+    M(untracked)  Backend/tests/engine/routingB1Readiness.test.js    19 616 B   2026-08-09 23:19:26
+
+REVISION 8.1 - this pass
+    M             PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md   (§39, and the annotations in §38)
+
+    git diff --stat  ->  10 Backend paths, all at their revision-7 state. NOTE: this command
+    reports tracked modifications only and is blind to the two lines above; it is recorded for
+    continuity with §38.11 and is NOT the evidence.
+```
+
+| Did revision 8.1 ... | |
+|---|---|
+| Change any source file, test, fixture, schema, migration, seed, adapter, register entry or ADR | **No** — documentation only |
+| Invent a Product or Fleet D3 decision, an agent class, a mobility value, a speed value, range or unit | **No** |
+| Invent a calibration status, a meaning for `:loaded`, a payload mass or any D6 value | **No** |
+| Fabricate a D3 version, ISO date or approver | **No** — recorded as gap **G4** instead |
+| Decide C7 / interpret `ADR-33` / modify `ADR-33`, D4, D6 or D1 | **No** — §39.3, escalated unresolved |
+| Modify the solver, deploy/select/rank a routing engine, or run B1 Step 1 | **No** |
+| Weaken a readiness gate | **No.** The only gate change in revision 8 can turn `PASS` into `FAIL` and never the reverse |
+| Create fake D3 input to make readiness pass | **No** — `npm run routing:readiness` still reports `D3: BLOCKED` on the real, empty state |
+| Add a D3 schema field to make the seven-item request look more complete | **No** — the gaps stand as gaps (§39.5) |
+| Create a new markdown report, or a commit | **No** — this is §39 of the same living record |
+
+---
+
+### 39.7 Status after Revision 8.1
+
+```
+D1:                    BLOCKED - WAITING FOR OPERATIONS + COMMERCIAL
+
+D3:                    BLOCKED - the real Product + Fleet Engineering decision has NOT been
+                       supplied. No agent class, no mobility model and no speed model exists
+                       for this deployment; the repository's only MobilityModel is the Phase 2
+                       seed MOB-SIDEWALK-DEFAULT, whose speedModel is a note. D3 is answerable
+                       (§38.9) and is not answered.
+                         C4  ENFORCED MECHANICALLY  (§39.2) - collision-free profile keys
+                         C7  OPEN DECISION REQUIRED - Architecture / ADR-33 scope (§39.3)
+                         G1-G6  CONTRACT GAPS, unfilled by design (§39.5)
+
+D8:                    BLOCKED - WAITING FOR OPERATIONS
+
+D6:                    OPEN, SEPARATE - Architecture (shape) + Fleet Engineering (values)
+WEATHER LAYER:         OPEN - Architecture (N33)
+D4:                    RATIFIED (ADR-33) - not reopened, not reinterpreted, not modified
+D2:                    CLOSED globally (FINE 8 / COARSE 5) - not reopened
+
+B1 STEP 2:             COMPLETE
+B1 STEP 1:             BLOCKED BY D1 + D3
+B1 STEPS 3, 4, 5:      BLOCKED
+B1 ENGINE SELECTION:   NOT PERFORMED
+
+PHASE 15:              STILL BLOCKED
+PHASE 16:              NOT READY
+```
+
+**D3 remains BLOCKED**, and the reason is unchanged by anything in this pass: **the real Product +
+Fleet Engineering decision has not been supplied.** C4's enforcement makes a future answer
+*checkable*; it supplies no part of the answer. **B1 Step 1 remains BLOCKED by D1 + D3** — the
+extract does not exist and the profile edge costs are underived.
+
+**NEXT ACTIONS — three desks, none waiting on another:**
+
+> **Product + Fleet Engineering:** the seven-item D3 request in §38.9, unchanged.
+> **Operations + Commercial:** D1's five fields (§36.3.1). **Operations:** D8's downtime policy
+> shape (§36.7).
+> **Architecture, added by this pass:** the C7 scope question in §39.3.3, and the weather-layer
+> question in §38.9 item 6. Neither needs a number from anyone.
+
+---
+
+### 39.8 Verification
+
+Run after the documentation changes above. No source file was modified by this pass, so no result
+could move — and none did.
+
+| Check | Command | Result |
+|---|---|---|
+| **Readiness gate** | `npm run routing:readiness` | exit **0** · `OVERALL: BLOCKED` · **D1 `BLOCKED`**, **D3 `BLOCKED`**, **D8 `BLOCKED`** · **Step 2 `PASS`**, **Steps 1/3/4/5 `BLOCKED`** (Step 1 `blocked by: D1, D3`) · **`stepEvidenceAdmissible: false`** — *"a benchmark run now would NOT be admissible as B1 Step 3 evidence"* · no engine selected, ranked or recommended |
+| **Focused readiness + domain suites** | `npx jest routingB1Readiness domainModel --runInBand` | **2 suites / 83 tests / 0 failures** — 81 at revision 8, plus exactly the two C4 tests |
+| **C4 regression, collision case** | `-t "C4"` | **1 passed** — two models under one `modelId` ⇒ `D3: FAIL`, Step 1 `BLOCKED` by `["D3"]`, `stepEvidenceAdmissible: false` |
+| **C4 regression, distinct case** | `-t "distinctly"` | **1 passed** — two distinct models ⇒ `D3: PASS`, two distinct profile keys. The check refuses collisions, not plurality |
+| **C7 behaviour probe** (read-only; shipped functions only, no source change) | ad-hoc harness | §39.3.1's table — `INDOOR_GRAPH`-only and `AIRSPACE_VOLUME`-only both reach `D3: PASS` |
+| **C9 representation probe** (read-only) | ad-hoc harness | `assessD3` exposes no version, date or approver — gap **G4** |
+| **Full regression** | `jest --runInBand` | **PENDING.** A full run started **2026-08-09 23:20:05** was **still executing** when this pass ran. Per the standing rule, **no duplicate full regression was started** and **no result is claimed here**. The last recorded full result remains §37.11's — 144 suites / 6 265 tests / 0 failures; `gate:calibration` **FAIL at 39**; `routing:b1` `NOT_MEASURED` |
+
+---
+
+*End of revision 8.1. No new report was created — this is §39 of the same single living record
+revisions 1-8 wrote. This pass reconciled the record with the tree and decided nothing: no agent
+class, mobility value, speed value, unit, range, calibration status, payload mass, `:loaded` mass
+condition, D6 quantity, region, extract, vintage, cadence, threshold or calibration value was
+created, chosen, defaulted or suggested; no D3 version, date or approver was fabricated; **C7 was
+escalated and not decided**; `ADR-33`, D4, D6, D1, D8, the MobilityModel schema, the seed, the
+solver, the routing adapters and the benchmark were not modified; no readiness gate was weakened;
+no D3 input was created to make readiness pass; no engine was deployed, selected, ranked or
+recommended; B1 Step 1 was not run; no test was weakened, skipped or deleted; no source file was
+changed at all; and no commit was created.*

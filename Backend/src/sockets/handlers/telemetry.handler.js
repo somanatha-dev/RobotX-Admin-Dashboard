@@ -724,7 +724,8 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
       // eliminate 2 redundant socket emissions and 1 DB query per tick.
       // Was a global io.emit (every connected socket, including every OTHER
       // robot, which have no use for this event) — an O(N²) fan-out pattern
-      // at fleet scale, flagged in system.md §16. Scoped to the dashboard
+      // at fleet scale, flagged in docs/history/legacy-system-reference.md
+      // §16. Scoped to the dashboard
       // room, which only browser dashboard clients join.
       io.to("dashboard").emit("robot:update", fullState);
 

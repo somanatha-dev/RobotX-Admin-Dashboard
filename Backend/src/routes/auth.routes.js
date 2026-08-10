@@ -18,7 +18,8 @@ router.get("/me", authMiddleware.authUser, authControllers.getMe);
 router.post("/change-password", authMiddleware.authUser, authControllers.changePassword);
 router.post("/pin-auth", authMiddleware.authUser, authControllers.pinAuth);
 
-// WebAuthn / passkey step-up (server-verified — see PHASE1_REVIEW.md F31)
+// WebAuthn / passkey step-up (server-verified — see
+// docs/history/legacy-phase1-hardening-review.md F31)
 router.post("/webauthn/register-options", authMiddleware.authUser, webauthnLimiter, webauthnControllers.registerOptions);
 router.post("/webauthn/register", authMiddleware.authUser, webauthnLimiter, webauthnControllers.register);
 router.post("/webauthn/auth-options", authMiddleware.authUser, webauthnLimiter, webauthnControllers.authOptions);

@@ -138,7 +138,21 @@ describe("§23.7 — the identity store seals, classifies, and tombstones", () =
 
   test("an edited ciphertext fails to decrypt rather than decrypting to something else", () => {
     const sealed = identityStore.seal({ label: "12 Acacia Avenue" }, KEY);
-    const tampered = { ...sealed, ciphertext: `${sealed.ciphertext.slice(0, -2)}ff` };
+
+    // The tamper is an XOR against the final byte rather than a literal `ff`. `seal()` uses a
+    // random IV, so the ciphertext differs every run, and overwriting the last byte with `ff`
+    // was a **no-op whenever that byte was already `ff`** — leaving an untampered ciphertext
+    // that `unseal()` then correctly decrypted, so the assertion failed. Measured over 50 000
+    // trials it landed on `ff` at very close to 1-in-256, which is exactly the arithmetic and
+    // not a defect in the cipher. Recorded with this fix in
+    // `PHASE_15_B1_ROUTING_DECISION_REPORT.md` §16 and applied by the pre-Phase-16
+    // reconciliation. XOR guarantees the byte changes, so the tamper can never be a no-op and
+    // the test is strictly stronger than the one it replaces.
+    const last = sealed.ciphertext.slice(-2);
+    const flipped = (parseInt(last, 16) ^ 0xff).toString(16).padStart(2, "0");
+    const tampered = { ...sealed, ciphertext: `${sealed.ciphertext.slice(0, -2)}${flipped}` };
+
+    expect(tampered.ciphertext).not.toBe(sealed.ciphertext);
     expect(() => identityStore.unseal(tampered, KEY)).toThrow();
   });
 

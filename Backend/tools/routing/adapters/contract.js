@@ -57,6 +57,8 @@
  * tie-break. Whether the *engine* is deterministic is R10, and it is Step 3's to measure.
  */
 
+const { compareStrings } = require("../../../src/engine/determinism/ordering");
+
 /**
  * What happened to one requested origin→destination pair, or to one query.
  *
@@ -154,6 +156,19 @@ const HOSTED_HOSTS = Object.freeze([
   "graphhopper.com",
   "api.mapbox.com",
 ]);
+
+/**
+ * Strings that are a note to oneself rather than a value. Compared lower-cased and with
+ * trailing punctuation stripped, so "TBD." and "tbd" are the same non-answer.
+ *
+ * The list is deliberately narrow: only tokens that cannot be a truthful answer to any of the
+ * four fields. "none" and "not built" are **not** here, because for `profilesBuilt` and
+ * `hierarchyBuildTime` they are exactly the honest answer for a candidate Step 1 has not
+ * deployed — and a check that refused an honest negative would push operators toward writing
+ * something that reads better instead.
+ * @structural placeholder tokens, not a tunable list
+ */
+const PLACEHOLDER_TOKENS = new Set(["tbd", "tba", "todo", "n/a", "unknown", "unspecified", "pending", "?", "-", "--", "xxx", "fixme", "placeholder"]);
 
 /** @param {unknown} value @returns {boolean} */
 function isFiniteNumber(value) {
@@ -361,7 +376,24 @@ function normaliseDeployment(declared, problems) {
     return null;
   }
   for (const field of ["shape", "extract", "profilesBuilt", "hierarchyBuildTime"]) {
-    if (!isNonEmptyString(declared[field])) problems.push(`deployment.${field} is required (a string the operator supplies; this adapter chooses none)`);
+    if (!isNonEmptyString(declared[field])) {
+      problems.push(`deployment.${field} is required (a string the operator supplies; this adapter chooses none)`);
+      continue;
+    }
+    // PHASE 15 — a placeholder is not an answer. The four fields are carried opaquely
+    // *because* D1 owns the extract and D8 owns its vintage, and the point of carrying them is
+    // that Step 4 records real operational costs against a real extract. "TBD" satisfies "a
+    // non-empty string" and satisfies nothing else: it would reach `description`, reach the
+    // Step 5 record, and read there as though somebody had answered. Refusing it invents no
+    // value — it declines to accept a non-answer as one.
+    if (PLACEHOLDER_TOKENS.has(declared[field].trim().toLowerCase().replace(/[.\s]+$/u, ""))) {
+      problems.push(
+        `deployment.${field} is "${declared[field]}", which is a placeholder rather than a value. This field is ` +
+          "carried verbatim into the adapter's description and into B1 Step 4's operational record; a placeholder " +
+          "there is indistinguishable from an answer. The extract is D1's and its vintage/refresh cadence is D8's — " +
+          "both are open, and an adapter is not the place either is settled",
+      );
+    }
   }
   if (problems.length > 0) return null;
   return Object.freeze({
@@ -554,7 +586,15 @@ function failedAnswer(destCellId, status, reason) {
  */
 function nearestK(chargers, k) {
   const reachable = chargers.filter((charger) => charger.status === ROUTE_STATUS.OK);
-  reachable.sort((a, b) => a.distanceM - b.distanceM || a.travelSeconds - b.travelSeconds || a.chargerId.localeCompare(b.chargerId));
+  // The tie-break is `determinism/ordering.compareStrings`, not `localeCompare`. That module's
+  // header states the reason and this file's header claims the property: "`localeCompare`
+  // depends on the host's ICU data and collation locale, so the same two ids can order
+  // differently on two hosts. A total order whose result depends on where it ran is not a
+  // total order for replay purposes." Two chargers at an identical distance and duration is
+  // not a hypothetical — a catalogue seeded from a grid produces them — and an order that
+  // differed between the build machine and the shard would be a §9.6 replay defect that only
+  // ever showed up as an inexplicable diff.
+  reachable.sort((a, b) => a.distanceM - b.distanceM || a.travelSeconds - b.travelSeconds || compareStrings(a.chargerId, b.chargerId));
   return Object.freeze(reachable.slice(0, k));
 }
 
@@ -677,6 +717,7 @@ module.exports = {
   CANDIDATE_IDS,
   AdapterError,
   HOSTED_HOSTS,
+  PLACEHOLDER_TOKENS,
   assertSelfHosted,
   normaliseConfig,
   normaliseMatrixRequest,

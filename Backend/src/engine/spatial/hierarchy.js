@@ -37,6 +37,10 @@
  */
 
 const { canonicalCellOrder, isCellId, normaliseCellId, RESOLUTION, validateAssignment } = require("./cells");
+// PHASE 15 — V-10 lives beside the rest of the D1 gate rather than being restated here. A
+// second copy of "what a published cell id must be" is a second thing to get wrong when §6.2's
+// site-local carve-out is revisited.
+const regionBoundary = require("./regionBoundary");
 
 /**
  * The containment order §3.6 tabulates, top-first. `region` is the top of the
@@ -304,6 +308,49 @@ function validate(map) {
 }
 
 /**
+ * Validate a spatial map against §3.6's containment rules **and** against B5 — that is,
+ * everything `validate()` checks plus the requirement that a published cell id actually be
+ * the thing it claims to be (§30.5.5 V-10).
+ *
+ * ── Why this is a second function rather than a stricter `validate()` ──────
+ * The two answer different questions, and both are needed.
+ *
+ * `validate()` is Phase 2's, and Phase 2 was deliberately built against an **opaque token**
+ * because B5 — H3 versus S2 versus site-local graph zones — was open (`cells.js`'s header
+ * states this outright). It checks containment, it is what the durable `CellAssignment` mirror
+ * and the seed are validated by, and tightening it would be re-litigating a decision Phase 2
+ * made correctly.
+ *
+ * `validateForPublish()` is the question the Config Service asks: *may this map become the
+ * operating region's published configuration?* B5 is now settled (`cells.js:29–39`, H3, res
+ * 8/5), so at **that** moment a cell id is an H3 index unless it is §6.2 site-local space and
+ * says so. §30.5.2 records the gap this closes as **N21**: a map whose every cell id is a
+ * placeholder token passes the full spatial validation with zero problems, which means the
+ * publish path "would today accept a fabricated, geometry-free region map indistinguishable
+ * from a derived one".
+ *
+ * The publish path enforces the same rule as a blocking finding (`validators.js` A6); this
+ * function exists so a caller can check a map it is *about to* publish, exactly as
+ * `validate()` does for containment.
+ *
+ * @param {{ regions?: object[], zones?: object[], sites?: object[], cells?: object[] }} map
+ * @returns {{ ok: boolean, problems: string[] }}
+ */
+function validateForPublish(map) {
+  const containment = validate(map);
+  const problems = [...containment.problems];
+  const source = map || {};
+
+  for (const assignment of source.cells || []) {
+    if (!assignment || !isCellId(assignment.cellId)) continue;
+    const expected = assignment.resolution === RESOLUTION.COARSE ? RESOLUTION.COARSE : RESOLUTION.FINE;
+    problems.push(...regionBoundary.validateCellIdentity(assignment, expected));
+  }
+
+  return { ok: problems.length === 0, problems };
+}
+
+/**
  * Convert a map into the payload shape the Config Service publishes and validates
  * (`validators.js` V8), so the same map object serves both the durable mirror and
  * the pinned configuration version.
@@ -333,6 +380,10 @@ function toConfigPayload(map) {
     regionId: assignment.regionId ? String(assignment.regionId) : null,
     zoneId: assignment.zoneId ? String(assignment.zoneId) : null,
     siteId: assignment.siteId ? String(assignment.siteId) : null,
+    // PHASE 15 — carried so the publish-time check (A6) reads the map's own declaration rather
+    // than inferring one. Absent means H3 (`regionBoundary.CELL_INDEXING`): the exemption is
+    // claimed explicitly or it is not claimed, because an inferred exemption is no check.
+    indexing: assignment.indexing === undefined || assignment.indexing === null ? null : String(assignment.indexing),
   });
 
   const all = (source.cells || []).map(project);
@@ -350,5 +401,6 @@ module.exports = {
   SPATIAL_UNITS,
   indexMap,
   validate,
+  validateForPublish,
   toConfigPayload,
 };

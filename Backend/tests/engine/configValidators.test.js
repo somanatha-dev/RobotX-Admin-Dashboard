@@ -16,6 +16,23 @@
 
 const service = require("../../src/engine/config/service");
 const { SEVERITY } = require("../../src/engine/config/validators");
+const cells = require("../../src/engine/spatial/cells");
+
+/**
+ * Cell ids for the V8 fixtures below.
+ *
+ * They were `"c1"` and `"c2"` until PHASE 15's **A6** check landed, which refuses a published
+ * cell id that is not an H3 index at its declared resolution (§6.2, B5 — the guard against
+ * publishing a fabricated region map, report N21). Those fixtures were invalid under the
+ * settled contract, so they are corrected here rather than the check being relaxed: V8's rule
+ * is about *containment*, and it is testable at any cell id that is a real one.
+ *
+ * **These coordinates are arbitrary test data and are not an operating region.** They are two
+ * points far apart on the equator, chosen because nothing operates there and nobody could read
+ * them as a deployment decision. D1 remains undecided and is not decided by a test fixture.
+ */
+const CELL_1 = cells.cellForPoint(0, 0, cells.RESOLUTION.FINE);
+const CELL_2 = cells.cellForPoint(0, 30, cells.RESOLUTION.FINE);
 
 const bind = (name, value, level = "global", key = "") => ({ level, key, name, value });
 
@@ -155,8 +172,8 @@ describe("V8 — spatial containment (§3.6)", () => {
       spatial: {
         zones: [{ id: "z1", regionId: "r1" }],
         cells: [
-          { cellId: "c1", zoneId: "z1" },
-          { cellId: "c1", zoneId: "z2" },
+          { cellId: CELL_1, zoneId: "z1" },
+          { cellId: CELL_1, zoneId: "z2" },
         ],
       },
     }).result;
@@ -170,8 +187,8 @@ describe("V8 — spatial containment (§3.6)", () => {
       spatial: {
         zones: [{ id: "z1", regionId: "r1" }],
         cells: [
-          { cellId: "c1", zoneId: "z1", siteId: "s1" },
-          { cellId: "c1", zoneId: "z1", siteId: "s2" },
+          { cellId: CELL_1, zoneId: "z1", siteId: "s1" },
+          { cellId: CELL_1, zoneId: "z1", siteId: "s2" },
         ],
       },
     }).result;
@@ -188,8 +205,8 @@ describe("V8 — spatial containment (§3.6)", () => {
           { id: "z2", regionId: "r1" },
         ],
         cells: [
-          { cellId: "c1", zoneId: "z1", siteId: "s1" },
-          { cellId: "c2", zoneId: "z2" },
+          { cellId: CELL_1, zoneId: "z1", siteId: "s1" },
+          { cellId: CELL_2, zoneId: "z2" },
         ],
       },
     }).result;

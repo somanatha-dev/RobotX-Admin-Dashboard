@@ -39,6 +39,8 @@
  *   A2  derived parameters are not hand-entered (§22.1 rule 6)
  *   A3  the migrated legacy liveness coupling `flush interval < offline cutoff`
  *   A4  the leadership renewal margin is satisfiable (§19.5) — Phase 13
+ *   A6  every published cell id is an H3 index at its declared resolution, or is a declared
+ *       §6.2 site-local graph zone (B5) — Phase 15, closing N21
  *
  * Per-parameter type and range validation runs first (P-series). A cross-parameter
  * check reading an out-of-range value would report a second, derived failure.
@@ -53,6 +55,11 @@ const { normaliseScopeLevel, permitsScope } = require("./resolver");
 const sizing = require("../shard/sizing");
 const shardModel = require("../shard/shardModel");
 const election = require("../shard/election");
+// PHASE 15 — A6's rule is the D1 gate's V-10, read from where it is defined rather than
+// restated. §6.2's site-local carve-out is the part most likely to be revisited, and it must
+// mean the same thing at publish time as it does at region acceptance.
+const regionBoundary = require("../spatial/regionBoundary");
+const { RESOLUTION } = require("../spatial/cells");
 
 /** @structural unit conversion: seconds in an hour, from the §3.5 inequality's own statement */
 const SECONDS_PER_HOUR = 3600;
@@ -573,6 +580,61 @@ function v8SpatialContainment(spatial) {
 }
 
 /**
+ * A6 — every published cell id is the thing it claims to be (§6.2, B5), else a fabricated
+ * region map is indistinguishable from a derived one at the only point that can refuse it.
+ *
+ * ── The defect this closes ────────────────────────────────────────────────
+ * `PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md` §30.5.2 records it as **N21**, proven by
+ * execution rather than by reading: `hierarchy.validate(SEED_SPATIAL_MAP).ok → true` with zero
+ * problems, on a map whose every cell id is a placeholder token and none of which
+ * `cells.resolutionOfH3Cell` can resolve. That was **correct for Phase 2**, where a cell id was
+ * "an opaque token supplied by the published map" because B5 was open. B5 is now settled
+ * (`cells.js:29–39` — H3, resolutions 8 and 5) and this check is the validator catching up to
+ * it. §36.2 records the consequence of leaving it open: "the publish path still cannot
+ * mechanically reject a fabricated region, and it should be tightened *before* the first
+ * spatial map is published, not after."
+ *
+ * ── Why it is an A-series check ───────────────────────────────────────────
+ * §22.1 rule 5's list is introduced with "the following are validated at publish and are
+ * blocking", not "only the following" — this file's header states that, and A1–A5 already
+ * stand on it. A6 enforces a §6.2 identity, not a §22.1 cross-parameter identity, so it takes
+ * the same place A3's migrated legacy coupling does.
+ *
+ * ── What it does not do ───────────────────────────────────────────────────
+ * It passes **vacuously on an absent map**, exactly as V8 does: D1 is undecided, nothing is
+ * published, and an absent map is not an invalid one. It validates no geometry, because a
+ * published map carries none (§3.6 — containment is by assignment). And it does not reject
+ * §6.2's indoor/multi-level site-local graph zones: those are legitimate non-geodesic tokens,
+ * and a cell may claim that exemption by declaring it and naming its site. What it refuses is
+ * a token that is *neither* — which is precisely what a fabricated map is made of.
+ *
+ * @param {object|null|undefined} spatial the published spatial payload
+ * @returns {object[]} findings
+ */
+function a6SpatialCellIdentity(spatial) {
+  if (!spatial) return [];
+  const results = [];
+
+  const check = (list, resolution, field) => {
+    for (const assignment of Array.isArray(list) ? list : []) {
+      if (!assignment || assignment.cellId === undefined || assignment.cellId === null) continue;
+      for (const problem of regionBoundary.validateCellIdentity(assignment, resolution)) {
+        results.push(finding("A6", SEVERITY.BLOCKING, "§6.2 · B5 · §22.1 rule 5", `${field}: ${problem}`));
+      }
+    }
+  };
+
+  // `toConfigPayload` splits the map: `cells` carries the fine cells §3.6's containment rule is
+  // stated for, `coarseCells` the §6.2 regional-sweep index. Each is checked at its own band,
+  // because a fine cell published at the coarse resolution silently changes the §20.3 cache key
+  // space and the §6.3 k-ring bounds while looking entirely well-formed.
+  check(spatial.cells, RESOLUTION.FINE, "cells");
+  check(spatial.coarseCells, RESOLUTION.COARSE, "coarseCells");
+
+  return results;
+}
+
+/**
  * V9 — the combined nominal and degraded conservatism products do not exceed
  * `energy.max_combined_conservatism` (§14.3), else independently-chosen derating
  * factors compound past anyone's stated intention.
@@ -909,6 +971,7 @@ function validatePublish(candidate) {
   findings.push(...a3LegacyLivenessCoupling(values));
   findings.push(...a4LeadershipRenewalMargin(values));
   findings.push(...a5IdentityRetentionOrdering(values));
+  findings.push(...a6SpatialCellIdentity(candidate.spatial));
 
   const blocking = findings.filter((item) => item.severity === SEVERITY.BLOCKING);
   const launchGate = findings.filter((item) => item.severity === SEVERITY.LAUNCH_GATE);
@@ -937,5 +1000,6 @@ module.exports = {
   a3LegacyLivenessCoupling,
   a4LeadershipRenewalMargin,
   a5IdentityRetentionOrdering,
+  a6SpatialCellIdentity,
   validatePublish,
 };

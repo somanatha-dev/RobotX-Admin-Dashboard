@@ -1,219 +1,150 @@
-"# RobotX Admin Dashboard
+# RobotX
 
-RobotX is a realtime fleet-operations admin dashboard (Frontend) backed by a Socket.IO + Redis + Prisma service (Backend). It includes a robot telemetry simulator, live map views, fleet/task pages, and a refactored component-based React architecture.
+A fleet command-and-control backend for autonomous delivery robots, with a realtime operator
+dashboard.
 
-This README documents what was implemented from the beginning of this workspace through the current state: backend runtime fixes, realtime telemetry wiring, Redis storage, env-var configuration, and the frontend refactor that removed the monolithic `App.jsx`.
+RobotX commissions and authenticates robots, ingests their telemetry in real time, handles obstacle
+reports and rerouting, and streams the whole picture to an operator dashboard. It is mid-way
+through replacing its task-assignment engine.
 
-## What’s in this repo
+---
 
-- `Backend/`
-	- `server.js`: Express + Socket.IO server. Ingests telemetry, stores latest telemetry in Redis, emits realtime updates to dashboards, and writes tasks via Prisma.
-	- `robot.js`: Socket.IO client simulator that emits telemetry periodically.
-	- `prisma/`: Prisma schema + migrations (Postgres).
-- `Frontend/`
-	- Vite + React dashboard UI.
-	- A stable Socket.IO client module (HMR-safe singleton) + extracted pages/components.
+## ⚠️ Current status — read this before anything else
 
-## Architecture (high level)
+**Task assignment does not currently work, and that is deliberate.**
 
-### Realtime data flow
+| | |
+|---|---|
+| **Legacy DTARO assignment engine** | **Deleted.** Removed from the build by Phase 15, not merely bypassed. A build gate fails if it returns |
+| **Next-generation assignment engine** | **Built and tested — 185 modules — but switched off.** `ENGINE_ENABLED` defaults to `false`, and no production composition root constructs a solve path |
+| **`POST /api/tasks`** | Returns **`503 ENGINE_NOT_LIVE`** |
+| **Phase 15** (verification, gates, cutover) | **BLOCKED** |
+| **Phase 16** (Tier 2 enablement) | **NOT READY — must not begin** |
+| **B1** (routing engine selection) | **BLOCKED** behind the region definition (D1), which awaits an operations/commercial decision |
 
-1) **Robot / simulator** emits telemetry via Socket.IO:
+**Everything else runs.** Robot authentication, telemetry ingestion, the live dashboard feed,
+obstacle handling and rerouting, the simulator, and the operator API are all live and working.
 
-- Event: `telemetry`
-- Payload example:
-	- `robotId`
-	- `lat`, `lon`
-	- `battery`
+A 503 naming the state is deliberate: with the legacy dispatcher out of the build, accepting a task
+for a shard whose coordinator is not running would durably record work that no component is
+responsible for deciding — the exact defect the new architecture exists to eliminate.
 
-2) **Backend** receives telemetry and does two things:
+**Full detail: [`ARCHITECTURE.md`](ARCHITECTURE.md).**
 
-- Stores the latest snapshot in Redis under `robot:<robotId>`
-- Broadcasts the same snapshot to all connected frontends:
-	- Event: `robot_update`
+---
 
-3) **Frontend** listens for `robot_update` and updates robot state live.
+## Documentation map
 
-### Task flow (Socket.IO → Prisma)
+Read these in this order depending on what you need.
 
-- Admin emits: `assign_task`
-- Backend writes: `prisma.task.create({ data: task })`
-- Backend broadcasts: `task_assigned`
+| Document | What it is |
+|---|---|
+| **[`ARCHITECTURE.md`](ARCHITECTURE.md)** | **Start here.** What RobotX is *today* — the live host platform, the engine's real status, known gaps, and a source-of-truth map |
+| [`NEXT_GENERATION_ASSIGNMENT_ENGINE.md`](NEXT_GENERATION_ASSIGNMENT_ENGINE.md) | **The frozen architecture.** Architectural authority. Where anything disagrees with it, the other thing is defective |
+| [`docs/adr/`](docs/adr/) | 38 architecture decision records — each fixing one decision's identity **and its rejected alternative** |
+| [`IMPLEMENTATION_EXECUTION_PLAN.md`](IMPLEMENTATION_EXECUTION_PLAN.md) | The plan of record: 16 phases, capability inventory, blocking decisions, release gates |
+| [`PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md`](PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md) | **Current programme status.** Living, append-only register of what is blocked and why |
+| [`docs/runbooks/`](docs/runbooks/) | [`cutover.md`](docs/runbooks/cutover.md) and [`rollback.md`](docs/runbooks/rollback.md). **Read rollback first** |
+| [`docs/safety-case/SAFETY_CASE.md`](docs/safety-case/SAFETY_CASE.md) | Generated safety case — `npm run safety:case`. Do not hand-edit |
+| [`Backend/src/engine/ARCHITECTURE.md`](Backend/src/engine/ARCHITECTURE.md) · [`TIERS.md`](Backend/src/engine/TIERS.md) | Engine module map and obligation tiers |
+| `PHASE_*_IMPLEMENTATION_REPORT.md` · `PHASE_*_INDEPENDENT_VERIFICATION.md` | Historical engineering evidence, one pair per phase |
+| [`docs/history/`](docs/history/) | **Superseded documentation.** Describes deleted systems — not current authority |
 
-Note: Prisma schema relates `Task.robotId` to `Robot.robotId`. If your database enforces foreign keys, you must ensure a matching `Robot` record exists before inserting a `Task`.
+> **Two of these are build dependencies.** Four tests read `NEXT_GENERATION_ASSIGNMENT_ENGINE.md`
+> and `docs/adr/**` from disk and assert against their contents; three more read `TIERS.md`.
+> Moving, renaming, or reformatting them breaks the build.
 
-## Key work completed (detailed)
+---
 
-### Backend work
+## Repository structure
 
-1) **Runtime dependency fix**
-- The robot simulator (`Backend/robot.js`) is a Socket.IO client.
-- The backend package originally didn’t include the Socket.IO client dependency, which caused runtime failures when running the simulator.
-- Added/installed `socket.io-client` in `Backend/package.json` so the simulator can emit telemetry.
+```
+Backend/
+  server.js              Process wiring, Socket.IO adapter, graceful shutdown
+  src/
+    app.js               Express pipeline: helmet → CORS → JSON/cookies → logging → /api
+    routes/              13 route groups mounted under /api
+    controllers/         HTTP handlers
+    services/            15 transport-agnostic service modules
+    sockets/             Socket.IO server, 5 handlers, per-event rate limiting
+    cache/kv.js          The sole Redis facade — pipelining, fail-closed locks, fallback
+    db/                  Prisma client
+    engine/              Next-generation assignment engine — 185 modules, NOT ENABLED
+    workers/             19 engine workers — none on production scheduling
+    simulation/          VirtualRobot + SimulationEngine
+    middlewares/         auth, rate limiting, error handling
+    config/              env, logger, CORS, constants
+  prisma/                Schema, migrations, seed
+  tests/                 5 Jest projects: legacy, gates, engine, chaos, scale
+  tools/                 Build gates, routing benchmark, replay, safety case, soak
+  benchmark/             Load harness + historical results (legacy monolith)
+Frontend/                Vite + React 19 operator dashboard
+docs/                    ADRs, runbooks, safety case, historical documentation
+formal/                  TLA+ specifications and configurations
+```
 
-2) **Socket.IO event pipeline**
-- Implemented/confirmed a minimal, reliable telemetry handler in `Backend/server.js`:
-	- `redis.set(`robot:${data.robotId}`, JSON.stringify(data))`
-	- `io.emit('robot_update', data)`
+---
 
-3) **Redis lifecycle visibility**
-- Added Redis connection lifecycle logs (`connect`, `ready`, `error`, `close`) to make it obvious whether Redis is reachable.
-
-4) **Prisma integration**
-- Prisma client initialized in `Backend/server.js`.
-- `assign_task` handler persists tasks into Postgres via Prisma.
-
-### Frontend work
-
-1) **Realtime telemetry consumption**
-- Wired a Socket.IO client to receive `robot_update` events and update robot state in realtime (used in the map/fleet experience).
-
-2) **HMR-safe Socket.IO client**
-- During Vite Fast Refresh/HMR, multiple module reloads can cause repeated connect/disconnect loops.
-- Implemented a singleton socket pattern in `Frontend/src/lib/socket.js` by storing the socket on `globalThis[<key>]`.
-- This prevents “Connected → Disconnected → Connected…” spam and stabilizes dev experience.
-
-3) **Vite env migration + fixes**
-- Standardized frontend configuration to use Vite-exposed env vars (`VITE_*`).
-- Socket config:
-	- `VITE_SOCKET_URL`
-	- `VITE_SOCKET_GLOBAL_KEY`
-- Mapbox config:
-	- `VITE_MAPBOX_TOKEN`
-	- Optional: `VITE_USE_LEGACY_EMBEDDED_MAP` (used by the map page)
-
-4) **Major refactor: remove monolithic App**
-
-Goal: "App.jsx should not contain logic" and the UI should be component-based.
-
-Completed refactor outcomes:
-
-- `Frontend/src/App.jsx` is now a thin wrapper only rendering the app shell.
-- App logic lives in `Frontend/src/app/RobotXApp.jsx`, with UI layout and route rendering split into small modules under `Frontend/src/app/layout/` and `Frontend/src/app/routing/`.
-- Extracted UI building blocks into:
-	- `Frontend/src/components/`
-	- `Frontend/src/components/layout/`
-	- `Frontend/src/components/modals/`
-- Extracted route/page components into:
-	- `Frontend/src/pages/`
-
-5) **Removed redundant “re-export only” file**
-- Deleted `Frontend/src/socket.js` (it was only re-exporting from `src/lib/socket.js`).
-
-6) **Helper extraction to reduce duplication**
-- Moved common geo/math helpers into `Frontend/src/lib/geo.js`.
-- Moved Mapbox marker DOM builder into `Frontend/src/lib/mapboxMarkers.js`.
-- Extracted session persistence into `Frontend/src/lib/storage/sessionStorage.js`.
-- Extracted the “Decision Required” popup into `Frontend/src/components/modals/DecisionRequiredModal.jsx`.
-
-## Frontend folder structure (current)
-
-- `Frontend/src/app/`
-	- `RobotXApp.jsx`: app entry (wraps Provider + Shell)
-	- `context/`: React Context (state/actions) + hooks
-		- `appContext.js`
-	- `providers/`: top-level providers
-		- `AppProvider.jsx`
-	- `shell/`: app composition (Sidebar/TopBar/Content + global modals)
-		- `AppShell.jsx`
-	- `hooks/`: extracted app behaviors (effects)
-		- `useRobotSimulator.js`
-		- `useDecisionCountdown.js`
-		- `useNotificationsDismiss.js`
-	- `layout/`: navigation + top bar + notifications UI
-		- `AppSidebar.jsx`
-		- `AppTopBar.jsx`
-		- `NotificationsMenu.jsx`
-	- `routing/`: route helpers + page rendering
-		- `routes.js`: route/title helpers
-		- `AppContent.jsx`: renders the active page
-- `Frontend/src/config/`
-	- `mapConfig.js`: map constants and location tree
-- `Frontend/src/mocks/`
-	- `mockData.js`: initial mock robot/task data
-- `Frontend/src/pages/`
-	- `DashboardPage.jsx`, `RobotsPage.jsx`, `MapPage.jsx`, `TasksPage.jsx`, `ProfilePage.jsx`, `RobotDetailPage.jsx`, `LoginPage.jsx`
-- `Frontend/src/components/`
-	- UI primitives used by pages (e.g. metric cards, health rows)
-- `Frontend/src/components/modals/`
-	- Auth/commission/task/decision modals
-- `Frontend/src/lib/`
-	- `socket.js`: Socket.IO singleton client
-	- `geo.js`: reusable geometry helpers
-	- `mapboxMarkers.js`: marker element builder
-	- `storage/sessionStorage.js`: `loadSession()` / `saveSession()`
-- `Frontend/src/features/`
-	- Maps and campus rendering modules
-
-## Setup & run (Windows / local dev)
+## Development setup
 
 ### Prerequisites
 
-- Node.js (LTS recommended)
-- Redis (optional)
-- Postgres database (for Prisma) if you plan to use task persistence
+- **Node.js 20** (what CI runs)
+- **PostgreSQL** — required
+- **Redis** — optional in development; set `REDIS_ENABLED=false` to run without it
+- A **Mapbox token** for map views
 
-### 1) Backend install
-
-From the repo root:
+### 1. Backend
 
 ```bash
 cd Backend
 npm install
 ```
 
-### 2) Configure database (Prisma)
-
-Prisma expects `DATABASE_URL` for Postgres (see `Backend/prisma/schema.prisma`). Create `Backend/.env`:
+Create `Backend/.env`:
 
 ```env
 DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/robotx?schema=public"
 
-# Optional: Redis cache for latest telemetry + socket<->robot binding
-# - Redis Cloud / hosted Redis typically requires TLS: use `rediss://...`
-# - Local Redis without TLS can use `redis://...`
-#
-# Local (no TLS)
-# REDIS_URL="redis://:PASSWORD@localhost:6379"
-#
-# Redis Cloud (TLS + username + host + port)
-# Format: rediss://<username>:<password>@<host>:<port>
-# Example:
-# REDIS_URL="rediss://default:YOUR_PASSWORD@redis-xxxx.xxxx.region.cache.amazonaws.com:12345"
-REDIS_URL="rediss://default:YOUR_PASSWORD@YOUR_REDIS_HOST:YOUR_REDIS_PORT"
+# Redis — use rediss:// for TLS (hosted), redis:// for local
+REDIS_URL="redis://localhost:6379"
+# REDIS_ENABLED=false        # run without Redis entirely
 
-# Dev convenience: disable Redis completely
-# REDIS_ENABLED=false
+JWT_SECRET="a-long-random-string"
+FRONTEND_URL="http://localhost:5173"
+MAPBOX_ACCESS_TOKEN="YOUR_MAPBOX_TOKEN"
+
+# Optional
+# GOOGLE_CLIENT_ID=...
+# ADMIN_EMAIL=... / ADMIN_PASSWORD=...      bootstrap admin
+# DISABLE_VIRTUAL_SIMULATOR=true
+# LOG_LEVEL=debug
+
+# The assignment engine master switch. Leave false — see "Current status".
+ENGINE_ENABLED=false
 ```
 
-Then run migrations (optional but recommended if using tasks):
+Apply migrations, and optionally seed:
 
 ```bash
-cd Backend
 npx prisma migrate dev
+npx prisma generate         # regenerate the Prisma client
+npx prisma db seed          # seeds the spatial map and reference data
+npx prisma studio           # browse the database in a UI
 ```
 
-### 3) Start backend server
+Run it:
 
 ```bash
-cd Backend
-node server.js
+npm run dev                 # or: npm start
 ```
 
-Backend listens on `http://localhost:3000`.
+The backend listens on `http://localhost:3000` (override with `PORT`).
 
-### 4) Start robot telemetry simulator
+> **Resetting the database.** `npx prisma migrate reset` drops everything, re-applies migrations,
+> and re-runs the seed. All data is lost.
 
-In a second terminal:
-
-```bash
-cd Backend
-node robot.js
-```
-
-This emits `telemetry` every ~2 seconds.
-
-### 5) Frontend install + run
+### 2. Frontend
 
 ```bash
 cd Frontend
@@ -221,26 +152,52 @@ npm install
 npm run dev
 ```
 
-Vite dev server starts (see its terminal output for the URL).
-
-## Frontend environment variables
-
-Create `Frontend/.env.local` (not committed) if you need to override defaults:
+Create `Frontend/.env.local`:
 
 ```env
+VITE_API_URL=http://localhost:3000
 VITE_SOCKET_URL=http://localhost:3000
 VITE_SOCKET_GLOBAL_KEY=__robotx_socket__
-
-# Required for Mapbox-powered views
 VITE_MAPBOX_TOKEN=YOUR_MAPBOX_TOKEN
-
-# Optional: keep legacy map mode available
-VITE_USE_LEGACY_EMBEDDED_MAP=false
+# VITE_GOOGLE_CLIENT_ID=...
 ```
 
-Important: after changing env vars, restart `npm run dev`.
+Restart the dev server after changing env vars — Vite reads them at startup.
 
-## Useful commands
+---
+
+## Verification
+
+The build gates run **first and independently of the tests**, deliberately: a tier-dependency
+violation or an unregistered behavioural constant is a structural defect that no amount of passing
+tests makes acceptable.
+
+```bash
+cd Backend
+
+npm run gates          # all seven build gates
+npm test               # full suite — 145 suites, 6287 tests
+npm run verify         # gates + tests
+
+# Individual gates
+npm run gate:tiers     # §1.8 rule 2 — no Tier 0/1 module may depend on a Tier 2 mechanism
+npm run gate:params    # §22 — no behavioural constant outside the parameter register
+npm run gate:tenets    # T1 type separation, T6 no wall-clock read in the decision path
+npm run gate:privacy   # §23.7 — identity isolation
+npm run gate:erasure   # replay equivalence over an erased corpus
+npm run gate:legacy    # the four retired modules stay retired
+npm run gate:columngen # §21.6 — a column-generation change must carry an evaluator run
+
+# Test projects
+npm run test:engine
+npm run test:gates     # gate self-tests: plant violations, assert each gate reports them
+npm run test:chaos
+npm run test:scale
+
+# Tooling
+npm run routing:readiness   # B1 readiness gate — currently reports BLOCKED
+npm run safety:case         # regenerate docs/safety-case/SAFETY_CASE.md
+```
 
 Frontend:
 
@@ -250,33 +207,27 @@ npm run lint
 npm run build
 ```
 
-Backend:
-
-```bash
-cd Backend
-node server.js
-node robot.js
-```
+---
 
 ## Troubleshooting
 
-### Socket connects/disconnects repeatedly during development
+**`POST /api/tasks` returns 503 `ENGINE_NOT_LIVE`.**
+Expected. See "Current status" above. The legacy dispatcher is deleted and the engine is off.
 
-- The frontend socket client uses a global singleton to avoid HMR reconnect churn.
-- Verify you are importing the socket from `Frontend/src/lib/socket.js`.
+**Telemetry not updating.**
+Confirm the backend is on port 3000; if Redis is enabled, confirm `REDIS_URL` is reachable (hosted
+Redis usually needs `rediss://`); check the simulator is running.
 
-### No map / Mapbox errors
+**Socket connects and disconnects repeatedly in development.**
+The frontend socket client is a global singleton to survive Vite HMR. Make sure you import it from
+`Frontend/src/lib/socket.js` rather than constructing your own.
 
-- Ensure `VITE_MAPBOX_TOKEN` is set and the dev server was restarted.
+**No map, or Mapbox errors.**
+Set `VITE_MAPBOX_TOKEN` and restart the dev server.
 
-### Telemetry not updating
+**Prisma errors on start.**
+Ensure `DATABASE_URL` is set, migrations are applied, and `npx prisma generate` has run.
 
-- Confirm backend is running on port 3000.
-- If Redis is enabled, confirm your `REDIS_URL` is reachable (for Redis Cloud, use `rediss://...`).
-- Run the simulator (`node robot.js`) and watch the backend logs.
-
-### Prisma task insert fails
-
-- Ensure `DATABASE_URL` is set and migrations are applied.
-- Ensure the referenced `Robot` exists if your DB enforces the `Task.robotId → Robot.robotId` relation.
-" 
+**A gate fails after a documentation change.**
+Not a false positive. Four tests read `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` and `docs/adr/**` from
+disk. Restore the path or content — do not weaken the test.

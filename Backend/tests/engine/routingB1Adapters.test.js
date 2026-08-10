@@ -607,7 +607,19 @@ describe("the benchmark discovers and selects the adapters, and reports them hon
     expect(code).toBe(0);
     expect(printed).toMatch(/NOT_DEPLOYED/u);
     expect(printed).toMatch(/NOT_MEASURED is not PASS/u);
-    expect(printed).not.toMatch(/\bPASS\b\s+\w/u);
+
+    // Asserted per benchmark row rather than as "the word PASS appears nowhere in the output".
+    // PHASE 15 added the readiness gate to this report, and its step 2 legitimately reads PASS —
+    // the four adapters exist, which is a true statement about work that is done and is not a
+    // claim about any candidate's performance. The property this test is protecting is narrower
+    // and unweakened: **no §20.1 row may be reported as passing** when nothing was measured.
+    for (const row of benchmark.ROWS) {
+      const printedRow = printed.split("\n").find((line) => line.includes(row.id) && /^\s{2}\w/u.test(line));
+      expect({ id: row.id, line: printedRow }).toEqual({ id: row.id, line: expect.stringContaining(benchmark.VERDICT.NOT_MEASURED) });
+    }
+    // …and the readiness gate must still be reporting the steps as blocked rather than passed.
+    expect(printed).toMatch(/BLOCKED\s+step 1/u);
+    expect(printed).toMatch(/would NOT be admissible as B1 Step 3 evidence/u);
   });
 
   test("an engine that answers no spread now loses the entry instead of being credited with certainty", async () => {
@@ -629,5 +641,71 @@ describe("the benchmark discovers and selects the adapters, and reports them hon
     const measured = await benchmark.measure(silent, config, shape);
     expect(measured.cacheEntries).toBe(0);
     expect(measured.approachHitRate.hitRate).toBe(0);
+  });
+});
+
+describe("PHASE 15 — two defects found auditing the Step 2 work, and their fixes", () => {
+  /**
+   * **The determinism defect.** `nearestK`'s tie-break was `chargerId.localeCompare(...)`.
+   * `determinism/ordering.js`'s own header rules that out in as many words: "`localeCompare`
+   * depends on the host's ICU data and collation locale, so the same two ids can order
+   * differently on two hosts. A total order whose result depends on where it ran is not a
+   * total order for replay purposes."
+   *
+   * It is load-bearing rather than theoretical because the order decides which chargers
+   * survive the truncation to `k`. Two chargers at an identical distance and duration is not
+   * an edge case — a catalogue laid out on a grid produces them — and a build machine and a
+   * shard that truncated a tie differently would write two different entries under one cache
+   * key (§20.3), surfacing only as an unexplained replay diff (§9.6).
+   */
+  test("nearestK breaks a tie by code unit, not by the host's collation", () => {
+    // `"a"` sorts BEFORE `"B"` under most ICU collations and AFTER it by code unit. Any
+    // implementation still calling `localeCompare` returns the other order here.
+    const tied = [
+      { chargerId: "a-charger", status: contract.ROUTE_STATUS.OK, distanceM: 100, travelSeconds: 10 },
+      { chargerId: "B-charger", status: contract.ROUTE_STATUS.OK, distanceM: 100, travelSeconds: 10 },
+    ];
+    expect(contract.nearestK(tied, 2).map((charger) => charger.chargerId)).toEqual(["B-charger", "a-charger"]);
+    // …and the truncation follows the same order, which is where the defect would have bitten.
+    expect(contract.nearestK(tied, 1).map((charger) => charger.chargerId)).toEqual(["B-charger"]);
+  });
+
+  test("the entry cache applies the same order, so the adapter and the cache cannot disagree", () => {
+    // eslint-disable-next-line global-require
+    const chargerCache = require("../../src/engine/routing/chargerReachabilityCache");
+    const built = chargerCache.buildEntry({
+      chargers: [
+        { chargerId: "a-charger", distanceM: 100, travelSeconds: 10 },
+        { chargerId: "B-charger", distanceM: 100, travelSeconds: 10 },
+      ],
+      k: 2,
+      intraCellOffsetM: 0,
+      energyWhPerMetre: 0.05,
+      speedMetresPerSecond: 5,
+      projectionVersion: 1,
+    });
+    expect(built.entry.chargers.map((charger) => charger.chargerId)).toEqual(["B-charger", "a-charger"]);
+  });
+
+  /**
+   * **The placeholder defect.** The four `deployment` fields are carried opaquely *because*
+   * D1 owns the extract and D8 owns its vintage — and the reason they are carried at all is
+   * that `b1Benchmark.js:89–90` puts them in the adapter's `description` and Step 4 records
+   * them as operational costs. "TBD" satisfies "a non-empty string" and satisfies nothing
+   * else: it would reach the Step 5 record reading as though somebody had answered.
+   */
+  test("a placeholder in the deployment block is refused — a non-answer is not an answer", () => {
+    for (const token of ["TBD", "tbd.", "n/a", "unknown", "?", "TODO"]) {
+      expect(() => osrm.create(configFor({ deployment: { shape: "fixture", extract: token, profilesBuilt: "none", hierarchyBuildTime: "not built" } }))).toThrow(
+        /is a placeholder rather than a value/u,
+      );
+    }
+  });
+
+  test("but an honest negative is accepted — the check must not push operators toward prose", () => {
+    // "none" and "not built" are the truthful answers for a candidate Step 1 has not deployed,
+    // and refusing them would teach people to write something that reads better instead.
+    expect(() => osrm.create(configFor())).not.toThrow();
+    expect(osrm.create(configFor()).description).toMatch(/profiles none; hierarchy build not built/u);
   });
 });

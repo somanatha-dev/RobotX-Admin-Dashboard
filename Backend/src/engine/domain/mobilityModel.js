@@ -137,12 +137,152 @@ function validateModel(model) {
   return problems;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   PHASE 15 — the speed model's readiness, which is D3's and is not decided here
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * The six things §2.2 states a speed model is a function **of**: "speed as a function of road
+ * class, gradient, surface, payload mass, congestion, and weather".
+ *
+ * This list is the specification's own and is not a schema this module invents. Nothing below
+ * reads a *value* from any of them, states a plausible range for one, or supplies one when it
+ * is missing — a speed, a gradient response, a congestion coefficient and a weather
+ * coefficient are **D3**, owned by Product + Fleet Engineering, and §25.4 makes inventing one
+ * a commissioning-gate violation: "a heterogeneous fleet with copy-pasted parameters will make
+ * confidently wrong cross-class comparisons, which is worse than not comparing at all."
+ *
+ * What is checked is only whether the declaration *addresses* each factor. That is the
+ * difference between a model and a placeholder, and it is checkable without knowing a number.
+ * @structural §2.2's own factor list
+ */
+const SPEED_MODEL_FACTORS = Object.freeze(["roadClass", "gradient", "surface", "payloadMass", "congestion", "weather"]);
+
+/**
+ * How usable a declared speed model is as an input to routing edge costs.
+ *
+ * The distinction that matters is `STUB` versus `ABSENT`. §36.6 records the seeded model's
+ * `speedModel` as `{ note: "Populated by the routing integration in Phases 7–9 (blocking
+ * decision B1)" }` — an object, so every "is it declared?" check passes, and it contains
+ * nothing a routing engine could weight an edge with. A stub that reads as present is more
+ * dangerous than an absent field, because absence is at least visible.
+ * @structural the D3 readiness states
+ */
+const SPEED_MODEL_STATUS = Object.freeze({
+  /** No speed model is declared at all. */
+  ABSENT: "ABSENT",
+  /** Declared, and it addresses none of §2.2's factors — a placeholder, not a model. */
+  STUB: "STUB",
+  /** Declared and addresses some but not all of §2.2's factors. */
+  INCOMPLETE: "INCOMPLETE",
+  /** Declared and addresses every §2.2 factor. Whether the *values* are right is commissioning's. */
+  DECLARED: "DECLARED",
+});
+
+/**
+ * Classify a model's `speedModel` (§2.2, decision **D3**).
+ *
+ * @param {object} model
+ * @returns {{ status: string, declared: string[], missing: string[], reason: string }}
+ */
+function speedModelStatus(model) {
+  const declared = model && typeof model === "object" ? model.speedModel : undefined;
+  if (declared === undefined || declared === null) {
+    return Object.freeze({
+      status: SPEED_MODEL_STATUS.ABSENT,
+      declared: Object.freeze([]),
+      missing: SPEED_MODEL_FACTORS,
+      reason: "no speedModel is declared (§2.2 requires all six MobilityModel elements)",
+    });
+  }
+  if (typeof declared !== "object" || Array.isArray(declared)) {
+    return Object.freeze({
+      status: SPEED_MODEL_STATUS.ABSENT,
+      declared: Object.freeze([]),
+      missing: SPEED_MODEL_FACTORS,
+      reason: `speedModel is ${Array.isArray(declared) ? "an array" : typeof declared}; §2.2's speed model is a declaration of speed as a function of six named factors`,
+    });
+  }
+
+  const present = SPEED_MODEL_FACTORS.filter(
+    (factor) => Object.prototype.hasOwnProperty.call(declared, factor) && declared[factor] !== undefined && declared[factor] !== null,
+  );
+  const missing = SPEED_MODEL_FACTORS.filter((factor) => !present.includes(factor));
+
+  if (present.length === 0) {
+    return Object.freeze({
+      status: SPEED_MODEL_STATUS.STUB,
+      declared: Object.freeze([]),
+      missing: Object.freeze(missing),
+      reason:
+        "speedModel is declared but addresses none of §2.2's factors — it is a placeholder. A contraction " +
+        "hierarchy is a precomputation over edge COSTS, and a placeholder yields no costs, so a hierarchy built " +
+        "behind it would be a precomputation over numbers nobody chose",
+    });
+  }
+  if (missing.length > 0) {
+    return Object.freeze({
+      status: SPEED_MODEL_STATUS.INCOMPLETE,
+      declared: Object.freeze(present),
+      missing: Object.freeze(missing),
+      reason: `speedModel addresses ${present.join(", ")} but not ${missing.join(", ")}; §2.2 states all six, and an omitted factor is a gap rather than a permissive default (§2.7)`,
+    });
+  }
+  return Object.freeze({
+    status: SPEED_MODEL_STATUS.DECLARED,
+    declared: Object.freeze(present),
+    missing: Object.freeze([]),
+    reason: "speedModel addresses every §2.2 factor. Whether its VALUES are the fleet's is commissioning evidence, which this check cannot and does not assert",
+  });
+}
+
+/**
+ * Is this model usable as a routing input — that is, may a per-profile contraction hierarchy
+ * be built from it?
+ *
+ * ── Why this is separate from `validateModel()` ───────────────────────────
+ * `validateModel()` answers §2.2's structural question — are all six elements *declared*? —
+ * and `ADR-33` rider 2 makes it the check the Phase 8 client must call before it keys, because
+ * `routingProfileKey()` is total and yields `unknown:unknown:*` for a broken model. That
+ * contract is unchanged, and this function does not alter it.
+ *
+ * This one answers B1 Step 1's question instead, and it is stricter for one specific reason:
+ * a model can satisfy §2.2 structurally and still be unroutable, which is exactly the state
+ * the repository is in. The seeded `MOB-SIDEWALK-DEFAULT` declares all six elements and its
+ * speed model is a note. Passing it into hierarchy construction would produce edge costs
+ * derived from nothing, and a benchmark run against those hierarchies would produce numbers
+ * that look like evidence and are not.
+ *
+ * **This function decides no value.** It reports `BLOCKED` and names D3's owner.
+ *
+ * @param {object} model
+ * @returns {{ routable: boolean, problems: string[], speedModel: object }}
+ */
+function validateRoutingReadiness(model) {
+  const problems = [...validateModel(model)];
+  const speed = speedModelStatus(model);
+  if (speed.status !== SPEED_MODEL_STATUS.DECLARED) {
+    const id = model && typeof model.modelId === "string" ? model.modelId : "<unnamed>";
+    problems.push(
+      `mobility model "${id}" is NOT ROUTABLE — ${speed.status}: ${speed.reason}. This is decision D3 (Product + ` +
+        "Fleet Engineering): the fleet's agent classes and, per class, a real speed model. No speed is chosen " +
+        "here, no default is substituted, and B1 Step 1 stays BLOCKED rather than building a hierarchy over " +
+        "costs that were never decided",
+    );
+  }
+  return { routable: problems.length === 0, problems, speedModel: speed };
+}
+
 module.exports = {
   MOBILITY_ELEMENTS,
   TRAVERSAL_DOMAIN,
   TRAVERSAL_DOMAINS,
+  SPEED_MODEL_FACTORS,
+  SPEED_MODEL_STATUS,
   isTraversalDomain,
   traversalDomains,
   routingProfileKey,
   validateModel,
+  speedModelStatus,
+  validateRoutingReadiness,
 };

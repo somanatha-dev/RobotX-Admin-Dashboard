@@ -54,6 +54,10 @@
  */
 
 /** @structural the plan's own key prefix */
+// PHASE 15 — the entry's charger order is part of what §9.6 replays, so its tie-break is the
+// engine's own host-independent comparison rather than `localeCompare`. See `buildEntry`.
+const { compareStrings } = require("../determinism/ordering");
+
 const KEY_PREFIX = "engine:charger:reach";
 
 /** @structural the plan's own projection-mirror key prefix */
@@ -175,7 +179,12 @@ function buildEntry(input) {
         intraCellOffsetM: source.intraCellOffsetM,
       });
     })
-    .sort((a, b) => a.distanceM - b.distanceM || a.chargerId.localeCompare(b.chargerId))
+    // `compareStrings`, not `localeCompare`: this sort decides which chargers survive the
+    // `slice(0, k)` below, so two hosts with different ICU collation could truncate a tie
+    // differently and produce two different entries under one cache key — a §9.6 replay defect
+    // that would surface only as an unexplained diff. `determinism/ordering`'s header states
+    // the rule; this call site is now one of the places that follows it.
+    .sort((a, b) => a.distanceM - b.distanceM || compareStrings(a.chargerId, b.chargerId))
     .slice(0, source.k);
 
   return {

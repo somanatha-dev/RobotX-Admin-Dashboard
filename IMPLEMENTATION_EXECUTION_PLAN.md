@@ -709,6 +709,508 @@ data, manual override discipline, PII separation with surrogate keys and erasure
 
 ---
 
+### REMEDIAL PHASE T1-04 — Anti-starvation escalation ladder (§17.4, §17.5)
+
+**Purpose.** Close the unowned **Tier 1** mechanism this plan records as a defect in §6.3, and make
+**I13** a genuine ladder-enforcement check rather than the queue-age proxy
+`observability/invariantChecker.js` currently implements. This phase delivers T1-04 —
+`fairness/ladder.js`, `fairness/operatorCapacity.js`, `fairness/agentStarvation.js` — and nothing
+else.
+
+**Why it exists at all.** §8.7 caps the aging multiplier *because* §17.4's ladder carries the
+anti-starvation guarantee. The cap shipped in Phase 8; the guarantee it delegates to did not. §1.8
+rule 2 is discharged by this mechanism, so its absence is a Tier 1 gap, not a missing improvement.
+
+#### Why this identity, and not a number
+
+| Candidate identity | Rejected because |
+|---|---|
+| **Phase 17** | §0.2: *"Phases 0–15 deliver Tier 0 + Tier 1. Phase 16 enables Tier 2."* A Tier 1 obligation sequenced after the Tier 2 enablement phase contradicts the plan's own phasing rule, which is §1.8 rule 3 |
+| **Phase 16, or a Phase 16 sub-phase** | §6.3: filing a Tier 1 launch obligation into the Tier 2 enablement phase would make Phase 15's own completion criteria dischargeable without it |
+| **Phase 15.1 / Phase 15.x** | `PHASE_15_BLOCKER_RESOLUTION_PLAN.md` §10 rules the form out directly — *"inventing 'Phase 15.1' would be terminology the architecture does not use"* — and Phase 15's Purpose states *"No new capability ships in this phase"*, which T1-04 is |
+| **Re-opening an existing phase** | The pattern `PHASE_15_BLOCKER_RESOLUTION_PLAN.md` §10 establishes ("Phase 10, re-opened") requires a phase whose Scope or **Files to create** already names the module. §6.3 establishes that **no phase does**, and refutes the one contrary claim on record |
+| **Renumbering** | Phases 0–14 are closed and independently verified |
+
+What remains is the middle option §6.3 and **OD-1** themselves name — *"open a remedial phase"* —
+so the phase takes that term and the `TIERS.md` mechanism id as its identity. It introduces no
+numbering scheme, renumbers nothing, and cannot collide with Phase 15 or Phase 16.
+
+**Position.** Prerequisites are Phases 11, 12, 13, 14 — the same set as Phase 15's — so it is placed
+here, after Phase 14. It runs **parallel with Phase 15**, because §6.3 blocks Phase 15's *completion*
+criteria (E1, E2), not its start; Phase 15 is already underway and continues its independent
+evidence throughout.
+
+**Scope.** Exactly thirteen items, and no fourteenth:
+
+| # | Item |
+|---|---|
+| 1 | `src/engine/fairness/ladder.js` — the eight-step ladder: elapsed-SLA-budget step function, relaxation descriptor, step recording, termination |
+| 2 | `src/engine/fairness/operatorCapacity.js` — §17.4's human-capacity model: `ops.escalation_capacity` accounting, the four-key triage order, rate limiting, saturation detection, the saturation signal |
+| 3 | `src/engine/fairness/agentStarvation.js` — §17.5: idle detection, the §7.7 rejection-histogram diagnostic, EXERCISE Leg proposal |
+| 4 | Durable ladder state — §17.4 requires each step **recorded**; §26.1's I13 instrument is *"queue age audit versus ladder step"* |
+| 5 | I13 enforcement rewrite in `observability/invariantChecker.js` |
+| 6 | Producers for the three already-declared, currently unproduced `HUMAN_CAPACITY` metrics |
+| 7 | Lifecycle integration: `ESCALATION_LADDER`, `APPLY_LADDER_RELAXATION`, `LADDER_STEP_AVAILABLE`, `LADDER_EXHAUSTED` |
+| 8 | The escalation-saturation **input** to §20.5 admission control |
+| 9 | The §17.5 EXERCISE Leg producer |
+| 10 | Parameter/configuration work — registration only, values from their named owners |
+| 11 | Replay and reconstruction-equivalence evidence (§24.3) — the Tier 1 release gate |
+| 12 | The test matrix |
+| 13 | Implementation report and independent verification |
+
+| Field | Content |
+|---|---|
+| **Entry criteria** | (1) This phase entry exists — authorization is recorded here, not assumed. (2) Every external decision is identified and owned (**Decision blockers** below). (3) **No Phase 15 completion is assumed or implied.** (4) The frozen perimeter is untouched: `NEXT_GENERATION_ASSIGNMENT_ENGINE.md`, `TIERS.md`, `SAFETY_CASE.md`, every ADR, every Phase report, and the Phase 16 definition. (5) Start-blocking decisions resolved; completion-blocking decisions may still be open at start |
+| **Files to create** | `src/engine/fairness/ladder.js`, `src/engine/fairness/operatorCapacity.js`, `src/engine/fairness/agentStarvation.js` — **and no fourth production module.** Everything else is an edit at an existing integration point |
+| **Files to modify** | `src/engine/observability/invariantChecker.js` (I13), `decisionRecord.js` / `tierA.js` (produce `leg.ladderStep`), `metrics.js` producers, `src/engine/lifecycle/transitions.js` effect handlers, `src/engine/intake/admission.js` (**new saturation input only — the `@structural` §20.5 `SHED_LADDER` table is not touched**), `src/engine/config/register/*.json`, `src/engine/config/validators.js` |
+| **Database migrations** | Durable ladder state. **Attachment is an open engineering decision (AR-4)** — columns on `WorkQueue` versus a sibling per-step table. Convention evidence exists on both sides and no authoritative source decides it; see **Decision blockers** |
+| **Redis changes** | None |
+| **Socket.IO changes** | None |
+| **REST API changes** | None beyond what §21.3's existing Explanation API already exposes (`ladderStep` becomes non-null) |
+| **Background workers** | None new. The invariant worker consumes the rewritten I13 |
+| **Configuration updates** | The eight §17.4 trigger fractions, the published relaxation order, the step-2 wait horizon, the step-7 rate limit, and any step-8 modality configuration — **registered here, valued by their owners.** `ops.escalation_capacity` keeps `required: true`, `default: null`, `UNCALIBRATED`; no value is supplied by this phase |
+| **Dependencies** | Phases 11, 12, 13, 14 |
+| **Risk level** | **MEDIUM** — a new Tier 1 mechanism on the queue path, but every Tier 2 collaborator is absent or switched off, so the delivered path is the launch path |
+| **Testing requirements** | Nine groups: unit (ladder core), integration (lifecycle, expansion, decision record, explanation, degraded modes), adversarial (infeasible-for-all, thundering herd at step 7, I/R/F never relax, saturation, custodial never shed, aging-cap, clock skew, config change mid-ladder), **Tier dependency** (no forbidden static import, planted-violation self-test, each Tier 2 step with its switch thrown, all three thrown), replay/reconstruction, §24.4 aging-cap scenario, I13 invariant verification, agent starvation, human escalation capacity |
+| **Completion criteria** | X1–X20 below, in full |
+
+**Prerequisites:** Phases 11, 12, 13, 14. **Must precede:** Phase 15 **completion** (criteria E1, E2),
+and therefore Phase 16. **Parallel with:** Phase 15.
+
+#### Non-scope
+
+| # | Excluded | Authority |
+|---|---|---|
+| N1 | Enabling any Tier 2 mechanism | §1.8 rule 3; Phase 16 owns enablement one switch at a time |
+| N2 | Implementing `lifecycle/preemption.js` (T2-05), `shard/crossRegion.js` candidacy (T2-13), `fairness/repositioning.js` (T2-11) | Tier 2; Phase 16h, 16f, 16i |
+| N3 | The duty-cycle regulariser `fairness/dutyCycle.js` (T2-10) | Tier 2, off-ladder, **OD-2**. Shares only a directory with T1-04 |
+| N4 | Any change to the §22.5 monotone kill-switch ladder or its nine rows | Frozen; the 12-vs-9 discrepancy is **OD-2**, unresolved |
+| N5 | Any change to `admission.js`'s `@structural` §20.5 `SHED_LADDER` | It is the specification's own published shed order. T1-04 **relies** on it; it does not modify it |
+| N6 | Any change to ADR-19, ADR-29, ADR-13, ADR-26, or any ADR | Frozen |
+| N7 | Any change to the frozen specification, `TIERS.md`, `SAFETY_CASE.md`, Phase reports, or the Phase 16 definition | Authority order |
+| N8 | Resolving D1, D3, D6, D8, **OD-2**, **OD-3/Q-20.1**, **B7**, or **B10** | Separately owned |
+| N9 | Resolving any Phase 15 blocker — calibration, `scale_targets`, `locality`, the four production-evidence gates, rollback rehearsal, or **B1/B2/B3/B6/B8** | Phase 15's, and unaffected by this phase |
+| N10 | Making any Phase 15 gate GREEN, or claiming Phase 15 completion | §10 below |
+| N11 | A general fairness refactor | Not the obligation |
+
+#### Dependencies, stated as the chain
+
+```
+  REMEDIAL PHASE T1-04
+          ↓
+  removes the T1-04 ownership and implementation obstruction (§6.3, OD-1)
+          ↓
+  Phase 15 continues its own independent E1/E2 evidence
+          ↓
+  Phase 15 still carries every one of its other blockers
+          ↓
+  Phase 16 remains blocked until Phase 15 is actually complete
+```
+
+#### Decision blockers
+
+Tracked here because a phase whose open decisions are not written down acquires them silently.
+**START** = implementation of the affected work may not begin. **COMPLETE** = the phase cannot
+reach its exit criteria.
+
+| ID | Decision | Owner | Blocks | Note |
+|---|---|---|---|---|
+| **AR-1** | **STEP-3 interpretation.** §17.4 step 3 says *"relax **class P** soft constraints … zone affinity first, dedicated-fleet preference next"*. Class P is §7.2's *constraint* class (predicates F2, F3, F9, F11, F15, F20, F36); zone affinity and dedicated-fleet preference are `C_policy` **cost adjustments** (§8.6, `cost/cPolicy.js`). Four readings survive: **A** predicate, **B** cost, **C** both, **D** cost-first / predicate-tail | **Architecture**, with Ops; **Safety** concurs if a predicate reading is chosen | **COMPLETE** (exit criterion X5) — **not START** | Every other step, and all three modules, proceed without it. **Not resolved by inference.** See below |
+| **AR-2** | May an **automatic (non-human) actor** hold a class-P waiver? `security/override.js` refuses without `actorId`, by design | **Architecture + Safety** | **COMPLETE**, and only under readings A, C, or a non-empty D tail | Live only if AR-1 selects a predicate surface |
+| **AR-3** | Does `REVISE_TARGET_SOC` or `RELEASE_RESERVATION` discharge §17.4 step 6's *"accelerated charge"*? `energy/chargingSchedulerClient.js` offers only those two request kinds | **Architecture** | Neither | **B2** gates the whole path regardless. Step 6 records `UNAVAILABLE` and the ladder advances |
+| **AR-4** | **Durable ladder-state attachment** — columns on `WorkQueue` versus a sibling per-step table. **Narrowed by the decision-closure pass; see the note below.** What is settled: the required content, and that ladder state is a **step history, not a single current-step snapshot**. What is not: the physical shape | **Architecture / implementing engineer** | **START of scope item 4 only** | Scope items 1–3 do not depend on it. The residual is a shape decision the implementing engineer may take **provided it is recorded in the implementation report** |
+| **AR-5** | What *"new work of the affected classes"* resolves to when escalation saturation reaches intake (§17.4) — the classes of the saturating escalations, or all classes routed to that region's dispatch function | **Architecture + Ops** | **COMPLETE** (X11) | May not be inferred from §20.5, which describes a different control |
+| **AR-6** | Are `OPERATOR_NOTIFICATION` (§4.4) and §17.4 step 8's *customer notification* one channel or two? | **Architecture + Product** | **COMPLETE** (X9) | |
+| **AR-7** | **Register representation** for the eight trigger fractions and the relaxation order. **Narrowed by two decision-closure passes; see the note below.** What is settled: registrability, file, required fields, the fraction's type and unit, that the relaxation order is configuration rather than structure, and — from the second pass — that JSON object **insertion order** is excluded as an encoding. What is not: scalar-family versus keyed map for the eight fractions, how an **ordered** collection is represented at all, the leaf names, and the calibration classification | **Architecture + register owner** | **START of scope item 10**, therefore of all behavioural code | Forced ordering: `tools/gates/checkParameterRegister.js` rejects an unregistered behavioural literal, so nothing behavioural can be written before the register entries exist. Its scan is **numeric-only**, so it forces the fractions but not the order; §17.4 and §22.3 do |
+| **PF-1** | Is any **alternative modality** configured at launch (human courier, third-party carrier, scheduled batch)? | **Product / Programme** | Neither | §17.4 says *"where configured"*. **"None configured" is a valid, complete, compliant answer** and makes step 8 the decline branch |
+| **PF-2** | The step-2 **wait horizon** value. §17.4 says *"a longer wait horizon"* and names no quantity; no register entry exists | **Product / Ops** | **COMPLETE** (X5, step 2) | |
+| **PF-3** | Are the eight trigger fractions per-SLA-class or single-valued? §17.4 gives one table for all classes and does not say | **Product** | **COMPLETE** | **OPEN.** Restated exactly by the third closure pass, and now **sequenced before AR-7's fraction half** rather than merely entangled with it — see below |
+| **PF-4** | Customer-notification content and channel for a step-8 decline | **Product** | **COMPLETE** (X9) | |
+| **OP-1** | **`ops.escalation_capacity` per region.** Registered `required: true`, `default: null`, `UNCALIBRATED`, `awaits: "the region's actual staffed operator count"` | **Ops** | **COMPLETE** (X10, X11) — config publish fails without it | **No value is invented by this plan or by the implementing phase** |
+| **OP-2** | The step-7 **rate limit** into the human queue. §17.4 names the property; no parameter exists. Distinct from the concurrency bound `ops.escalation_capacity` | **Ops** | **COMPLETE** (X10) | |
+| **OP-3** | Approve the eight trigger fractions as published Policy configuration | **Ops** | **COMPLETE** | §22.3 places *"relaxation ladder order"* under Policy: Ops approval, staged rollout, audit. **The launch values are §17.4's own** — 25 %, 40 %, 55 %, 70 %, 80 %, 85 %, 90 %, 100 % — so Ops approves rather than originates |
+| **OP-4** | Approve the published relaxation order, once AR-1 fixes the surface | **Ops** | **COMPLETE** (X5) | **An empty published order is a legitimate launch choice** and is still published configuration |
+| **OP-5** | Severity of the §17.5 idle alert. §17.5 says only *"raises an alert"*, in deliberate contrast to §17.4's explicit *"distinct high-severity alert"* for saturation | **Ops** | **COMPLETE** (X12) | Must not be inferred from §17.4 |
+| **OP-6** | The **EXERCISE mission cadence**. §17.5 says *"periodic"* and names no period. `fairness.idle_alert_period` is the *detection* window and is not it | **Ops** | **COMPLETE** (X13) | |
+| **OP-7** | Calibrate `ops.escalation_saturation_period` and `fairness.idle_alert_period`, both `PROVISIONAL` | **Ops** | Neither — both carry defaults | Ordinary §22.4 calibration; not a launch gate at Policy class |
+| **OP-8** | Register and derive the **§26 invariant-observation window** | **Ops / SRE** | Neither, for this phase | **Pre-existing gap**, recorded in `PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md` §17. I13 consumes it; this phase does not create it, and it must not be double-counted as new |
+| **PR-3** | Whether any **ADR** is required for this phase | **Programme** | Neither | **No ADR is created.** ADR-19 (anti-starvation) and ADR-29 (human escalation) already hold the decisions; a *phase* is not an ADR subject, and §8's specification-change bar is not triggered because the specification already says what the mechanism is |
+
+##### AR-1 in full, because it is the one that must not be decided by inference
+
+The choice changes **implementation** (which surface the published order enumerates), **safety**
+(reading A auto-waives predicates such as F3 *"not under operator hold or quarantine"*, which §7.2
+justifies as *"human judgement outranks the optimiser"*), **authority** (a predicate reading needs
+AR-2, because `security/override.js` refuses a waiver without an actor and refuses class I/R/F
+*before* consulting the actor — an ordering that must survive), and **replay** (§24.3's
+reconstruction-equivalence requires the relaxation set to be derivable from `(ladderStep,
+configVersion)` alone, so the order must be resolved configuration under every reading).
+
+Under **every** reading, class **I**, **R** and **F** are never relaxed (§17.4, §7.2, **I9**).
+
+**No authoritative source in this repository decides between A, B, C and D.** AR-1 is therefore
+**OPEN** and is a **completion blocker only**. Implementation may begin for every unaffected
+portion; the phase may not complete until Architecture returns a decision.
+
+##### AR-1 after the decision-readiness pass
+
+A third pass tested AR-1 specifically as the domain supplier AR-7's order half is waiting on. It
+**does not close AR-1** — nothing below is a new decision — and it narrows what the owner is
+actually being asked, what the answer must additionally state, and what must not be waiting on it.
+
+- **There are two orders in §17.4, and only the inner one is AR-1's.** The **ladder order** — the
+  eight steps and their triggers — is stated completely in §17.4's own table, is what §21.2 records
+  as *"ladder step reached"*, and is what **X5** tests; it has exactly eight members and no
+  ambiguity of membership. The order AR-1 gates is step 3's *"defined, ordered, published
+  sequence"*, which the specification states as **two members and *"and so on"*** — the only order
+  in §17.4 left unenumerated, and therefore the only one that must be carried as a register entry.
+  §22.3's change-class row names *"relaxation ladder order"*, which fixes the **change class** of
+  both and identifies the members of neither.
+- **AR-1 supplies the domain; it does not supply the members.** Which members are actually
+  published at launch is **OP-4**, which already records that an **empty published order is
+  legitimate**. AR-1 fixes only the universe those members are drawn from — which is precisely what
+  a `keys` list or a rank-per-member map would have to enumerate, and is why AR-7's order half
+  cannot be sized before it returns. **Member count is therefore not an AR-1 output**, and AR-7
+  must not be described as waiting for one.
+- **The negative evidence is now complete, which is why the question cannot be closed by reading.**
+  *"Soft constraints"* occurs **exactly once in the entire specification** — §17.4 step 3 — and is
+  defined nowhere. §7.2's class P is a *constraint* class whose members in §7.5 are the seven
+  predicates F2, F3, F9, F11, F15, F20, F36, and **none of them is zone affinity or dedicated-fleet
+  preference**; the nearest predicate, F4 *"tenant and fleet scope permit this mission"*, is class
+  **C**, not P. Conversely §8.6's five-row table lists the **zone-affinity credit first and the
+  dedicated-fleet credit second** — the same two adjustments as step 3's exemplars, in the same
+  order — and `cost/cPolicy.js` carries that table as `@structural` with ids `ZONE_AFFINITY`,
+  `DEDICATED_FLEET`, `BURN_IN`, `PILOT`, `OPERATOR`. Each reading holds evidence the other lacks:
+  **B** holds the exemplars, **A** holds the word *"constraints"* and the class letter. Neither is
+  a statement of the domain, so neither closes, and the §8.6 ordering coincidence is **evidence for
+  the owner, not a decision** — an implementation convention may not settle it (§8's bar, and the
+  same rule that keeps the `@structural` `SHED_LADDER` out of the register).
+- **No ADR decides it.** ADR-19 and ADR-29 are Appendix C **identity records**: each states that it
+  *"does not restate, summarise, or reinterpret"* its specification section. Neither names a
+  relaxation surface. Closing AR-1 by ADR would require a **new** record, which **PR-3** declined
+  and which the authority order does not permit an implementing phase to originate.
+- **One semantic rider the answer must carry, found by the replay check.** §17.4 gives each step
+  **exactly one trigger fraction** and defines **no trigger within a step**, while calling step 3's
+  sequence *ordered*. An order has behavioural content only if a **prefix** of it can be in force;
+  but §21.2 records *"ladder step reached"* as a single value per Leg, and **X16** requires the
+  relaxation set to be derivable from `(ladderStep, configVersion)` **alone**. The two reconcile
+  only if (i) the whole published sequence is applied on entry to step 3, in which case the
+  sequence's order governs the **record and the audit** rather than the behaviour, or (ii) Tier A
+  gains sub-step resolution — a §21.2 change **outside this phase's perimeter** (N7). **AR-1's
+  return must state which**, because an intra-step advance would need a trigger family of its own
+  that §17.4 does not provide and no register entry holds. This is a rider on AR-1, not a new
+  blocker, and it changes no exit criterion.
+- **AR-1 and PF-3 are independent decisions.** No reading makes the step-3 member domain vary by
+  SLA class — §17.4 gives one table for all classes — so PF-3 neither constrains AR-1 nor is
+  constrained by it. Their only contact is **downstream inside AR-7**: `config/resolver.js` resolves
+  by whole-value replacement, so a per-`sla_class` binding must restate the whole value, and that
+  cost scales with the member count OP-4 publishes rather than with the surface AR-1 picks.
+- **AR-4 is unaffected.** Under every reading a relaxation is identified by a **string id** —
+  predicate id or adjustment id — so the step-history *content* AR-4 has already settled is
+  sufficient, and AR-4's residual remains the **physical shape** at implementation step 4.
+
+**The decision request, stated exactly.** *Which surface does §17.4 step 3 relax: the class-P
+feasibility predicates of §7.5 (**A**), the `C_policy` adjustments of §8.6 (**B**), both (**C**), or
+the §8.6 adjustments followed by a named predicate tail (**D**)? And is the published sequence
+applied in full on entry to step 3, or advanced within the step — and if advanced, on what trigger?*
+Owner: **Architecture**, with Ops; **Safety** concurs if A, C, or a non-empty D tail is chosen, and
+**AR-2** goes live in that case. Consumers of the answer: **OP-4** (which members are published),
+**AR-7**'s order half (the key domain), and **X5** step 3.
+
+##### AR-7 and AR-4 after the decision-closure pass
+
+Both remain **START blockers**, and both are now materially narrower. What follows is what
+existing authority determines, with nothing added.
+
+**AR-7 — settled.**
+
+- **These parameters can be registered without any architecture change.** Appendix A states its
+  own extensibility: *"Not exhaustive; it establishes the required form. **Every** behavioural
+  constant in the implementation MUST appear in a register entry of this shape."*
+  `config/register/supplementary.json` is the established home for *"parameters the
+  specification's text names or requires, which Appendix A's table does not tabulate"*, and holds
+  precedents of exactly this kind.
+- **Required fields are canonical and enforced.** §22.1 rule 2's ten fields, checked by
+  `config/validators.js` `checkEntryForm`.
+- **A trigger fraction is `type: "number"`, `unit: "ratio"`, range `[0, 1]`.** Uniform across more
+  than thirty register entries; `unit: "%"` appears only under `legacy.*`. The closest analogue is
+  `solve.max_window_sla_fraction` — itself *"the largest share of `sla.assignment_deadline`"* —
+  which is `number` / `ratio`, `changeClass: POLICY`, and prefixed by its **consuming subsystem**
+  rather than by the quantity it divides.
+- **The relaxation order is configuration, not structure.** §22.3's change-class table names
+  *"relaxation ladder order"* under **Policy — Ops approval, staged rollout, audit**, and §17.4
+  calls it *"published configuration"*. It is therefore **not** eligible for the `@structural`
+  treatment `admission.js` gives the §20.5 shed order — and the distinction is principled: §20.5
+  states its order completely in prose, whereas §17.4 states two members and *"and so on"*.
+
+**AR-7 — still open, and why.** A second closure pass tested each candidate representation against
+the machinery that actually carries a published value — `config/resolver.js`,
+`config/validators.js`, `determinism/ordering.canonicalJson`, and the `ConfigVersion.payload`
+column. It eliminated one candidate on evidence, established that two others are technically
+sufficient but unauthorised, and found one new dependency. The residual is narrower and is stated
+here in full. **It still does not select a representation, because no authority does.**
+
+- **Scalar family versus keyed map for the eight fractions — undecided, and now with one
+  behavioural difference on record.** The register does **both** for a closed, enumerated key
+  domain: `energy.event_budget_per_fleet_year` and `energy.shortfall_probability` are single `map`
+  entries with `indexedBy: ["tier"]` and `keys: ["T1","T2","T3"]`, while Appendix A's own
+  `ops.stranded_safe_response_target` / `ops.stranded_restrictive_response_target` /
+  `ops.stranded_obstructing_response_target` split the closed obstruction-class domain across three
+  scalars. That trio replaces the `energy.combined_*_conservatism` pair this entry previously cited,
+  which is weaker evidence: both of those are `DERIVED`, not configured, so they are not a precedent
+  for how Ops-owned Policy values are shaped. Neither idiom is authority, so neither may be adopted
+  here. **The difference that is not cosmetic:** `config/resolver.js` resolves by **whole-value
+  replacement** — the winning binding supplies `value` entire, with no per-key merge across scope
+  levels — so a keyed map bound at `sla_class` must restate all eight fractions, whereas a scalar
+  family can override one step at that scope. §17.4 says the steps are *"each individually
+  configurable"* and does not say whether that reaches per-scope partial override. This **sharpens**
+  the decision rather than settling it, and it is entangled with **PF-3**.
+- **What does not discriminate, recorded so the decision is not taken against a false constraint.**
+  §22.2's traceability requirement is met by both: `resolver.explain()` accepts `options.index` and
+  returns the supplying scope level for a single map key. §22.1 rule 2's ten fields are satisfiable
+  by both. Determinism is satisfied by both, because neither encodes an order. The eight fractions
+  also share unit, range, owner and change class, which is the property that correlates with the
+  `map` idiom elsewhere in the register — a **correlation, not a stated rule**, and it is recorded
+  as evidence for the owner rather than acted on.
+- **Ordered collections still have no authorised representation, and the four candidates now sort
+  into three verdicts.**
+  - **JSON object insertion order — excluded, on evidence.**
+    `determinism/ordering.canonicalJson` sorts object keys by code unit **at every depth**, and it
+    is what the config version's signature is taken over (`config/service.js`).
+    `ConfigVersion.payload` is a Prisma `Json` column on PostgreSQL — `jsonb` — which does not
+    preserve object key order either. A published order encoded as insertion order would not
+    survive a single publish, let alone a replay. This is now settled and is not a matter of taste.
+  - **`set` — technically possible, decision-required.** `canonicalJson` preserves array order and
+    so does `jsonb`, so an array *would* carry the order intact end to end. But `set` is validated
+    solely as `Array.isArray` (`config/validators.js`) and is the type that asserts unorderedness,
+    and T6 (§1.5) names *"floating-point summation over unordered sets"* among the techniques
+    prohibited in the decision path. Carrying a decision-path order in the unordered type is a
+    decision for Architecture, not a convention that may be adopted quietly.
+  - **A rank-keyed map — technically possible, decision-required, no precedent.** No register entry
+    anywhere encodes rank, priority or ordinal. It would survive `canonicalJson` and `jsonb`
+    because the rank sits in the key rather than in the iteration order. Two things are unhandled
+    and would be new work: `canonicalJson` sorts keys by code unit, so `"10"` precedes `"2"` unless
+    ranks are zero-padded; and nothing validates that ranks are unique, contiguous or dense.
+  - **A new `list`/`sequence` type — not authorised.** The `type` values `enum` and `decimal`
+    already appear in `supplementary.json` with no handling in `checkValueAgainstEntry`, which
+    shows the type vocabulary is de facto rather than mechanically gated — and is exactly why an
+    *ordered* type must be an explicit decision rather than an implementation convention. It is
+    also **register-wide, not T1-04's**: introducing one is an integration decision of the kind
+    `docs/adr/README.md` admits from number 33 upward, which is a case **PR-3** did not consider.
+- **The order half is additionally gated by AR-1 for its key domain.** Every encoding that
+  enumerates its members — `keys` on a rank-keyed map, or a rank-per-constraint map — needs the
+  member set, and AR-1 is precisely *which surface the published order enumerates*. AR-7's order
+  half therefore carries two independent gates: the representation question owned by Architecture +
+  register owner, and the domain, which AR-1 supplies. Note that the parameter gate does **not**
+  force this half: `tools/gates/checkParameterRegister.js` scans **numeric** literals only, so a
+  hard-coded string order would pass it. The requirement that the order be configuration comes from
+  §17.4 (*"published configuration"*) and §22.3 (Policy), not from the gate.
+- **Leaf names** and **calibration classification** are owner acts and are not invented here.
+- **`specScope`** interacts with **PF-3**: the nearest analogue, `solve.max_window_sla_fraction`, is
+  `specScope: "sla_class"`, which is evidence for the per-class reading but does not decide it.
+
+##### AR-7's fraction half and PF-3 after the third closure pass
+
+A third pass took the fraction half and **PF-3** together, against the whole of
+`config/register/*.json` rather than the two entries earlier passes cited. It **does not close
+either**, and it takes no decision. It corrects the precedent weighting, records one previously
+unexamined gap, and — the substantive result — establishes that the two questions are **ordered**,
+not merely entangled: the representation choice has no behavioural content until PF-3 returns.
+
+- **The precedent earlier passes cited is the weaker of the two available, and the stronger one
+  points the other way.** `energy.event_budget_per_fleet_year` is `scopes: ["global"]`, and
+  `energy.shortfall_probability` is `DERIVED` and computed by the Config Service, so **neither map
+  is ever bound at a more-specific scope** — neither exercises whole-value replacement at all, and
+  neither is a precedent for an Ops-bound Policy value. The entries that do exercise it are
+  `energy.variance_inflation` (`map`, three members named by §14.5's prose, one shared unit and
+  range, `TUNED`, `scopes: ["global","region","mission_class"]`) and
+  `feasibility.negative_cache_ttl` (`map`, three members named by §7.6's prose, one shared unit and
+  range, `OPERATIONAL`, `scopes: ["global","region"]`). Both are **closed, homogeneous families the
+  register itself had to shape from specification prose, carried as one map and bound below
+  `global`** — which is structurally what the eight fractions are. This is a **moderate** precedent
+  and not authority, for the reason it was not authority before: an implementation idiom, however
+  consistent, does not settle a register-owner decision (§8's bar).
+- **`ops.stranded_*` is weak precedent, and the reason is now on record.** The three entries carry
+  **three different units** (`h`, `min`, `min`), three different ranges, **two different change
+  classes** (`POLICY`, `POLICY`, `SAFETY`) and **two different owners** (Ops, Ops, Safety) — and
+  §22.1 rule 2 attaches every one of those fields **per parameter**, which a single map cannot
+  carry. That trio is therefore split by **field heterogeneity**, not chosen as the idiom for
+  homogeneous families; Appendix A tabulates it as three rows for the same reason. The eight
+  fractions are homogeneous in all ten fields, so the trio does not reach them. It remains true
+  that this **weakens a precedent rather than supplying a rule**, and no rule anywhere states how a
+  homogeneous family must be shaped.
+- **A gap neither earlier pass examined: nothing validates that a map binding is complete.**
+  `config/validators.js` `checkValueAgainstEntry` checks map keys against `entry.keys` for
+  *unknown* keys and range-checks the members present; it never requires the declared keys to be
+  *present*. Combined with whole-value replacement, a binding at a more-specific scope that
+  restates seven of eight fractions **publishes clean**, and `resolver.explain(..., { index })`
+  returns `null` for the eighth — it does not fall back to the less-specific binding. The
+  established mitigation is **consumer-side**: `energy/consumption.js` enumerates its member set as
+  `VARIANCE_SOURCES`, marked `@structural the specification's own inflation sources`, and reports a
+  missing member as an explicit failure rather than trusting the map. Under a keyed map the ladder
+  would owe the same `@structural` enumeration of the eight steps — which is consistent with §17.4,
+  where the eight steps and their actions are stated **completely** (structure) and only the
+  fractions are *"individually configurable"* (configuration), in contrast to step 3's inner
+  sequence, which §17.4 states as two members and *"and so on"* and therefore cannot be structure.
+- **The decisive finding: the two representations differ behaviourally only below `global`.** Every
+  consequence that separates them — whole-value replacement, the completeness gap above, whether one
+  fraction can move alone — arises **only if the entry declares a scope level below `global`**. If
+  the fractions resolve at `global` only, the two representations are behaviourally
+  indistinguishable and the choice is presentational; `energy.event_budget_per_fleet_year` is
+  exactly that case, and is a map. What determines whether a level below `global` is declared is
+  **PF-3**. **PF-3 therefore sequences ahead of AR-7's fraction half**, and the fraction half must
+  not be put to Architecture + register owner before PF-3 returns, because until it does the
+  question being asked has no stated consequence.
+- **PF-3, restated as the decision actually required.** §22.2 makes *every* parameter overridable at
+  each level it declares, so "per-SLA-class versus single-valued" is not a property of the value —
+  it is the **`scopes` list** the register owner declares, and behind it the Product question *may
+  ladder aggression differ by SLA class as policy?* Evidence exists and does not decide: the nearest
+  analogue `solve.max_window_sla_fraction` is Product-owned, `POLICY`, `ratio`, and
+  `specScope: "sla_class"`, as is `candidate.max_radius_by_sla_class`; against that, §17.4 gives one
+  table for all classes, and the trigger is already SLA-relative without per-class fractions,
+  because the budget it divides — `sla.assignment_deadline` — is itself per class. **Nothing in the
+  frozen specification, the ADRs, `TIERS.md`, Appendix A, or the register answers it.**
+- **What is settled by this pass, and what is not.** Settled: the fraction's ten §22.1 rule 2 fields
+  are satisfiable under either representation and are identical across all eight members
+  (`type: "number"`, `unit: "ratio"`, range `[0, 1]`, `changeClass: POLICY`, `owner: Ops` per §22.3
+  and **OP-3**, `blastRadius` following the `scopes` decision, file `supplementary.json`); the
+  launch values are §17.4's own; and the calibration classification stays an owner act, unaffected
+  by shape. Not settled, and not decidable here: the `scopes` list (**PF-3**), the representation
+  (**AR-7**), and the leaf name or key names. **Neither may be created in advance of the other.**
+- **Safety classification is unchanged and is not a function of shape.** §22.3 places *"relaxation
+  ladder order"* under **Policy**; the fractions are Policy under either representation, with the
+  same approval, staged rollout, audit and rollback path. Auditability differs only in granularity
+  of the published diff — eight named entries versus eight keys of one entry — and both are
+  traceable, because `resolver.explain()` answers per key. **No representation creates a new safety
+  decision.** The only new decision either could create is a **register-wide** one — a publish-time
+  map-completeness check — which is the register owner's, not this phase's, and is recorded here
+  rather than taken (**N7**, and the same bar that keeps the ordered-type question out).
+- **Determinism separates neither, and this is now checked end to end rather than asserted.**
+  `determinism/ordering.canonicalJson` sorts object keys by code unit at every depth and is what
+  `config/service.js` signs; `ConfigVersion.payload` is a Prisma `Json` column (`jsonb`). Eight
+  scalar entries and one eight-key map both canonicalise stably, both round-trip `jsonb` unchanged,
+  both pin into the round snapshot as one `configVersion`, and both satisfy §24.3
+  reconstruction-equivalence, because **neither encodes an order** — the ladder's order is the
+  step's own identity, not a position in a collection. Multi-worker consistency follows from §22.1
+  rule 4 (one version per round) under both. Determinism is therefore **not** a discriminator, and
+  must not be cited as one: a representation can canonicalise perfectly and still be the wrong
+  answer to *"individually configurable"*.
+- **AR-1 is not involved.** This pass touches only the fraction half. AR-1 gates the **order** half's
+  key domain and nothing here; it remains **OPEN** and is unchanged by anything above.
+
+**AR-4 — settled.**
+
+- **Ladder state is a step history, not a current-step snapshot.** §17.4 requires each step
+  *"**recorded** with what was relaxed and why"*, and §17.4's step 7 additionally requires that a Leg
+  *waiting to enter* the human queue be distinguishable from one that completed step 7.
+- **No existing store already holds that history**, which is the fact that decides it. §4.4's row
+  `QUEUED --assignment deadline--> QUEUED` carries the single effect `APPLY_LADDER_RELAXATION` and
+  — unlike the two round rows beside it — **no `DECISION_RECORD`**. A ladder advance is therefore a
+  durable transition that writes no decision record, and there is no generic Leg transition log.
+- **The schema states the test itself.** `AgentCellPosition` documents the snapshot pattern as
+  applying when *"only an agent's current index placement is ever queried, so a new observation
+  supersedes the row rather than joining it — the append-only history already lives in
+  `Observation`"*. Ladder state satisfies neither limb.
+- **Consequently a design in which the next step overwrites the previous one is excluded**, which is
+  the reading `ExternalEscalation` rejects for the same reason: *"One row per step attempt, so the
+  chain is a history rather than a status field that the next step overwrites."*
+
+**AR-4 — still open, and why.** `ExternalEscalation` scopes its own rationale to *"the one chain
+that reaches outside"* and claims no generality, so it is a pattern and not an authority. The
+physical shape — a dedicated sibling table, a history table plus a denormalised current-step column
+on `WorkQueue` for I13's audit query, or a JSON column following `WorkQueue.predictedWindow` —
+is **not** selected by any authoritative source and remains the implementing engineer's decision,
+to be recorded in the implementation report.
+
+#### Implementation order
+
+Eighteen steps, one coherent phase. It is **not** to be split into sub-phases. Two properties are
+load-bearing: **termination is built before optional widening** (step 7 before step 13), so the
+ladder is never in a state where it cannot terminate; and **the checker is built after the
+mechanism** (step 9 after 3–8), the inverse of which would reproduce the defect this phase exists
+to fix.
+
+| # | Step |
+|---|---|
+| 0 | This plan entry exists — authorization recorded |
+| 1 | Raise **AR-1** and **OP-1** immediately, in parallel with step 2; both have long human latency |
+| 2 | Register the parameters (AR-7, then the fractions, and PF-2/OP-2 as they arrive) with publish-time validators — **forced first, because the parameter gate rejects behavioural literals** |
+| 3 | `ladder.js` **pure core**: step function, trigger evaluation, termination. No I/O, no collaborators |
+| 4 | Durable ladder state (**AR-4**) and its migration |
+| 5 | Wire the lifecycle: `ESCALATION_LADDER`, `APPLY_LADDER_RELAXATION`, `LADDER_STEP_AVAILABLE`, `LADDER_EXHAUSTED`, steps still no-ops |
+| 6 | **Steps 1 and 2** through `expansionInput` — the only steps that are pure Tier 1 argument values |
+| 7 | **Step 8** — the terminal decline. Deliberately early |
+| 8 | `operatorCapacity.js` and **step 7** — the step that makes the ladder a guarantee in a Tier 0 + Tier 1 engine |
+| 9 | **I13 rewrite** |
+| 10 | Observability producers — `ladderStep`, the three `HUMAN_CAPACITY` metrics, the explanation surface |
+| 11 | The saturation input to §20.5 admission |
+| 12 | `agentStarvation.js` |
+| 13 | **Steps 4, 5, 6 as injected adapters, switches thrown** — last among the ladder steps, so the ladder was never able to depend on them |
+| 14 | **Step 3**, once AR-1 returns. Isolated by construction, so an unresolved AR-1 blocks one step rather than the phase |
+| 15 | §24.4 aging-cap scenario; replay and reconstruction corpus |
+| 16 | Full gate sweep; safety-case regeneration |
+| 17 | Implementation report and independent verification |
+
+#### Verification
+
+| Requirement | Content |
+|---|---|
+| **Implementation report** | `PHASE_T1_04_IMPLEMENTATION_REPORT.md`, per the programme's existing per-phase convention |
+| **Independent verification** | `PHASE_T1_04_INDEPENDENT_VERIFICATION.md`. It must independently confirm **X3** and **X14**, which are the two an implementation is most able to claim without evidence |
+| **Tier dependency verification** | `gate:tiers` green **with a planted-violation self-test**: `ladder.js` importing `lifecycle/preemption.js` must fail the gate |
+| **I13 adversarial verification** | The old proxy must now fail — a Leg with `roundsConsidered = 5 000` and no ladder progress must report **VIOLATED** |
+| **Replay / reconstruction verification** | §24.3 golden replay, continuous-replay sampling, **reconstruction-equivalence byte for byte**, snapshot retention. `TIERS.md` makes this **the Tier 1 release gate**, not an optional extra |
+| **Full gate sweep** | `gate:tiers`, `gate:params`, `gate:tenets`, `gate:privacy`, `gate:erasure`, `gate:legacy`, and `safety:case` regenerating byte-identically — required because a Tier 1 mechanism and an invariant instrument both changed |
+
+#### Exit criteria — X1 to X20, in full
+
+| # | Criterion | Proof |
+|---|---|---|
+| **X1** | T1-04 exists | The three modules present; `guards/tierAssertions.js` T1-04 module paths all resolve |
+| **X2** | All three modules are Tier 1 | `tierOf()` returns Tier 1 for each; `gate:tiers` passes |
+| **X3** | **No forbidden Tier 2 static dependency exists** | Import-graph test plus the planted-violation self-test |
+| **X4** | **The ladder terminates in a decision with every Tier 2 mechanism disabled** | Full run with `preemption`, `cross_region_candidacy`, `reposition_injection` all thrown |
+| **X5** | All eight steps are represented | Per-step tests; step 3 requires **AR-1** |
+| **X6** | **Every step is recorded** with what was relaxed and why | Step records carry relaxation, reason, triggering fraction, `configVersion`, disposition |
+| **X7** | **Every step is driven by elapsed SLA budget** | Step sequence invariant under swept cost inputs, including the aging multiplier pinned at `cost.aging.max_multiplier` and at 1 |
+| **X8** | **Class I, R and F never relax** | Every step, every relaxation, every degraded mode; `authoriseWaiver`'s class-check-before-actor ordering preserved; I9 audit clean |
+| **X9** | **Terminal decision is guaranteed** | Exhaustion transition; elapsed ≥ 100 % with no terminal decision is a violation; holds when the Leg is infeasible for every agent |
+| **X10** | **Human escalation triage works** | Custody → obstruction class → SLA breach proximity → queue age, as a deterministic total order; capacity respected; rate limit holds; a Leg awaiting entry stays on the ladder and is never recorded as having completed step 7 |
+| **X11** | **Saturation behaviour works** | Sustained saturation raises the distinct high-severity alert and declines the affected classes at intake; brief exceedance does not |
+| **X12** | **Agent starvation detection works** | Idle detection fires; not-nominally-available agents excluded; the diagnostic names the binding predicate from the §7.7 histogram |
+| **X13** | **EXERCISE shedding works** | EXERCISE shed at level 1 before any SLA class; custodial purposes never shed at any level; **`SHED_LADDER` byte-identical to its pre-phase content** |
+| **X14** | **I13 is actually enforced** | The rewritten check fails on a stalled Leg and on a 100 %-elapsed Leg with no terminal decision; the checker shares no logic with the enforcer |
+| **X15** | **`ladderStep` is observable** | Non-null in Tier A; the Explanation API answers *"why is this task still waiting"* from Tier A alone; `ladder_step_distribution` emits |
+| **X16** | **Replay is deterministic** | Golden replay, reconstruction-equivalence, step-as-pinned-input, relaxation set derivable from `(ladderStep, configVersion)` |
+| **X17** | **The §24.4 aging-cap scenario passes** | Aggregate sacrifice bounded by `cost.aging.max_multiplier`; the aged Leg still terminated; scenario labelled per §24.4 as a stipulated stimulus |
+| **X18** | **Every new parameter is registered; none is a code literal** | `gate:params` green |
+| **X19** | **The safety case regenerates byte-identically** | `safety:case` |
+| **X20** | **The frozen perimeter is untouched** | Diff contains no change to the specification, any ADR, `TIERS.md`, `SAFETY_CASE.md`, `SHED_LADDER`, the §22.5 switch ladder, any Phase report, or the Phase 16 definition |
+
+**Not exit criteria, and not implied by any of them:** Phase 15 GREEN; `invariants_enforced`
+closed; `simulator_fidelity` closed; any Tier 2 mechanism enabled.
+
+#### What this phase does not do to Phase 15 or Phase 16
+
+It closes the **T1-04 ownership and implementation obstruction** recorded in §6.3, and nothing
+further. Explicitly, T1-04 does **not**:
+
+- make Phase 15 GREEN, or move any of its 23 release gates;
+- close **E1** (every §24 gate green) — 2 RED, 1 PARTIAL, 4 NOT_EVALUATED remain;
+- close **E2** (every §26 invariant `ENFORCED`) — no shard has operated, and the observation window
+  (**OP-8**) is still undefined;
+- close **E5** (rollback rehearsed);
+- resolve **B1**, **B2**, **B3**, **B6** or **B8**;
+- resolve **D1**, **D3**, **D6** or **D8**;
+- resolve `scale_targets`, calibration, `simulator_fidelity`, `soak`, `locality`, or
+  `shadow_agreement`;
+- enable any Tier 2 mechanism.
+
+**Phase 16 remains blocked until Phase 15 is actually complete.** Its prerequisite is Phase 15, not
+this phase.
+
+---
+
 ### PHASE 15 — Verification, release gates, and production cutover
 
 **Purpose.** Prove the Tier 0 + Tier 1 engine against §24's gates and cut over from the legacy
@@ -758,7 +1260,7 @@ validated in shadow before it is trusted (§1.8 rule 3, §27 items 6, 7, 10).
 | Field | Content |
 |---|---|
 | **Files to modify** | `src/engine/config/killSwitches.js`, `src/engine/solve/regime.js`, `src/engine/solve/round.js` |
-| **Files to create** | `src/engine/solve/setPartitioning.js`, `branchAndBound.js`, `localSearch.js`, `src/engine/lifecycle/preemption.js`, `src/engine/fairness/repositioning.js` |
+| **Files to create** | **16b:** `src/engine/solve/batch.js` · **16c:** `src/engine/reliability/**` (§16 in full — metric set, hierarchical Bayesian estimation with attribution, health tiers) · **16d:** `src/engine/solve/setPartitioning.js`, `branchAndBound.js`, `src/engine/plan/multiLegColumn.js`, `src/engine/plan/consolidation.js` · **16h:** `src/engine/lifecycle/preemption.js` · **16i:** `src/engine/fairness/repositioning.js` · **no sub-phase (§6.4 OD-2):** `src/engine/solve/localSearch.js`, `src/engine/fairness/dutyCycle.js` |
 | **Database migrations** | None (schema already supports all of it) |
 | **Redis changes** | None |
 | **Socket.IO changes** | None |
@@ -771,6 +1273,25 @@ validated in shadow before it is trusted (§1.8 rule 3, §27 items 6, 7, 10).
 | **Completion criteria** | Each mechanism enabled only after its own gate; every switch exercised in staging on a schedule; unrehearsed switch combinations alert rather than being blocked |
 
 **Prerequisites:** Phase 15. **Must precede:** nothing. **Parallel with:** sub-phases are strictly sequential.
+
+> **The `Files to create` row above was completed by the pre-Phase-16 reconciliation, and is a
+> correction rather than a scope change.** It previously named five modules. `TIERS.md` — which is
+> derived from §1.8 and machine-checked against `guards/tierAssertions.js` — names the owning
+> module of **every** Tier 2 mechanism, and §0.2 of this plan puts every Tier 2 mechanism in Phase
+> 16. Five owning modules were therefore required by this phase and listed by no phase at all:
+> `solve/batch.js` (T2-01), `plan/multiLegColumn.js` (T2-02), `plan/consolidation.js` (T2-12),
+> `fairness/dutyCycle.js` (T2-10), and `reliability/**` (T2-09). No module moved phase and none
+> exists; the omission was in this table, not in the tree.
+>
+> **Phase 16 is therefore not a switch-flipping phase.** Its `Database migrations: None · Redis:
+> None · Socket.IO: None · REST: None` rows are accurate and have been read as implying a low-build
+> phase. Nine modules and one entire subsystem (§16 reliability) must be *built* inside it, behind
+> switches that already exist. The **MEDIUM per sub-phase** risk rating was set against the
+> switch-flipping reading and should be re-assessed when the phase is specified.
+>
+> **Three Tier 2 mechanisms still have no sub-phase**, and none was manufactured here — see §6.4
+> **OD-2**. Two of the nine modules above (`localSearch.js`, `dutyCycle.js`) belong to them, which
+> is why they are listed with no sub-phase against their name.
 
 ---
 
@@ -793,8 +1314,14 @@ validated in shadow before it is trusted (§1.8 rule 3, §27 items 6, 7, 10).
 | 12 Failure & invariants | 3, 5, 10 | 11, 13, 14 | 10 |
 | 13 Sharding & leadership | 3, 10 | 11, 12, 14 | 10 |
 | 14 Security & privacy | 4, 11 | 12, 13 | 11 |
-| 15 Verification & cutover | 11, 12, 13, 14 | — | all |
+| **T1-04 Remedial — anti-starvation ladder** | **11, 12, 13, 14** | **15** | **14** |
+| 15 Verification & cutover | 11, 12, 13, 14 | T1-04 Remedial | all |
 | 16 Tier 2 enablement | 15 | — | 15 |
+
+> **The T1-04 remedial row is not a prerequisite of Phase 15's *start*, and is a prerequisite of
+> its *completion*.** §6.3 blocks Phase 15's completion criteria **E1** and **E2**, not its entry;
+> Phase 15 is already underway and continues its independent evidence in parallel. Phase 16's
+> prerequisite remains Phase 15 alone.
 
 ### 4.1 Dependency graph
 
@@ -847,14 +1374,24 @@ validated in shadow before it is trusted (§1.8 rule 3, §27 items 6, 7, 10).
       └───────┬────────┘          │                   │
               └───────────┬───────┴───────────────────┘
                           │
-                ┌─────────▼──────────┐
-                │ 15 Verify & Cutover│
-                └─────────┬──────────┘
-                          │
-                ┌─────────▼──────────┐
-                │ 16 Tier 2 (staged) │
-                └────────────────────┘
+              ┌───────────┴────────────┐
+              │                        │
+    ┌─────────▼──────────┐   ┌─────────▼──────────────┐
+    │ 15 Verify & Cutover│   │ T1-04 Remedial         │
+    │                    │   │ anti-starvation ladder │
+    └─────────┬──────────┘   └─────────┬──────────────┘
+              │                        │
+              │  E1/E2 cannot close ◄──┘
+              │  until T1-04 lands
+              │
+    ┌─────────▼──────────┐
+    │ 16 Tier 2 (staged) │
+    └────────────────────┘
 ```
+
+The T1-04 remedial phase runs **beside** Phase 15, not before it: it is a prerequisite of Phase
+15's completion criteria E1 and E2, not of its start. Phase 16's only prerequisite is a complete
+Phase 15.
 
 **Critical path:** 0 → 1 → 2 → 7 → 6 → 8 → 9 → 10 → 13 → 15 → 16.
 The commitment track (3 → 4 → 5) is off the critical path *provided* it starts as soon as Phase 2
@@ -962,6 +1499,7 @@ changes the architecture; each is an instance of §27's open decisions.
 | B7 | **Column-regime MIP solver** selection | Phase 16d | §27 item 3b | Not needed for Tier 0/1 — singleton regime uses min-cost flow |
 | B8 | **Calibration owner** named, and the fleet-year energy event budgets set by ops/finance/safety | Phases 7, 15 | §22.4, §27 item 8 | A launch gate: no Safety-class parameter may be `PROVISIONAL` at cutover |
 | B9 | **PostgreSQL isolation strategy** — Prisma does not expose SERIALIZABLE per-transaction ergonomically; raw SQL or an escape hatch is required for the commit transaction | Phase 3 | §10.3.2 | Verify `FOR UPDATE` + partial unique index behaviour on the target Postgres version |
+| **B10** | **Forecast Service** — the demand forecaster supplying `Λ(z,τ)`, projected supply `S(z,τ)`, and the response-time-versus-supply curve `R(z,S)`. **Owner: UNASSIGNED / PROGRAMME.** Build, buy, or declare permanently absent | **Phase 16a** | §1.6, §5.2, §8.3.1 | Added by the pre-Phase-16 reconciliation; see §6.4 |
 
 ### 6.2 Programme-level risks
 
@@ -975,6 +1513,103 @@ changes the architecture; each is an instance of §27's open decisions.
 | Simulator is systematically optimistic and over-approves the engine | Medium | High | §24.4 one-sided fidelity gate; the simulator may not discharge a Tier 0 obligation until validated |
 | Routing migration (B1) slips and blocks the decision-path track | **High** | High | Start B1 procurement during Phase 0; the cell-pair cache interface can be developed against a stub |
 | Firmware rollout for the new agent protocol lags the server | Medium | High | VirtualRobot is the reference implementation and the conformance fixture; legacy events retained until Phase 15 |
+
+---
+
+### 6.3 Defect of this plan — a Tier 1 mechanism with no owning phase
+
+**This section records a defect in this document.** It is stated here rather than fixed, because
+fixing it is a programme decision and this plan may not take one on its own behalf.
+
+**T1-04 — the §17.4 anti-starvation escalation ladder — is assigned to no phase.**
+
+| | |
+|---|---|
+| **Modules** | `src/engine/fairness/ladder.js`, `src/engine/fairness/operatorCapacity.js`, `src/engine/fairness/agentStarvation.js` |
+| **Tier** | **1 — Operational integrity.** §1.8: *"The anti-starvation escalation ladder (§17.4) — which is where the anti-starvation **guarantee** lives."* `TIERS.md` T1-04; invariant **I13** |
+| **Where this plan names them** | §2.8 rows *"Escalation ladder + human capacity model (§17.4)"* and *"Agent starvation + exercise missions (§17.5)"* — a capability-inventory table with **no phase column** |
+| **Where this plan assigns them** | **Nowhere.** No phase's Scope, Files to create, or §7 checklist mentions any of the three |
+| **Current state** | Absent. `src/engine/fairness/` holds only `.gitkeep` |
+| **The one contrary claim on record, and why it does not assign the work** | `PHASE_5_IMPLEMENTATION_REPORT.md` §13 states *"§17.4's escalation ladder is T1-04 and belongs to Phase 8"* (its §12 table says the same), and `PHASE_5_INDEPENDENT_VERIFICATION.md` repeats it as *"the ladder itself is Phase 8's"*. **Phase 8 does not own it.** Phase 8's Purpose is *"Deliver §8 and §13"*; §17.4 is in neither, its Scope names only the cost terms and the Plan Builder, and its **Files to create** names no module under `fairness/`. Both statements are unsupported assertions in phase evidence, which this plan outranks; they are recorded here rather than removed, because the reports are dated evidence artefacts. **They neither establish ownership nor change it: the row above stands** |
+
+**Why this is load-bearing rather than tidy-up.** §1.8 rule 2 is discharged *by* this mechanism:
+*"anti-starvation is guaranteed by the ladder (Tier 1) and not by the aging price (Tier 2), which
+is why the aging multiplier could be safely capped."* The cap shipped in Phase 8. The guarantee it
+relies on did not.
+
+**Why Phase 16 cannot absorb it.** §0.2 of this plan: *"Phases 0–15 deliver Tier 0 + Tier 1. Phase
+16 enables Tier 2."* Filing a Tier 1 launch obligation into the Tier 2 enablement phase would make
+Phase 15's own entry conditions dischargeable without it, which is exactly what §1.8's tiering
+exists to prevent. Three documents had done so and have been corrected:
+`Backend/src/engine/ARCHITECTURE.md`, root `ARCHITECTURE.md`, and the planted-violation list in
+`Backend/tests/engine/phase0Scaffold.test.js`.
+
+**Consequence, stated plainly.** Phase 15 entry conditions **E1** (every §24 gate green) and **E2**
+(every §26 invariant `ENFORCED`) cannot be honestly discharged while I13's mechanism does not exist
+— `observability/invariantChecker.js` implements only the queue-age half and says so in its own
+docstring. Phase 16's sole prerequisite is Phase 15, so this blocks Phase 16 as surely as any
+external decision does, and it is the only such blocker that requires no external input at all.
+
+**What is NOT decided here.** Which phase owns it. Phase 15 ships *"no new capability"*; Phases
+0–14 are closed and independently verified, so assigning it to one of them re-opens a completed
+phase. Whether to re-open a phase, open a remedial phase, or re-scope Phase 15 is a programme
+decision, and no authoritative source makes it. Recorded as **OD-1** below.
+
+#### Closure — the ownership half only
+
+**The ownership defect recorded above is closed. The implementation gap it describes is not.**
+
+The programme took **OD-1**'s middle option — *open a remedial phase* — and the phase now exists in
+§3 as **REMEDIAL PHASE T1-04 — Anti-starvation escalation ladder (§17.4, §17.5)**, with its own
+scope, prerequisites (Phases 11, 12, 13, 14), decision register, implementation order, verification
+requirements, and exit criteria X1–X20. Its identity is not a number, for the reasons that entry
+states: §0.2 forbids a Tier 1 obligation after Phase 16, §6.3 forbids folding it into Phase 16,
+`PHASE_15_BLOCKER_RESOLUTION_PLAN.md` §10 rules out the *"Phase 15.1"* form as *"terminology the
+architecture does not use"*, and the *"re-open the owning phase"* pattern that same section
+establishes is unavailable precisely because — as this section proves — no phase owns it.
+
+Read the rows above as dated and now superseded on one point only:
+
+| Row | Status after closure |
+|---|---|
+| *"Where this plan assigns them: **Nowhere**"* | **Superseded.** §3's remedial phase entry assigns all three modules |
+| *"**Current state.** Absent. `src/engine/fairness/` holds only `.gitkeep`"* | **Still true.** Re-verified against the working tree at registration. Registration is authorization, not implementation |
+| The Phase 5 contrary-claim row | **Unchanged and still correct.** Phase 8 does not own T1-04; the remedial phase does |
+| *"**Consequence, stated plainly**"* — E1 and E2 cannot be honestly discharged | **Still true until the remedial phase completes.** Registering a phase discharges nothing |
+
+Nothing else in this section changes, and no row is deleted: the record of how a Tier 1 mechanism
+came to have no owning phase is worth keeping in the document whose defect it was.
+
+---
+
+### 6.4 Open decisions raised by the pre-Phase-16 reconciliation
+
+Each is recorded rather than taken. None is an architecture change made here; where one *would* be
+an architecture change, that is stated as the reason it is not taken.
+
+| ID | Decision required | Owner | Blocks | Why not decided here |
+|---|---|---|---|---|
+| **OD-1** ✅ **CLOSED** | **Which phase owns T1-04** (§6.3) — re-open a closed phase, open a remedial phase, or re-scope Phase 15 | **Programme** | Phase 15 **E1**, **E2**; therefore all of Phase 16 | **Decided: open a remedial phase.** §3's **REMEDIAL PHASE T1-04** now owns the three modules; §6.3's closure note records what that does and does not change. **Ownership is closed; the obstruction to E1/E2 persists until the phase completes.** The decisions the phase itself carries — AR-1 (STEP-3) above all — are registered in that entry, not here |
+| **OD-2** | **Enabling gates for the three Tier 2 mechanisms §22.5 omits** — churn pricing (§8.9), post-solve local search (§9.5), the duty-cycle regulariser (§17.2). Each has a kill switch and **no sub-phase, no ladder position, and no gate** | **Architecture** | Completeness of Phase 16. Churn pricing is already *implemented* and switched off, so it is enablement with no gate | §1.8 lists twelve Tier 2 mechanisms and §22.5 tabulates nine switches. `TIERS.md` records the discrepancy and its own disposition: *"resolving it is an architecture change, and the architecture is frozen."* Escalated at Phase 0; **no decision has ever been returned** |
+| **OD-3** | **Q-20.1 — §20.1 budget composition.** (a) each per-unit row's relation to `perf.round_wall_clock_p99`; (b) what intra-round concurrency §20.1 assumes; (c) the relation between `solve.time_budget` (250 ms) and `perf.round_wall_clock_p99` (250 ms); (d) which rows are release-gate requirements and which are diagnostic sub-budgets | **Architecture** | **Phase 16b**, whose entire acceptance criterion is *"round wall-clock within §20.1 at target batch size"*; and `scale_targets` having an arithmetically defined target at all | The frozen architecture states the statistic and the scope and **no aggregation rule**; §20.2, §20.4, §9.4 and `observability/sli.js` were each checked and none supplies one. Adopting any reading would be inventing the answer. Answerable today — no engine, region or fleet required |
+| **OD-4** | **B10 — the Forecast Service** (§6.1): build, buy, or declare permanently absent | **Programme** (currently **UNASSIGNED**) | **Phase 16a** | §1.6 places the demand forecaster outside the engine boundary and §5.2 contracts it, but §6.1 never registered it as a blocking decision. See the note below — this is narrower and different from "Capacity Pricing is missing" |
+| **OD-5** | **B7 — the column-regime MIP solver** (§6.1, §27 item 3b) | **Programme** | **Phase 16d** | Registered since the plan was written and never worked. Recorded here only because Phase 16d is now being scoped |
+
+> **Capacity Pricing is *not* an unresolved external dependency, and a reconciliation draft that
+> said otherwise has been corrected here.** §1.6's non-goals table places *"a demand forecaster"*
+> outside the engine and does **not** place capacity pricing outside it; §3.2 lists the Capacity
+> Pricing Service as an **L1 component of the engine**, mapped to
+> `src/engine/pricing/capacityPricingClient.js` and `vTerminal.js`; and
+> `src/workers/capacityPricing.worker.js` is the publisher of the `ZonePriceSnapshot`. All three
+> exist and are tested. Phase 16a's *"Capacity Pricing Service live"* therefore means **schedule
+> that worker with `killswitch.opportunity_cost_term` un-thrown** — engineering inside Phase 16a,
+> needing no procurement.
+>
+> The real external dependency underneath it is **B10, the Forecast Service**, and it matters for a
+> specific reason: §8.3.1 makes the forecast-driven estimate **primary** and static configured
+> priors the **degraded path**. With no forecast, live `λ_zone` resolves permanently to the same
+> static priors 16a exists to replace — so **16a's gate could be signed off while delivering
+> nothing**. That is why B10 is registered against 16a rather than left as a soft §5.2 degradation.
 
 ---
 
@@ -1293,6 +1928,33 @@ completion-criteria box.
 - [ ] Add REST: `POST /api/privacy/erasure`
 - [ ] **Build gate:** reconstruction-equivalence re-run over an erased corpus still reproduces Tier B byte-for-byte
 - [ ] **Gate:** no identifying value is an input to any cost term
+
+### Remedial Phase T1-04 — Anti-starvation escalation ladder (§17.4, §17.5)
+
+Runs parallel with Phase 15. Blocks Phase 15's **completion** criteria E1 and E2, not its start.
+Full entry in §3. **Ticking every box below still does not make Phase 15 complete.**
+
+- [ ] **Decisions raised first:** **AR-1** (STEP-3 interpretation) and **OP-1** (`ops.escalation_capacity`) escalated to their owners — both have long human latency
+- [ ] **AR-7** settled: register representation for the eight trigger fractions and the relaxation order
+- [ ] Register the §17.4 trigger fractions (25 / 40 / 55 / 70 / 80 / 85 / 90 / 100 %, the specification's own values) with a publish-time monotonicity validator
+- [ ] Register the step-2 wait horizon (**PF-2**) and the step-7 rate limit (**OP-2**) — **no value invented; each supplied by its owner**
+- [ ] Implement `fairness/ladder.js` **pure core** — step function on elapsed SLA budget, no I/O, no collaborators
+- [ ] **AR-4** settled, then durable ladder state and its migration
+- [ ] Wire `ESCALATION_LADDER`, `APPLY_LADDER_RELAXATION`, `LADDER_STEP_AVAILABLE`, `LADDER_EXHAUSTED`
+- [ ] **Steps 1 and 2** via `expansionInput` — radius widening and the widened availability classes
+- [ ] **Step 8** — the terminal decline, built early so the ladder is never unable to terminate
+- [ ] Implement `fairness/operatorCapacity.js` and **step 7** — capacity, four-key triage, rate limit, saturation
+- [ ] **Rewrite `checkI13`** — queue age **versus ladder step**, plus the terminal-decision half
+- [ ] Produce `leg.ladderStep`, `outstanding_escalations`, `escalation_saturation_time`, `ladder_step_distribution`
+- [ ] Add the escalation-saturation **input** to §20.5 admission — **`SHED_LADDER` untouched**
+- [ ] Implement `fairness/agentStarvation.js` — idle detection, §7.7 diagnostic, EXERCISE producer
+- [ ] **Steps 4, 5, 6 as injected adapters with their switches thrown** — never statically imported
+- [ ] **Step 3**, once **AR-1** returns *(completion blocker — every other box may be ticked without it)*
+- [ ] §24.4 aging-cap scenario, labelled as a stipulated stimulus
+- [ ] Replay and reconstruction-equivalence corpus — **the Tier 1 release gate**
+- [ ] Full gate sweep: `gate:tiers` (with planted-violation self-test), `gate:params`, `gate:tenets`, `gate:privacy`, `gate:erasure`, `gate:legacy`, `safety:case` byte-identical
+- [ ] Implementation report and independent verification
+- [ ] **Gate:** X1–X20 in full — in particular **X3** no forbidden Tier 2 dependency, **X4** termination with Tier 2 disabled, **X8** class I/R/F never relaxed, **X14** I13 genuinely enforced, **X20** frozen perimeter untouched
 
 ### Phase 15 — Verification, gates, cutover
 

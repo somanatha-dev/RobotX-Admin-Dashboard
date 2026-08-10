@@ -329,6 +329,47 @@ describe("no row rules an engine out on a figure that is not about the engine", 
     if (code === 1) expect(printed).toMatch(/CACHE_PATH row\(s\) EXCEEDED[\s\S]*engine is NOT called on this path/);
   }, 120000);
 
+  /**
+   * PHASE 15 — the two constants the tool used to supply on an adapter's behalf.
+   *
+   * `main` read `(engine.profile && engine.profile.energyWhPerMetre) || 0.05` and
+   * `… || 5`. The second is a **fleet speed in metres per second**, which is the central
+   * quantity of decision D3 and is recorded as undecided; the first is a Wh-per-metre
+   * consumption figure. Both reach `chargerReachabilityCache.buildEntry`, which divides the
+   * intra-cell offset by the speed and multiplies the distance by the consumption, so both
+   * shaped the entries the return-leg rows were measured over. A benchmark supplying its own
+   * robot speed is a benchmark measuring a speed nobody chose.
+   */
+  test("AN ADAPTER THAT DECLARES NO PROFILE IS NOT MEASURED — no speed is substituted for it", async () => {
+    const log = jest.spyOn(console, "log").mockImplementation(() => {});
+    const code = await benchmark.main(["--engine", require.resolve("./helpers/profilelessRoutingAdapter.js")]);
+    const printed = log.mock.calls.map((call) => String(call[0])).join("\n");
+    log.mockRestore();
+
+    expect(code).toBe(0);
+    expect(printed).toMatch(/declares no usable profile/u);
+    expect(printed).toMatch(/decision D3, Product \+ Fleet Engineering/u);
+    expect(printed).toMatch(/No default is substituted here/u);
+    // Every row unmeasured, and nothing reported as passing.
+    for (const row of benchmark.ROWS) {
+      const line = printed.split("\n").find((entry) => entry.includes(row.id) && /^\s{2}\w/u.test(entry));
+      expect({ id: row.id, line }).toEqual({ id: row.id, line: expect.stringContaining(benchmark.VERDICT.NOT_MEASURED) });
+    }
+  }, 30000);
+
+  test("a zero speed is refused as well — it is not a declared profile, it is a division by zero", async () => {
+    // `buildEntry` computes `travelSeconds + intraCellOffsetM / speedMetresPerSecond`, so a
+    // zero speed does not fail loudly: it produces `Infinity`, which is then refused per-entry
+    // and shows up as an empty cache rather than as a configuration error.
+    const log = jest.spyOn(console, "log").mockImplementation(() => {});
+    const code = await benchmark.main(["--engine", require.resolve("./helpers/zeroProfileRoutingAdapter.js")]);
+    const printed = log.mock.calls.map((call) => String(call[0])).join("\n");
+    log.mockRestore();
+
+    expect(code).toBe(0);
+    expect(printed).toMatch(/declares no usable profile/u);
+  }, 30000);
+
   test("the amortisation block reports queries issued against reads served, per population", async () => {
     const measured = await benchmark.measure(stubEngine(), configFor(), TEST_WORKLOAD);
 

@@ -79,9 +79,9 @@ means being recomputed.
 | Candidate Service | Spatial and hierarchical candidate discovery with lower-bound pruning | L4 | `src/engine/candidates/availabilityIndex.js`, `expansion.js`, `lowerBound.js`, `omega.js`, `ordering.js` | 9 |
 | Feasibility Evaluator | Constraint predicate evaluation, three-valued | L4 | `src/engine/feasibility/evaluate.js`, `threeValued.js`, `systemicGuard.js`, `register.js`, `cache.js`, `volatileSubset.js`, `rejectionTelemetry.js`, `predicates/f01..f38.js` | 6 |
 | Cost Evaluator | Direct, opportunity, risk, lifecycle, delay, churn terms | L4 | `src/engine/cost/phi.js` + one module per term (`cDirect.js`, `cOpportunity.js`, `cRisk.js`, `cLifecycle.js`, `cPolicy.js`, `cDelay.js`, `cDefer.js`, `cChurn.js`), `signDiscipline.js` | 8 |
-| Plan Builder | Stop sequencing, insertion evaluation, timeline and energy projection | L4 | `src/engine/plan/planBuilder.js`, `timeline.js`, `insertion.js`, `consolidation.js` | 8 |
-| Column Builder | Enumerates and prices candidate columns by marginal insertion cost | L4 | `src/engine/plan/columnBuilder.js`, `column.js`, `multiLegColumn.js` | 8 |
-| Solver | Set-partitioning solve over columns with deferral variables; degenerates to min-cost flow in the singleton regime | L4 | `src/engine/solve/minCostFlow.js`, `setPartitioning.js`, `objective.js`, `cadence.js`, `budgets.js`, `batch.js`, `localSearch.js` | 10 |
+| Plan Builder | Stop sequencing, insertion evaluation, timeline and energy projection | L4 | `src/engine/plan/planBuilder.js`, `timeline.js`, `insertion.js`, `consolidation.js` | 8 · **16** for `consolidation.js` |
+| Column Builder | Enumerates and prices candidate columns by marginal insertion cost | L4 | `src/engine/plan/columnBuilder.js`, `column.js`, `multiLegColumn.js` | 8 · **16** for `multiLegColumn.js` |
+| Solver | Set-partitioning solve over columns with deferral variables; degenerates to min-cost flow in the singleton regime | L4 | `src/engine/solve/minCostFlow.js`, `setPartitioning.js`, `objective.js`, `cadence.js`, `budgets.js`, `batch.js`, `localSearch.js` | 10 · **16** for `setPartitioning.js`, `batch.js`, `localSearch.js` |
 | Commitment Store | Durable HARD commitments, agent authority epochs and fence counters, leases, outbox | L3 | `src/engine/commitment/model.js`, `commit.js`, `guards.js`, `fencing.js`, `leases.js`, `idempotency.js`, `clock.js` | 3 |
 | Dispatcher | Outbox drain, delivery, ACK/NACK correlation, retry | L2 | `src/engine/dispatch/outbox.js`, `offers.js`, `escalation.js`, `dedupHandshake.js`, `sequence.js`, `src/workers/outbox.worker.js` | 4 |
 | Supervisor | Durable timers for every non-terminal state | L2 | `src/engine/supervision/timers.js`, `leases.js`, `progress.js`, `src/workers/timer.worker.js` | 5 |
@@ -97,6 +97,16 @@ means being recomputed.
 | Explanation API | Human- and machine-readable decision explanation | — | `src/routes/explain.routes.js`, `src/controllers/explain.controller.js` | 11 |
 | Simulation Harness | Offline replay, shadow evaluation, scenario testing | — | `src/engine/observability/shadow.js`, `tools/evaluator/**`, `tools/replay/**` | 11, 15 |
 
+> **Why three rows carry two phases.** A component's *modules* need not share its phase.
+> `consolidation.js`, `multiLegColumn.js`, `setPartitioning.js`, `batch.js` and `localSearch.js`
+> are the owning modules of Tier 2 mechanisms **T2-12, T2-02, T2-02, T2-01 and T2-08** in
+> [`TIERS.md`](TIERS.md), and §1.8 rule 3 — *"Phases 0–15 … Phase 16 enables Tier 2"* — puts every
+> Tier 2 mechanism in Phase 16. The execution plan agrees: `setPartitioning.js` and `localSearch.js`
+> are named in Phase 16's own **Files to create**. These rows previously read `8` and `10` flat,
+> which contradicted both, and `PHASE_10_IMPLEMENTATION_REPORT.md` §13 and
+> `PHASE_11_IMPLEMENTATION_REPORT.md` §13 had already certified all five **absent** as Phase 16's.
+> The phase column is corrected here; no module moved and none exists.
+
 ### Components the catalogue implies but does not list separately
 
 | Concern | Spec | Owning module path | Phase |
@@ -109,7 +119,8 @@ means being recomputed.
 | Dependency contracts, budgets, circuit breakers | §5.2 | `src/engine/deps/registry.js`, `circuitBreaker.js` | 12 |
 | Map obstruction classification | §4.3, §5.2 | `src/engine/map/obstructionClass.js` | 12 |
 | Payload spec, container model, tiered packing, custody evidence | §15 | `src/engine/payload/spec.js`, `container.js`, `packing.js`, `loadState.js`, `custodyEvidence.js` | 7 |
-| Fairness — duty cycle, ladder, operator capacity, agent starvation, repositioning | §17 | `src/engine/fairness/*.js` | 12, 16 |
+| Fairness — **anti-starvation ladder, operator capacity, agent starvation (Tier 1, T1-04, I13)** | §17.4, §17.5 | `src/engine/fairness/ladder.js`, `operatorCapacity.js`, `agentStarvation.js` | **UNASSIGNED — a Phases 0–15 obligation with no owning phase.** See the note below |
+| Fairness — duty-cycle regulariser and repositioning (Tier 2, T2-10, T2-11) | §17.2, §17.3 | `src/engine/fairness/dutyCycle.js`, `repositioning.js` | 16 |
 | Failure catalogue, degraded-mode register, external escalation | §18 | `src/engine/failure/catalogue.js`, `externalEscalation.js`, `src/engine/degraded/modeRegister.js` | 12 |
 | Determinism substrate | §9.6 | `src/engine/determinism/fixedPoint.js`, `ordering.js`, `snapshot.js` | 1 |
 | Units and exchange rates | §1.3 | `src/engine/cost/units.js`, `exchangeRates.js` | 1 |
@@ -117,6 +128,27 @@ means being recomputed.
 | Security — attestation, command signing, manual override | §23 | `src/engine/security/attestation.js`, `commandSigning.js`, `override.js` | 4, 14 |
 | Privacy — surrogate identity store and erasure | §23.7 | `src/engine/privacy/identityStore.js` | 14 |
 | Tenet and tier guards | §1.5, §1.8 | `src/engine/guards/tenets.js`, `tierAssertions.js`, `sourceScan.js` | 0 |
+
+> **`fairness/` holds two tiers, and only one of them is Phase 16's.** This row previously read
+> *"Fairness — duty cycle, ladder, operator capacity, agent starvation, repositioning · `12, 16`"*
+> as one line, which merged a Tier 1 launch obligation into a Tier 2 enablement phase.
+>
+> §1.8 places **the §17.4 anti-starvation escalation ladder in Tier 1** — *"which is where the
+> anti-starvation **guarantee** lives"* — and rule 2 depends on it: the aging multiplier could be
+> capped precisely *because* the guarantee lives in the ladder and not in the Tier 2 price.
+> [`TIERS.md`](TIERS.md) records it as **T1-04**, invariant **I13**, and its module-tier table
+> resolves `fairness/ladder.js`, `operatorCapacity.js` and `agentStarvation.js` to Tier 1 by
+> longest-prefix fallthrough while naming `dutyCycle.js` and `repositioning.js` Tier 2 explicitly.
+> `IMPLEMENTATION_EXECUTION_PLAN.md` §0.2 then binds the phase: *"Phases 0–15 deliver Tier 0 +
+> Tier 1. Phase 16 enables Tier 2."*
+>
+> **So T1-04 cannot be Phase 16's, and it is not Phase 12's either** — Phase 12's scope is §18 and
+> §26. It is an obligation of Phases 0–15 that the execution plan never assigned to a phase, and
+> the three modules do not exist. Which phase owns it is an open programme decision recorded in
+> `IMPLEMENTATION_EXECUTION_PLAN.md` §6.3; it is **not** decided here, and no phase was invented to
+> absorb it. `tests/engine/phase0Scaffold.test.js` refuses the three modules on disk for exactly
+> that reason — no phase owns them yet — and now asserts their Tier 1 classification so the
+> refusal can never again be read as "Phase 16 owns them".
 
 ---
 
