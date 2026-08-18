@@ -59,7 +59,7 @@ const cells = require("../engine/spatial/cells");
 const availabilityIndex = require("../engine/candidates/availabilityIndex");
 const { lowerBound } = require("../engine/candidates/lowerBound");
 const omega = require("../engine/candidates/omega");
-const { orderCandidates } = require("../engine/candidates/ordering");
+const { orderCandidates, compareStrings } = require("../engine/candidates/ordering");
 const { unexploredRingFloorMilliCU, READY_CLASSES } = require("../engine/candidates/expansion");
 const { ratesFrom } = require("../engine/cost/exchangeRates");
 const { toCU } = require("../engine/determinism/fixedPoint");
@@ -425,6 +425,38 @@ const getAgentEnergy = asyncHandler(async (req, res) => {
 const CANDIDATES_MAX_RING = 3;
 
 /**
+ * `EnergyModelParams` as `energy/consumption.js` reads a model: an object keyed by
+ * §14.2's coefficient names (`beta_dist`, …), not the camelCase Prisma columns.
+ *
+ * This adapter exists because the two spellings are genuinely different and nothing
+ * else converts between them. Reading `params.coefficients` — a column
+ * `EnergyModelParams` does not have — yields `undefined` for every coefficient and
+ * therefore an unresolvable `LB(a, l)` on every agent, which is what this endpoint
+ * did before the Phase 9 closure. Kept beside the endpoint that needs it rather
+ * than added to `consumption.js`, whose contract is the coefficient object, not the
+ * row it came from.
+ *
+ * @param {object|null} params an `EnergyModelParams` row
+ * @returns {object|null} a coefficient object, or null when there is no row
+ */
+function energyCoefficientsFrom(params) {
+  if (!params) return null;
+  return {
+    [consumption.COEFFICIENT.DIST]: params.betaDist,
+    [consumption.COEFFICIENT.MASS]: params.betaMass,
+    [consumption.COEFFICIENT.CLIMB]: params.betaClimb,
+    [consumption.COEFFICIENT.REGEN]: params.betaRegen,
+    [consumption.COEFFICIENT.MOVE_TIME]: params.betaMoveTime,
+    [consumption.COEFFICIENT.STOP_START]: params.betaStopStart,
+    [consumption.COEFFICIENT.DWELL]: params.betaDwell,
+    [consumption.COEFFICIENT.AUX]: params.betaAux,
+    [consumption.COEFFICIENT.THERMAL]: params.betaThermal,
+    [consumption.COEFFICIENT.PAYLOAD_THERMAL]: params.betaPayloadThermal,
+    [consumption.COEFFICIENT.REGEN_EFFICIENCY]: params.etaRegen,
+  };
+}
+
+/**
  * GET /api/diagnostics/candidates/:legId — §6's own diagnostic: "cells explored,
  * smallest unexplored bound, achieved gap in CU" (§6.1).
  *
@@ -467,7 +499,21 @@ const getLegCandidates = asyncHandler(async (req, res) => {
 
   const snapshot = defaultSnapshot();
   const rates = ratesFrom(snapshot, {});
+
+  // Ω_terminal + Ω_policy, the correction `LB(a, l)` subtracts (§6.4). This endpoint
+  // supplies no `omegaTerminalCu`, which resolves cleanly only while
+  // `opportunity_cost_term` is thrown — the §1.8 rule 3 ship state. When it is not,
+  // `combinedCorrection` reports the failure and this endpoint answers 422 rather
+  // than pricing every agent against a bound whose negative-term correction is
+  // missing: an `LB` without it is not a lower bound at all (§6.4), and a diagnostic
+  // that silently reports one would advertise the guarantee §6.4 exists to protect.
   const correction = omega.combinedCorrection({ snapshot });
+  if (!correction.ok) {
+    return res.status(422).json({
+      error: `the Ω correction LB(a, l) requires did not resolve for leg "${legId}"`,
+      unresolvedBecause: correction.problems,
+    });
+  }
 
   const originFineCellId = cells.cellForPoint(originStop.lat, originStop.lon, cells.RESOLUTION.FINE);
   const originCoarseCellId = cells.coarseParentOf(originFineCellId);
@@ -529,7 +575,7 @@ const getLegCandidates = asyncHandler(async (req, res) => {
         mobilityModel: mobilityModel ? { kinematicLimits: mobilityModel.kinematicLimits } : null,
       },
       waitUntilAvailableSeconds: 0,
-      energy: { kappa: 1, model: params ? params.coefficients : null },
+      energy: { kappa: 1, model: energyCoefficientsFrom(params) },
       leg: legForBound,
       rates: { lambdaTimeFloor: rates["cost.lambda_time_floor"], cuPerWh: rates["cost.energy.cu_per_wh"] },
       delayParameters: readDelayParameters(snapshot),
@@ -539,33 +585,48 @@ const getLegCandidates = asyncHandler(async (req, res) => {
     return {
       agentId: position.agent.agentId,
       availabilityClass: position.availabilityClass,
+      // The exact int64 is carried alongside the CU figure. `lbCu` is for a human
+      // reading the response; every comparison below uses `lbMilliCU`, because
+      // round-tripping an exact milli-CU quantity through a float and back
+      // (`BigInt(Math.round(cu * 1000))`) is the narrowing §1.3 and §8.10 exist to
+      // prevent — and it is silent, not an error.
+      lbMilliCU: bound.ok ? bound.milliCU : null,
       lbCu: bound.ok ? toCU(bound.milliCU) : null,
       lbUnresolvedBecause: bound.ok ? [] : bound.missing,
     };
   });
 
+  // §6.6: "the resulting list ordered canonically before cost evaluation ... Any set
+  // ordering that depends on a query planner, hash iteration order, or concurrent-
+  // response arrival order is prohibited." `positions` comes from an unordered
+  // `findMany`, so the response's own ordering has to be the canonical comparator —
+  // a plain numeric sort leaves every tie to the order PostgreSQL happened to return.
   const resolvedCandidates = orderCandidates(
     evaluated
-      .filter((row) => row.lbCu !== null)
-      .map((row) => ({ agentId: row.agentId, costMilliCU: BigInt(Math.round(row.lbCu * 1000)) })),
+      .filter((row) => row.lbMilliCU !== null)
+      .map((row) => ({ agentId: row.agentId, costMilliCU: row.lbMilliCU })),
   );
 
-  const bestLbMilliCU = resolvedCandidates.length > 0
-    ? BigInt(Math.round(evaluated.find((row) => row.agentId === resolvedCandidates[0].agentId).lbCu * 1000))
-    : null;
+  const rankByAgentId = new Map(resolvedCandidates.map((row, index) => [row.agentId, index]));
+  const orderedEvaluated = [...evaluated].sort((a, b) => {
+    const rankA = rankByAgentId.has(a.agentId) ? rankByAgentId.get(a.agentId) : Number.MAX_SAFE_INTEGER;
+    const rankB = rankByAgentId.has(b.agentId) ? rankByAgentId.get(b.agentId) : Number.MAX_SAFE_INTEGER;
+    // Unresolved rows keep a canonical order of their own rather than an arbitrary one.
+    return rankA - rankB || compareStrings(a.agentId, b.agentId);
+  });
 
-  const floor = correction.ok
-    ? unexploredRingFloorMilliCU({
-        ringDistance: ring + 1,
-        resolution: cells.RESOLUTION.FINE,
-        leg: legForBound,
-        decisionTimeMs: Date.now(),
-        fleetBestCase: fleetBestCaseFrom(positions),
-        rates: { lambdaTimeFloor: rates["cost.lambda_time_floor"], cuPerWh: rates["cost.energy.cu_per_wh"] },
-        delayParameters: readDelayParameters(snapshot),
-        correction,
-      })
-    : { ok: false, milliCU: null, missing: ["Ω correction unresolved"] };
+  const bestLbMilliCU = resolvedCandidates.length > 0 ? resolvedCandidates[0].costMilliCU : null;
+
+  const floor = unexploredRingFloorMilliCU({
+    ringDistance: ring + 1,
+    resolution: cells.RESOLUTION.FINE,
+    leg: legForBound,
+    decisionTimeMs: Date.now(),
+    fleetBestCase: fleetBestCaseFrom(positions),
+    rates: { lambdaTimeFloor: rates["cost.lambda_time_floor"], cuPerWh: rates["cost.energy.cu_per_wh"] },
+    delayParameters: readDelayParameters(snapshot),
+    correction,
+  });
 
   return res.json({
     legId: leg.legId,
@@ -574,7 +635,7 @@ const getLegCandidates = asyncHandler(async (req, res) => {
     tiersExplored: Math.min(ring + 1, CANDIDATES_MAX_RING + 1),
     cellsExplored,
     agentsFound: agentIds.size,
-    candidates: evaluated.sort((a, b) => (a.lbCu ?? Infinity) - (b.lbCu ?? Infinity)),
+    candidates: orderedEvaluated.map(({ lbMilliCU, ...row }) => row),
     bestLbCu: bestLbMilliCU !== null ? toCU(bestLbMilliCU) : null,
     smallestUnexploredBoundCu: floor.ok ? toCU(floor.milliCU) : null,
     achievedGapCu:
@@ -633,7 +694,8 @@ function fleetBestCaseFrom(positions) {
       maxSpeedMs = maxSpeedMs === null ? limits.maxSpeedMs : Math.max(maxSpeedMs, limits.maxSpeedMs);
     }
     const params = agentClass && agentClass.energyModelParams && agentClass.energyModelParams[0];
-    const betaDist = params && params.coefficients && params.coefficients[consumption.COEFFICIENT.DIST];
+    const coefficients = energyCoefficientsFrom(params);
+    const betaDist = coefficients && coefficients[consumption.COEFFICIENT.DIST];
     if (Number.isFinite(betaDist)) {
       betaDistMin = betaDistMin === null ? betaDist : Math.min(betaDistMin, betaDist);
     }

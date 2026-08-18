@@ -1,6 +1,25 @@
 /**
  * Robot Registry Service — DTARO
  *
+ * ── SUPERSEDED (Phase 9, §6.2) — traceability banner only, no behavioural change ──
+ * The execution plan's Phase 9 row names this file under "Files to modify":
+ * "`robots:all` superseded by the cell-partitioned index." `getAllRobotIds()` below
+ * reads one global Redis set — an unpartitioned enumeration whose cost grows with
+ * total fleet size, which is exactly what §6.1's bounded-work property (T9) forbids
+ * of a decision path: "per-decision cost MUST be a function of local agent density,
+ * not global fleet size."
+ *
+ * Its replacement is `src/engine/candidates/availabilityIndex.js`'s
+ * `(shard, cell, availability_class)` partition, read through
+ * `candidatesInFineCell()` / `candidatesInCoarseCell()`. Nothing here is on the
+ * engine's decision path, so this file keeps working unchanged for the legacy
+ * DTARO surfaces until Phase 15's cutover retires them the way it retired
+ * `taskAssignment.service.js` (see `tools/gates/checkLegacyRetirement.js`).
+ *
+ * This banner discharges the one finding `PHASE_9_INDEPENDENT_VERIFICATION.md` left
+ * open; its companion finding — the same banner on `taskAssignment.service.js` — was
+ * overtaken by that file's actual retirement.
+ *
  * Unified live-state facade over Redis + in-memory socket map.
  * All DTARO components read/write robot state through this service;
  * nothing else should reach into Redis `robot:*` keys directly for

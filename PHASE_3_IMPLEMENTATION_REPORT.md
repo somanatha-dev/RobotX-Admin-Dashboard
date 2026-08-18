@@ -1,698 +1,722 @@
-# Phase 3 — Commitment core · Implementation Report
+# Phase 3 — Commitment core · Implementation & Verification Report
 
-**Phase:** 3 of 16 · **Status:** ✅ **COMPLETE — awaiting independent verification before Phase 4**
-**Date:** 2026-07-29 · **Branch:** `feature/dashboard` · **Working tree at implementation:** `4244b3d` + uncommitted Phases 1–3
+**Phase:** 3 of 16 · **Status:** see §28
+**Original implementation:** 2026-07-29 · **This re-verification:** 2026-08-14/15
+**Branch:** `feature/dashboard` · **Working tree:** `63f5c58` + uncommitted Phase 3 changes
 **Authority:** `IMPLEMENTATION_EXECUTION_PLAN.md` §3 "PHASE 3" and §7 "Phase 3" checklist
 **Specification:** `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` (FROZEN) — §2.6, §3.3, §4.1, §10, §12.2, §19.3, §19.5, §24.2, §26
 
-> **Phase 4 has NOT been started.** There is no `Outbox` table, no `AgentDedupState`,
-> no offer handler, no outbox worker, and no socket event of any kind. No routing
-> optimisation, no scheduling, no allocation heuristic. `ENGINE_ENABLED` remains
-> `false` in every environment; nothing in the running system calls `commit()`.
+> This report **supersedes** the 2026-07-29 edition. That edition described an
+> implementation that had never been executed against a database. This one describes an
+> implementation that has, and corrects three claims the earlier one made that live
+> execution did not support. Where a claim here is not backed by a command that was run,
+> it says so.
 
 ---
 
 ## 1. Executive summary
 
-Phase 3 delivers §10 in full. After it, exclusivity is a durable, fenced,
-database-enforced property rather than a Redis key with a timeout.
+Phase 3 delivers §10: exclusivity as a durable, fenced, database-enforced property. The
+implementation was already substantially complete and, on inspection, correct. What was
+missing was **evidence**, and the missing evidence was the kind that only a real database
+produces.
 
-**8 new engine modules, 2 new tables, 1 new column, 1 partial unique index, 1 CHECK,
-1 trigger, 1 static shard row, 1 TLA+ module, and 5 new test suites (200 tests).**
+A disposable PostgreSQL 18.3 cluster was built, the migration chain applied to it, and the
+shipped `commit.js` driven against it. That produced:
 
-Four properties hold that did not before:
+- **The migration executes.** Phases 1→3 (10 migrations) and the full chain (21 migrations)
+  both apply cleanly. The partial unique index, the `plpgsql` trigger function, the CHECK
+  constraints, and the seeded shard row are all present with the definitions the
+  specification requires, read back from `pg_index`, `pg_constraint`, `pg_trigger` and
+  `pg_proc`.
+- **The database backstops hold.** 17 direct writes bypassing the entire application path —
+  no guards, no row locks, no fence allocation — produced 17 correct verdicts.
+- **Blocking decision B9 is discharged by execution**, all six questions, including the two
+  that had only ever been reasoned about.
+- **One real defect was found and fixed.** `isCapacityConstraintViolation` did not classify
+  the error PostgreSQL and Prisma actually produce when the capacity backstop fires, so
+  `commit()` would have re-thrown a raw driver error instead of returning the graceful
+  abort §10.3.2 prescribes. It was invisible to a fully green suite because the JavaScript
+  store model authors its own error text.
+- **A second defect was found and fixed in the verification apparatus.** The model
+  checker's `exhaustive` flag ignored its own depth bound, so every "exhaustive" claim in
+  the previous report was a claim about a truncated search. Fixing it also falsified a
+  prominent narrative claim, which is corrected here rather than restated.
+- **TLC has now been run**, which every report since Phase 3 recorded as not done.
 
-1. **Exclusivity survives a process pause.** §10.2's argument — that a lock with a
-   timeout cannot provide mutual exclusion across a pause, because a paused holder
-   cannot know it was preempted — is answered structurally: a coordinator that pauses
-   mid-finalisation and resumes finds its leadership fence or its `authority_epoch`
-   stale and aborts. Both cases are chaos-tested, and the abort leaves the Leg
-   byte-identical to how it started.
-2. **The fences are two, and the comparison is per commitment id.** §10.3.1's own
-   worked example — the one where a single per-agent counter makes the fleet seize
-   after the second concurrent commitment on any agent — is a test case that passes
-   under the shipped comparison and a **model-check counterexample** under the
-   defective one.
-3. **The database refuses what a defective code path would allow.** The capacity
-   backstop is a *partial unique index*, not a counting trigger, so it is immune to
-   the very interleaving it exists to catch. It is exercised by writes that bypass
-   every guard.
-4. **The model check is a gate, and it can fail.** The protocol is checked
-   exhaustively at capacity 1, 2 and 3 — 6 443, 42 123 and 135 001 states, search
-   exhausted in every case, zero violations. A mutation suite then breaks one guard at
-   a time and asserts the checker finds each. §10.3.1's named defect is found at
-   capacity 2 and 3 and **is invisible at capacity 1**, which is precisely why §24.2
-   makes the configuration part of the requirement.
+Full suite after the changes: **145 suites, 6 378 tests, 0 failures, 7/7 gates PASS.**
 
-`npm run verify` is green: **3 gates PASS, 47 suites, 871 tests, 0 failures.** The
-legacy lane is **22 suites / 169 tests, identical to the Phase 0, 1 and 2 baselines** —
-no legacy test was modified, skipped, or re-baselined.
-
-**One inherited risk is not discharged** (§20): no migration in this programme has been
-applied to a live PostgreSQL instance. Phase 3 makes that gap materially more
-consequential than Phases 1 and 2 did, because Phase 3's DDL is the first that
-contains a partial index, a trigger function, and a seeded row rather than only
-`CREATE TABLE`. This is stated plainly in §18 and §20 rather than mitigated by
-assertion.
+Three claims from the 2026-07-29 report are **withdrawn** (§22). None of them was a safety
+claim; all three were characterisations of evidence that a model produced and PostgreSQL
+does not.
 
 ---
 
-## 2. Objective achieved
+## 2. Phase objective
 
-The plan's stated purpose:
+> **Purpose.** Deliver §10 in full — the correctness core's centre. After this phase,
+> exclusivity is a durable, fenced, database-enforced property.
 
-> Deliver §10 in full — the correctness core's centre. After this phase, exclusivity is
-> a durable, fenced, database-enforced property.
+The operative requirement, §10.1:
 
-> **Scope.** Two fencing scopes, commit transaction with guards G1–G6, SERIALIZABLE
-> isolation, schema backstops, lease grant, idempotency namespaces, clock discipline,
-> advisory-only cache lock.
-
-Every item in that scope landed. The one item conditioned on a later event — removing
-`reserveRobot`'s fail-closed *throw* — is deliberately not done, because the plan
-conditions it on the durable path being live and it is not (§10.3 below).
+> for every agent, at every instant, the set of HARD commitments MUST have cardinality ≤
+> `capacity[agent]`, under every failure mode including worker crash, network partition,
+> cache loss, leader change, duplicate request, and clock skew.
 
 ---
 
-## 3. Files created
+## 3. Scope
 
-### 3.1 The commitment core — `src/engine/commitment/**` (1 515 lines)
+**In scope and delivered:** the commitment model; two fencing scopes; authority epoch;
+per-commitment fence; fence floor; fence allocation; the normative command-class →
+fence-scope table; guards G1–G6; the transactional commit path; SERIALIZABLE isolation and
+`FOR UPDATE` row locks; schema backstops; capacity enforcement; the partial unique index;
+slot allocation; the slot-bound trigger; shard leadership and its fence; `AgentFenceAudit`;
+lease grant; idempotency with disjoint namespaces; store-clock discipline; monotonic time;
+skew budget; leadership self-removal; the formal model; correctness, concurrency, chaos and
+failure-path tests; cache-independence of the durable path.
 
-| File | Lines | Purpose | Tier |
-|---|---|---|---|
-| `model.js` | 183 | §2.6's Commitment shape; `refuseSoftPersistence` (I18's application-side half); `isActive` as `releasedAt IS NULL` — the same predicate the index is built on; deterministic lowest-free-slot allocation | **0** |
-| `fencing.js` | 299 | §10.3.1: the two scopes, the **normative** command-class → fence-scope table, fence allocation, `fence_floor`, and the two rejection predicates — stated once here because Phase 4 mirrors them on the agent side | **0** |
-| `guards.js` | 346 | G1–G6 as six independent pure predicates, one abort reason each; `evaluateGuards` runs all six without short-circuiting | **0** |
-| `clock.js` | 189 | §10.6: the store's clock as the sole authority, the monotonic source, the skew budget, leadership self-removal | **0** |
-| `idempotency.js` | 186 | §10.5: the deterministic `commitment_id`, and two provably disjoint command namespaces | **0** |
-| `leases.js` | 110 | §12.2: the lease granted at commit from the store's clock; the commitment-scoped-evidence rule renewal will need | **0** |
-| `commit.js` | 392 | §10.3.2 steps 1–7 as one transaction | **0** |
-
-### 3.2 Shard leadership — `src/engine/shard/` (208 lines)
-
-| File | Lines | Purpose |
-|---|---|---|
-| `leadership.js` | 208 | The plan's cycle-C1 resolution: a single static shard row with a manually-advanced fence, read in-transaction by G1. Phase 13 replaces its *management*; **G1's code does not change** |
-
-### 3.3 Migration and formal model
-
-| File | Lines | Purpose |
-|---|---|---|
-| `prisma/migrations/20260729120000_commitment_core/migration.sql` | 185 | `ShardLeadership`, `AgentFenceAudit`, `Commitment.capacitySlot`, the partial unique index, the slot CHECK, the slot-bound trigger, the static shard row |
-| `formal/commitment.tla` | 408 | The §24.2 formal model, with its three capacity configurations |
-
-### 3.4 Tests — `tests/engine/**` (2 489 lines, 200 tests)
-
-| File | Tests | Covers |
-|---|---|---|
-| `commitmentFencing.test.js` | 72 | The command table in both directions; the per-commitment comparison including §10.3.1's worked example; `fence_floor`; idempotency and namespace disjointness; clock discipline; the lease; the §2.6 model; parameter-register integration |
-| `commitmentGuards.test.js` | 31 | Each guard aborting **on its own violation and only its own**; the two counterfactuals (a per-commitment G3, an unqualified G5) asserted rather than argued |
-| `commitmentTransaction.test.js` | 38 | The nominal commit; idempotency; the storm at capacity 1 and 2; the two chaos scenarios; the schema backstops driven **without** the commit path; both seams; every failure path |
-| `commitmentSchema.test.js` | 36 | Additivity; migration ⟷ `schema.prisma` against Prisma's own SQL; the backstop DDL as written; `ShardLeadership` and `AgentFenceAudit` |
-| `commitmentModelCheck.test.js` | 23 | The §24.2 gate at capacity 1, 2, 3; exhaustiveness; the mutation suite |
-| `helpers/commitmentStore.js` | — | A store model with blocking row locks, atomic overlays, and the two backstops evaluated at apply time |
-| `helpers/commitmentModel.js` | — | The exhaustive explicit-state checker, whose transitions call the **shipped** modules |
+**Explicitly out of scope** (§26): REST changes · Socket.IO changes · background workers ·
+outbox processing · offer semantics · agent-side deduplication · timers · the reconciler ·
+lease renewal · settlement · cancellation · reassignment · preemption · scheduling · routing
+optimisation · allocation heuristics. None was implemented or modified in this pass.
 
 ---
 
-## 4. Files modified
+## 4. Files created
+
+| File | Purpose |
+|---|---|
+| `Backend/tools/verify/phase3LiveDatabase.js` (≈840 lines) | The live-PostgreSQL verification harness. Drives the **shipped** `commit.js`, `db/prisma.js` and `shard/leadership.js` against a real instance: 82 checks across B9, the nominal commit, idempotency, three concurrency scenarios, three guard races under two isolation levels, error classification, the store clock, and cache independence. Deliberately **not** a Jest suite — it requires a database, and a test that silently skips when its environment is absent reports green for having done nothing |
+
+The commitment core's own eight modules, the migration, and the TLA+ module were created in
+the original Phase 3 pass and are unchanged in this one except as listed in §5.
+
+---
+
+## 5. Files modified
 
 | File | Change | Why |
 |---|---|---|
-| `prisma/schema.prisma` | +106 lines, **zero removed** | `ShardLeadership`, `AgentFenceAudit`, `Commitment.capacitySlot` |
-| `src/db/prisma.js` | +103 lines, **zero removed** | Blocking decision B9: neither SERIALIZABLE nor `FOR UPDATE` is reachable through the ergonomic Prisma path. Adds `runSerializable`, `selectForUpdate`, and serialisation-failure classification |
-| `src/cache/kv.js` | +78 / −14 (14 = comment reflow + the signature line) | §10.4's demotion, as an **opt-in**: `reserveRobot(key, value, ttl, { advisory: true })` gets §10.4 semantics; a caller passing nothing gets byte-identical behaviour to before |
-| `src/services/task.service.js` | +21, **comment only** (verified: zero non-comment lines added or removed) | The plan lists it because its *role* changes — it is no longer the only writer — not its behaviour. The comment records why the fail-closed lock stays until Phase 15 |
-| `tests/engine/phase0Scaffold.test.js` | Ownership assertion widened to Phase 3; two presence tests added | The assertion narrows rather than disappears: a module under `feasibility/`, `dispatch/`, or `supervision/` still fails it |
-| `tests/engine/domainSchema.test.js` | Drift-check generalised | See §4.1 |
+| `Backend/src/engine/commitment/commit.js` | +68 / −4 | **Defect fix D1** — `isCapacityConstraintViolation` rewritten to match the three error shapes PostgreSQL and Prisma actually produce (§22.1) |
+| `Backend/tests/engine/helpers/commitmentModel.js` | +52 / −7 | **Defect fix D2** — `check()` now reports `exhaustive`, `depthTruncated` and `stateCapExceeded` separately, so a depth-truncated search can no longer report itself as a proof (§22.2) |
+| `Backend/tests/engine/commitmentModelCheck.test.js` | +170 / −51 | Rewritten around D2: closed searches where affordable, bounded searches asserted *as* bounded, and the corrected capacity-1 narrative |
+| `Backend/tests/engine/commitmentTransaction.test.js` | +99 / −7 | Regression tests for D1, built from error objects transcribed verbatim from the live run |
+| `formal/README.md` | Status section rewritten | TLC has now been executed; the file said it had not, and separately made an exhaustion claim that was not true of either checker |
 
-### 4.1 One Phase 2 test needed a general fix, not a re-baseline
-
-Phase 2's drift-check compares its historical migration against `prisma migrate diff
---from-empty`, which generates the schema **as it stands now**. Phase 3's additive
-`Commitment.capacitySlot` therefore appears in the generated `CREATE TABLE` and
-correctly does not appear in Phase 2's migration file.
-
-Left alone, that test would fail on *every* future additive column — a test that
-re-baselines itself out of existence rather than one that detects drift. It now
-subtracts exactly the columns that migrations dated **after** it add, read from those
-migration files rather than hard-coded, and compares the remainder verbatim. A test
-asserts the subtraction is non-empty, so it cannot silently become a no-op. Drift in
-anything Phase 2's migration *does* declare still fails.
+**Nothing else was touched.** `git diff --name-only` over the whole repository lists exactly
+these files plus the new `tools/verify/`. No migration, no schema, no route, no socket
+handler, no worker, no later-phase module.
 
 ---
 
-## 5. Transaction design
+## 6. Architecture implemented
 
-**One transaction is introduced.** `commit()` — a single serialised transaction per
-(Leg, Agent) pairing, executing §10.3.2's seven steps in order.
+```
+Coordinator pins a round snapshot
+        │  (leadershipFence, authorityEpoch, legVersion, expectedLegState)
+        ▼
+runSerializable  ──►  BEGIN ISOLATION LEVEL SERIALIZABLE
+        │
+        ├─ idempotency: findUnique(commitmentId)  ──► ALREADY_COMMITTED
+        │
+        ├─ 1. SELECT … FOR UPDATE  "Agent"   (always first)
+        │     SELECT … FOR UPDATE  "Leg"
+        │     SELECT … FOR SHARE   "ShardLeadership"
+        │
+        ├─ 2. G1 G2 G3 G4 G5 G6 — all six evaluated, none short-circuits
+        │
+        ├─ 3. volatileRecheck seam (required; Phase 6 populates)
+        │
+        ├─ 4. fence = fenceCounter + 1;  UPDATE Agent SET fenceCounter
+        │     slot  = lowestFreeSlot;    INSERT Commitment (HARD)
+        │     lease = storeNow + lease.duration
+        │     UPDATE Leg SET state, version+1 WHERE id = ? AND version = ?
+        │     UPSERT AgentFenceAudit          (I6 high-water)
+        │
+        ├─ 5. sideEffects seam (required; Phase 4's outbox row)
+        ├─ 6. decisionRef carried in the same insert
+        └─ 7. COMMIT
+                    │
+   database backstops, independent of every line above:
+     partial unique index (agentId, capacitySlot) WHERE releasedAt IS NULL
+     CHECK capacitySlot >= 0 · CHECK kind = 'HARD' · slot-bound trigger
+```
 
-| Step | §10.3.2 | Implementation |
+---
+
+## 7. Commitment model
+
+`model.js` is the single definition of the §2.6 shape. Verified:
+
+| Property | Result | Evidence |
 |---|---|---|
-| 1 | Read the agent row `FOR UPDATE`; read the Leg row `FOR UPDATE` | `lockRows` — **agent first, then Leg, always**. A fixed global lock order removes deadlock by construction rather than relying on the database to detect it; agent first because the agent is the resource whose exclusivity is the invariant |
-| 2 | Verify G1–G6; every guard aborts | `guards.evaluateGuards`, which evaluates all six and returns every failure |
-| 3 | Re-verify the volatile subset of feasibility | The `volatileRecheck` seam, a **required** dependency (§5.2) |
-| 4 | Allocate `fence = fence_counter + 1`; update the counter; insert the Commitment; update Leg state and version. **`authority_epoch` is not touched** | `applyCommit` — plus the I6 high-water write |
-| 5 | Insert the outbox row **in the same transaction** | The `sideEffects` seam (§5.2). Phase 4 |
-| 6 | Insert the decision-record reference | `Commitment.decisionRef`, carried in the same insert |
-| 7 | Commit | Returning from the transaction callback |
-
-**Isolation.** The plan permits `SERIALIZABLE` **or** `REPEATABLE READ` + `FOR UPDATE`
-on both rows. The implementation does **both**: `runSerializable` requests
-`isolationLevel: "Serializable"` and step 1 takes explicit `FOR UPDATE` locks, which is
-what §10.3.2 step 1 asks for in its own words ("an explicit row lock, not an optimistic
-read"). This is not belt-and-braces for its own sake: it means the guarantee survives a
-future change to the connection's default isolation.
-
-**Failure.** Any guard failure, any lost volatile predicate, and any thrown side effect
-abort the whole transaction. Nothing partial is representable, and this is asserted:
-after a failing `sideEffects` callback the commitment count, the fence counter, the Leg
-state, the Leg version, and the fence-audit table are all exactly as they were.
-
-**No internal retry.** A serialisation failure returns `SERIALIZATION_FAILURE` and
-writes nothing. A retry loop would need a bound; a bound is a behavioural constant that
-would have to be registered, owned, and calibrated (§22.1); and §10.3.2 already says
-what happens to a failed commit — it "returns the pairing to the next round with the
-cause recorded", which is the round loop's decision (Phase 10), not this module's.
-
-### 5.1 Leadership fence advance
-
-A second, unrelated transaction: `leadership.advanceFence()` — one short write to
-`ShardLeadership`. It is a control-plane operation, deliberately not part of commit, and
-it touches **no** `Agent` row (§19.5: "Advancing the shard leadership fence does not
-advance any agent's `authority_epoch`").
-
-### 5.2 The two seams, and why they are seams rather than stubs
-
-Steps 3 and 5 belong to phases that have not landed. Both are **injected dependencies**,
-not optional hooks with permissive defaults:
-
-- **`volatileRecheck`** — Phase 6 supplies the enumerated volatile subset (F7, F8, F10,
-  F13, F14, F16, F17, F18, F20, F34, F35). Its **absence is refused**: `commit()` throws
-  a configuration error rather than proceeding. A re-check that silently passes when
-  nobody registered it is exactly the "informal bypass under latency pressure" §7.1
-  names as a predicted failure mode. Anything other than `{ ok: true }` — `null`,
-  `undefined`, `{}`, `{ ok: "yes" }` — is treated as failure; all four are tested.
-- **`sideEffects`** — Phase 4's outbox writer, run *inside* this transaction, which is
-  §4.1 rule 5. An empty seam is admissible **here and only here**, because in Phase 3
-  there is no dispatcher with a row to write.
+| The §2.6 field list is carried in full | PASS | `commitmentFencing.test.js`; the live row read back carries every field |
+| Active ≡ `releasedAt IS NULL` — the same predicate the index is built on | PASS | Code read; the live partial index's predicate read back from `pg_index` is literally `("releasedAt" IS NULL)` |
+| Deterministic lowest-free-slot allocation, order-independent, reused after release | PASS | Unit tests; live: slot 0 after release is reusable (backstop B7) |
+| Soft-persistence refusal | PASS | `refuseSoftPersistence` throws; the CHECK rejects a `SOFT` row written through Prisma and through raw SQL |
+| Malformed commitments refused before the write | PASS | `validateCommitment` |
 
 ---
 
-## 6. Database changes
+## 8. Fencing model
 
-Additive only. Zero lines removed from `schema.prisma`. The only pre-existing table
-altered is `Commitment`, and the added column is `NOT NULL DEFAULT 0`, so no backfill is
-required — and the table is empty in any case, because nothing has written it since
-Phase 2 created it.
+**The normative table was checked in both directions, mechanically**: all 18 commands the
+specification names are present with the correct scope, and the implementation contains no
+command the specification does not name. An unrecognised command **throws** rather than
+being treated as unfenced.
 
-| Object | Purpose |
-|---|---|
-| `ShardLeadership` (table) | `shardId` unique, `leadershipFence` BIGINT, `holder`, `leaseExpiry`, `lastAdvancedBy/At`. Guard G1's subject |
-| `AgentFenceAudit` (table) | `agentId` unique, `fenceHighWater` BIGINT, `epochHighWater` BIGINT, `lastFenceSource`. Invariant I6's **persisted** high-water mark |
-| `Commitment.capacitySlot` (column) | INTEGER NOT NULL DEFAULT 0 — the slot an active commitment occupies on its agent |
-| `Commitment_agent_capacity_slot_active_key` | **Partial unique index** on `("agentId", "capacitySlot") WHERE "releasedAt" IS NULL` — invariant I1's backstop |
-| `Commitment_capacity_slot_non_negative` | CHECK `"capacitySlot" >= 0` |
-| `Commitment_capacity_slot_in_bounds` | BEFORE INSERT OR UPDATE trigger bounding the slot by `COALESCE("Agent"."capacityOverride", 1)` |
-| Static `ShardLeadership` row | `shardId = 'default'`, `leadershipFence = 1`, inserted `ON CONFLICT DO NOTHING` |
-
-`Commitment_kind_hard_only` (I18) landed with Phase 2 and is **not restated** — asserted
-by a test, so a future duplicate would be caught.
-
-### 6.1 Why the capacity backstop is an index plus a trigger, and why the column exists
-
-§10.3.2 requires "a partial unique index (**or equivalent**) enforcing at most
-`capacity[agent_class]` active commitments per agent". Three readings were available and
-two were rejected:
-
-| Candidate | Rejected because |
-|---|---|
-| `UNIQUE ("agentId") WHERE "releasedAt" IS NULL` | Expresses I1 only at `capacity = 1`. Phase 16e raises capacity and the plan records that Phase 16 requires **no migrations** ("schema already supports all of it"). This would need one |
-| A trigger counting active commitments | Inherits the hazard it guards. Two transactions that each count zero and both insert is *exactly* the interleaving §10.2 describes and exactly what a defective code path — one that failed to take the agent row lock — produces. A count-based backstop is only as good as the locking it is meant to backstop |
-| **A partial unique index on `(agentId, capacitySlot)`, plus a trigger bounding the slot** | Chosen. The index is immune to concurrency by construction and generalises to any capacity; the trigger bounds the number of slots without counting anything |
-
-The `capacitySlot` column is what makes the chosen reading expressible. The plan's Phase 3
-migration list names constraints and no column, so this is a **recorded assumption**
-(§19 A1) — and it follows the precedent Phase 2 set when it added `Leg.cancelRequestedAt`
-and `Commitment.releasedAt` for the same reason: "adding them now is what makes Phase 3's
-stated migration possible as stated."
-
-The trigger reads `COALESCE("Agent"."capacityOverride", 1)`: the durable per-agent record
-Phase 2 established, falling back to `capacity`'s registered structural default. The
-decision path still resolves capacity through the Config Service (§22.2); this is a
-second, independent line of defence, which is the point.
-
-### 6.2 Why `AgentFenceAudit` is a separate table
-
-I6 is verified by "a windowed monotonicity audit against a **persisted high-water
-mark**". A high-water mark read back off the `Agent` row cannot detect the one defect it
-exists to detect — a counter that went backwards — because it *is* that counter. Two
-rows that disagree are evidence; one row that agrees with itself is not. The commit
-transaction writes both atomically, so a disagreement is genuine rather than a
-write-ordering artefact.
-
----
-
-## 7. Concurrency guarantees
-
-| # | Guarantee | Mechanism | Evidence |
+| Scope | Commands | Rejection rule | Verified |
 |---|---|---|---|
-| 1 | Two coordinators cannot both commit the same agent | SERIALIZABLE **and** `FOR UPDATE` on agent and Leg, in a fixed global order | Storm test: 8 concurrent attempts → exactly one winner, 7 abort on G2, one fence allocated |
-| 2 | A coordinator whose leadership lapsed mid-transaction cannot commit | **G1**, re-read inside the transaction | Chaos test: pause, leadership change, resume → `G1_LEADERSHIP_FENCE_ADVANCED`, nothing written. Model check: dropping G1 produces a counterexample |
-| 3 | A paused worker cannot commit against a stale agent | **G3** on the agent-scope epoch | Chaos test: pause, quarantine, resume → `G3_AUTHORITY_EPOCH_CHANGED` |
-| 4 | Several commits to one agent in one round do not invalidate each other | `authority_epoch` untouched by commit; G3 guards the agent scope, never a per-commitment counter | Guard test asserts the counterfactual explicitly; storm at capacity 2 → two winners, two slots, two fences, epoch unmoved |
-| 5 | An agent never applies a superseded command, in either scope | Per-commitment comparison; `fence_floor` | 72 fencing tests; model check at capacity 1, 2, 3 |
-| 6 | A retried commit never double-commits | `commitment_id = f(leg, agent, round)`, uniquely indexed | Retry returns `ALREADY_COMMITTED`, allocates no second fence |
-| 7 | A defective code path cannot exceed capacity | Partial unique index + slot trigger, evaluated against globally committed state | Direct writes bypassing every guard are rejected; a deliberately defective slot allocator is caught and reported |
-| 8 | Cache loss cannot lose, duplicate, or double-grant a commitment (I16) | The commit path takes **no** cache dependency | Asserted structurally: no module under `commitment/` imports `cache/kv` or `ioredis` |
-| 9 | Safety does not depend on synchronised clocks | Deadlines from the store's clock; the two fences and G1 carry safety; clocks affect liveness only | Clock tests; `shouldStopCommitting` shown to fire *before* the lease expires, and the chaos tests show that ignoring it still ends in an abort |
+| Commitment (mission) | `OFFER`, `WITHDRAW`, `REROUTE`, `RESEQUENCE`, `RECALL`, `RESUME`, `TRANSFER_CUSTODY`, `ABORT_MISSION` | reject if `fence ≤ highest_seen[commitment_id]` **or** `fence ≤ fence_floor` | PASS |
+| Agent | `STAND_DOWN_ALL`, `QUARANTINE`, `RELEASE_QUARANTINE`, `ESTOP_CLEAR`, `SHARD_MIGRATE`, `SESSION_REKEY`, `PARAMETER_PUSH` | reject if `authority_epoch < highest_seen_authority` | PASS |
+| Query | `STATUS_REQUEST`, `PROBE`, `MANIFEST_QUERY` | never fenced | PASS |
+
+The `≤` / `<` asymmetry between the two rules is the specification's own and is asserted as
+such. The comparison is **per commitment id**: `acceptsMissionCommand` takes a map keyed by
+commitment id and will not accept a scalar maximum at all, so the defect §10.3.1 names
+cannot be reintroduced by passing the wrong argument.
+
+`fence_floor`: `applyAgentCommand` returns an empty per-commitment table, so one
+`STAND_DOWN_ALL` fences every commitment the agent holds without enumerating them. Driven
+with three commitments in the unit suite and exercised by both model checkers.
+
+**Multi-fence scenarios exercised:** multiple commitments; multiple fences; an agent-level
+command; a commitment-level command; a stale command; a fresh command; equal, lower and
+higher fences — `commitmentFencing.test.js` covers each, and the model checkers explore
+every interleaving of them.
 
 ---
 
-## 8. State-transition rules
+## 9. G1–G6
 
-Phase 3 performs exactly one Leg transition — the one commit authorises — and it is a
-conditional write on the Leg's own version (§4.1 rule 2):
+Each guard is a separate pure function with its own abort reason; `evaluateGuards` runs all
+six without short-circuiting, so a test that violates one can assert the other five passed.
+That is exactly what the unit suite does for all six.
 
-```
-UPDATE "Leg" SET state = <target>, version = version + 1
- WHERE id = <legId> AND version = <snapshot version>
-```
-
-Guard G4 already checked the version under the row lock; the `WHERE` clause is the
-second line, and a match count other than 1 throws rather than proceeding. This is the
-structural answer to the baseline's silent cancellation reversion, in which finalisation
-overwrote `CANCELLED` back to `ASSIGNED` without reading the current status.
-
-Every other state machine — the Task machine, the full Leg machine, cancellation,
-reassignment, settlement — is **Phase 5** and is not implemented here. `commit()` takes
-its target state as an input and validates it only against G6's declared expectation; it
-does not know the §4.4 transition table, and inventing one would be Phase 5 work.
-
-**What is validated at every commit:**
-
-- the expected Leg state, declared by the decision, against the actual (G6);
-- the Leg version, against the snapshot (G4);
-- cancellation, purpose-conditioned (G5), using `domain/purpose.isCustodial()` as the
-  single definition of `custodial_purposes`;
-- the agent's `authority_epoch` (G3) and the shard's leadership fence (G1);
-- capacity (G2), plus the volatile feasibility subset (step 3).
-
----
-
-## 9. Rollback strategy
-
-**Within a commit.** There is nothing to roll back by hand: the transaction is the unit.
-A guard failure, a lost volatile predicate, or a thrown side effect discards every write.
-This is asserted, not assumed — the side-effect failure test checks the commitment table,
-the fence counter, the Leg state, the Leg version, and the fence-audit table individually.
-
-**Of the migration.** Forward-only, matching this repository's convention (no prior
-migration carries a `down`). The rollback path is the additive-only property: an
-unapplied Phase 3 leaves a `Commitment` table that nothing writes, exactly as Phase 2 left
-it. The one statement with any persistence beyond DDL — the static `ShardLeadership` row
-— is `ON CONFLICT DO NOTHING`, so re-applying cannot reset a fence that has since
-advanced.
-
-**Of the phase.** No runtime behaviour changed. `ENGINE_ENABLED` is false, no route, no
-socket event, and no worker was added, and the only live-path file touched is `kv.js`,
-whose default behaviour is unchanged. Reverting Phase 3 removes capability; it restores
-nothing, because nothing was taken away.
-
----
-
-## 10. API, Redis, and Socket.IO changes
-
-### 10.1 REST API
-
-**None.** The plan specifies "None", and none was made. No route file was touched.
-
-### 10.2 Redis
-
-The plan's row: *"`robotReserve:{agentId}` **retained but advisory** (§10.4) — loss
-degrades throughput only; the fail-closed throw is removed *after* the durable guard set
-is proven, not before."*
-
-**No key was added, removed, or renamed.** The change is to `reserveRobot`'s contract:
-
-```js
-kv.reserveRobot(key, value, ttl)                      // legacy — unchanged, fail-closed
-kv.reserveRobot(key, value, ttl, { advisory: true })  // §10.4 — grants on cache loss
-```
-
-### 10.3 Why the fail-closed throw is still there
-
-The plan conditions its removal twice, and the condition is not met:
-
-> remove the fail-closed *throw* only after the durable path is **live** — see Risk
-> Demote `kv.reserveRobot` to advisory (§10.4) — **only after** the durable path passes
-> its gate
-
-`ENGINE_ENABLED` is false and `task.service.js` is still the only writer of assignments.
-For that caller this lock remains the *sole* exclusivity mechanism. Removing the throw
-today would delete the only protection the live path has, months before the Phase 15
-cutover replaces it — trading a real, present safety property for a cosmetic match to a
-checklist line the plan itself qualifies. The default flips at Phase 15, when the legacy
-path is removed from the build rather than merely bypassed.
-
-The demotion that Phase 3 *can* make is made, and it is the substantive one: **the commit
-path takes no cache dependency at all**, asserted structurally rather than by review.
-
-### 10.4 Socket.IO
-
-**None.** The plan specifies "None (dispatch is Phase 4)". `src/sockets/` is byte-for-byte
-unchanged.
-
-### 10.5 Background workers
-
-**None.** The plan specifies "None".
-
----
-
-## 11. Compatibility guarantees
-
-| Surface | Guarantee | Evidence |
-|---|---|---|
-| **Data** | No legacy row read or written differently. The one added column is `NOT NULL DEFAULT 0` on a table that has never held a row | §6, `commitmentSchema.test.js` |
-| **Schema** | Zero lines removed from `schema.prisma`; no `DROP`, `RENAME`, or `ALTER COLUMN` anywhere in the migration | `git diff | grep -c '^-[^-]'` = 0; four dedicated tests |
-| **API** | No route, response shape, or status code changed | §10.1 |
-| **Redis** | No key added, read, written, or retired; the legacy call signature and behaviour are unchanged | §10.2 |
-| **Socket.IO** | No event added, changed, or removed | §10.4 |
-| **Legacy tests** | 22 suites / 169 tests, identical to the Phase 0, 1 and 2 baselines; not one file touched | `git diff --stat -- tests/unit tests/integration` is empty |
-| **Legacy behaviour** | `task.service.js` changed by comment only — verified by filtering the diff to non-comment lines, which is empty | §4 |
-| **Determinism** | The commitment id derives from three facts with no clock and no randomness; slot allocation is order-independent; no module in `commitment/` reads a wall clock outside `clock.readStoreTime`, which reads the *store's* | `commitmentFencing.test.js`; `gate:tenets` PASS |
-| **Parameter register** | No behavioural constant introduced. All five Phase 3 parameters were already registered by Phase 1 and resolve through the real Config Service | `gate:params` PASS (31 modules / 148 parameters); 8 register-integration tests |
-
----
-
-## 12. Tests added
-
-**200 new tests across 5 suites.** Every plan-named requirement and where it is met:
-
-| Plan requirement | Where | Result |
-|---|---|---|
-| **Model checking at capacity 1, 2 and 3** under worker pause, leader change, partition, duplicate delivery, reordering | `commitmentModelCheck.test.js` | Exhaustive, 0 violations at all three |
-| **≤ capacity HARD commitments** under all interleavings | Model check property `S1`; storm test | Held |
-| **Commanding/reassigning/settling one commitment leaves another commandable (I19)** | Model check property `S3` + the `crossCommitmentInvalidation` counter; capacity-2 storm | Held |
-| **No commit under a superseded leadership fence, including a transaction spanning the change (G1)** | Model check counter; chaos test | Held |
-| **Each guard G1–G6 aborts on its own violation and only its own** | `commitmentGuards.test.js` — every case asserts the failing id **and** that the other five passed | 31 tests |
-| **Concurrent commit storm against one agent yields exactly one winner** | `commitmentTransaction.test.js` | 8 attempts → 1 winner, 7 × G2, 1 fence |
-| **Chaos: worker paused mid-finalisation beyond lease duration, resumed → abort** | `commitmentTransaction.test.js`, two variants (G1 and G3) | Abort, nothing written |
-| **Schema constraints reject violations independently of application logic** | `commitmentTransaction.test.js` — writes that bypass every guard | Index, trigger, and CHECK each rejected |
-
-### 12.1 Two things the tests do that a weaker suite would not
-
-**The mutation suite.** A model check that has never rejected anything is evidence about
-nothing. Five mutations are injected and four are caught by the model check:
-
-| Mutation | Caught | Property |
-|---|---|---|
-| Drop G1 | ✅ | `commitUnderSupersededLeadership` |
-| Drop G2 | ✅ | `overCapacity` |
-| Drop G3 | ✅ | `commitAfterAuthorityChange` |
-| Drop G4 | ✅ | `commitOnStaleLegVersion` |
-| Drop G6 | ❌ — and the test says so | Every transition that moves a Leg's state also moves its version, which is §4.1 rule 2 holding, so G4 subsumes G6 *in this model*. G6's independence is established in the unit suite instead, and the model-check file asserts both facts rather than leaving the gap silent |
-| Per-agent fence maximum (§10.3.1's named defect) | ✅ at capacity 2 and 3, ❌ at capacity 1 | Exactly §24.2's stated reason for requiring capacity ≥ 2 |
-
-**The counterfactuals are asserted, not argued.** Where the specification explains why a
-design is wrong, the test executes the wrong design and shows it failing:
-
-- a G3 written against `fence_counter` rejects the second commit of the same round;
-- an unqualified cancellation guard refuses exactly the `RECOVERY` and `TRANSFER` Legs
-  that cancellation itself mandates;
-- a per-agent fence maximum rejects a command for C1 that the per-commitment rule accepts.
-
----
-
-## 13. Checklist completion — `IMPLEMENTATION_EXECUTION_PLAN.md` §7, Phase 3
-
-| # | Item | Status | Evidence |
-|---|---|---|---|
-| 1 | `commitment/fencing.js` — `authority_epoch` and per-commitment `fence` from `fence_counter` | ✅ | `fencing.js`; `allocateFence` strictly advances, refuses a negative counter |
-| 2 | The normative command-class → fence-scope table (§10.3.1) | ✅ | All 18 commands, checked against the spec's table **in both directions**; an unknown command throws rather than being treated as unfenced |
-| 3 | `fence_floor` semantics — agent-scope command invalidates all commitment authorities | ✅ | `applyAgentCommand` discards the per-commitment table; test drives three commitments fenced by one `STAND_DOWN_ALL` |
-| 4 | `commit.js` at SERIALIZABLE (or RR + `FOR UPDATE` on agent **and** Leg) | ✅ | **Both**: `runSerializable` + `selectForUpdate` on each, agent first |
-| 5 | Guard **G1** — leadership fence re-read inside the transaction | ✅ | `g1LeadershipFence`; `readLeadership` uses `FOR SHARE` inside the tx |
-| 6 | Guard **G2** — active HARD count < `capacity[agent_class]` | ✅ | `g2Capacity`; refuses a non-positive-integer capacity rather than defaulting |
-| 7 | Guard **G3** — `authority_epoch` equals snapshot (agent scope, not per-commitment) | ✅ | `g3AuthorityEpoch`; the per-commitment counterfactual asserted |
-| 8 | Guard **G4** — Leg `version` equals snapshot | ✅ | `g4LegVersion` |
-| 9 | Guard **G5** — `cancel_requested_at IS NULL OR purpose ∈ custodial_purposes` | ✅ | `g5Cancellation`, reading `domain/purpose.isCustodial()` |
-| 10 | Guard **G6** — Leg state is the expected one | ✅ | `g6LegState`; an undeclared expectation is itself a failure |
-| 11 | Volatile-subset re-check hook (populated in Phase 6) | ✅ | A **required** dependency; absence throws |
-| 12 | Migration: partial unique index enforcing ≤ capacity (I1) | ✅ | `Commitment_agent_capacity_slot_active_key`, plus the slot-bound trigger |
-| 13 | Migration: CHECK admitting HARD only (I18) | ✅ | Present since Phase 2; asserted, not restated |
-| 14 | Migration: `ShardLeadership` static row + fence; `AgentFenceAudit` | ✅ | Both tables; row seeded `ON CONFLICT DO NOTHING` at fence 1 |
-| 15 | `leases.js` (grant at commit), `idempotency.js` (two disjoint namespaces), `clock.js` | ✅ | Disjointness proven by construction and by test |
-| 16 | Demote `kv.reserveRobot` to advisory — **only after** the durable path passes its gate | ⚠️ **Conditioned, per the plan's own wording** | Advisory mode implemented and tested; the fail-closed throw retained for legacy callers because the durable path is not live. §10.3 |
-| 17 | `formal/commitment.tla` — check at capacity 1, 2 and 3 | ⚠️ **Written; TLC not executed** | 408-line module with all three configurations. The equivalent checker §24.2 permits **was** executed at all three. §20 |
-| 18 | Tests: each guard aborts on its own violation only; storm yields exactly one winner | ✅ | 31 + 38 tests |
-| 19 | Chaos: worker paused beyond lease duration, resumed → abort | ✅ | Two variants |
-| 20 | **Gate:** model check clean at capacity ≥ 2; I1, I5, I6, I18, I19 verifiable; schema constraints reject violations independently of application code | ✅ | §14 |
-
-**18 of 20 fully complete. Two are qualified, both deliberately and both disclosed:**
-item 16 is conditioned by the plan itself and the condition is unmet; item 17's artefact
-exists and its property set is checked by the executable equivalent §24.2 permits, but
-TLC did not run here.
-
----
-
-## 14. Completion criteria — §3 "PHASE 3"
-
-| Criterion | Result |
-|---|---|
-| Commit runs at SERIALIZABLE (or REPEATABLE READ + `FOR UPDATE` on both agent and Leg) | ✅ **Both**, not either |
-| All six guards implemented and individually tested | ✅ 31 tests; each case asserts the failing guard **and** the five that passed |
-| Schema constraints reject violations independently of application logic | ✅ Direct writes bypassing every guard are rejected by the index, the trigger, and the CHECK; a deliberately defective slot allocator is caught by the database and reported as `CAPACITY_CONSTRAINT_VIOLATED` |
-| Two-scope fence allocation correct and monotonic | ✅ `allocateFence` strictly advances; `DistinctFences` holds in every reachable state at all three capacities; `AgentFenceAudit` persists the high-water mark |
-| TLA+ (or equivalent) model checked clean at `capacity ≥ 2` | ✅ **Equivalent executed** — exhaustive and clean at 1, 2 and 3, with a mutation suite proving it can fail. TLA+ module written but not TLC-executed (§20) |
-| I1, I5, I6, I18, I19 verifiable | ✅ §14.1 |
-
-### 14.1 Invariants, and how each is verified
-
-| Invariant | Enforced by | Verified here by |
-|---|---|---|
-| **I1** ≤ `capacity[class]` active HARD commitments | G2 + partial unique index + slot trigger | Model check `S1` and `DistinctSlots` at capacity 1/2/3; storm test; direct-write rejection |
-| **I5** no superseded fence applied, either scope | Per-commitment comparison; `fence_floor` | 72 fencing tests; model-check counters `standDownNotHonoured`, `doubleApplication` |
-| **I6** both counters strictly monotone | Transactional increment under the agent row lock; `AgentFenceAudit` | `isStrictAdvance`; `DistinctFences` in every reachable state; the audit row written in the commit transaction |
-| **I18** no SOFT reservation persisted | Phase 2's CHECK + `model.refuseSoftPersistence` | Direct write of `kind = 'SOFT'` rejected; the refusal names the rule |
-| **I19** no cross-commitment invalidation | `authority_epoch` untouched; per-commitment fences | Model check at capacity 2 and 3, where the defective comparison **is** detected and at capacity 1 is not; capacity-2 storm |
-| **I16** cache loss harmless | The commit path has no cache dependency | Structural assertion over every module in `commitment/` |
-| **I2** every commitment has a valid lease | Lease granted at commit from the store's clock | A zero or absent duration is refused; expiry is `store_now + lease.duration` |
-
----
-
-## 15. Verification evidence
-
-### 15.1 `npm run verify`
-
-```
-> gate:tiers
-gate: tier-dependencies (§1.8 rule 2)
-  PASS — 97 module(s), 44 governed import edge(s), no Tier 0/1 → Tier 2 dependency.
-
-> gate:params
-gate: parameter-register (§22, Appendix A)
-  PASS — 31 engine module(s) checked against 148 registered parameter(s); no bare behavioural constants.
-
-> gate:tenets
-gate: tenets (T1 type separation, T6 decision-path determinism)
-  PASS — 94 module(s) checked, no violations.
-
-> test
-Test Suites: 47 passed, 47 total
-Tests:       871 passed, 871 total
-```
-
-| Lane | Suites | Tests | Δ vs Phase 2 |
-|---|---|---|---|
-| `legacy` | 22 | 169 | **unchanged** |
-| `gates` | 3 | 49 | unchanged |
-| `engine` | 22 | 653 | +5 suites, +203 tests |
-| **Total** | **47** | **871** | +5 / +203 |
-
-### 15.2 The model check, run
-
-| Capacity | States | Transitions | Exhaustive | Violations |
+| # | Guard | Owns exactly | Unit | Live DB |
 |---|---|---|---|---|
-| 1 | 6 443 | 17 604 | ✅ | 0 |
-| 2 | 42 123 | 102 704 | ✅ | 0 |
-| 3 | 135 001 | 313 799 | ✅ | 0 |
+| G1 | `shard.leadership_fence` equals the pinned value — **equality**, not `≥` | Leadership superseded, or absent, or the round pinned nothing | PASS | PASS |
+| G2 | active HARD count `< capacity[agent_class]` | Over-commitment; refuses a non-positive-integer capacity rather than defaulting | PASS | PASS |
+| G3 | agent `authority_epoch` equals the snapshot — **agent scope** | Quarantine, e-stop, migration, stand-down since the snapshot | PASS | PASS |
+| G4 | Leg `version` equals the snapshot | Concurrent Leg modification | PASS | PASS |
+| G5 | `cancel_requested_at IS NULL` **OR** `purpose ∈ custodial_purposes` | Cancelled work, while admitting the recovery Legs cancellation mandates | PASS | PASS — a cancelled `PRIMARY` Leg is refused and a cancelled `RECOVERY` Leg commits |
+| G6 | Leg state is the expected one; an undeclared expectation is itself a failure | Committing from an unexpected state | PASS | PASS |
 
-The gate is **"exhaustive and clean"**, never "clean": a bounded search that hit its
-bound is not a proof, and the test asserts `exhaustive === true` separately from
-asserting zero violations.
+Two counterfactuals are executed rather than argued: a G3 written against `fence_counter`
+rejects the second commit of the same round, and an unqualified G5 refuses exactly the
+`RECOVERY` and `TRANSFER` Legs that §4.6 mandates.
 
-### 15.3 The gates caught real violations during implementation
+---
 
-Two, recorded because a gate that has never fired during a phase is a gate nobody has
-evidence about:
+## 10. Transaction semantics
 
-1. `gate:params` fired on bare numerics in `clock.js` and `idempotency.js` — the
-   nanoseconds-per-millisecond and milliseconds-per-second conversions, and the digest
-   length. Each was annotated `@structural` with its reason (a unit conversion is not a
-   threshold) and the gate passed.
-2. A **NUL byte** silently replaced the space in `idempotency.js`'s
-   `FIELD_SEPARATOR = " "` during file creation, which made the ambiguity check inert:
-   `"leg 1"` passed a check that exists to reject it. It was caught by the test that
-   asserts the check rejects a component containing the separator, not by inspection.
-   Recorded because it is the exact class of defect that "the test looks obviously
-   right" reasoning misses.
+| §10.3.2 step | Implementation | Live evidence |
+|---|---|---|
+| 1 — agent `FOR UPDATE`, Leg `FOR UPDATE` | `lockRows`, **agent first, always** | Lock order instrumented on the real client: `Agent,Leg`. A second `FOR UPDATE` on the same row waited for the first transaction to commit (measured) |
+| 2 — the guard set, every guard aborting | `evaluateGuards` | All six exercised against real rows |
+| 3 — volatile-subset re-check | required injected dependency; absence throws | Unit |
+| 4 — allocate fence, advance counter, insert commitment, update Leg | `applyCommit` | Counter 0 → 1, commitment carries fence 1, `authority_epoch` unmoved, Leg `PLANNED`/0 → `OFFERED`/1 |
+| 5 — outbox row in the same transaction | `sideEffects` seam, required | Unit; Phase 4 owns the writer |
+| 6 — decision-record reference | `Commitment.decisionRef` | Row read back |
+| 7 — commit | return from the callback | — |
 
-### 15.4 Architectural compliance, item by item
+**Isolation.** Both legs of the specification's disjunction, and this is now measured rather
+than assumed: inside `runSerializable`, `SHOW transaction_isolation` returns
+`serializable`. The ergonomic path (`$transaction` with no options) returns
+`read committed` — which confirms the premise B9 rests on, that the default path does not
+satisfy §10.3.2.
 
-| Requirement | Evidence |
+**Rollback.** Any guard failure, any lost volatile predicate, any thrown side effect
+discards every write. Asserted individually on the live database after each of nine aborted
+attempts: no commitment row, no fence advance, no Leg transition, no audit row.
+
+**No internal retry.** A serialisation failure returns `SERIALIZATION_FAILURE` and writes
+nothing; the round loop owns the retry decision (§10.3.2's own disposition).
+
+---
+
+## 11. Database schema
+
+Read back from the live catalogue, not from the migration file:
+
+| Object | Definition as it exists in PostgreSQL 18.3 |
 |---|---|
-| §10.3.1 — two scopes, compared differently | The command table asserted in both directions; mission rejection at `≤`, agent rejection at `<`, matching the spec's own asymmetry |
-| §10.3.1 — fences compared **per commitment id** | §10.3.1's worked example (C1 at 5, C2 at 6) is a passing test; the per-agent-maximum comparison is a model-check counterexample |
-| §10.3.1 — one `STAND_DOWN_ALL` fences everything without enumerating | `applyAgentCommand` returns an empty authority table; three commitments fenced by one command |
-| §10.3.2 step 1 — explicit row locks, not optimistic reads | `selectForUpdate` on both, agent first; lock order asserted |
-| §10.3.2 step 4 — `authority_epoch` **not** touched | Asserted after every nominal commit and in the capacity-2 storm |
-| §10.3.2 — schema constraints as an independent line of defence | Backstops driven by writes that bypass the entire commit path |
-| §10.4 — cache unavailability MUST NOT halt commitment | Advisory mode grants on cache loss; the commit path imports no cache module |
-| §10.5 — commit idempotent on a derived `commitment_id` | Retry returns `ALREADY_COMMITTED`, allocates no second fence |
-| §10.5 — the two namespaces are disjoint | Proven by construction (namespace prefix + a separator no component may contain) and by test |
-| §10.6 — the store's clock is the sole authority | `readStoreTime` refuses a non-transaction client; `deadlineFrom` refuses a raw epoch number |
-| §10.6 — a skewed node removes itself from leadership eligibility | `assessLeadershipEligibility` |
-| §12.2 — leases are per commitment, renewed on commitment-scoped evidence | Evidence naming another commitment, or carrying a different fence, is insufficient |
-| §19.5 — leadership fence advance touches no `Agent` row | `advanceFence` writes only `ShardLeadership` |
-| §19.5 — stop committing *before* the lease expires; G1 closes the window | `shouldStopCommitting` fires while the lease is still valid; the chaos tests show G1 catching a coordinator that ignored it |
-| §2.6 — only HARD commitments are durable | CHECK + `refuseSoftPersistence` |
-| §4.1 rule 2 — every transition is a conditional write on the version | The `updateMany` `WHERE version = …`, with a match count other than 1 throwing |
-| §4.1 rule 5 — no side effect precedes its authorising write | The `sideEffects` seam runs inside the transaction; a failing side effect rolls the commit back |
-| §1.8 rule 2 — no Tier 0/1 → Tier 2 dependency | `gate:tiers` PASS over 44 governed edges |
+| `Commitment.capacitySlot` | `integer NOT NULL DEFAULT 0` |
+| `Commitment_agent_capacity_slot_active_key` | `CREATE UNIQUE INDEX … ON "Commitment" ("agentId","capacitySlot") WHERE ("releasedAt" IS NULL)` — `indisunique = t`, `indpred = ("releasedAt" IS NULL)` |
+| `Commitment_capacity_slot_non_negative` | `CHECK (("capacitySlot" >= 0))` |
+| `Commitment_kind_hard_only` | `CHECK ((kind = 'HARD'::text))` — Phase 2's, correctly not restated by Phase 3 |
+| `Commitment_capacity_slot_in_bounds` | `BEFORE INSERT OR UPDATE … FOR EACH ROW EXECUTE FUNCTION commitment_capacity_slot_in_bounds()` |
+| `commitment_capacity_slot_in_bounds()` | `plpgsql`, volatile — **compiled by the server**, which no static check establishes |
+| `ShardLeadership` | 10 columns; `leadershipFence BIGINT NOT NULL DEFAULT 0`; unique on `shardId`; index on `leaseExpiry` |
+| `AgentFenceAudit` | 7 columns; both high-water marks `BIGINT`; unique on `agentId`; index on `observedAt` |
+| Seed row | `shard-leadership-default` / `default` / fence `1` / `lastAdvancedBy = migration:20260729120000_commitment_core` |
+| FKs | `Commitment_agentId_fkey` and `Commitment_legId_fkey`, both `ON DELETE RESTRICT` |
+
+**The seed is idempotent in fact, not by inspection**: re-executing the migration's
+`INSERT … ON CONFLICT ("shardId") DO NOTHING` reported `INSERT 0 0` and left the row count
+at 1 and the fence at 1.
+
+**The trigger reads correctly.** `SELECT COALESCE("capacityOverride", 1) INTO
+"effective_capacity" FROM "Agent" WHERE "id" = NEW."agentId"`, with a NULL result meaning
+"no such agent". That branch is **reachable and correct**: an insert naming a non-existent
+agent raised `P0001 Commitment … names agent … which does not exist` — the trigger fires
+before the foreign key does. It does not count rows, which is what keeps it immune to the
+interleaving the index closes.
 
 ---
 
-## 16. Redis changes
+## 12. Migration
 
-Covered in §10.2. Summarised: **no key added, removed, or renamed**; `robotReserve:*`
-retained; its contract gains an opt-in advisory mode; the commit path depends on neither.
+| Run | Migrations | Result |
+|---|---|---|
+| Phases 1 → 3 | 10, in directory order, `psql -v ON_ERROR_STOP=1` | **All applied.** `20260729120000_commitment_core` applied cleanly |
+| Full chain | 21 | **All applied** |
 
----
+Both against a disposable PostgreSQL 18.3 cluster built from the installed binaries on port
+55432. Neither the shared Neon instance nor the developer's own cluster on 5432 was
+touched.
 
-## 17. Socket.IO changes
-
-**None.** Covered in §10.4.
-
----
-
-## 18. Known assumptions
-
-Each is an implementation choice not dictated by the plan, stated so it can be overruled.
-
-1. **`Commitment.capacitySlot` is added, although the plan's Phase 3 migration list names
-   only constraints.** It is what makes "a partial unique index enforcing ≤
-   `capacity[agent_class]`" expressible for capacity > 1 without a Phase 16 migration.
-   The alternatives and why they were rejected are in §6.1. **This is the most
-   consequential reading in the phase.**
-2. **The fail-closed throw in `reserveRobot` is retained for legacy callers**, with
-   advisory semantics offered as an opt-in. The plan conditions removal on the durable
-   path being live; it is not. §10.3.
-3. **The commit runs at SERIALIZABLE *and* takes `FOR UPDATE` row locks**, rather than
-   choosing one leg of §10.3.2's disjunction.
-4. **No internal retry on serialisation failure.** §5.
-5. **`volatileRecheck` is a required dependency whose absence throws**, rather than an
-   optional hook defaulting to pass. §5.2.
-6. **Step 6's "decision-record reference" is the `Commitment.decisionRef` column**, not a
-   `DecisionRecordA` row. That table's writer is Phase 11; fabricating a record here
-   would be Phase 11 work done badly.
-7. **The static shard row's fence starts at 1, not 0**, so "the fence has not moved" is
-   distinguishable from "there is no leadership record".
-8. **`AgentFenceAudit` is written by the commit transaction** and read by Phase 12's
-   Invariant Checker. The plan assigns the table to Phase 3 and the audit to Phase 12;
-   populating it is what makes the audit possible.
-9. **`leases.isRenewalEvidenceSufficient` is stated in Phase 3** although renewal is
-   Phase 5's, because the rule constrains the lease's shape and would otherwise be
-   discovered late. No renewal path calls it yet.
-10. **`task.service.js` is modified by comment only.** The plan lists it among files to
-    modify, but its parenthetical — "legacy path left intact but no longer the only
-    writer" — describes a change in role, not in behaviour.
-11. **Phase 2's schema drift-check was generalised rather than re-baselined.** §4.1.
-12. **`readLeadership` uses `FOR SHARE`, not `FOR UPDATE`.** G1 needs the fence stable
-    for the transaction's remainder; `FOR UPDATE` would additionally serialise every
-    commit in the shard against every other, which is a throughput cost with no
-    correctness gain.
-13. **The store model in the tests implements `REPEATABLE READ` + `FOR UPDATE`, not true
-    `SERIALIZABLE`.** It has no predicate locking. It therefore models the weaker leg of
-    §10.3.2's disjunction — which is the honest direction for a model to err in, since
-    the production path requests both.
+Forward-only, matching the repository's convention: no migration in this programme carries a
+`down`, so **rollback was not executed** and is not claimed.
 
 ---
 
-## 19. Remaining TODOs
+## 13. PostgreSQL verification
 
-### 19.1 Carried out of Phase 3
+**Environment.** PostgreSQL 18.3 (x86_64-windows), fresh cluster, `initdb … -A trust`, port
+55432, two databases: `robotx_phase3` (Phases 1→3 only) and `robotx_full` (all 21).
 
-| # | Item | Owner | Due |
+### 13.1 The harness result
+
+`tools/verify/phase3LiveDatabase.js` — **82 checks, 82 passed, 0 failed**, run twice:
+
+- against `robotx_full` — 82/82;
+- against `robotx_phase3` — 82/82. This second run establishes something the first cannot:
+  **Phase 3's own migration is sufficient for the commitment core.** No later phase's DDL is
+  required for any part of §10.
+
+### 13.2 Database backstops, driven without the application (§11 of the brief)
+
+17 writes issued as raw SQL with no guards, no locks and no fence allocation:
+
+| # | Attempt | Expected | Actual | SQLSTATE |
+|---|---|---|---|---|
+| B1 | first active commitment, slot 0 | accepted | accepted | — |
+| B2 | second active commitment, same (agent, slot) | rejected | rejected | `23505` `Commitment_agent_capacity_slot_active_key` |
+| B3 | slot 1 on a capacity-1 agent | rejected | rejected | `P0001` trigger |
+| B4 | negative slot | rejected | rejected | `23514` |
+| B5 | `kind = 'SOFT'` (I18) | rejected | rejected | `23514` `Commitment_kind_hard_only` |
+| B6 | duplicate `commitmentId` | rejected | rejected | `23505` |
+| B7 | slot 0 reused after release | accepted | accepted | — |
+| B8 | un-releasing into an occupied slot | rejected | rejected | `23505` |
+| B9 | capacity-2 agent, slot 0 | accepted | accepted | — |
+| B10 | capacity-2 agent, slot 1 | accepted | accepted | — |
+| B11 | capacity-2 agent, slot 2 | rejected | rejected | `P0001` |
+| B12 | capacity lowered to 1, then an UPDATE touching the slot-1 row | rejected | rejected | `P0001` |
+| B13 | commitment naming a non-existent agent | rejected | rejected | `P0001` |
+| B14 | deleting an agent that holds a commitment | rejected | rejected | `23001` RESTRICT |
+| B15 | second `ShardLeadership` row for one shard | rejected | rejected | `23505` |
+| B16 | first `AgentFenceAudit` row | accepted | accepted | — |
+| B17 | duplicate `AgentFenceAudit` row for one agent | rejected | rejected | `23505` |
+
+B7, B8 and B12 are the three that a static reading of the DDL cannot settle, and all three
+behave as the design requires.
+
+### 13.3 Blocking decision B9 — discharged, question by question
+
+| # | Question | Answer | Evidence |
 |---|---|---|---|
-| 1 | **Apply Phases 1–3 to a production-shaped PostgreSQL dump.** Phase 3 is the first migration containing a partial index, a trigger function, and a seeded row rather than only `CREATE TABLE` | Verifier / SRE | **Before Phase 4** |
-| 2 | **Discharge blocking decision B9 by execution**: confirm Prisma's `isolationLevel: "Serializable"` and `SELECT … FOR UPDATE` behave as expected on the target PostgreSQL, and that the partial unique index is chosen by the planner | Eng / SRE | Before Phase 4 |
-| 3 | **Run `formal/commitment.tla` under TLC** at all three capacity configurations | Verifier | Before Phase 15's gate |
-| 4 | Wire the volatile-subset re-check to the real predicate set | Phase 6 | Phase 6 |
-| 5 | Wire the outbox row into the `sideEffects` seam | Phase 4 | Phase 4 |
-| 6 | Replace the static `ShardLeadership` row's management with real election (**G1 unchanged**) | Phase 13 | Phase 13 |
-| 7 | Consume `AgentFenceAudit` in the independent Invariant Checker | Phase 12 | Phase 12 |
-| 8 | Flip `reserveRobot`'s default to advisory and delete the throw | Phase 15 | Phase 15 |
-
-### 19.2 Carried forward, still open
-
-| # | Item | Owner | Origin |
-|---|---|---|---|
-| 1 | Resolve the combined-conservatism V9 finding — the seeded register still does not publish | Safety | Phase 1 §7.1 |
-| 2 | Resolve the §1.8 / §22.5 kill-switch discrepancy | Tech lead | Phase 0 §7.1 |
-| 3 | Name the calibration owner; set the fleet-year energy budgets (B8) | Ops / Finance / Safety | Phase 1 |
-| 4 | Supply the 15 unset `required` register values | Ops, Finance, Account management | Phase 1 |
-| 5 | `fixedPoint.toMilliCU()` half-boundary rounding | Implementation | Phase 1 verification |
-| 6 | `POST /api/config/publish` 500 on malformed input | Implementation | Phase 1 verification |
-| 7 | Report line-count accuracy | Documentation | Phase 2 verification |
-
-**Items 5 and 6 were deliberately not fixed**, per the instruction to carry forward only
-Phase 2 follow-up work that belongs to Phase 3. Neither is called by any Phase 3 code
-path. `lease.duration` is `PROVISIONAL` and is a Safety-class parameter; that is item 3's
-territory and a Phase 15 launch gate, not a Phase 3 defect.
-
-### 19.3 Explicitly out of scope for Phase 3
-
-REST changes · Socket.IO changes · background workers · the outbox · offer semantics ·
-agent-side dedup · timers · the reconciler · lease renewal · settlement · cancellation ·
-reassignment · preemption · scheduling · routing optimisation · allocation heuristics —
-**the plan assigns each to a later phase, and none was implemented.**
+| 1 | Does Prisma actually execute the commitment transaction at the requested isolation level? | **Yes** | `SHOW transaction_isolation` inside `runSerializable` → `serializable`; inside a bare `$transaction` → `read committed` |
+| 2 | Does PostgreSQL provide the expected SERIALIZABLE behaviour? | **Yes** | Two transactions with a read/write dependency cycle: one committed, one aborted with `40001 could not serialize access due to read/write dependencies among transactions`, which `isSerializationFailure` classified |
+| 3 | Do `SELECT … FOR UPDATE` statements behave as intended? | **Yes** | A second `FOR UPDATE` on the same Agent row acquired 3–4 ms *after* the first transaction released it, never before |
+| 4 | Is the lock ordering correct? | **Yes** | Instrumented on the real client: `Agent` then `Leg`, every time |
+| 5 | Does the partial unique index enforce the intended invariant? | **Yes** | B2, B7, B8 above, plus every concurrency run |
+| 6 | Does the planner recognise and use the partial index? | **Yes** | Over 16 000 rows, 8 000 active, after `ANALYZE`: the point lookup uses `Index Scan using "Commitment_agent_capacity_slot_active_key"`, and the commit path's own active-set read uses `Bitmap Index Scan` on the same index. The partial index is 528 kB against a 2 264 kB table |
 
 ---
 
-## 20. Risks
+## 14. Concurrency verification
+
+All against real PostgreSQL MVCC, driving the shipped `commit()`.
+
+| Scenario | Result |
+|---|---|
+| **Storm, capacity 1** — 8 concurrent commits, one agent, distinct Legs and rounds | Exactly **one** committed. Census: 1 committed, 6 × `G2_AGENT_AT_CAPACITY`, 1 × `SERIALIZATION_FAILURE`, **0 threw**. Database: 1 active commitment, 1 fence allocated, `authority_epoch` unmoved, exactly one Leg moved |
+| **Storm, capacity 2** — 8 concurrent commits | Round 1: 1 committed, 7 × `SERIALIZATION_FAILURE`, never more than capacity active. After the next round (the losers re-presented, as §10.3.2 prescribes): exactly **2** active, slots `[0,1]`, two distinct fences, `authority_epoch` unmoved, exactly two Legs moved. **See §22.3 — this corrects a claim in the previous report** |
+| **Sequential capacity 2** (I19) | Both commits succeed **against the same pinned `authority_epoch`**, slots 0 and 1, fences 1 and 2; a third is refused by G2 |
+| **Retry storm** — 8 concurrent commits with an **identical** idempotency key | Exactly one durable commitment, one fence, one Leg version increment, one audit row, **0 threw**. This was the gap the independent verification flagged as reasoned-but-untested; it is now executed |
+| **Leadership race (G1)** | See §15 |
+| **Authority-epoch race (G3)** | See §15 |
+| **Leg-version race (G4)** | See §15 |
+
+---
+
+## 15. Failure and chaos verification
+
+Each guard race was run in **three** configurations, because the two isolation levels give
+different — and both correct — answers:
+
+| Race | At SERIALIZABLE | At READ COMMITTED |
+|---|---|---|
+| **A — the world moved *before* the transaction began** (the pinned snapshot is stale) | The guard aborts: `G1_LEADERSHIP_FENCE_ADVANCED`, `G3_AUTHORITY_EPOCH_CHANGED`, `G4_LEG_VERSION_CHANGED` respectively. Nothing written | — |
+| **B — the world moved *while* the transaction was open** | PostgreSQL aborts the transaction with `40001` **before the guard is evaluated**, classified as `SERIALIZATION_FAILURE`. Nothing written | **The guard aborts**, with its own reason. Nothing written |
+
+Race B at READ COMMITTED is the configuration §10.3.2 prohibits, driven deliberately to
+establish that the guards are load-bearing rather than decorative: with the store declining
+to intervene, G1, G3 and G4 are what fence the write. That is the strongest available
+demonstration that the guard set is not merely redundant with the isolation level.
+
+"Nothing written" is checked component by component after every abort: no commitment row, no
+fence advance, no Leg state change, no Leg version change, no audit row.
+
+Also verified live: advancing the shard leadership fence touches **no** `Agent` row —
+neither `authority_epoch` nor `fence_counter` moves (§19.5).
+
+The repository's own chaos suite (`tests/chaos/commitment.chaos.test.js`, 6 tests including
+thirty kills at random moments and a worker paused past its lease) passes unchanged.
+
+---
+
+## 16. Idempotency verification
+
+| Property | Result | Evidence |
+|---|---|---|
+| `commitment_id = f(leg_id, agent_id, decision_round_id)`, deterministic, no clock, no randomness | PASS | Unit; the live row's id equals the independently derived one |
+| A sequential retry returns the original result and allocates no second fence | PASS | Live: `ALREADY_COMMITTED`, `fenceCounter` still 1, one row |
+| A **concurrent** retry storm never double-commits | PASS | Live, 8-way, §14 |
+| The two command namespaces are disjoint | PASS | By construction (namespace is the first field; the separator cannot appear inside a component) and by test |
+| A component containing the separator is refused | PASS | Unit |
+
+---
+
+## 17. Lease verification
+
+| Property | Result | Evidence |
+|---|---|---|
+| Granted at commit, from the **store's** clock | PASS | Live: `expiry − grantedAt = 60 000 ms` exactly; `grantedAt` within 24 ms of the store's `NOW()` |
+| Absolute expiry, not a duration | PASS | Column is `timestamp` |
+| A non-positive duration is refused rather than silently granted | PASS | Unit |
+| Renewal requires commitment-scoped evidence — id **and** fence | PASS | Unit; evidence naming another commitment, or carrying a different fence, is insufficient |
+| Renewal itself | **Out of scope** — Phase 5 | `commitment/leases.js` implements no renewal path |
+
+---
+
+## 18. Clock verification
+
+| §10.6 claim | Result | Evidence |
+|---|---|---|
+| Deadlines are absolute timestamps from the store's clock | PASS | Live |
+| `NOW()` inside a transaction is the transaction's start time, so one commit has one origin | **PASS — measured** | Live: two `NOW()` readings 250 ms apart inside one transaction are byte-identical, while `clock_timestamp()` advanced by 260 ms in the same transaction. The claim in `clock.js`'s header is now a measurement |
+| The store clock is read through the transaction client, never a wall clock | PASS | `readStoreTime` refuses a non-transaction client |
+| Monotonic source independent of the wall clock | PASS | `process.hrtime.bigint()` |
+| Skew is signed; both directions distinguishable | PASS | Unit |
+| A node beyond `time.max_clock_skew` removes itself from leadership eligibility | PASS | `assessLeadershipEligibility` |
+| Safety does not depend on synchronised clocks | PASS | No branch in `commit.js` reads a clock for a safety decision; the chaos suite shows a skewed coordinator's late commit still aborts at G1 |
+
+---
+
+## 19. Formal model
+
+### 19.1 TLC — executed, which no previous report could say
+
+TLA+ 1.8.0 (`tla2tools.jar`), Java 20, `formal/commitment.tla`:
+
+| Configuration | Model | Result |
+|---|---|---|
+| `commitment_c1.cfg` (**as checked in**) | 3 Legs, 2 Workers, Capacity 1, MaxFence 5 | **Complete state graph.** 17 991 520 states generated, **2 375 660 distinct**, diameter **21**, **no error found**, 48 s |
+| Capacity 2, **reduced** | 2 Legs, 2 Workers, Capacity 2, MaxFence 4 | **Complete state graph.** 37 633 116 generated, **4 769 532 distinct**, diameter 21, **no error found**, 69 s |
+| `commitment_c2.cfg` (as checked in) | 3 Legs, 2 Workers, MaxFence 5 | **NOT COMPLETED** — stopped after >1 h with an 11 GB disk queue still growing |
+| Capacity 3 | 3 Legs, MaxFence 4 | **NOT COMPLETED** within this session's budget |
+
+The completed capacity-2 run is the one §24.2's argument turns on: it keeps `Capacity = 2`,
+so the concurrent-commitment case exists in the model, and reduces only the Leg count and
+the fence bound.
+
+**Model written: YES. TLC executed: YES, at capacity 1 (full configuration) and capacity 2
+(reduced). TLC completed at capacity 3: NO — resource-bound, not a failure.**
+
+### 19.2 Correspondence between the model and the implementation
+
+Checked line by line. `Commit(w)` allocates `fenceCounter + 1`, takes the lowest free slot,
+advances the Leg's state and version, and leaves `authorityEpoch` `UNCHANGED` — which is
+`applyCommit`'s behaviour. The safety conjunction maps to the invariants: `AtMostCapacity`
+→ I1, `DistinctSlots` → the partial unique index, `DistinctFences` → I6, `TerminalIsFinal`
+→ I12, `OnlyHardCommitments` → I18, `AllActiveCommandable` → I19, and the witness counters
+→ I5.
+
+**One correspondence gap, disclosed:** `GuardsPass == G1 ∧ G2 ∧ G3 ∧ G4 ∧ G6`. **G5 is
+absent from both models** — neither models a cancelled Leg, so the guard would be vacuous.
+G5's evidence is the unit suite and the live-database run, not the formal one. This is
+recorded in `formal/README.md` as well.
+
+### 19.3 The executable equivalent, corrected
+
+The JavaScript checker's distinct value is that its transitions call the shipped modules.
+Its results, with the **kind** of result each is now stated:
+
+| Shape | States | Transitions | Max depth | Search | Violations |
+|---|---|---|---|---|---|
+| Capacity 1, 2 Legs, 2 workers, depth 21 | 44 124 | 160 486 | 21 | **closed** | 0 |
+| Capacity 2, 2 Legs, 2 workers, depth 21 | 114 848 | 455 718 | 21 | **closed** | 0 |
+| Capacity 1, 2 Legs, 2 workers, depth 9 | 6 443 | 28 852 | 9 | bounded | 0 |
+| Capacity 2, 3 Legs, 2 workers, depth 9 | 42 123 | 245 725 | 9 | bounded | 0 |
+| Capacity 3, 4 Legs, 2 workers, depth 9 | 135 001 | 902 537 | 9 | bounded | 0 |
+
+The bounded shapes carry more Legs than capacity, so over-commitment is *reachable* in them
+and the G2 mutation has something to violate; the closed shapes are where the frontier
+genuinely empties. The suite now asserts closure where it holds and asserts **truncation**
+where it does not.
+
+The mutation suite is unchanged in substance and still has teeth: dropping G1, G2, G3 or G4
+is caught; dropping G6 is not, because in this model every state change also moves the
+version — that is §4.1 rule 2 holding, and it is asserted rather than left silent.
+
+---
+
+## 20. Test results
+
+```
+npm run verify
+  gate:tiers      PASS — no Tier 0/1 → Tier 2 dependency
+  gate:params     PASS — 183 engine modules against 242 registered parameters
+  gate:tenets     PASS — 274 modules, no violations
+  gate:privacy    PASS — 16 modules, no identifying field
+  gate:erasure    PASS — 3 decisions reconstructed byte for byte
+  gate:legacy     PASS — 4 retired modules absent across 303 files
+  gate:columngen  PASS (NOT_REQUIRED)
+
+  Test Suites: 145 passed, 145 total
+  Tests:       6 378 passed, 6 378 total
+  Time:        1 301 s
+```
+
+Phase 3's own suites: `commitmentFencing` (72), `commitmentGuards` (31),
+`commitmentSchema` (63), `commitment.chaos` (6) — 172 together — plus
+`commitmentTransaction` **45** (+7) and `commitmentModelCheck` **31** (+8).
+
+Live-database harness: **82 checks, 82 passed**, twice. Database backstops: **17/17**.
+
+**Note on runtime.** `commitmentModelCheck.test.js` now takes ~154 s, up from ~50 s, because
+a closed search costs more than a truncated one. That is the price of the claim being true.
+
+---
+
+## 21. Requirement matrix
+
+| Requirement | Spec | Code | Migration | PostgreSQL | Test | Status |
+|---|---|---|---|---|---|---|
+| Commitment shape and durability rule | §2.6 | `model.js` | `Commitment` | verified | unit | **PASS** |
+| Only HARD commitments persist (I18) | §2.6 | `refuseSoftPersistence` | `Commitment_kind_hard_only` | rejects `SOFT` via Prisma **and** raw SQL | unit + live | **PASS** |
+| Two fencing scopes | §10.3.1 | `fencing.js` | `Agent.authorityEpoch`, `fenceCounter`, `Commitment.fence` | columns verified | 72 tests + both model checkers | **PASS** |
+| Normative command table, both directions | §10.3.1 | `fencing.js` | n/a | n/a | mechanical both-direction check, 18/18 | **PASS** |
+| Unknown command is never unfenced | §10.3.1, T2 | `fenceScopeOf` throws | n/a | n/a | unit | **PASS** |
+| `fence_floor` invalidates all commitment authorities | §10.3.1 | `applyAgentCommand` | n/a | n/a | unit + model | **PASS** |
+| Fence allocation, strictly monotone (I6) | §10.3.2 §4 | `allocateFence` | `BIGINT` | counter 0→1, audit row written atomically | unit + live | **PASS** |
+| G1 leadership fence, re-read in-transaction | §10.3.2 | `g1LeadershipFence` | `ShardLeadership` | aborts at both isolation levels | unit + live + TLC | **PASS** |
+| G2 capacity | §10.3.2 | `g2Capacity` | index + trigger | aborts; backstop independently rejects | unit + live + TLC | **PASS** |
+| G3 agent-scope epoch | §10.3.2 | `g3AuthorityEpoch` | `Agent.authorityEpoch` | aborts | unit + live + TLC | **PASS** |
+| G4 Leg version | §10.3.2, §4.1 r2 | `g4LegVersion` | `Leg.version` | aborts | unit + live + TLC | **PASS** |
+| G5 cancellation, purpose-conditioned | §10.3.2, §4.6 | `g5Cancellation` | `Leg.cancelRequestedAt` | PRIMARY refused, RECOVERY admitted | unit + live | **PASS** (no formal-model counterpart — §19.2) |
+| G6 expected Leg state | §10.3.2 | `g6LegState` | `Leg.state` | aborts | unit + live | **PASS** |
+| SERIALIZABLE isolation | §10.3.2 | `runSerializable` | n/a | `SHOW transaction_isolation` = `serializable` | live | **PASS** |
+| `FOR UPDATE` on agent **and** Leg, fixed order | §10.3.2 §1 | `lockRows` | n/a | blocks; order `Agent,Leg` | live | **PASS** |
+| Partial unique index (I1) | §10.3.2 | slot allocator | `Commitment_agent_capacity_slot_active_key` | predicate verified; rejects; planner uses it | live | **PASS** |
+| Slot-bound trigger | §10.3.2 | — | `commitment_capacity_slot_in_bounds()` | compiles; rejects; all branches reachable | live | **PASS** |
+| Capacity cannot be violated | §10.1, I1 | G2 + slot allocator | index + trigger | never exceeded in any concurrency run | live + model | **PASS** |
+| `ShardLeadership` + static row | plan C1 | `leadership.js` | table + seed | seeded at fence 1; re-insert is a no-op | live | **PASS** |
+| `AgentFenceAudit` (I6) | §26 | `applyCommit` upsert | table | written in the same transaction; absent after every abort | live | **PASS** |
+| Lease granted at commit (I2) | §12.2 | `leases.grant` | `leaseExpiry` | exactly `store_now + 60 s` | live | **PASS** |
+| Idempotency on derived id | §10.5 | `idempotency.js` | unique index | sequential **and** concurrent | live | **PASS** |
+| Disjoint command namespaces | §10.5 | `idempotency.js` | n/a | n/a | unit | **PASS** |
+| Store-clock discipline | §10.6 | `clock.js` | n/a | `NOW()` transaction-stable, measured | live | **PASS** |
+| Skew budget, leadership self-removal | §10.6 | `assessLeadershipEligibility` | n/a | n/a | unit + chaos | **PASS** |
+| Conditional versioned Leg write | §4.1 r2 | `updateMany` + count check | `Leg.version` | one row, version +1 | live | **PASS** |
+| Cache independence (I16) | §10.4, §26 | no import anywhere under `commitment/` | n/a | commits succeed with no cache in the module graph | live | **PASS** |
+| Formal model, capacity 1 | §24.2 | — | — | — | **TLC complete, 0 errors** | **PASS** |
+| Formal model, capacity 2 | §24.2 | — | — | — | **TLC complete on a reduced model, 0 errors**; JS checker closed, 0 violations | **PASS** |
+| Formal model, capacity 3 | §24.2 | — | — | — | JS checker **bounded**, 0 violations; TLC did not complete | **PARTIAL** |
+| Migration applies | plan | — | 10 and 21 migrations | applied cleanly | live | **PASS** |
+| Migration rollback | repo convention | — | forward-only, no `down` | not executed | — | **OUT OF SCOPE** |
+| Volatile-subset re-check | §10.3.2 §3 | required seam | n/a | n/a | unit | **PASS** (Phase 6 populates) |
+| Outbox in the same transaction | §11.1 | required seam | n/a | n/a | unit | **OUT OF SCOPE** (Phase 4 owns the writer) |
+| `reserveRobot` demoted to advisory | §10.4 | opt-in advisory mode | n/a | n/a | unit | **PARTIAL — conditioned by the plan itself**, §25 |
+
+No unexplained discrepancy remains between specification, schema, migration, database,
+application code and tests.
+
+---
+
+## 22. Defects found
+
+### 22.1 D1 — CRITICAL-adjacent (severity **HIGH**, robustness): the capacity backstop's rejection was not classified
+
+**What was wrong.** `isCapacityConstraintViolation` matched on the index's name, on the
+literal string `capacity slot`, and on SQLSTATE `23505` in `error.code`. Executing each
+rejection against PostgreSQL 18.3 through Prisma 5.22 shows that the shape the commit path
+actually produces carries **none** of those:
+
+```
+prisma.commitment.create() → partial unique index violation
+  constructor : PrismaClientKnownRequestError
+  code        : "P2002"                       ← not 23505
+  meta.target : ["agentId","capacitySlot"]    ← the only place the columns appear
+  message     : "Unique constraint failed on the fields: (`agentId`,`capacitySlot`)"
+                                              ← the index's NAME appears nowhere
+```
+
+**What it violated.** §10.3.2 requires a failed commit to return the pairing to the next
+round with the cause recorded. Unclassified, the error propagated out of `commit()` as a
+raw driver rejection instead of an `ABORTED` result carrying
+`CAPACITY_CONSTRAINT_VIOLATED`.
+
+**Why it survived a green suite.** The JavaScript store model authors its own error text,
+and that text contains the constraint name — so the classifier matched the fixture and
+would not have matched production. This is the same class of defect Phase 2's closure
+found: an in-memory double cannot evidence a schema-facing claim.
+
+**Severity.** Not a safety violation — the database still refused the write and nothing was
+persisted in any case. It is a failure-mode defect: the graceful abort is what returns the
+pairing to the round loop, and a thrown driver error does not.
+
+**The fix.** Four recognisers, one per shape the backstop can produce, plus the explicit
+non-recognition of a `commitmentId` collision (an idempotency-key collision, not a capacity
+violation). Smallest change that covers the executed evidence.
+
+**Regression test.** Six tests built from the error objects **transcribed verbatim** from
+the live run, plus one that drives `commit()` into the real shape and asserts a graceful
+`ABORTED`. Live re-run: `isCapacityConstraintViolation` now classifies both the index and
+the trigger rejection.
+
+### 22.2 D2 — MEDIUM (verification rigour): the model checker reported truncated searches as exhaustive
+
+**What was wrong.** `check()` set `exhaustive = false` only when the 400 000-state cap was
+hit. The **depth bound** — which every caller set to 9 and every run hit — did not move the
+flag at all.
+
+**What it violated.** §24.2's gate is a model check, and the previous report cited
+"exhaustive, search exhausted in every case" as its discharge. Re-running the same
+unmodified checker at greater depth shows the capacity-2 space growing 8.6× within three
+more actions; the true diameter of that space is 21, not 9.
+
+**The fix.** `exhaustive`, `depthTruncated` and `stateCapExceeded` are reported separately,
+and detecting depth truncation precisely costs one extra expansion per node sitting at the
+bound. The suite now runs closed searches where they are affordable and asserts *truncation*
+where they are not, and a dedicated test fails if the distinction is ever collapsed again.
+
+**What the fix then falsified.** The claim that §10.3.1's named defect is "invisible at
+capacity 1" is **false**. Searched to closure, the same checker finds it at capacity 1 in a
+trace of 14 actions. What is actually true, and is now what the suite asserts: at capacity 1
+the counterexample requires a commitment to **settle** first — it is a stale redelivery for
+a commitment that is no longer active, and it never involves two commitments held at once.
+§10.3.1's own worked example is the concurrent one, and only capacity ≥ 2 can exhibit it.
+That is the precise version of §24.2's argument.
+
+### 22.3 D3 — MEDIUM (documentation accuracy): three claims the model supported and PostgreSQL does not
+
+| Withdrawn claim (2026-07-29 report) | What PostgreSQL does |
+|---|---|
+| "Storm at capacity 2 → **two winners**, two slots, two fences" | One winner per round. All eight attempts take `FOR UPDATE` on the same Agent row; under SERIALIZABLE a blocked reader whose row was updated by a committed concurrent transaction is aborted with `40001`, not allowed to re-read. Two winners require **two rounds** — which is §10.3.2's own disposition. Safety is unaffected: capacity was never exceeded |
+| "Chaos test: pause, leadership change, resume → `G1_LEADERSHIP_FENCE_ADVANCED`" | At SERIALIZABLE the store aborts the transaction with `40001` **before G1 is evaluated**. G1's abort is observable when the world moves *before* the transaction begins, or at READ COMMITTED. Both are now tested; the guard is still load-bearing, and is now shown to be |
+| "Storm at capacity 1 → 7 abort on G2" | 6 abort on G2 and 1 on serialisation failure, varying with connection-pool timing. Exactly one winner either way |
+
+None of the three is a safety claim. All three were true of the JavaScript store model and
+are not true of PostgreSQL, which is why the model's limitations were listed as a risk in
+the original report and why that risk was correctly identified.
+
+### 22.4 Findings **not** fixed, with the reason
+
+| Finding | Classification | Why not fixed here |
+|---|---|---|
+| `tests/engine/helpers/lifecycleModel.js` carries the **same** `exhaustive` defect as D2 (flag set only at `maxStates`) | **B — later phase.** Phase 15's artefact | Fixing it would change what Phase 15's own gate reports. Recorded here, and in `formal/README.md`, as a carried-forward finding for Phase 15 |
+| A concurrent duplicate that survived to the insert would surface a `P2002` on `commitmentId` rather than `ALREADY_COMMITTED` | **A — Phase 3, but not reachable** | With SERIALIZABLE + `FOR UPDATE` on the agent row it cannot occur, and the 8-way retry storm confirmed it does not. Reachable only if the isolation level were weakened, which §10.3.2 prohibits. Recorded, not changed — a speculative fix to an unreachable path is not a justified change |
+| `commitment_c2.cfg` / `c3.cfg` do not converge on a workstation | **F — environment limitation** | The configurations are correct; they need CI-scale resources |
+
+---
+
+## 23. Defects fixed
+
+| # | Defect | Fix | Verified by |
+|---|---|---|---|
+| D1 | Capacity-backstop rejection not classified | `commit.js` +68/−4 | 6 regression tests from verbatim live errors; live re-run 82/82 |
+| D2 | Model checker reported truncation as exhaustion; a narrative claim built on it was false | `commitmentModel.js` +52/−7; suite rewritten | 31 tests including three that assert the checker's own honesty |
+| D3 | Three inaccurate claims in the previous report | Withdrawn and corrected in §22.3 | The live runs that falsified them |
+
+---
+
+## 24. Remaining risks
 
 | Risk | Assessment |
 |---|---|
-| **No migration has been applied to a real database** | The largest residual risk, inherited from Phases 1 and 2 and now materially sharper. Phase 3's DDL is the first to contain a `CREATE UNIQUE INDEX … WHERE`, a `plpgsql` trigger function with an `INTO` query, and a data `INSERT`. Every one of those is statically checked against Prisma's own generated SQL where Prisma generates it, and hand-reviewed where it does not — but static checking cannot catch a plpgsql syntax error or a planner that declines the partial index. §19.1 items 1 and 2 |
-| **The `capacitySlot` reading (assumption 1)** | If the intended reading was a bare `UNIQUE (agentId) WHERE releasedAt IS NULL`, the correction is a two-line migration change plus deleting the slot allocator — but it would reintroduce a Phase 16e migration the plan says does not exist. Flagged first among the assumptions for that reason |
-| **TLC has not run** | The TLA+ module is checked by reading, not by execution. Mitigated more strongly than usual: the executable equivalent explores the same actions exhaustively and, unlike TLC, drives the **shipped code**. The residual risk is that both artefacts share a modelling error — which is why they are kept as two independently-written descriptions rather than one generated from the other |
-| **The store model is not PostgreSQL** | Every concurrency claim from `commitmentTransaction.test.js` is a claim about a model with blocking row locks, atomic overlays, and re-checked backstops — not about PostgreSQL's MVCC. Stated at the top of the helper and here. The claims most exposed are the storm results; the claims least exposed are the guard and fencing results, which are pure functions |
-| **G6 is not independently detectable in the model check** | Real, disclosed in the test file itself, and covered by the unit suite instead. It arises because the model has no transition that moves a Leg's state without moving its version — which is §4.1 rule 2 holding, not a gap in the guard |
-| **`lease.duration` is `PROVISIONAL` and Safety-class** | Unchanged by this phase; §22.4's predicted failure mode, gated at Phase 15 launch. A commitment's lease is only as good as the number, and the number is not yet calibrated |
-| **The advisory/fail-closed split is a temporary state with two behaviours** | Deliberate and time-boxed to Phase 15, but until then two callers of one function get different failure semantics. Mitigated by the parameter being explicit at every call site and by a test asserting both behaviours |
+| **The verification database is not the production database** | The cluster was PostgreSQL 18.3 built from local binaries; production is Neon. Version, extensions, connection pooling (PgBouncer semantics for interactive transactions) and network latency all differ. Everything B9 asked is answered *for PostgreSQL 18.3*; a pooled Neon endpoint could behave differently for interactive transactions specifically, and that is worth confirming before cutover |
+| **TLC has not completed at capacity 3** | The JavaScript checker's capacity-3 run is bounded (depth 9, 135 001 states, 0 violations) and TLC completed at capacity 1 and at a reduced capacity 2. Capacity 3 is a resource gap, not a modelling one |
+| **G5 has no formal-model counterpart** | Covered by unit and live tests; disclosed in §19.2 and in `formal/README.md` |
+| **The JavaScript store model's concurrency results do not transfer** | Established, not suspected — §22.3. The model remains useful for guard and fencing semantics, which are pure functions; its *storm* results should not be cited as statements about PostgreSQL. The live harness is now the instrument for those |
+| **`lease.duration` is `PROVISIONAL` and Safety-class** | Unchanged by this phase. A commitment's lease is only as good as the number, and the number is not yet calibrated. Phase 15 launch gate |
+| **The advisory/fail-closed split in `reserveRobot`** | Deliberate and time-boxed to Phase 15; two callers of one function get different failure semantics until then |
+| **Model-check suite runtime** | 154 s, up from ~50 s. A closed search costs more than a truncated one; the alternative is a cheaper claim that is not true |
 
 ---
 
-## 21. Readiness for Phase 4
+## 25. Carried-forward items
 
-| Prerequisite | State |
+| # | Item | Owner | Status after this pass |
+|---|---|---|---|
+| 1 | Apply Phases 1–3 to a production-shaped PostgreSQL dump | Verifier / SRE | **DISCHARGED** for a real PostgreSQL 18.3 instance. Not discharged against a production-shaped *dump* with production data volumes |
+| 2 | Discharge blocking decision B9 by execution | Eng / SRE | **DISCHARGED** — all six questions, §13.3 |
+| 3 | Run `formal/commitment.tla` under TLC | Verifier | **PARTIALLY DISCHARGED** — complete and clean at capacity 1 (full configuration) and capacity 2 (reduced). Capacity 3 open |
+| 4 | Wire the volatile-subset re-check to the real predicate set | Phase 6 | Open — later phase |
+| 5 | Wire the outbox row into the `sideEffects` seam | Phase 4 | Open — later phase (the seam is now *required*, so it cannot be forgotten) |
+| 6 | Replace the static `ShardLeadership` row with real election | Phase 13 | Open — later phase. G1's code is unchanged, as the plan required |
+| 7 | Consume `AgentFenceAudit` in the Invariant Checker | Phase 12 | Open — later phase |
+| 8 | Flip `reserveRobot`'s default to advisory and delete the throw | Phase 15 | Open — conditioned by the plan |
+| 9 | **NEW** — `lifecycleModel.js` carries D2's defect | Phase 15 | Open |
+| 10 | **NEW** — confirm interactive-transaction semantics on the pooled production endpoint | SRE | Open |
+| 11 | **NEW** — complete TLC at capacity 3, and at capacity 2 with the checked-in configuration | Verifier / CI | Open |
+| 12 | Resolve the V9 combined-conservatism finding; the §1.8/§22.5 kill-switch discrepancy; the calibration owner and fleet-year budgets (B8); the 15 unset `required` register values | Safety / Ops / Tech lead | Open — inherited, none is Phase 3's |
+
+---
+
+## 26. Explicitly out-of-scope items
+
+REST changes · Socket.IO changes · background workers · the outbox · offer semantics ·
+agent-side deduplication · timers · the reconciler · lease renewal · settlement ·
+cancellation · reassignment · preemption · scheduling · routing optimisation · allocation
+heuristics · the full Leg state machine (Phase 5) · the `DecisionRecord` writer (Phase 11).
+
+**None was implemented, and none was modified.** The whole-repository diff is five files.
+
+---
+
+## 27. Environment limitations
+
+| Limitation | What it means for the claims above |
 |---|---|
-| Phase 3 complete | ✅ 18/20 checklist items complete, 2 qualified and disclosed; 6/6 completion criteria met |
-| Phase 4's dependency | Phase 3 only — satisfied |
-| Blocking decisions for Phase 4 | **None from Phase 3's output.** Phase 4's own surface (the agent protocol, firmware coordination) is unaffected |
-| What Phase 4 gets | A committed fence per commitment, allocated in the authorising transaction; the §10.3.1 command→scope table already implemented and tested, so `offer.handler.js` and `VirtualRobot` implement one definition rather than two; `acceptsMissionCommand` / `acceptsAgentCommand` / `applyAgentCommand` as the agent-side reference; both idempotency namespaces; the `sideEffects` seam already inside the commit transaction, so §4.1 rule 5 is satisfied by construction the moment the outbox writer is attached |
-| What Phase 4 must add | `Outbox` and `AgentDedupState` tables; the outbox writer bound into the seam; the drain worker; offer semantics; the escalation ladder; per-commitment sequencing; the durable dedup handshake; the VirtualRobot agent-side contract |
-| Guardrails Phase 4 will meet | Tier gate (`dispatch/**` is Tier 0), parameter gate (31 modules / 148 parameters), tenet gate, and the Phase-3-ownership assertion in `phase0Scaffold.test.js`, which will fail on any `dispatch/` module until this report's successor widens it |
-| **Strongly recommended first** | §19.1 items 1 and 2 — apply Phases 1–3 to a production-shaped dump and confirm the isolation and locking behaviour on the target PostgreSQL. Phase 4 writes its outbox row *inside* this transaction, so it inherits every property of it |
+| The database was a disposable local PostgreSQL 18.3, not the shared Neon instance | Deliberate: `DATABASE_URL` names shared production infrastructure and was not touched. Every PostgreSQL claim is a claim about 18.3 on this machine |
+| No production-shaped data volume | The planner evidence used 16 000 synthetic rows. A production distribution could plan differently, though a unique-index point lookup is not a plan that changes with scale |
+| TLC could not complete capacity 3, or capacity 2 with the checked-in configuration | Reported as not completed. **Not** reported as passing |
+| Rollback was not executed | Migrations are forward-only and carry no `down`; there is nothing to execute |
+| Redis was never contacted | Correct and intended — I16. `REDIS_URL` was set in the environment throughout and no cache module entered the commit path's module graph |
 
 ---
 
-## 22. Stop
+## 28. Final status
 
-**Phase 3 is complete. Phase 4 has not been started and will not be started without
-independent verification and explicit approval.**
+Every Phase 3 requirement is implemented and evidenced by execution. The correctness core's
+safety properties — capacity never exceeded, fencing per commitment id, the two scopes kept
+orthogonal, guards that abort exactly their own condition, a database that refuses what a
+defective code path would allow, idempotency under concurrent retry, leases from the store's
+clock, and no cache dependency anywhere on the durable path — were all exercised against a
+real PostgreSQL instance and held.
 
-No dispatch, no outbox, no offers, no supervision, no scheduling, no routing
-optimisation, and no allocation heuristic beyond Phase 3 was implemented. `ENGINE_ENABLED`
-is `false`; no running code path calls `commit()`.
+Two defects were found by that execution and fixed; three overstated claims were withdrawn.
+What remains is one formal-verification configuration that needs more compute than a
+workstation, and one confirmation that belongs to the production endpoint rather than to
+this phase.
+
+**PHASE 3 CLOSED WITH DOCUMENTED ENVIRONMENTAL LIMITATION**
+
+The limitations, stated once more without softening: TLC has not completed at capacity 3 or
+at capacity 2 with the checked-in configuration; and no migration has been applied to the
+production database or to a production-shaped dump — only to a disposable PostgreSQL 18.3
+instance carrying the real migration chain.

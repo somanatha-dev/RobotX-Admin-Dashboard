@@ -146,6 +146,13 @@ async function drainOnce(deps, config, workerId) {
     storeTime,
     limit: CLAIM_BATCH,
     claimTtlSeconds,
+    // §11.3 — "Retries use bounded exponential backoff with jitter." The policy lives in
+    // `escalation.js`, which already owns the schedule; the worker is what applies it,
+    // because the claim is where a retry is either taken or deferred. Passing it as a
+    // predicate rather than importing `escalation` into `outbox.js` keeps the store
+    // module free of the ladder that reads it (the dependency runs the other way).
+    isRetryDue: (row) =>
+      escalation.isRetryDue({ row, storeTime, retryWindowSeconds: settings.retryWindowSeconds }),
   });
 
   // Advisory mirror of what this worker holds. The database already holds
@@ -400,10 +407,14 @@ async function escalateOutstanding(deps, settings, storeTime, record) {
       outboxId: row.id,
       agentId: row.agentId,
       reason: verdict.reason,
+      // Reported with the same jitter the claim path enforces, so the logged schedule
+      // and the applied schedule are one number rather than two that can disagree.
       backoffSeconds: escalation.backoffSeconds({
         attempts: row.attempts,
         retryWindowSeconds: settings.retryWindowSeconds,
+        jitterFraction: escalation.jitterFractionFor(row.id),
       }),
+      retryDueAt: escalation.retryDueAt({ row, retryWindowSeconds: settings.retryWindowSeconds }),
     });
   }
 

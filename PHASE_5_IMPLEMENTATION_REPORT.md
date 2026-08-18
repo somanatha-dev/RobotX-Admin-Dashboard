@@ -1,5 +1,16 @@
 # Phase 5 — Implementation Report
 
+> **STATUS UPDATE — 2026-08-17.** Phase 5 is **CLOSED**. It was independently verified on
+> 2026-08-03 (`PHASE_5_INDEPENDENT_VERIFICATION.md`, PASS WITH MINOR ISSUES) and remediated on
+> 2026-08-17. Both of that review's code findings were still present in the tree, were
+> independently reproduced, and are now fixed with regression tests; two further defects found
+> during remediation are fixed; and the migration has been executed against a real PostgreSQL
+> instance. See **`PHASE_5_REMEDIATION_AND_CLOSURE.md`** for what changed and what remains open.
+>
+> This report is preserved as written on 2026-08-03. Three notes have been added inline where a
+> claim has since gone stale or was incomplete — marked **[2026-08-17]** — and nothing has been
+> removed.
+
 **Phase:** 5 of 16 · **Status:** ✅ **COMPLETE — awaiting independent verification before Phase 6**
 **Date:** 2026-08-03 · **Branch:** `feature/dashboard` · **Base:** `4244b3d` + uncommitted Phases 1–4
 **Scope:** `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` §4.2, §4.3, §4.4, §4.5, §4.6, §4.7, §4.9, §12
@@ -11,6 +22,12 @@
 > `src/engine/feasibility/`, `energy/`, `payload/`, `candidates/`, `solve/`, `plan/` and
 > `routing/` remain empty of runtime code — asserted mechanically by
 > `tests/engine/phase0Scaffold.test.js` and verified by `find … -name "*.js" | wc -l` → **0**.
+>
+> **[2026-08-17] This claim was true on 2026-08-03 and is now stale, correctly.** Phases 6–15
+> landed afterwards, so those directories now hold 45, 9, 5, 7, 7, 5 and 3 runtime modules
+> respectively. It is recorded here rather than edited away because it was an accurate statement
+> about Phase 5's own boundary at the time, and because the 2026-08-17 remediation introduced no
+> later-phase functionality of its own.
 
 ---
 
@@ -79,11 +96,37 @@ counts as the agent's step-3 mark; a commitment released in the meantime is clos
 withdrawn at a fence nobody holds; an unanswered non-offer goes terminal; and an unanswered
 offer is **not** swept away by its own envelope expiring.
 
-### 0.3 Result
+### 0.3 Blocking issue 3 — `registerOfferHandlers` had no caller · **[2026-08-17, added]**
+
+**This item was not disclosed when this report was written, and should have been**, by the same
+standard §0 sets for the two above. `PHASE_5_INDEPENDENT_VERIFICATION.md` found it (its Part 9.2)
+and classified it as a correct fix that went unreported.
+
+Phase 4 shipped `src/sockets/handlers/offer.handler.js` — the `OFFER_ACCEPT` / `OFFER_REJECT` /
+`OFFER_DEFER` handlers of §11.2 — and both Phase 4 documents passed it without checking whether
+`registerOfferHandlers` was ever *called* from `initSocketServer`. It was not. Without the wiring,
+Phase 4's offer-response mechanism could never receive a real socket event regardless of
+`ENGINE_ENABLED` — a gap of the same shape as this section's blocking issue 2 (a mechanism built and
+tested but unreachable).
+
+**Correction (`src/sockets/socket.server.js`):** the import and the per-connection call, labelled
+`// PHASE 4 — §11.2 offer responses`. Inert while the engine is off, because `offer.handler.js`'s
+`handle()` checks `engineEnabled()` as its first statement.
+
+**Scope:** Phase 4's checklist item 6, closed during Phase 5. Re-confirmed present on 2026-08-17;
+`grep -rn "registerOfferHandlers" src/` reports the definition, the export, the import and exactly
+one call site.
+
+### 0.4 Result
 
 `npm run verify` after the remediation: 3 gates PASS, **53 suites / 1,075 tests**, up from the
 1,067 the Phase 4 report and its verification both recorded. Legacy lane unchanged at 22/169.
 Phase 5 was then begun.
+
+> **[2026-08-17]** These counts are Phase 5's own baseline and are preserved as recorded. The
+> current tree, with Phases 6–15 landed and this phase's remediation applied, runs **145 suites /
+> 6,406 tests** with 7 gates passing, and the legacy lane at 17/126 after later phases retired part
+> of it. Numbers in this report should not be quoted as current.
 
 ---
 

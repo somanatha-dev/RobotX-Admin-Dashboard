@@ -18,7 +18,7 @@
  * model. It is not PostgreSQL, and the report says so.
  */
 
-const { commit, OUTCOME, ABORT_REASON } = require("../../src/engine/commitment/commit");
+const { commit, OUTCOME, ABORT_REASON, isCapacityConstraintViolation } = require("../../src/engine/commitment/commit");
 const idempotency = require("../../src/engine/commitment/idempotency");
 const leadership = require("../../src/engine/shard/leadership");
 const model = require("../../src/engine/commitment/model");
@@ -535,6 +535,110 @@ describe("the schema backstops reject violations independently of application lo
     } finally {
       model.lowestFreeSlot = originalLowestFreeSlot;
     }
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Classifying the backstop's rejection — against the shapes PostgreSQL and the
+   Prisma driver actually produce, not the shapes the store model produces
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe("a backstop rejection is classified from a real driver error, not a synthetic one", () => {
+  /**
+   * Why these fixtures are verbatim rather than hand-written.
+   *
+   * The store model above authors its own error text, and that text contains the
+   * constraint's name — so a classifier that matched on the name alone passed every
+   * test in this suite while failing against PostgreSQL. Executing each rejection
+   * against PostgreSQL 18.3 through Prisma 5.22 (`tools/verify/phase3LiveDatabase.js`)
+   * showed the three shapes below, and that the index's name appears in **none** of
+   * the two that the commit path can actually produce.
+   *
+   * These objects are transcriptions of that run. A test written from the driver's
+   * documentation rather than from its behaviour is how the defect survived the first
+   * time.
+   */
+  const prismaUniqueViolation = Object.assign(new Error(
+    "\nInvalid `prisma.commitment.create()` invocation in\n  → 33 try { await prisma.commitment.create(\n" +
+      "Unique constraint failed on the fields: (`agentId`,`capacitySlot`)",
+  ), {
+    name: "PrismaClientKnownRequestError",
+    code: "P2002",
+    meta: { modelName: "Commitment", target: ["agentId", "capacitySlot"] },
+    clientVersion: "5.22.0",
+  });
+
+  const rawUniqueViolation = Object.assign(new Error(
+    "\nInvalid `prisma.$executeRawUnsafe()` invocation:\n\nRaw query failed. Code: `23505`. " +
+      'Message: `Key ("agentId", "capacitySlot")=(es-agent, 0) already exists.`',
+  ), {
+    name: "PrismaClientKnownRequestError",
+    code: "P2010",
+    meta: { code: "23505", message: 'Key ("agentId", "capacitySlot")=(es-agent, 0) already exists.' },
+    clientVersion: "5.22.0",
+  });
+
+  const triggerRejection = Object.assign(new Error(
+    "\nInvalid `prisma.commitment.create()` invocation in\nError occurred during query execution:\n" +
+      'ConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(PostgresError { code: "P0001", ' +
+      'message: "Commitment es-c3 would occupy capacity slot 7 on agent es-agent, whose durable capacity is 1 ' +
+      '(§10.3.2, invariant I1).", severity: "ERROR", detail: None, column: None, hint: None }), transient: false })',
+  ), { name: "PrismaClientUnknownRequestError", clientVersion: "5.22.0" });
+
+  const commitmentIdCollision = Object.assign(new Error(
+    "\nInvalid `prisma.commitment.create()` invocation in\nUnique constraint failed on the fields: (`commitmentId`)",
+  ), {
+    name: "PrismaClientKnownRequestError",
+    code: "P2002",
+    meta: { modelName: "Commitment", target: ["commitmentId"] },
+    clientVersion: "5.22.0",
+  });
+
+  const kindCheckViolation = Object.assign(new Error(
+    "\nInvalid `prisma.commitment.create()` invocation in\nError occurred during query execution:\n" +
+      'ConnectorError(ConnectorError { kind: QueryError(PostgresError { code: "23514", message: "new row for ' +
+      'relation \\"Commitment\\" violates check constraint \\"Commitment_kind_hard_only\\"" }) })',
+  ), { name: "PrismaClientUnknownRequestError", clientVersion: "5.22.0" });
+
+  test("the partial unique index, as prisma.commitment.create reports it — the shape the commit path produces", () => {
+    expect(isCapacityConstraintViolation(prismaUniqueViolation)).toBe(true);
+  });
+
+  test("the partial unique index, as $executeRawUnsafe reports it — SQLSTATE beneath Prisma's own code", () => {
+    expect(isCapacityConstraintViolation(rawUniqueViolation)).toBe(true);
+  });
+
+  test("the slot-bound trigger, which carries no code at all — only its RAISE text", () => {
+    expect(isCapacityConstraintViolation(triggerRejection)).toBe(true);
+  });
+
+  test("a collision on commitmentId is NOT a capacity violation — it is an idempotency-key collision", () => {
+    expect(isCapacityConstraintViolation(commitmentIdCollision)).toBe(false);
+  });
+
+  test("the I18 CHECK is NOT a capacity violation either", () => {
+    expect(isCapacityConstraintViolation(kindCheckViolation)).toBe(false);
+  });
+
+  test("nothing is classified from an absent or unrelated error", () => {
+    expect(isCapacityConstraintViolation(null)).toBe(false);
+    expect(isCapacityConstraintViolation(new Error("connection reset by peer"))).toBe(false);
+  });
+
+  test("a commit whose write is refused by the real index shape aborts gracefully rather than throwing", async () => {
+    const { seed, store } = seeded();
+    const dependencies = deps(store, {
+      prisma: {
+        ...store.client,
+        $transaction: async () => {
+          throw prismaUniqueViolation;
+        },
+      },
+      runSerializable: (client, fn) => client.$transaction(fn),
+    });
+    const result = await commit(dependencies, request(seed));
+    expect(result.outcome).toBe(OUTCOME.ABORTED);
+    expect(result.reason).toBe(ABORT_REASON.CAPACITY_CONSTRAINT_VIOLATED);
   });
 });
 

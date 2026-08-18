@@ -515,6 +515,36 @@ describe("§9.3 — the solve is exact, and says so from a proof rather than fro
     expect(proof.problems.join(" ")).toMatch(/improving cycle|not optimal/);
   });
 
+  test("the certificate's OTHER condition is capacity, and it fails on a flow that exceeds one", () => {
+    // Condition 1 of the module header is "every node's excess is zero **and every arc is
+    // within capacity**". Only the excess half was ever computed; the capacity half was argued
+    // from the push and relabel invariants — which is exactly the kind of argument the
+    // certificate exists so that nothing has to rely on. A defect that moved flow without
+    // moving it *along* an arc would satisfy conservation and every dual-feasibility check
+    // and would have certified.
+    const instance = instanceOf(
+      [
+        fixture.column({ legId: "L1", agentId: "A1", gammaCu: 10 }),
+        fixture.column({ legId: "L2", agentId: "A2", gammaCu: 20 }),
+      ],
+      ["L1", "L2"],
+    );
+    const network = minCostFlow.buildNetwork(instance).network;
+    const prepared = costScaling.prepare(network).prepared;
+    const state = costScaling.run(prepared, {});
+
+    expect(state.outcome).toBe(costScaling.OUTCOME.OK);
+    expect(costScaling.certify(prepared, state).ok).toBe(true);
+
+    // Now break capacity on one arc without touching its reverse: the pair no longer conserves
+    // flow, which is what "flow appeared from nowhere" looks like in a residual network.
+    prepared.arcResidual[0] += 1;
+    const broken = costScaling.certify(prepared, state);
+
+    expect(broken.ok).toBe(false);
+    expect(broken.problems.join(" ")).toMatch(/created or destroyed|exceeds a capacity/);
+  });
+
   test("an instance whose costs are too wide for exact scaling falls back, and the fallback is exact", () => {
     // int64 milli-CU is what §9.6 requirement 1 permits; the collapse needs `n · max|γ|` to fit
     // in float64's exact-integer range, and this does not. The answer must still be right.
@@ -916,6 +946,220 @@ describe("§9.4 — the anytime property survives the change of algorithm", () =
     // incumbent to be, and it is checkable against the instance.
     expect(solved.assignments.length + solved.unassigned.length + solved.deferred.length).toBe(2);
     assertSolutionInvariants(instance, solved);
+  });
+
+  /**
+   * A tracker whose clock is inside its budget for the first `passes` consultations and expired
+   * for every one after. The consultations, in order, are: one in `solveByCostScaling` before
+   * the network is collapsed, then one at the top of each iteration of the scaling loop. So
+   * `passes` selects *which* stopping point the round takes, deterministically and without a
+   * real clock (T6).
+   *
+   * @param {number} passes
+   * @returns {object}
+   */
+  const trackerExpiringAfter = (passes) => {
+    let calls = 0;
+    return budgets.create({
+      config: fixture.budgetConfig({ timeBudgetMs: 10 }),
+      elapsedMs: () => {
+        calls += 1;
+        return calls > passes ? 99_999 : 0;
+      },
+    });
+  };
+
+  /**
+   * Five Legs, each with exactly one agent of its own, so the optimum places all five and any
+   * result naming fewer than five Legs is visibly not a whole allocation.
+   *
+   * @param {boolean} deferralAdmissible
+   * @returns {object}
+   */
+  const fiveLegs = (deferralAdmissible) => {
+    const legIds = ["L0", "L1", "L2", "L3", "L4"];
+    return instanceOf(
+      legIds.map((legId, index) => fixture.column({ legId, agentId: `A${index}`, gammaCu: 10 + index })),
+      legIds,
+      { deferralAdmissible, deferCu: 100 },
+    );
+  };
+
+  test.each([
+    ["deferral disabled", false],
+    ["deferral enabled", true],
+  ])(
+    "the budget cannot stop the scaling loop BEFORE its first phase, because no incumbent exists yet — %s",
+    (unused, deferralAdmissible) => {
+      // The regression this pins. The budget used to be consulted at the top of every iteration
+      // including the first, which is not "between phases" at all: it is before the first one,
+      // where the pseudoflow is the empty one and all five units of supply are still on the
+      // source. `assemble()` reads flow off the residual capacities, finds none, and reported an
+      // allocation naming **no Leg at all** — assigned, deferred and queued all empty for a
+      // batch of five — with `ok: true`. With deferral disabled `objective.validate` even called
+      // that feasible, because a coverage row reading `≤ 1` is satisfied by zero.
+      //
+      // §9.4 asks the incumbent to be "a feasible solution and a bound", so the loop must reach
+      // the first point where one exists before it may honour the budget at all.
+      const instance = fiveLegs(deferralAdmissible);
+      const solved = minCostFlow.solve(instance, { budgets: trackerExpiringAfter(1) });
+
+      expect(solved.budgetLimited).toBe(true);
+      expect(solved.solverDiagnostics.scalingPhases).toBe(1);
+      expect(solved.assignments.length + solved.deferred.length + solved.unassigned.length).toBe(5);
+      assertSolutionInvariants(instance, solved);
+    },
+  );
+
+  test("every later stopping point is between phases, and each still returns a whole allocation", () => {
+    // The loop's own progression, so a future change that reintroduced an unsafe stopping point
+    // further in would be caught as well as one at the start.
+    for (let passes = 1; passes <= 6; passes += 1) {
+      const instance = fiveLegs(false);
+      const solved = minCostFlow.solve(instance, { budgets: trackerExpiringAfter(passes) });
+
+      expect({ passes, phases: solved.solverDiagnostics.scalingPhases }).toEqual({ passes, phases: passes });
+      expect({ passes, accountedFor: solved.assignments.length + solved.deferred.length + solved.unassigned.length }).toEqual({
+        passes,
+        accountedFor: 5,
+      });
+      assertSolutionInvariants(instance, solved);
+    }
+  });
+
+  test.each([
+    ["deferral disabled", false],
+    ["deferral enabled", true],
+  ])(
+    "a budget already exhausted BEFORE the network is collapsed returns the trivial feasible flow, not an empty one — %s",
+    (unused, deferralAdmissible) => {
+      // The regression this pins, and it is the one the previous pass left open. The budget is
+      // consulted once before `prepare()`, because collapsing a 100 000-column network is tens
+      // of milliseconds a spent round should not spend. That check used to return
+      // `assemble(network, () => 0, …)` — the **zero** flow — and `assemble()` reads the
+      // allocation off the arcs carrying flow, so the result named no Leg at all: assigned,
+      // deferred and queued all empty for a batch of five, with `ok: true`, `budgetLimited:
+      // true` and — with the `deferral` switch thrown — `objective.validate()` calling it
+      // FEASIBLE, because a coverage row reading `≤ 1` is satisfied by zero.
+      //
+      // §9.4: "at any point it holds a feasible solution and a bound. Exceeding the time budget
+      // returns the incumbent with its bound, never nothing and never a hang." An allocation
+      // accounting for none of the round's Legs is not a feasible solution of this instance, and
+      // it is indistinguishable from a round that decided nothing was worth doing.
+      const instance = fiveLegs(deferralAdmissible);
+      const solved = minCostFlow.solve(instance, { budgets: trackerExpiringAfter(0) });
+
+      expect(solved.budgetLimited).toBe(true);
+      expect(solved.solverDiagnostics.scalingPhases).toBe(0);
+      expect(solved.solverDiagnostics.trivialIncumbent).toBe(true);
+      expect(solved.solverDiagnostics.legsDecidedByTrivialCompletion).toBe(5);
+
+      // Every Leg accounted for, exactly once, and the whole thing feasible against the
+      // instance's own constraint rows — under *both* coverage senses, which is the half the
+      // `≤ 1` relaxation used to hide.
+      expect(solved.assignments.length + solved.deferred.length + solved.unassigned.length).toBe(5);
+      assertSolutionInvariants(instance, solved);
+
+      // Which of the two trivial outcomes depends on whether a priced deferral exists, and the
+      // result says which rather than reporting an unpriced non-assignment as a priced deferral.
+      expect(solved.deferred).toHaveLength(deferralAdmissible ? 5 : 0);
+      expect(solved.unassigned).toHaveLength(deferralAdmissible ? 0 : 5);
+      expect(solved.assignments).toEqual([]);
+
+      // And it never claims to have proven anything.
+      expect(solved.optimalityCertified).toBe(false);
+    },
+  );
+
+  test("the reference solver's budget-limited stop is completed too, so the fallback cannot lose a Leg either", () => {
+    // The same defect class on the other solver, and it is reachable in production: cost
+    // scaling hands an instance whose costs are too wide for exact scaled arithmetic to the
+    // reference solver, which then runs under the same budget. Successive shortest paths
+    // augments once per Leg, so stopping between augmentations used to return a *partial*
+    // batch — the Legs the loop had not reached carried no flow on any arc and appeared in
+    // none of the three lists. Measured before the fix: 3 of 20 Legs named, `ok: true`.
+    for (const deferralAdmissible of [false, true]) {
+      for (const passes of [0, 1, 3]) {
+        const instance = fiveLegs(deferralAdmissible);
+        const solved = minCostFlow.solve(instance, { budgets: trackerExpiringAfter(passes), ...REFERENCE });
+
+        expect({ passes, deferralAdmissible, limited: solved.budgetLimited }).toEqual({ passes, deferralAdmissible, limited: true });
+        expect({
+          passes,
+          deferralAdmissible,
+          accounted: solved.assignments.length + solved.deferred.length + solved.unassigned.length,
+        }).toEqual({ passes, deferralAdmissible, accounted: 5 });
+
+        // The units the search *did* place are left where it placed them: completion adds
+        // Legs, it does not re-decide them.
+        expect({ passes, assigned: solved.assignments.length }).toEqual({ passes, assigned: passes });
+        assertSolutionInvariants(instance, solved);
+      }
+    }
+  });
+
+  test("§9.4's bound is a bound: a budget-limited result never reports its incumbent as proven optimal", () => {
+    // §9.4 asks for "the incumbent **with its bound**". `boundMilliCU = objectiveMilliCU` and
+    // `lpIpGapMilliCU = 0` says the incumbent *is* the optimum — which on a completed singleton
+    // solve is true and proven, and on a truncated one is a claim the run explicitly did not
+    // make: it reports `optimalityCertified: false` in the same object. Measured at the §20.1
+    // shape before the fix: an incumbent 36.5 % above the optimum, published with a zero gap.
+    const instance = fiveLegs(true);
+
+    const truncated = minCostFlow.solve(instance, { budgets: trackerExpiringAfter(0) });
+    const complete = minCostFlow.solve(instance);
+
+    // A real lower bound: valid for every feasible flow on the network, hence for the optimum.
+    expect(truncated.boundMilliCU).toBeLessThanOrEqual(truncated.objectiveMilliCU);
+    expect(truncated.boundMilliCU).toBeLessThanOrEqual(complete.objectiveMilliCU);
+    expect(truncated.optimalityCertified).toBe(false);
+
+    // The all-deferred incumbent is genuinely worse than the optimum, and the published pair
+    // now shows that rather than hiding it behind an equality.
+    expect(truncated.objectiveMilliCU).toBeGreaterThan(complete.objectiveMilliCU);
+
+    // On a completed solve the bound is still the objective, computed as the equality §9.3's
+    // total unimodularity earns rather than asserted as a constant.
+    expect(complete.boundMilliCU).toBe(complete.objectiveMilliCU);
+    expect(complete.optimalityCertified).toBe(true);
+
+    // And the *integrality* gap stays exactly zero in both, because it is zero in this regime
+    // whatever the clock did — the truncation gap is `objective − bound` and is a different
+    // quantity, which §9.3 requires be reported separately rather than summed into this one.
+    expect(truncated.lpIpGapMilliCU).toBe(0n);
+    expect(complete.lpIpGapMilliCU).toBe(0n);
+  });
+
+  test("a budget-limited round does not publish its prices as exact marginal prices either", () => {
+    // The same false claim as the bound, on the other published quantity, and with a live
+    // consumer: §8.3.1 feeds singleton-regime duals into λ_zone calibration and reads
+    // `validForCalibrationWithoutQualification` to decide whether it may. §9.3 entitles the
+    // *regime* to exact integer duals; it does not entitle a solve that stopped on §9.4's
+    // clock to them, and the two axes were being conflated. Cost scaling publishes ε-optimal
+    // prices on that path (it says so in its own header) and the reference solver publishes
+    // the potentials of a partially routed network — neither is a marginal price, and both
+    // were labelled `EXACT_INTEGER_MARGINAL_PRICE`.
+    const instance = fiveLegs(true);
+
+    for (const [label, solved] of [
+      ["cost scaling, pre-prepare stop", minCostFlow.solve(instance, { budgets: trackerExpiringAfter(0) })],
+      ["cost scaling, between phases", minCostFlow.solve(instance, { budgets: trackerExpiringAfter(1) })],
+      ["reference solver", minCostFlow.solve(instance, { budgets: trackerExpiringAfter(2), ...REFERENCE })],
+    ]) {
+      expect({ label, limited: solved.budgetLimited }).toEqual({ label, limited: true });
+      expect({ label, kind: solved.duals.kind }).toEqual({ label, kind: regime.DUAL_KIND.BUDGET_LIMITED });
+      expect({ label, kind: solved.agentDuals.kind }).toEqual({ label, kind: regime.DUAL_KIND.BUDGET_LIMITED });
+      expect({ label, calibratable: solved.duals.validForCalibrationWithoutQualification }).toEqual({
+        label,
+        calibratable: false,
+      });
+      expect(solved.duals.validity).toMatch(/§9.4's wall-clock budget/);
+    }
+
+    // And a completed solve is unaffected: it earned the label the regime entitles it to.
+    const complete = minCostFlow.solve(instance);
+    expect(complete.duals.kind).toBe(regime.DUAL_KIND.EXACT_INTEGER);
+    expect(complete.duals.validForCalibrationWithoutQualification).toBe(true);
   });
 
   test("a budget that never expires produces the same answer as no budget at all", () => {

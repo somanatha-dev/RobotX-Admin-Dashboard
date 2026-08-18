@@ -417,6 +417,53 @@ function build(input) {
       cellsExplored: bounds.cellsExplored ?? null,
       agentsEvaluated: bounds.agentsEvaluated ?? null,
       smallestUnexploredBoundMilliCU: milli(bounds.smallestUnexploredBoundMilliCU),
+      // ── Phase 10 handoffs P11-2 and P11-3 ─────────────────────────────────
+      // WHICH algorithm decided this Leg, and whether it proved its answer.
+      // `PHASE_10_REMEDIATION_AND_CLOSURE.md` P11-2: the round result now carries the
+      // partition's `solver` / `optimalityCertified` / `fallbackFrom`, and Tier A should
+      // carry them "so an exactness fallback in production is visible in the record, not
+      // only in the round object". Without them a round could fall back from cost scaling
+      // to the reference solver — a 23-second solve — and every decision record it
+      // produced would look identical to one the fast path certified.
+      //
+      // Read from the partition that actually contained this Leg, never from a label and
+      // never from the round as a whole: two partitions of one round can be decided by
+      // two different solvers with two different certification states.
+      solver: bounds.solver ?? null,
+      optimalityCertified: bounds.optimalityCertified === undefined ? null : bounds.optimalityCertified,
+      fallbackFrom: bounds.fallbackFrom ?? null,
+      objectiveMilliCU: milli(bounds.objectiveMilliCU),
+      boundMilliCU: milli(bounds.boundMilliCU),
+      // P11-3 — the **truncation gap**: `objective − bound` on the incumbent this Leg's
+      // sub-problem returned. A FOURTH quantity, and none of the other three substitutes:
+      //
+      //   searchGapMilliCU      what candidate-set truncation could have cost (§9.3, §6.4)
+      //   lpIpGapMilliCU        integrality — exactly zero in the singleton regime (§9.3)
+      //   truncationGapMilliCU  what stopping early cost, on THIS solve (§9.4)
+      //   column_generation_gap what a poorer column set cost — offline only (§21.6)
+      //
+      // Zero for an exact, certified result, by construction: the solver returns
+      // `objective === bound` when it proves optimality. Non-zero only when a budget cut
+      // the search short, which is the case §9.4 says must "return the incumbent with its
+      // bound" rather than nothing. Computed as exact int64 milli-CU by the writer and
+      // carried as a decimal string, like every other cost here (§9.6 requirement 1) — a
+      // subtraction performed in float would report a gap of zero for two objectives that
+      // differ, which is the one answer this field must never give.
+      truncationGapMilliCU: milli(bounds.truncationGapMilliCU),
+      // ── And the half a milli-CU gap cannot express ─────────────────────────
+      // §9.3's objective is **lexicographic**: `(unassigned, milliCU)`, with an unassigned
+      // Leg costing `(1, 0)`. `objectiveMilliCU` and `boundMilliCU` are the *money*
+      // component alone, so `truncationGapMilliCU` bounds the money component alone — and
+      // an incumbent that left every Leg queued scores a money gap of exactly zero while
+      // being as far from optimal as the round can get.
+      //
+      // A reader who saw `truncationGapMilliCU: "0"` and stopped there would read that
+      // incumbent as proven optimal. This is the dominant component of the same gap, so
+      // the record cannot be read that way: with `optimalityCertified: false` and
+      // `budgetLimited: true` beside it, the three together are the state Phase 10's D1
+      // made distinguishable, and are why handoff P11-1's `decidedNothingBecause` was
+      // withdrawn rather than implemented.
+      legsUnassignedByIncumbent: Number.isFinite(bounds.legsUnassignedByIncumbent) ? bounds.legsUnassignedByIncumbent : null,
       // §6.4's two admissibility corrections, recorded because a large realised
       // correction is itself a §21.4 signal: "a large value means policy credit
       // ceilings exceed their realised use and should be tightened".

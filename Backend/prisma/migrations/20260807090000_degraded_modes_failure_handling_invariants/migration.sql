@@ -8,9 +8,12 @@
 -- verbatim from `prisma migrate diff --from-empty --to-schema-datamodel`, so the
 -- hand-written file and `schema.prisma` cannot silently disagree.
 -- `tests/engine/degradedSchema.test.js` re-runs that diff and asserts the equality, and
--- asserts that the eight CHECK constraints at the foot of this file — and the partial
+-- asserts that the ten CHECK constraints at the foot of this file — and the partial
 -- unique index, which Prisma also cannot express — are **absent** from Prisma's output,
 -- which is what proves they are genuine hand-written additions rather than an echo.
+--
+-- (The count read "eight" until the Phase 12 remediation. There are ten, and the test's own
+-- header and assertion always said ten; the comment was the thing that was wrong.)
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 1. `DegradedModeEvent` — §18.5 rule 1's entry and exit events.

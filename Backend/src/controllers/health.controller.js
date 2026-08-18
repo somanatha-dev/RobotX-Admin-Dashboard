@@ -125,8 +125,19 @@ const invariants = asyncHandler(async (req, res) => {
       violated: violated.length,
       suspended: suspended.length,
       unreported: unreported.length,
-      // The SLI §26.1 gives a target of exactly zero.
-      invariantViolations: invariantRows.reduce((sum, row) => sum + (row.violationCount || 0), 0),
+      // The SLI §26.1 gives a target of exactly zero — counted over `VIOLATED` rows **only**.
+      //
+      // A suspended check keeps its findings deliberately (`checkOne` retains them, because on
+      // mode exit they are the reconciliation input §18.5 requires), so summing
+      // `violationCount` across every row made this SLI non-zero for the whole of a Commitment
+      // Store outage: I2 SUSPENDED, one row per expired lease, target zero. That is precisely
+      // the "paging continuously for a condition the design already anticipates" §26.1 created
+      // the third status to prevent, reintroduced one aggregation later.
+      //
+      // The suspended findings are still reported — under their own name, where they cannot be
+      // mistaken for violations.
+      invariantViolations: violated.reduce((sum, row) => sum + (row.violationCount || 0), 0),
+      suspendedFindings: suspended.reduce((sum, row) => sum + (row.violationCount || 0), 0),
       // A register with unreported invariants is not a green register. Stated as its own
       // field so a dashboard cannot render "0 violated" as "all clear".
       complete: unreported.length === 0,

@@ -13,7 +13,13 @@
  * > is an alertable SLI.
  *
  * The last of those reads "nine"; §12.4's table has ten rows. The specification wins over
- * the plan by the plan's own precedence rule, so all ten are exercised here.
+ * the plan by the plan's own precedence rule, so all ten are covered.
+ *
+ * Nine of the ten have their divergence constructed and their repair asserted here. The
+ * tenth — `TASK_WAITING_BEYOND_SLA` — turns on a nested relation filter this store model
+ * does not implement, and is verified against live PostgreSQL in
+ * `tools/verify/phase5LiveDatabase.js` group 6; the test named for it below records that
+ * split rather than leaving it to be inferred.
  */
 
 const leases = require("../../src/engine/supervision/leases");
@@ -810,6 +816,231 @@ describe("§12.4 — the reconciliation loop", () => {
       store.now(),
     );
     expect(withIndex.repaired).toBe(1);
+  });
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     REGRESSION — Phase 5 remediation, finding 4.
+
+     Four of §12.4's ten classes had no test that *constructed* their divergence:
+     `scanExpiredLeases`, `scanWaitingTasks`, `scanUndeliveredOutbox` and
+     `scanEnergyAccounting` were exercised only by the full-sweep test below, which
+     asserts that every class runs and reports a count — and a scan that detects
+     nothing reports a count of zero and passes that assertion. The phase's
+     completion criterion is that every class is *tested*, so each of the four now
+     has its divergence built and its repair asserted.
+
+     `TASK_WAITING_BEYOND_SLA`'s negative case — a waiting Task that still has a
+     queue entry, and must therefore be left alone — turns on a nested relation
+     filter (`mission: { tasks: { some: … } }`) this store model does not implement.
+     It is verified against live PostgreSQL instead, in
+     `tools/verify/phase5LiveDatabase.js` group 6, and recorded here so the gap is
+     visible rather than silent.
+     ───────────────────────────────────────────────────────────────────────── */
+
+  test("LEASE_EXPIRED_UNPROCESSED — an expired lease is detected and the §4.7 recovery path is run, custody-aware", async () => {
+    const fixture = fixtures.seed({ legs: 2 });
+    const store = fixtures.storeFor(fixture, {
+      commitments: [
+        {
+          ...fixtures.commitmentRow(fixture, { fence: 42n }),
+          leaseExpiry: new Date(fixture.now.getTime() - 300_000),
+        },
+      ],
+    });
+    await store.client.leg.update({
+      where: { id: fixtures.LEG_ROW_ID },
+      data: { state: "EN_ROUTE_DROP", custodyState: "HELD", obstructionClass: "CLEAR" },
+    });
+
+    const recovered = [];
+    const result = await reconciler.scanExpiredLeases(
+      { ...deps(store), recover: async (input) => recovered.push(input) },
+      config,
+      store.now(),
+    );
+
+    expect(result.repaired).toBe(1);
+    // Custody HELD strands rather than reassigning: no amount of database repair moves
+    // goods that are physically inside a stopped machine (§4.7).
+    expect(result.assessments[0].assessment.outcome).toBe("PHYSICAL_RECOVERY");
+    expect(result.assessments[0].assessment.legState).toBe("STRANDED_SAFE");
+    expect(recovered).toHaveLength(1);
+
+    const repair = store.rows("reconcilerRepair")[0];
+    expect(repair).toMatchObject({
+      category: reconciler.DIVERGENCE.LEASE_EXPIRED_UNPROCESSED,
+      action: "RECOVERY_PHYSICAL_RECOVERY",
+    });
+  });
+
+  test("…and a Leg already in a recovery state is not assessed again — I2 reads 'valid lease **or** in a recovery state'", async () => {
+    const fixture = fixtures.seed({ legs: 2 });
+    const store = fixtures.storeFor(fixture, {
+      commitments: [
+        {
+          ...fixtures.commitmentRow(fixture, { fence: 42n }),
+          leaseExpiry: new Date(fixture.now.getTime() - 300_000),
+        },
+      ],
+    });
+    await store.client.leg.update({ where: { id: fixtures.LEG_ROW_ID }, data: { state: "STRANDED_SAFE" } });
+
+    const result = await reconciler.scanExpiredLeases(deps(store), config, store.now());
+
+    expect(result.repaired).toBe(0);
+  });
+
+  test("TASK_WAITING_BEYOND_SLA is verified against live PostgreSQL, not here — and this records why", () => {
+    // `scanWaitingTasks` asks whether the Task's Mission still has a queued Leg, through
+    // the implicit many-to-many `mission: { tasks: { some: { id } } }`. This store model
+    // does not implement nested relation filters and says so by throwing, rather than
+    // matching nothing and reporting a divergence that is not there — so the scan cannot
+    // run here at all, in either direction.
+    //
+    // Two consequences, both recorded rather than worked around:
+    //   1. The class is verified in `tools/verify/phase5LiveDatabase.js` group 6, against
+    //      real PostgreSQL, where the relation is the real one: the positive case, the
+    //      "still has a queue entry" negative case, and the "inside its SLA" boundary.
+    //   2. The full-sweep test below passes for this class *vacuously* — the fixture seeds
+    //      no Task, so the scan's loop body never executes and never reaches the query.
+    //      That is exactly the shape of gap this remediation set out to close, so it is
+    //      named here instead of being left to be rediscovered.
+    const fixture = fixtures.seed({ legs: 2 });
+    const store = fixtures.storeFor(fixture);
+    expect(
+      store.client.task.create({
+        data: {
+          id: "task-waiting-1",
+          taskId: "task-waiting-1",
+          status: "WAITING",
+          createdAt: new Date(STORE_NOW.getTime() - 3600_000),
+          version: 0,
+        },
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  test("OUTBOX_UNDELIVERED_PAST_DEADLINE — a row past its deadline is counted and deferred to the §11.4 ladder", async () => {
+    const fixture = fixtures.seed({ legs: 2 });
+    const store = fixtures.storeFor(fixture, {
+      outbox: [
+        {
+          id: "outbox-stale-1",
+          idempotencyKey: "idem-stale-1",
+          agentId: fixture.agent.id,
+          commitmentId: "commitment-c1",
+          commandClass: "MISSION",
+          command: "ASSIGN_MISSION",
+          fenceScope: "COMMITMENT",
+          fence: 42n,
+          sequence: 1,
+          payload: {},
+          notValidAfter: new Date(fixture.now.getTime() - 60_000),
+          signature: "sig",
+          state: "PENDING",
+          attempts: 1,
+        },
+      ],
+    });
+
+    const result = await reconciler.scanUndeliveredOutbox(deps(store), config, store.now());
+
+    expect(result.repaired).toBe(1);
+    const repair = store.rows("reconcilerRepair").find((row) => row.entityId === "outbox-stale-1");
+    // The reconciler observes; the ladder itself belongs to the outbox worker. Recording
+    // the observation separately is what distinguishes "the drain worker is behind" from
+    // "this agent will not answer", which are different faults with different responses.
+    expect(repair).toMatchObject({
+      category: reconciler.DIVERGENCE.OUTBOX_UNDELIVERED_PAST_DEADLINE,
+      action: "DEFER_TO_DISPATCH_LADDER",
+      escalated: false,
+    });
+  });
+
+  test("…and escalates once its attempts reach the unresponsive-strike count (§12.4 'Step 3+')", async () => {
+    const fixture = fixtures.seed({ legs: 2 });
+    const store = fixtures.storeFor(fixture, {
+      outbox: [
+        {
+          id: "outbox-stale-2",
+          idempotencyKey: "idem-stale-2",
+          agentId: fixture.agent.id,
+          commitmentId: "commitment-c1",
+          commandClass: "MISSION",
+          command: "ASSIGN_MISSION",
+          fenceScope: "COMMITMENT",
+          fence: 42n,
+          sequence: 1,
+          payload: {},
+          notValidAfter: new Date(fixture.now.getTime() - 60_000),
+          signature: "sig",
+          state: "PENDING",
+          attempts: config.unresponsiveStrikes,
+        },
+      ],
+    });
+
+    await reconciler.scanUndeliveredOutbox(deps(store), config, store.now());
+
+    const repair = store.rows("reconcilerRepair").find((row) => row.entityId === "outbox-stale-2");
+    expect(repair.escalated).toBe(true);
+  });
+
+  test("ENERGY_ACCOUNTING_INCONSISTENT — realised consumption beyond tolerance is flagged for recalibration", async () => {
+    const fixture = fixtures.seed({ legs: 2 });
+    const store = fixtures.storeFor(fixture, {
+      commitments: [{ ...fixtures.commitmentRow(fixture, { fence: 42n }), releasedAt: fixture.now }],
+    });
+
+    const result = await reconciler.scanEnergyAccounting(
+      { ...deps(store), energyAccounting: async () => ({ predictedWh: 100, realisedWh: 120 }) },
+      config,
+      store.now(),
+    );
+
+    expect(result.repaired).toBe(1);
+    const repair = store.rows("reconcilerRepair")[0];
+    expect(repair).toMatchObject({
+      category: reconciler.DIVERGENCE.ENERGY_ACCOUNTING_INCONSISTENT,
+      action: "RECOMPUTE_AND_FLAG_CALIBRATION",
+      // 20% is above the 15% tolerance and below "large" (twice it), so the model is
+      // flagged for calibration rather than paged.
+      escalated: false,
+    });
+  });
+
+  test("…and escalates only on a large divergence — twice the tolerance the mid-mission supervisor already acts on", async () => {
+    const fixture = fixtures.seed({ legs: 2 });
+    const store = fixtures.storeFor(fixture, {
+      commitments: [{ ...fixtures.commitmentRow(fixture, { fence: 42n }), releasedAt: fixture.now }],
+    });
+
+    await reconciler.scanEnergyAccounting(
+      { ...deps(store), energyAccounting: async () => ({ predictedWh: 100, realisedWh: 180 }) },
+      config,
+      store.now(),
+    );
+
+    expect(store.rows("reconcilerRepair")[0].escalated).toBe(true);
+  });
+
+  test("…and consumption inside tolerance is not a divergence, nor is an absent energy model a consistent one", async () => {
+    const fixture = fixtures.seed({ legs: 2 });
+    const store = fixtures.storeFor(fixture, {
+      commitments: [{ ...fixtures.commitmentRow(fixture, { fence: 42n }), releasedAt: fixture.now }],
+    });
+
+    const withinTolerance = await reconciler.scanEnergyAccounting(
+      { ...deps(store), energyAccounting: async () => ({ predictedWh: 100, realisedWh: 105 }) },
+      config,
+      store.now(),
+    );
+    expect(withinTolerance.repaired).toBe(0);
+
+    // §4.1 rule 3 — with no model supplied the scan names itself skipped rather than
+    // reporting the accounting consistent.
+    const noModel = await reconciler.scanEnergyAccounting(deps(store), config, store.now());
+    expect(noModel).toMatchObject({ repaired: 0, skipped: "NO_ENERGY_MODEL" });
   });
 
   test("a full sweep runs every class and reports a per-category count", async () => {

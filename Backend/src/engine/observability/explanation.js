@@ -112,6 +112,73 @@ function answerOf(query, source, body) {
 }
 
 /**
+ * The provenance of the solve behind one decision — Phase 10's handoffs P11-2 and P11-3,
+ * rendered for a human.
+ *
+ * §21.3 requires every answer to name what it is standing on. "Agent A beat agent B by
+ * 4 CU" is a different claim depending on whether the allocation it came from was
+ * **certified optimal** by cost scaling, was produced by the reference solver after an
+ * exactness fallback, or was an incumbent a wall-clock budget stopped short of proving.
+ * All three are recorded (`searchAndSolveBounds`), and none of them is inferable from the
+ * outcome label, so this reads them and says which happened.
+ *
+ * Every gap is reported separately and none is summed — §9.3's rule, and the four
+ * quantities bound four different approximations.
+ *
+ * @param {object} record a `tierA.fromRow()` record
+ * @returns {object}
+ */
+function solveProvenance(record) {
+  const bounds = (record && record.searchAndSolveBounds) || {};
+  const certified = bounds.optimalityCertified ?? null;
+  const truncation = bounds.truncationGapMilliCU ?? null;
+  const budgetLimited = bounds.budgetLimited === true;
+  const legsUnassigned = bounds.legsUnassignedByIncumbent ?? null;
+
+  return {
+    solver: bounds.solver ?? null,
+    optimalityCertified: certified,
+    // Non-null means §20.2's cost-scaling path did not decide this: the round fell back,
+    // and the reason it fell back is the value.
+    fallbackFrom: bounds.fallbackFrom ?? null,
+    budgetLimited,
+    objectiveMilliCU: bounds.objectiveMilliCU ?? null,
+    boundMilliCU: bounds.boundMilliCU ?? null,
+
+    // Four quantities, four approximations, never one number (§9.3, §9.4, §21.6).
+    truncationGapMilliCU: truncation,
+    truncationGapCU: truncation === null ? null : toCU(BigInt(truncation)),
+    searchGapMilliCU: bounds.searchGapMilliCU ?? null,
+    lpIpGapMilliCU: bounds.lpIpGapMilliCU ?? null,
+    gapsReportedSeparately: {
+      searchGapMilliCU: "candidate-set truncation — what the expansion did not look at (§6.4, §9.3)",
+      lpIpGapMilliCU: "integrality — exactly zero in the singleton regime (§9.3)",
+      truncationGapMilliCU: "objective − bound on this solve — what stopping early cost, in MONEY (§9.4)",
+      columnGenerationGap: "measured offline only, by the counterfactual evaluator; never in a decision record (§21.6)",
+    },
+
+    // The lexicographic objective's dominant component. Stated beside the money gap
+    // because a money gap of zero on an incumbent that queued every Leg would otherwise
+    // read as a proof of optimality.
+    legsUnassignedByIncumbent: legsUnassigned,
+    truncationGapScope:
+      "the money half of §9.3's lexicographic objective (unassigned, milli-CU). A zero money gap is not a " +
+      "certificate: read it with optimalityCertified and legsUnassignedByIncumbent.",
+
+    sentence:
+      bounds.solver === null || bounds.solver === undefined
+        ? "No solve decided this Leg: it was resolved before the round reached a sub-problem."
+        : certified === true
+          ? `Decided by ${bounds.solver}, certified optimal over the generated column set.`
+          : budgetLimited
+            ? `Decided by ${bounds.solver}. NOT certified optimal: a §9.4 budget returned the incumbent with its bound` +
+              (truncation === null ? "" : `, ${toCU(BigInt(truncation))} CU above it in money`) +
+              (legsUnassigned ? `, leaving ${legsUnassigned} Leg(s) unassigned.` : ".")
+            : `Decided by ${bounds.solver}, without a certificate of optimality.`,
+  };
+}
+
+/**
  * *Why this agent?* — the cost breakdown, the runner-up, the margin, and which terms
  * were decisive.
  *
@@ -154,6 +221,11 @@ function whyThisAgent(record) {
     marginMilliCU: marginMilliCU === null ? null : marginMilliCU.toString(),
     marginCU: marginMilliCU === null ? null : toCU(marginMilliCU),
     decisiveTerms: decisive.sort((a, b) => compareStrings(a.term, b.term)),
+    // How much of this answer is proven, and by what. An operator disputing a margin is
+    // entitled to know whether the allocation behind it was certified optimal or was the
+    // best thing a §9.4 budget had found when the clock ran out — the two support very
+    // different arguments, and every input to the distinction is already in Tier A.
+    solve: solveProvenance(record),
     unit: "milli-CU",
     sentence:
       outcome.agentId === null || outcome.agentId === undefined
@@ -277,6 +349,11 @@ function whyStillWaiting(input) {
     exactOverAllDecisions: true,
     candidatesConsidered: record.runnerUpAndTopN ? record.runnerUpAndTopN.candidatesConsidered : null,
     searchAndSolveBounds: record.searchAndSolveBounds || null,
+    // §9.4's `BUDGET_TRUNCATED` is a *different answer* to "why is this still waiting"
+    // from `LOST_TO_ANOTHER_LEG`, and Phase 10's D1 separated them precisely so that the
+    // record stops claiming a cheaper Leg took the agent when the solve may never have
+    // priced this one. The provenance is what lets the answer say which.
+    solve: solveProvenance(record),
     projectedAssignment: source.projectedAssignment ?? null,
     sentence:
       binding === null
@@ -631,6 +708,7 @@ module.exports = {
   QUERIES,
   DECLARED_SOURCE,
   answerOf,
+  solveProvenance,
   whyThisAgent,
   whyNotAgent,
   whyStillWaiting,

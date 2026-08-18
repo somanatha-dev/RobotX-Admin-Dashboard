@@ -149,10 +149,18 @@ function build(input) {
     }
   }
 
+  // The guard this module's own docstring claims — "`assertSingletonRegime()` refuses a set
+  // containing a multi-Leg column" — run over the set actually emitted. It shipped correct
+  // and unit-tested but uncalled, so the restriction rested on `build()` happening to take
+  // one `legId` per candidate rather than on the named check. Unreachable while that holds,
+  // which is the point: a guard proven live before it is relied on.
+  const regimeCheck = assertSingletonRegime(kept);
+  if (!regimeCheck.ok) problems.push(...regimeCheck.problems);
+
   const singletonRegime = kept.every((entry) => entry.singleton);
 
   return {
-    ok: true,
+    ok: regimeCheck.ok,
     columns: kept,
     pruned,
     generation: Object.freeze({

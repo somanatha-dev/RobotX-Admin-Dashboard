@@ -120,6 +120,9 @@ describe("§6.3 — expandCandidates, end to end", () => {
       targetFeasible: 1,
       maxEvaluated: 10,
       maxExpansionTiers: 2,
+      // §6.3 requires the k-ring expansion to be bounded; `expandCandidates` refuses
+      // to run tier 2 without either this or a wall-clock budget.
+      maxRadiusMetres: 5_000,
       kv,
       loadAgentSnapshot: baseAgentSnapshots([seeded]),
       waitUntilAvailableFor: async () => 0,

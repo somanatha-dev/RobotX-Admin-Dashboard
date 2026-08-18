@@ -247,6 +247,10 @@ function prepare(network) {
 
   const arcHead = new Int32Array(arcCount);
   const arcResidual = new Int32Array(arcCount);
+  // The capacities as built, kept alongside the residuals the run consumes. `certify()`'s
+  // first condition is feasibility, and feasibility is conservation *and* capacity; without
+  // the original capacities the second half cannot be checked at all, only argued.
+  const arcCapacity = new Int32Array(arcCount);
   const arcCostScaled = new Float64Array(arcCount);
   const arcCostUnassigned = new Float64Array(arcCount);
   const arcCostMoney = new Float64Array(arcCount);
@@ -254,6 +258,7 @@ function prepare(network) {
   for (let arc = 0; arc < arcCount; arc += 1) {
     arcHead[arc] = network.arcTo[arc];
     arcResidual[arc] = network.arcCapacity[arc];
+    arcCapacity[arc] = network.arcCapacity[arc];
     arcCostScaled[arc] = Number(collapsed[arc]);
     arcCostUnassigned[arc] = Number(network.arcCost[arc][0]);
     arcCostMoney[arc] = Number(network.arcCost[arc][1]);
@@ -285,6 +290,7 @@ function prepare(network) {
       requiredFlow: network.requiredFlow,
       arcHead,
       arcResidual,
+      arcCapacity,
       arcCostScaled,
       arcCostUnassigned,
       arcCostMoney,
@@ -466,13 +472,26 @@ function run(prepared, options) {
   let outcome = OUTCOME.OK;
 
   for (;;) {
-    if (settings.budgets) {
+    // §9.4's anytime requirement, at the only points where stopping is safe: **between**
+    // phases. `refine` returns when no node holds excess, so after one completed phase the
+    // flow is whole and feasible — every Leg is routed, to an agent or to the sink — and
+    // merely ε-optimal rather than optimal. That is a strictly better incumbent than a
+    // partially routed batch.
+    //
+    // `phasesCompleted > 0` is what makes "between phases" true rather than nearly true. The
+    // loop's first iteration is not between phases: it is *before* the first one, where the
+    // pseudoflow is the empty one and every unit of supply is still sitting on the source.
+    // Stopping there returned a result that `assemble()` read as an allocation naming no Leg
+    // at all — not a partial allocation but an absent one, reported as feasible. §9.4 asks the
+    // incumbent to be "a feasible solution and a bound", and before the first phase there is
+    // no such thing to return, so the budget cannot be honoured by returning early here. It is
+    // honoured by the phase after this one, and the overshoot that costs is one phase at the
+    // coarsest ε — measured at 3.5 ms (median of 5) against a ~400 ms whole solve at §20.1's
+    // own 500 × 200 shape, which is the price of the contract holding unconditionally rather
+    // than usually.
+    if (settings.budgets && phasesCompleted > 0) {
       const permitted = settings.budgets.continueSolving();
       if (!permitted.ok) {
-        // §9.4's anytime requirement. Between phases the flow is complete and feasible — every
-        // Leg is routed, to an agent or to the sink — and merely ε-optimal rather than optimal.
-        // That is a strictly better incumbent than a partially routed batch, and it is the only
-        // point in this algorithm where one exists.
         budgetLimited = true;
         break;
       }
@@ -553,7 +572,7 @@ function approximatePrices(prepared, state) {
  *   potentialUnassigned: Float64Array, converged: boolean, dualsTight: boolean }}
  */
 function certify(prepared, state, options) {
-  const { nodeCount, arcCount, sourceNode, arcHead, arcResidual, arcCostUnassigned, arcCostMoney } = prepared;
+  const { nodeCount, arcCount, sourceNode, arcHead, arcResidual, arcCapacity, arcCostUnassigned, arcCostMoney } = prepared;
   const settings = options || {};
 
   const problems = [];
@@ -629,8 +648,9 @@ function certify(prepared, state, options) {
     return { ok: false, problems, potentialMoney, potentialUnassigned, converged, dualsTight: false };
   }
 
-  // Condition 1 — feasibility. Excess is the flow-conservation residue, so all-zero is exactly
-  // "every Leg routed, nothing left in transit".
+  // Condition 1 — feasibility, which is conservation **and** capacity. Excess is the
+  // flow-conservation residue, so all-zero is exactly "every Leg routed, nothing left in
+  // transit"; the capacity half is the arc-pair identity below.
   for (let node = 0; node < nodeCount; node += 1) {
     if (state.excess[node] !== 0) {
       problems.push(
@@ -638,6 +658,33 @@ function certify(prepared, state, options) {
           "Flow conservation is the first half of the optimality certificate.",
       );
       break;
+    }
+  }
+
+  // The capacity half, computed rather than argued. `residual + residual(reverse)` is
+  // invariant under push and relabel, so a pair whose residuals no longer sum to the pair's
+  // total capacity has had flow created or destroyed, and a negative residual is flow beyond
+  // capacity in one direction or below zero in the other. Both are cheap to check and neither
+  // was checked before: this condition was stated in the module header and argued from the
+  // push/relabel invariants, which is precisely the kind of claim the certificate exists to
+  // stop taking on trust.
+  if (arcCapacity) {
+    for (let arc = 0; arc < arcCount; arc += ARC_PAIR_STRIDE) {
+      const reverse = arc ^ 1;
+      if (arcResidual[arc] < 0 || arcResidual[reverse] < 0) {
+        problems.push(
+          `arc ${arc} has residual capacities (${arcResidual[arc]}, ${arcResidual[reverse]}), one of which is ` +
+            "negative, so the returned flow exceeds a capacity. Capacity is the second half of feasibility.",
+        );
+        break;
+      }
+      if (arcResidual[arc] + arcResidual[reverse] !== arcCapacity[arc] + arcCapacity[reverse]) {
+        problems.push(
+          `arc ${arc}'s residuals sum to ${arcResidual[arc] + arcResidual[reverse]} against a pair capacity of ` +
+            `${arcCapacity[arc] + arcCapacity[reverse]}, so flow was created or destroyed on it rather than moved.`,
+        );
+        break;
+      }
     }
   }
 

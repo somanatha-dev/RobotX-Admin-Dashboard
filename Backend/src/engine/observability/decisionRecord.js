@@ -174,6 +174,70 @@ function snapshotRow(input) {
 }
 
 /**
+ * Find the partition of a round result that decided one Leg.
+ *
+ * ── Why this is a lookup and not an assumption ──────────────────────────────
+ * §9.4 partitions a round into disjoint sub-problems and solves each independently, and
+ * `PHASE_10_REMEDIATION_AND_CLOSURE.md`'s D5 established that those results **compose**
+ * rather than compete. Two partitions of one round can therefore be decided by two
+ * different solvers, with two different certification states and two different truncation
+ * gaps. Attributing the round's first partition — or a roll-up of all of them — to every
+ * Leg would put a claim in the record that no solve made about that Leg.
+ *
+ * Returns `null` when the Leg was decided before any partition existed (no feasible
+ * candidate, an unsolvable regime), which is the honest answer: there was no solve, so
+ * there is no solver, no certification and no gap. `null` is not `false`, and a record
+ * that said `optimalityCertified: false` for a Leg nothing ever tried to optimise would
+ * be describing a failure that did not happen.
+ *
+ * @param {object} round the frozen `round.execute()` result
+ * @param {string} legId
+ * @returns {object|null} the partition report, or null
+ */
+function partitionFor(round, legId) {
+  const target = String(legId);
+  const partitions = (round && round.partitions) || [];
+  return partitions.find((part) => Array.isArray(part.legIds) && part.legIds.includes(target)) || null;
+}
+
+/**
+ * The truncation gap of one solve: `objective − bound`, in exact int64 milli-CU.
+ *
+ * Handoff P11-3. Zero for a certified result — the solver returns `objective === bound`
+ * when it proves optimality — and positive only where a §9.4 budget stopped the search
+ * with an incumbent it could not prove optimal.
+ *
+ * `bigint` throughout and never `Number`: a float subtraction of two milli-CU objectives
+ * above 2^53 reports a gap of zero for two values that differ, and "the solve was exact"
+ * is the single most damaging thing this field could say falsely. Returns `null` — never
+ * `0n` — when either side is unmeasured, because an unmeasured gap and a proven-zero gap
+ * are opposite claims.
+ *
+ * ── What it does NOT bound, and why the record carries a second field ───────
+ * §9.3's objective is lexicographic — `(unassigned, milliCU)` — and Phase 10 publishes the
+ * money component as `objectiveMilliCU` / `boundMilliCU`. This subtraction is therefore
+ * the *money* gap. On a solve that stopped before its first scaling phase the incumbent
+ * leaves every Leg queued at money cost zero against a money lower bound of zero, so this
+ * returns `0n` for the worst incumbent the round can produce. That is arithmetically
+ * correct and, alone, misleading, which is why `tierAInputFor` records
+ * `legsUnassignedByIncumbent` beside it: the dominant component of the same gap.
+ *
+ * A negative result is returned as computed rather than clamped. It would mean the
+ * "bound" is not a bound, and clamping it to zero would hide a solver defect behind a
+ * field whose whole job is to show one.
+ *
+ * @param {object|null} partition a partition report
+ * @returns {bigint|null}
+ */
+function truncationGapOf(partition) {
+  if (!partition) return null;
+  const objective = partition.objectiveMilliCU;
+  const bound = partition.boundMilliCU;
+  if (typeof objective !== "bigint" || typeof bound !== "bigint") return null;
+  return objective - bound;
+}
+
+/**
  * Assemble the Tier A `build()` input for one Leg of a round result.
  *
  * This is the adapter between `solve/round.js`'s decision fragment — which is shaped
@@ -198,6 +262,9 @@ function tierAInputFor(input) {
   const pins = snapshot.pins && typeof snapshot.pins === "object" ? snapshot.pins : {};
   const legMeta = context.legMeta || {};
   const committed = (round.committed || []).find((entry) => String(entry.legId) === String(decision.legId)) || null;
+  // P11-2 / P11-3 — the sub-problem that actually decided this Leg, and the gap it left.
+  const partition = partitionFor(round, decision.legId);
+  const truncationGap = truncationGapOf(partition);
 
   return {
     identity: {
@@ -262,6 +329,16 @@ function tierAInputFor(input) {
       omegaPolicyMilliCU: (context.omega && context.omega.policyMilliCU) ?? null,
       searchGapMilliCU: decision.searchGapMilliCU ?? null,
       lpIpGapMilliCU: round.lpIpGapMilliCU ?? null,
+      // Taken from the deciding partition, not from the round, and not inferred from
+      // `outcome`. A Leg whose sub-problem never ran carries `null` on all five rather
+      // than a manufactured "not certified".
+      solver: partition ? (partition.solver ?? null) : null,
+      optimalityCertified: partition ? (partition.optimalityCertified ?? null) : null,
+      fallbackFrom: partition ? (partition.fallbackFrom ?? null) : null,
+      objectiveMilliCU: partition ? (partition.objectiveMilliCU ?? null) : null,
+      boundMilliCU: partition ? (partition.boundMilliCU ?? null) : null,
+      truncationGapMilliCU: truncationGap,
+      legsUnassignedByIncumbent: partition && Array.isArray(partition.unassigned) ? partition.unassigned.length : null,
       regime: round.regime ?? null,
       guarantees: round.guarantees
         ? { exact: round.guarantees.exact, exactOver: round.guarantees.exactOver, dualKind: round.guarantees.dualKind }
@@ -532,6 +609,8 @@ module.exports = {
   shadowDecisionIdFor,
   retentionFor,
   snapshotRow,
+  partitionFor,
+  truncationGapOf,
   tierAInputFor,
   selectTierB,
   writeRound,

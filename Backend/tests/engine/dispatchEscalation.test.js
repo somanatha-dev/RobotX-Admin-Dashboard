@@ -126,6 +126,64 @@ describe("bounded exponential backoff (§11.3)", () => {
   });
 });
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   The Phase 4 independent verification's issue 3. `backoffSeconds` was computed
+   and logged, and nothing consulted it: `claim` re-took every PENDING row on
+   every pass, so the real cadence was the tick interval — constant, unjittered,
+   fleet-wide identical. These assert the schedule is now enforced, not reported.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+describe("the backoff actually paces retries (§11.3)", () => {
+  test("a row that has never been attempted is due immediately — backoff paces retries, not first delivery", () => {
+    expect(escalation.retryDueAt({ row: row({ attempts: 0 }), retryWindowSeconds: RETRY_WINDOW_SECONDS })).toBeNull();
+    expect(escalation.isRetryDue({ row: row({ attempts: 0 }), storeTime: STORE_NOW, retryWindowSeconds: RETRY_WINDOW_SECONDS })).toBe(true);
+  });
+
+  test("an attempted row is not due until its backoff has elapsed, and is due after", () => {
+    const attempted = row({ attempts: 3, updatedAt: STORE_NOW });
+    const dueAt = escalation.retryDueAt({ row: attempted, retryWindowSeconds: RETRY_WINDOW_SECONDS });
+
+    expect(dueAt).toBeInstanceOf(Date);
+    expect(dueAt.getTime()).toBeGreaterThan(STORE_NOW.getTime());
+
+    const justBefore = new Date(dueAt.getTime() - 1);
+    expect(escalation.isRetryDue({ row: attempted, storeTime: justBefore, retryWindowSeconds: RETRY_WINDOW_SECONDS })).toBe(false);
+    expect(escalation.isRetryDue({ row: attempted, storeTime: dueAt, retryWindowSeconds: RETRY_WINDOW_SECONDS })).toBe(true);
+  });
+
+  test("the wait grows with the attempt count and never exceeds the retry window", () => {
+    const waits = [1, 2, 3, 9].map((attempts) => {
+      const dueAt = escalation.retryDueAt({
+        row: row({ id: "outbox-fixed", attempts, updatedAt: STORE_NOW }),
+        retryWindowSeconds: RETRY_WINDOW_SECONDS,
+      });
+      return (dueAt.getTime() - STORE_NOW.getTime()) / 1000;
+    });
+
+    expect(waits[0]).toBeLessThan(waits[1]);
+    expect(waits[1]).toBeLessThan(waits[2]);
+    for (const wait of waits) expect(wait).toBeLessThanOrEqual(RETRY_WINDOW_SECONDS);
+  });
+
+  test("jitter is drawn from the row id, so two rows decorrelate and one row replays identically (T6)", () => {
+    const fractions = ["outbox-1", "outbox-2", "outbox-3", "outbox-4"].map((id) => escalation.jitterFractionFor(id));
+    for (const fraction of fractions) {
+      expect(fraction).toBeGreaterThanOrEqual(0);
+      expect(fraction).toBeLessThan(1);
+    }
+    // Decorrelated: the whole point of jitter is that a fleet's retries do not arrive
+    // as one herd.
+    expect(new Set(fractions).size).toBe(fractions.length);
+    // And stable: the same row yields the same fraction on every pass, in every worker,
+    // after every restart. A redrawn fraction would make `retryDueAt` non-monotonic.
+    expect(escalation.jitterFractionFor("outbox-1")).toBe(fractions[0]);
+  });
+
+  test("a row with no recorded last attempt is due rather than deferred forever", () => {
+    expect(escalation.retryDueAt({ row: row({ attempts: 2, updatedAt: null }), retryWindowSeconds: RETRY_WINDOW_SECONDS })).toBeNull();
+  });
+});
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Step 3 — consecutive, not a rate
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -318,8 +376,55 @@ describe("the outbox drain worker", () => {
     await worker.drainOnce(deps(store, async () => ({ delivered: false, detail: "AGENT_NOT_CONNECTED" })), settings, "w1");
     expect(store.rows("outbox")[0].state).toBe(outbox.OUTBOX_STATE.PENDING);
 
+    // §11.3 — the row is retried, but not instantly. The pass that follows the failure
+    // too closely takes nothing; the pass after the backoff has elapsed delivers. Before
+    // the backoff was enforced this second `drainOnce` delivered immediately, which is
+    // what made the retry cadence the tick interval rather than the schedule.
+    let attemptedInsideBackoff = false;
+    await worker.drainOnce(
+      deps(store, async () => {
+        attemptedInsideBackoff = true;
+        return { delivered: true };
+      }),
+      settings,
+      "w1",
+    );
+    expect(attemptedInsideBackoff).toBe(false);
+    expect(store.rows("outbox")[0].state).toBe(outbox.OUTBOX_STATE.PENDING);
+
+    store.advanceClock(RETRY_WINDOW_SECONDS);
     await worker.drainOnce(deps(store, async () => ({ delivered: true })), settings, "w1");
     expect(store.rows("outbox")[0].state).toBe(outbox.OUTBOX_STATE.DELIVERED);
+  });
+
+  test("a backlog of backing-off rows does not starve a fresh command behind it (§11.3)", async () => {
+    const store = buildStore();
+
+    // Fill the head of the queue with rows that have already failed an attempt, so they
+    // are the oldest *and* deferred. A claim window equal to the batch size would stop
+    // at them and take nothing.
+    for (let index = 0; index < 5; index += 1) {
+      await enqueueOffer(store, { command: "RECALL", sequence: index + 1 });
+    }
+    await worker.drainOnce(deps(store, async () => ({ delivered: false, detail: "AGENT_NOT_CONNECTED" })), settings, "w1");
+    expect(store.rows("outbox").every((r) => r.state === outbox.OUTBOX_STATE.PENDING)).toBe(true);
+
+    // A brand-new command arrives behind them. It has never been attempted, so §11.3
+    // defers nothing about it.
+    store.advanceClock(1);
+    await enqueueOffer(store, { sequence: 99 });
+
+    const delivered = [];
+    await worker.drainOnce(
+      deps(store, async (_agentId, envelope) => {
+        delivered.push(envelope.sequence);
+        return { delivered: true };
+      }),
+      settings,
+      "w1",
+    );
+
+    expect(delivered).toEqual([99]);
   });
 
   test("a row past its validity is expired before it is ever offered to the transport (§23.3)", async () => {

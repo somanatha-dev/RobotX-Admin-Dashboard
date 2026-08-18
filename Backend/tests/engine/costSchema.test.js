@@ -608,3 +608,95 @@ describe("the phase boundary", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Phase 8 remediation — §13.2's NULL-bearing cohort key.
+ *
+ * Found by `tools/verify/phase8LiveDatabase.js` against PostgreSQL 18.3: the
+ * five-part unique key was NULLS DISTINCT, so the *broad* cohorts §13.2's ladder
+ * falls back to were unconstrained and a duplicate was accepted. `loadVersion()`
+ * then returned whichever row the database listed last, making a pinned model
+ * version yield different dwell times on two loads — a §9.6 replay defect.
+ *
+ * The same class of defect, and the same repair, that Phase 6 applied to
+ * `RejectionAggregate`. Closed at the storage layer by migration
+ * 20260818090000 and, independently, in the reader below.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+describe("Phase 8 remediation — the cohort key binds its NULL-bearing rows", () => {
+  const NULLS_MIGRATION_PATH = path.join(
+    BACKEND_ROOT,
+    "prisma",
+    "migrations",
+    "20260818090000_service_time_model_nulls_not_distinct",
+    "migration.sql",
+  );
+  const nullsMigration = fs.readFileSync(NULLS_MIGRATION_PATH, "utf8");
+
+  test("the remediation migration redeclares the key NULLS NOT DISTINCT over the identical columns", () => {
+    expect(normalise(nullsMigration)).toContain(
+      normalise(`CREATE UNIQUE INDEX "ServiceTimeModel_version_siteId_stopType_missionClass_hourO_key"
+        ON "ServiceTimeModel" ("version", "siteId", "stopType", "missionClass", "hourOfWeek")
+        NULLS NOT DISTINCT`),
+    );
+  });
+
+  test("it drops no column and rewrites no table — the index is replaced in place", () => {
+    const statements = nullsMigration.replace(/^--.*$/gm, "");
+    expect(statements).not.toMatch(/DROP TABLE|DROP COLUMN|RENAME|ALTER COLUMN|TRUNCATE/);
+    // The only DELETE is the duplicate reduction a tightened unique key requires, and it
+    // touches nothing outside a group of size > 1.
+    expect(statements).toMatch(/ROW_NUMBER\(\) OVER \(\s*PARTITION BY/);
+    expect(statements).toMatch(/ranked\."ordinal" > 1|ranked\.ordinal > 1/);
+  });
+
+  test("the duplicate reduction is deterministic, and keeps the best-supported fit (§13.2)", () => {
+    // sampleCount is §13.2's shrinkage weight, so the largest is the least-shrunk
+    // estimate; `id` ends the order so the outcome cannot depend on physical row order.
+    expect(nullsMigration).toMatch(/ORDER BY "sampleCount" DESC, "fittedAt" DESC, "id" ASC/);
+  });
+
+  test("the schema records that the clause lives only in the migration, and why", () => {
+    expect(schema).toMatch(/This index is `NULLS NOT DISTINCT` in the database, which Prisma cannot express/);
+    expect(schema).toContain("20260818090000_service_time_model_nulls_not_distinct");
+  });
+
+  test("loadVersion refuses a version whose cohort key is claimed twice, rather than picking one", async () => {
+    const worker = require("../../src/workers/serviceTimeModel.worker");
+    const broad = (id, sampleCount) => ({
+      id,
+      version: 3,
+      siteId: null,
+      stopType: "DROP",
+      missionClass: null,
+      hourOfWeek: null,
+      meanSeconds: sampleCount === 40 ? 120 : 600,
+      sdSeconds: 10,
+      sampleCount,
+    });
+    // Two rows for one broad cohort — the pair NULLS DISTINCT used to permit.
+    const prisma = {
+      serviceTimeModel: { findMany: async () => [broad("row-a", 40), broad("row-b", 39)] },
+    };
+    await expect(worker.loadVersion({ prisma }, 3)).rejects.toThrow(/two rows for cohort/);
+    await expect(worker.loadVersion({ prisma }, 3)).rejects.toThrow(/§9.6 requirement 6/);
+  });
+
+  test("loadVersion reads in a total, deterministic order so the map cannot depend on row order", async () => {
+    const worker = require("../../src/workers/serviceTimeModel.worker");
+    let observedArgs = null;
+    const prisma = {
+      serviceTimeModel: {
+        findMany: async (args) => {
+          observedArgs = args;
+          return [
+            { id: "r1", version: 3, siteId: null, stopType: "DROP", missionClass: null, hourOfWeek: null, meanSeconds: 120, sdSeconds: 10, sampleCount: 40 },
+          ];
+        },
+      },
+    };
+    const models = await worker.loadVersion({ prisma }, 3);
+    expect(observedArgs.orderBy).toEqual([{ sampleCount: "desc" }, { fittedAt: "desc" }, { id: "asc" }]);
+    expect(models["stopType=DROP"]).toEqual({ n: 40, meanSeconds: 120, sdSeconds: 10 });
+  });
+});

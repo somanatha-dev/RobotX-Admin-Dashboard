@@ -97,6 +97,50 @@ const TIER_NAMES = Object.freeze(TIERS.map((row) => row.tier));
 const REQUIRED = "shortfall probability within alpha[tier] at all three tiers (§14.5)";
 
 /**
+ * Resolve `α[tier]` from the derived `energy.shortfall_probability` map.
+ *
+ * ── Why this is spelled out rather than a generic indexed read ───────────────
+ * This predicate deliberately re-derives its own targets instead of reading the
+ * `target` field `energy/tiers.js` already computed: F34 must not take the threshold
+ * from the producer whose output it is checking. That independence is only safe while
+ * the two transcriptions agree, and a generic `readIndexedParameter(map, tier, class)`
+ * did **not** agree — it indexes `map[tier][class]`, while `energy/tiers.js`'s
+ * `alphaFor()` indexes `map[class][tier]`. The two are transposed.
+ *
+ * Under the shape `config/derived.js` publishes today — a flat tier-keyed map, per
+ * Appendix A's `indexedBy: ["tier"]` — both readings land on the same number and the
+ * disagreement is invisible. The moment a class-keyed entry is published (which
+ * `alphaFor()` documents as supported, and which the register's `specScope:
+ * "sla_class"` invites) the readings part company, and they part in the **permissive**
+ * direction for this predicate: the energy model would use the stricter class target
+ * while F34 compared against the looser fleet default, admitting a plan the
+ * authoritative model calls infeasible. On a class I predicate that is a false
+ * positive, which §7.3's "unknown is never permission" exists to make impossible.
+ *
+ * So this resolves α with `alphaFor()`'s precedence exactly — a class-keyed entry wins
+ * over the tier-keyed default — and refuses any other shape rather than digging into
+ * it. The set of maps F34 accepts is now a subset of the set `energy/tiers.js` accepts,
+ * which is what makes "F34 admits ⟹ the energy model agrees" hold structurally.
+ *
+ * The range check is `alphaFor()`'s too: Appendix A bounds this parameter to [0, 1],
+ * and an α at or above 1 would make the tier vacuously satisfied for every plan.
+ *
+ * @param {object} map the resolved `energy.shortfall_probability` map
+ * @param {string} tier `T1` | `T2` | `T3`
+ * @param {string|null|undefined} slaClass
+ * @returns {number|undefined} the target, or `undefined` when it cannot be resolved
+ */
+function alphaFor(map, tier, slaClass) {
+  const byClass =
+    slaClass && map[slaClass] && typeof map[slaClass] === "object" ? map[slaClass][tier] : undefined;
+  const alpha = tv.isNumber(byClass) ? byClass : map[tier];
+  // @structural a probability target is a number strictly inside (0, 1); the bound is
+  // Appendix A's own range for this parameter, not a tunable threshold
+  if (!tv.isNumber(alpha) || alpha <= 0 || alpha >= 1) return undefined;
+  return alpha;
+}
+
+/**
  * @param {object} context `{ agentSnapshot, mission, plan, config }`
  * @returns {object} a `threeValued` predicate result
  */
@@ -151,8 +195,7 @@ function evaluate(context) {
   const evaluated = [];
 
   for (const row of TIERS) {
-    const alpha = tv.readIndexedParameter(alphaMap, row.tier, slaClass);
-    const target = tv.isNumber(alpha) ? alpha : tv.isNumber(alphaMap[row.tier]) ? alphaMap[row.tier] : undefined;
+    const target = alphaFor(alphaMap, row.tier, slaClass);
 
     if (!tv.isNumber(target)) {
       return tv.absent(`alpha[${row.tier}] for SLA class "${String(slaClass)}"`, {

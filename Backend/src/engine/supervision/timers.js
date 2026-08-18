@@ -188,6 +188,22 @@ function deadlineFor(entityType, state) {
  * the version moved on and discards, which is *correct* but doubles the handler load
  * during exactly the incident that produced the retry.
  *
+ * **How that idempotency is delivered, precisely, because the two halves differ.** The
+ * read-before-write below returns the existing row for a *sequential* retry. Under two
+ * genuinely concurrent transactions that both read the key as absent, the winner creates
+ * and the loser's `create` is refused by the `timerKey` unique index — its transaction
+ * aborts and its caller sees the violation. Reproduced against live PostgreSQL during
+ * Phase 5's remediation, where the review that raised it could only reason about it.
+ *
+ * That is the correct behaviour and not merely the tolerable one: **one timer exists
+ * either way**, which is the property this comment is about, and the guarantee is the
+ * database's rather than this function's. Catching the violation and re-reading is not
+ * available as an alternative — PostgreSQL aborts the whole transaction on a constraint
+ * violation, so there is no "read it again" to perform inside the caller's transaction
+ * without a savepoint this module has no business opening. A loser that rolls back its
+ * whole transition and retries is exactly §4.1 rule 2's discipline applied to the timer
+ * store, and it leaves no partial state behind.
+ *
  * @param {object} tx a Prisma transaction client
  * @param {object} input
  * @param {string} input.entityType
@@ -219,8 +235,19 @@ async function register(tx, input) {
   if (!(source.dueAt instanceof Date) || Number.isNaN(source.dueAt.getTime())) {
     throw new TypeError("a deadline is an absolute instant from the store's clock (§10.6)");
   }
+  // §4.5's defence in depth, over the **entity the caller supplied** — which is the object
+  // whose fields could be mistaken for a version, and therefore the only object on which
+  // this check means anything. Until Phase 5's remediation it inspected `source` (the call
+  // arguments) instead, where none of these names is ever passed, so it could not fire; the
+  // supervised entity kinds carry no agent-scope counter, so an entity that has one is an
+  // Agent row, or an entity object somebody widened with one, and both are the §4.5 defect.
+  //
+  // The structural guarantee is still `VERSION_SOURCE`, which reads only `version`/`fence`
+  // and nothing else. This catches the case that guarantee cannot: an object that carries a
+  // plausible `version` *and* an agent-scope counter, where the caller has conflated the two
+  // scopes and the key would be right today by luck rather than by construction.
   for (const forbidden of FORBIDDEN_VERSION_SOURCES) {
-    if (source.entity && Object.prototype.hasOwnProperty.call(source, forbidden)) {
+    if (source.entity && Object.prototype.hasOwnProperty.call(source.entity, forbidden)) {
       throw new TypeError(
         `a timer may not be keyed on "${forbidden}" (§4.5). Keying on the agent's epoch invalidates every timer ` +
           "for every other Leg that agent is carrying, which removes supervision from missions that are executing " +

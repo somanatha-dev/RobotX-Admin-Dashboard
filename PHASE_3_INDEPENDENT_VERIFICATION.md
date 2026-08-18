@@ -1,5 +1,40 @@
 # Phase 3 — Independent Architecture Verification Report
 
+> ## ▲ Addendum, 2026-08-15 — every finding below has been dispositioned by execution
+>
+> This report was written on 2026-07-29 against a Phase 3 that had never touched a
+> database. A re-verification on 2026-08-14/15 built a disposable PostgreSQL 18.3
+> instance, applied the migration chain to it, drove the shipped commit path against it,
+> and ran TLC. **The original text below is preserved unaltered** — a verification report
+> edited to agree with a later run stops being evidence of anything — and the disposition
+> of each of its seven findings is recorded in the new **PART 15**.
+>
+> **Headline: this review's two most consequential findings were both correct, and one of
+> them was more serious than it judged itself to be.**
+>
+> - Finding #1 (the `exhaustive` flag and the "invisible at capacity 1" claim) is
+>   **confirmed and fixed**. Both halves of it were right.
+> - Finding #3 (error-classification fragility) was rated *moderate, not blocking*, on the
+>   reasoning that "Prisma's PostgreSQL connector commonly does surface the constraint name
+>   in the top-level message … which is consistent with the code's assumption". **Execution
+>   falsified that reasoning.** The constraint name appears nowhere in the error Prisma
+>   actually raises, so the classifier failed and `commit()` would have re-thrown a raw
+>   driver error. It was a real defect, not a risk.
+> - Finding #2 (the untested concurrent identical-key retry) is **now executed**, and this
+>   review's hand-traced prediction of what would happen was correct.
+> - Findings #4, #5 and #6 were **closed by later phases** before this re-verification.
+> - Finding #7 (no live database) is **discharged** for PostgreSQL 18.3.
+>
+> One claim *this* report made is withdrawn in PART 15.3: its Part 12 stress table records
+> "two workers committing simultaneously … exactly two winners — **Safe, empirically
+> confirmed**". That was confirmed against the JavaScript store model, and it does not hold
+> on PostgreSQL.
+>
+> Full evidence: `PHASE_3_IMPLEMENTATION_REPORT.md` (2026-08-15 edition) and
+> `Backend/tools/verify/phase3LiveDatabase.js`.
+
+---
+
 **Verifier role:** Independent Architecture Verification Engineer (did not implement Phase 3)
 **Date:** 2026-07-29 · **Branch:** `feature/dashboard` · **Working tree at verification:** `4244b3d` + uncommitted Phases 1–3
 **Method:** Evidence re-derived from spec text, code execution, and byte-level diffs. The implementation
@@ -566,6 +601,103 @@ should not be allowed to stand uncorrected into later phases that will cite this
 
 ---
 
+## PART 15 — Disposition of every finding, 2026-08-15
+
+Added after the re-verification. Nothing above this line was altered.
+
+### 15.1 The seven findings of PART 14
+
+| # | Finding as recorded | Disposition | Evidence |
+|---|---|---|---|
+| 1 | The `exhaustive` flag ignores the depth truncation; the "invisible at capacity 1" claim is false at greater depth | **CONFIRMED — FIXED** | Reproduced exactly: the `perAgentFenceMaximum` mutation is clean at capacity 1 / depth 9 and produces 4 violations at depth 12, and again in a **closed** search at depth 21 (1 669 states, frontier emptied). `commitmentModel.js` now reports `exhaustive`, `depthTruncated` and `stateCapExceeded` separately; `commitmentModelCheck.test.js` asserts closure where affordable and asserts *truncation* where not, and carries three tests whose only job is to fail if the distinction is ever collapsed again. This review's **recommendation (a) and (b) were both taken**: the flag was redefined *and* the search was deepened to the measured diameter (21 at capacity 1 and 2) |
+| 1a | The corrected narrative | **REPLACED, not merely softened** | The claim now asserted is what the traces actually show: at capacity 1 the counterexample requires a commitment to **settle** first — a stale redelivery for a commitment that is no longer active — and never involves two commitments held at once. §10.3.1's own worked example is the concurrent one, which only capacity ≥ 2 can exhibit. That is the precise form of §24.2's argument, and it is what this review's Part 3.4 correctly described as "a narrower reading of I19 than the report's language claims" |
+| 2 | No test exercises a truly concurrent retry with an identical idempotency key | **CONFIRMED — CLOSED BY EXECUTION** | 8 concurrent `commit()` calls with identical `(agentId, legId, decisionRoundId)` against real PostgreSQL: 1 committed, 7 × `SERIALIZATION_FAILURE`, **0 threw**. One commitment row, one fence, one Leg version increment, one audit row. **This review's hand-traced prediction in Part 4.1 was correct** — the shared Agent row lock plus SSI resolves it to a graceful abort |
+| 3 | `isCapacityConstraintViolation` relies on substring matching validated only against the store model's synthetic error text | **CONFIRMED — AND IT WAS A DEFECT, NOT A RISK** | See 15.2 |
+| 4 | `request.agentId`/`request.legId` are named after business identifiers but require primary keys; no fixture could catch a caller passing the wrong one | **CLOSED by a later phase, and now positively tested** | `commit.js` carries `diagnoseMissingRow`, which distinguishes `AGENT_ID_IS_A_BUSINESS_KEY` / `LEG_ID_IS_A_BUSINESS_KEY` from a genuinely absent row. The live harness seeds `Agent.agentId = "BUSINESS-" + Agent.id`, so the two identifiers differ — the fixture defect this review identified as untestable — and both paths are exercised: passing the business key names the misuse, passing a nonexistent id reports `AGENT_NOT_FOUND` |
+| 5 | `TIERS.md` omits `commitment/leases.js` from T0-05 | **CLOSED** | `src/engine/TIERS.md` line 59 now lists it alongside `commit.js`, `guards.js`, `model.js`, `idempotency.js` and `clock.js` |
+| 6 | The two seams are described in parallel language but enforced asymmetrically | **CLOSED by Phase 4** | `sideEffects` is now a hard requirement whose absence throws with a named error, symmetrically with `volatileRecheck`. §10.3.2 step 5 is unconditional, and Phase 4's gate is now enforced by construction rather than by review |
+| 7 | No migration has been applied to a live PostgreSQL instance; Phase 3's is the first with a partial index, a `plpgsql` trigger and a data `INSERT` | **DISCHARGED for PostgreSQL 18.3** | Phases 1→3 (10 migrations) and the full chain (21) both applied cleanly to a disposable 18.3 cluster. The trigger function **compiles** (`pg_proc`: `plpgsql`, volatile); the partial index exists with predicate `("releasedAt" IS NULL)` read from `pg_index`; the seeded row is present and re-executing its `INSERT … ON CONFLICT DO NOTHING` reported `INSERT 0 0`. 17 direct writes bypassing the application produced 17 correct verdicts. **Not** discharged against production or a production-shaped dump |
+
+### 15.2 Finding #3 in full — where this review's reasoning was insufficient
+
+Part 7.1 concluded:
+
+> Prisma's PostgreSQL connector commonly does surface the constraint name in the top-level
+> message for this class of error, which is consistent with the code's assumption — but
+> this review, like the implementation report, could not confirm it against a live database.
+
+The confirmation was performed on 2026-08-15. Each of the three ways the backstop can fire
+was driven against PostgreSQL 18.3 through Prisma 5.22 and the error object dumped:
+
+| Path | `code` | `meta` | Does the message name the index? |
+|---|---|---|---|
+| `prisma.commitment.create()` — **the shape the commit path produces** | `"P2002"` | `{ modelName: "Commitment", target: ["agentId","capacitySlot"] }` | **No.** The message is `Unique constraint failed on the fields: (\`agentId\`,\`capacitySlot\`)` |
+| `$executeRawUnsafe` | `"P2010"` | `{ code: "23505", message: 'Key ("agentId", "capacitySlot")=(…) already exists.' }` | No — and the SQLSTATE is *beneath* Prisma's own code, which the old `error.code \|\| error.meta.code` shadowed |
+| The slot-bound trigger | `undefined` | `undefined` | Only its own `RAISE` text — which is why this one path *did* classify |
+
+So two of the three shapes failed to classify, including the only one `commit()` can
+produce. The consequence is the one this review predicted: `commit()`'s promise would
+**reject with the raw Prisma error** rather than resolving to `ABORTED` /
+`CAPACITY_CONSTRAINT_VIOLATED`. This review's severity call ("not a safety gap") stands —
+the database still refuses the write and nothing is persisted — but its likelihood call
+("consistent with the code's assumption") did not.
+
+`isCapacityConstraintViolation` now matches four shapes, and deliberately does **not**
+classify a `commitmentId` collision, which is an idempotency-key collision rather than a
+capacity violation. Seven regression tests were added, built from the error objects
+transcribed verbatim from that run — the fixtures this review correctly identified as the
+thing that could not be written from documentation.
+
+### 15.3 One claim from this report is withdrawn
+
+Part 12's stress table records:
+
+> Two workers committing simultaneously (same agent, distinct Legs, capacity 2) →
+> Reproduced directly: exactly two winners, distinct slots, distinct fences,
+> `authority_epoch` unmoved — **Safe, empirically confirmed**
+
+That was reproduced against `helpers/commitmentStore.js`, and it does not hold on
+PostgreSQL. Eight concurrent commits against a capacity-2 agent produce **one** winner and
+seven `SERIALIZATION_FAILURE`s: every attempt takes `FOR UPDATE` on the same Agent row, and
+under SERIALIZABLE a blocked reader whose row was updated by a committed concurrent
+transaction is aborted with `40001` rather than permitted to re-read. Two winners require
+two rounds — which is §10.3.2's own disposition for a failed commit ("returns the pairing to
+the next round with the cause recorded"), so the design is unaffected.
+
+The safety half of the claim is intact and was re-confirmed on the live database: capacity
+was never exceeded in any run, and after the next round the agent holds exactly two active
+commitments in slots `[0,1]` with distinct fences and an unmoved `authority_epoch`.
+
+Two further claims in the implementation report fell to the same cause and are withdrawn in
+`PHASE_3_IMPLEMENTATION_REPORT.md` §22.3. The general lesson this review had already
+recorded in its own risk framing — that the store model is not PostgreSQL — is now
+demonstrated rather than warned about, and the model's *storm* results should no longer be
+cited as statements about production. Its guard and fencing results are pure functions and
+remain sound.
+
+### 15.4 What the re-verification adds that this report could not
+
+| Question this report left open | Answer |
+|---|---|
+| Does Prisma's `isolationLevel: "Serializable"` reach the connection? | **Yes.** `SHOW transaction_isolation` inside `runSerializable` returns `serializable`; a bare `$transaction` returns `read committed`, confirming B9's premise |
+| Does `SELECT … FOR UPDATE` block? | **Yes.** The second acquirer obtained the row 3–4 ms *after* the first transaction released it |
+| Does the planner choose the partial index? | **Yes.** Over 16 000 rows after `ANALYZE`, both the point lookup and the commit path's active-set read use `Commitment_agent_capacity_slot_active_key` |
+| Does the `plpgsql` trigger compile and behave? | **Yes**, including the branch this report could only read: an insert naming a non-existent agent raises the trigger's `P0001` *before* the foreign key fires |
+| Is G1 load-bearing, or is it redundant with the isolation level? | **Both, depending on the race.** When the world moves *before* the transaction begins, G1 aborts. When it moves *during*, SERIALIZABLE aborts first with `40001` — so G1 was additionally driven at READ COMMITTED, where the store declines to intervene and the guard is demonstrably what fences the write |
+| Was TLC ever run? | **Now yes.** `commitment_c1.cfg` as checked in: complete state graph, 2 375 660 distinct states, diameter 21, no error. A reduced capacity-2 model: complete, 4 769 532 distinct states, no error. Capacity 3 did not complete and is reported as not completed |
+
+### 15.5 What remains open after this disposition
+
+1. TLC at capacity 3, and at capacity 2 with the checked-in configuration — resource-bound.
+2. No migration has touched production or a production-shaped dump; interactive-transaction
+   semantics on the pooled Neon endpoint are unconfirmed.
+3. `tests/engine/helpers/lifecycleModel.js` carries the **identical** `exhaustive` defect as
+   finding #1. It is Phase 15's artefact and was deliberately not changed here.
+4. Guard **G5** has no counterpart in either formal model — neither models a cancelled Leg,
+   so it is vacuous in both. Its evidence is the unit suite and the live run.
+
+---
+
 ## Appendix — Commands and scripts run for this verification (reproducible)
 
 ```
@@ -602,3 +734,25 @@ git diff --stat Backend/src/controllers/robots.controller.js Backend/src/control
 Working tree left clean; every planted violation was manually reverted and independently re-diffed to
 confirm exact restoration. No scratch files remain in the repository (`tmp_verify/` was created and
 removed during this session).
+
+### Appendix B — commands run for the 2026-08-15 disposition (PART 15)
+
+```
+initdb -D <scratch>/pgdata3 -U pgverify -A trust -E UTF8 --locale=C
+postgres -D <scratch>/pgdata3 -p 55432 -c listen_addresses=127.0.0.1   # disposable; 5432 untouched
+psql -v ON_ERROR_STOP=1 -f <each migration.sql>      # 10 migrations, then all 21
+psql -f schema-verify.sql       # pg_index / pg_constraint / pg_trigger / pg_proc read back
+psql -f backstop.sql            # 17 writes bypassing the application → 17/17 correct verdicts
+psql -f planner.sql             # EXPLAIN ANALYZE over 16 000 rows; partial index chosen
+DATABASE_URL=…/robotx_full   node tools/verify/phase3LiveDatabase.js   # 82/82
+DATABASE_URL=…/robotx_phase3 node tools/verify/phase3LiveDatabase.js   # 82/82 on Phases 1-3 alone
+java -cp tla2tools.jar tlc2.TLC -config commitment_c1.cfg -workers auto commitment.tla   # complete, 0 errors
+java -cp tla2tools.jar tlc2.TLC -config <capacity-2 reduced> -workers auto commitment.tla # complete, 0 errors
+npx jest tests/engine/commitmentModelCheck.test.js                     # 31/31
+npm run verify                                                          # 7 gates PASS; 145 suites / 6 378 tests
+pg_ctl -D <scratch>/pgdata3 -m fast stop && rm -rf <scratch>/pgdata3
+```
+
+The cluster, its two databases, and TLC's 11 GB state queue were all created outside the
+repository and removed afterwards. The shared Neon instance named by `DATABASE_URL` and the
+developer's own cluster on port 5432 were never contacted.

@@ -463,7 +463,33 @@ function checkInvariants(state, shape) {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
- * Explore the state space exhaustively to a bounded depth.
+ * Explore the state space, reporting **why** the search stopped.
+ *
+ * ── Why this reports three separate facts rather than one flag ──────────────
+ * A search stops for one of three reasons, and only the first of them is a proof:
+ *
+ *   1. **The frontier emptied.** Every reachable state was visited. The result is a
+ *      statement about the protocol.
+ *   2. **The depth bound was hit** while an unvisited successor existed beyond it.
+ *      The result is a statement about the protocol *within N actions*, which is a
+ *      strictly weaker claim and one that a reader must be told about.
+ *   3. **The state cap was hit.** Likewise.
+ *
+ * An earlier form of this checker set a single `exhaustive` flag from condition 3
+ * alone. The depth bound — which every caller set, and which every caller hit — moved
+ * it not at all, so a search truncated at depth 9 reported itself identically to one
+ * that had closed. That is not an under-explained name; it is a claim of proof for a
+ * search that did not perform one, and it was found by re-running this checker at
+ * greater depth and watching the state count grow 8.6× at capacity 2.
+ *
+ * `exhaustive` is now true only when the frontier genuinely emptied. `depthTruncated`
+ * and `stateCapExceeded` say which bound intervened when it did not, and
+ * `maxDepthReached` reports how deep the search actually went, so "depth 12 was enough"
+ * is a measurement rather than an assumption.
+ *
+ * Detecting condition 2 precisely costs one extra expansion per node sitting at the
+ * bound: a node at the bound whose successors have all been seen already truncates
+ * nothing, and reporting it as truncation would understate what was proven.
  *
  * @param {object} shape
  * @param {number} shape.capacity
@@ -472,8 +498,9 @@ function checkInvariants(state, shape) {
  * @param {number} shape.depth maximum action count along any path
  * @param {number} [shape.maxLeaderChanges]
  * @param {number} [shape.maxQuarantines]
- * @param {number} [shape.maxStates] refuse to report a truncated search as a proof
- * @returns {{ exhaustive: boolean, states: number, transitions: number, violations: object[] }}
+ * @param {number} [shape.maxStates]
+ * @returns {{ exhaustive: boolean, depthTruncated: boolean, stateCapExceeded: boolean,
+ *             maxDepthReached: number, states: number, transitions: number, violations: object[] }}
  */
 function check(shape) {
   const settings = {
@@ -488,10 +515,13 @@ function check(shape) {
   const frontier = [{ state: start, depth: 0, trace: [] }];
   const violations = [];
   let transitions = 0;
-  let exhaustive = true;
+  let depthTruncated = false;
+  let stateCapExceeded = false;
+  let maxDepthReached = 0;
 
   while (frontier.length > 0) {
     const node = frontier.pop();
+    if (node.depth > maxDepthReached) maxDepthReached = node.depth;
 
     const broken = checkInvariants(node.state, settings);
     if (broken.length > 0) {
@@ -499,15 +529,22 @@ function check(shape) {
       if (violations.length > 3) break;
     }
 
-    if (node.depth >= settings.depth) continue;
+    const atBound = node.depth >= settings.depth;
 
     for (const action of ACTIONS) {
       for (const successor of action(node.state, settings)) {
         transitions += 1;
         const successorKey = key(successor.state);
         if (seen.has(successorKey)) continue;
+
+        // An unvisited state exists one action past the bound: the search is truncated
+        // by depth, and says so rather than reporting itself exhaustive.
+        if (atBound) {
+          depthTruncated = true;
+          continue;
+        }
         if (seen.size >= settings.maxStates) {
-          exhaustive = false;
+          stateCapExceeded = true;
           continue;
         }
         seen.add(successorKey);
@@ -520,7 +557,15 @@ function check(shape) {
     }
   }
 
-  return { exhaustive, states: seen.size, transitions, violations };
+  return {
+    exhaustive: !depthTruncated && !stateCapExceeded,
+    depthTruncated,
+    stateCapExceeded,
+    maxDepthReached,
+    states: seen.size,
+    transitions,
+    violations,
+  };
 }
 
 module.exports = { check, initialState, checkInvariants, LEG, CUSTODY, MAX_DELIVERIES_PER_MESSAGE };

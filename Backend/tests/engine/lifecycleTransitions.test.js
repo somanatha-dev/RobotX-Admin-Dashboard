@@ -16,6 +16,7 @@
 
 const cancellation = require("../../src/engine/lifecycle/cancellation");
 const custody = require("../../src/engine/domain/custody");
+const leases = require("../../src/engine/supervision/leases");
 const legMachine = require("../../src/engine/lifecycle/legMachine");
 const timers = require("../../src/engine/supervision/timers");
 const transitions = require("../../src/engine/lifecycle/transitions");
@@ -97,6 +98,78 @@ describe("§4.4 / §12.2 — lease expiry resolves by custody state and obstruct
 
   test("custody HELD with an unknown location strands as obstructing", () => {
     expect(transitions.leaseExpiryTarget({ custodyState: "HELD" })).toBe(S.STRANDED_OBSTRUCTING);
+  });
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     REGRESSION — Phase 5 remediation, finding 1.
+     `leaseExpiryTarget` restated §4.7's recovery assessment inline instead of
+     reading it from `supervision/leases.assessRecovery`, and the restatement had
+     drifted. These tests pin the agreement itself, not one example of it, because
+     the defect was a second implementation rather than a wrong branch.
+     ───────────────────────────────────────────────────────────────────────── */
+
+  test("DISPUTED custody takes the physical-recovery path, not the custody-NONE one", () => {
+    // §2.5: "Evidence conflicts… not knowing resolves to the conservative case", which is
+    // why `custody.holdsGoods("DISPUTED")` is true. Routing it to REASSIGNING applied the
+    // treatment §4.7 reserves for an agent carrying nothing, to a Leg that may be carrying
+    // goods — the exact failure §4.1 rule 4 exists to prevent.
+    expect(custody.holdsGoods("DISPUTED")).toBe(true);
+    expect(transitions.leaseExpiryTarget({ custodyState: "DISPUTED", obstructionClass: "CLEAR" })).toBe(S.STRANDED_SAFE);
+    expect(transitions.leaseExpiryTarget({ custodyState: "DISPUTED", obstructionClass: "BLOCKING_CRITICAL" })).toBe(
+      S.STRANDED_OBSTRUCTING,
+    );
+    expect(transitions.leaseExpiryTarget({ custodyState: "DISPUTED" })).toBe(S.STRANDED_OBSTRUCTING);
+  });
+
+  test("the table's target agrees with leases.assessRecovery for every custody state and obstruction class", () => {
+    // The property the finding was an instance of: §12.2's decision has one
+    // implementation, and this row reports it. A future edit that reintroduced a literal
+    // custody comparison here would fail this before it could reach a live timer handler.
+    for (const custodyState of custody.CUSTODY_STATE_NAMES) {
+      for (const obstructionClass of ["CLEAR", "RESTRICTIVE", "BLOCKING_CRITICAL", undefined]) {
+        const context = { custodyState, obstructionClass, leg: { state: S.EN_ROUTE_DROP } };
+        expect({ custodyState, obstructionClass, target: transitions.leaseExpiryTarget(context) }).toEqual({
+          custodyState,
+          obstructionClass,
+          target: leases.assessRecovery(context).legState,
+        });
+      }
+    }
+  });
+
+  test("§4.7 Resume continues the Leg where it is — it does not reassign it away from the incumbent", () => {
+    // §4.7's Resume mechanism is "Lease renewed, replan route, continue". Resolving it to
+    // REASSIGNING froze the Leg and took it from an incumbent that had just recovered.
+    const resumed = {
+      custodyState: "HELD",
+      agentReachable: true,
+      withinResumeWindow: true,
+      stillFeasible: true,
+      leg: { state: S.EN_ROUTE_DROP },
+    };
+    expect(leases.assessRecovery(resumed).outcome).toBe(leases.RECOVERY_OUTCOME.RESUME);
+    expect(transitions.leaseExpiryTarget(resumed)).toBe(S.EN_ROUTE_DROP);
+  });
+
+  test("an incumbent inside its resume window but no longer feasible is assessed, not resumed", () => {
+    // The second drift: the inline copy omitted `stillFeasible` from the Resume condition,
+    // so an infeasible incumbent was resumed on reachability alone.
+    const infeasible = {
+      custodyState: "HELD",
+      agentReachable: true,
+      withinResumeWindow: true,
+      stillFeasible: false,
+      obstructionClass: "CLEAR",
+      leg: { state: S.EN_ROUTE_DROP },
+    };
+    expect(leases.assessRecovery(infeasible).outcome).toBe(leases.RECOVERY_OUTCOME.PHYSICAL_RECOVERY);
+    expect(transitions.leaseExpiryTarget(infeasible)).toBe(S.STRANDED_SAFE);
+  });
+
+  test("an unrecognised custody state is refused, never read as NONE", () => {
+    // §2.5: "An unrecognised custody state is never treated as NONE." The literal
+    // comparison silently reassigned it; the shared assessment refuses it.
+    expect(() => transitions.leaseExpiryTarget({ custodyState: "PROBABLY_FINE" })).toThrow(/unknown custody state/);
   });
 });
 

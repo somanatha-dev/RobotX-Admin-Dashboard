@@ -32,7 +32,7 @@ const cChurn = require("../../src/engine/cost/cChurn");
 const cDefer = require("../../src/engine/cost/cDefer");
 const signDiscipline = require("../../src/engine/cost/signDiscipline");
 const units = require("../../src/engine/cost/units");
-const { toCU } = require("../../src/engine/determinism/fixedPoint");
+const { toCU, scaleByRate } = require("../../src/engine/determinism/fixedPoint");
 
 const COST_DIR = path.resolve(__dirname, "..", "..", "src", "engine", "cost");
 
@@ -873,5 +873,164 @@ describe("§8.8 — C_defer, present and switched off", () => {
 
   test("the disabled behaviour is immediate assignment, named", () => {
     expect(cDefer.degraded().breakdown.degradesTo).toMatch(/immediate assignment/);
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Phase 8 remediation — regression tests, one per defect closed.
+ *
+ * Each test below fails against the code as Phase 8 originally shipped. They are
+ * grouped here rather than folded into the suites above so that a reader can see
+ * what each defect was and what now prevents it.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+describe("Phase 8 remediation — §8.7's once-per-Mission rule is enforced where the sum happens", () => {
+  const targetMs = fixture.DECISION_TIME_MS + 40 * fixture.MINUTE_MS;
+  const lateMs = fixture.DECISION_TIME_MS + 45 * fixture.MINUTE_MS;
+  const parameters = fixture.delayParameters();
+
+  /** Two Legs of ONE Mission, both marked terminal — the shape §8.7 forbids. */
+  function doubleTerminalLegs() {
+    return [
+      { legId: "a", missionId: "m1", role: cDelay.LEG_ROLE.TERMINAL, targetMs, deadlineMs: targetMs, queueAgeSeconds: 0, committed: false },
+      { legId: "b", missionId: "m1", role: cDelay.LEG_ROLE.TERMINAL, targetMs, deadlineMs: targetMs, queueAgeSeconds: 0, committed: false },
+    ];
+  }
+
+  test("forPlan refuses a plan that would charge M_breach twice for one Mission", () => {
+    const plan = fixture.brandedPlan({ legs: doubleTerminalLegs() });
+    const result = cDelay.forPlan(plan, { a: lateMs, b: lateMs }, () => parameters);
+
+    // Before: ok:true, two breach steps, and a total inflated by exactly one M_breach.
+    expect(result.ok).toBe(false);
+    expect(result.milliCU).toBeNull();
+    expect(result.missing.join(" ")).toMatch(/M_breach appears once per Mission/);
+  });
+
+  test("the refusal reaches Φ, so no such plan can be priced", () => {
+    const plan = fixture.brandedPlan({ legs: doubleTerminalLegs() });
+    const result = phi.evaluate(
+      plan,
+      fixture.phiInput({ completionByLegId: { a: lateMs, b: lateMs } }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.milliCU).toBeNull();
+    expect(result.missing.join(" ")).toMatch(/C_delay: .*terminal Legs/);
+  });
+
+  test("two terminal Legs of DIFFERENT Missions remain priceable — the rule is per Mission", () => {
+    const legs = [
+      { legId: "a", missionId: "m1", role: cDelay.LEG_ROLE.TERMINAL, targetMs, deadlineMs: targetMs, queueAgeSeconds: 0, committed: true },
+      { legId: "b", missionId: "m2", role: cDelay.LEG_ROLE.TERMINAL, targetMs, deadlineMs: targetMs, queueAgeSeconds: 0, committed: false },
+    ];
+    const result = cDelay.forPlan(fixture.brandedPlan({ legs }), { a: lateMs, b: lateMs }, () => parameters);
+    expect(result.ok).toBe(true);
+    expect(result.terminalLegCount).toBe(2);
+    expect(result.perLeg.filter((row) => row.breached)).toHaveLength(2);
+  });
+});
+
+describe("Phase 8 remediation — a violated sign declaration refuses the price (§8.1, §6.4)", () => {
+  test("a C_policy credit beneath −Ω_policy makes Φ fail rather than report and continue", () => {
+    const plan = fixture.brandedPlan();
+    // The fixture offers a −20 CU zone-affinity credit; Ω_policy of 1 milli-CU cannot cover it.
+    const evaluateWithTightBound = () =>
+      phi.evaluate(
+        plan,
+        fixture.phiInput({ bounds: { omegaTerminalMilliCU: 0n, omegaPolicyMilliCU: 1n } }),
+      );
+
+    // In test, §8.1's escalation throws — the behaviour the checklist asks for and that
+    // nothing under src/ performed as shipped.
+    expect(phi.escalationEnabled()).toBe(true);
+    expect(evaluateWithTightBound).toThrow(/beneath its declared floor/);
+  });
+
+  test("outside dev/test the same violation is an unpriceable candidate, not a priced one", () => {
+    const plan = fixture.brandedPlan();
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      expect(phi.escalationEnabled()).toBe(false);
+      const result = phi.evaluate(
+        plan,
+        fixture.phiInput({ bounds: { omegaTerminalMilliCU: 0n, omegaPolicyMilliCU: 1n } }),
+      );
+      // Before: ok:true, a full milliCU value, and the finding stranded in `problems`,
+      // which no module under src/ reads.
+      expect(result.ok).toBe(false);
+      expect(result.milliCU).toBeNull();
+      expect(result.problems.join(" ")).toMatch(/beneath its declared floor/);
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
+  });
+
+  test("an absent Ω bound is a named missing input, not a note on a priced result", () => {
+    const plan = fixture.brandedPlan();
+    const result = phi.evaluate(plan, fixture.phiInput({ bounds: undefined }));
+    expect(result.ok).toBe(false);
+    expect(result.milliCU).toBeNull();
+    expect(result.missing.join(" ")).toMatch(/bounds\.omegaPolicyMilliCU/);
+  });
+
+  test("the bound a registered C_opportunity needs is required only while it is registered", () => {
+    const plan = fixture.brandedPlan();
+    expect(phi.missingBoundsFor(["C_policy"], { omegaPolicyMilliCU: 1n })).toEqual([]);
+    expect(phi.missingBoundsFor(["C_policy", "C_opportunity"], { omegaPolicyMilliCU: 1n })).toHaveLength(1);
+
+    phi.registerTerm("C_opportunity", (candidate, input) => cOpportunity.evaluate(candidate, input));
+    const result = phi.evaluate(
+      plan,
+      fixture.phiInput({
+        opportunity: fixture.opportunityInput(),
+        bounds: { omegaPolicyMilliCU: 900_000n },
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.missing.join(" ")).toMatch(/bounds\.omegaTerminalMilliCU/);
+  });
+
+  test("a correctly bounded plan is still priced, and reports no problems", () => {
+    const result = phi.evaluate(fixture.brandedPlan(), fixture.phiInput());
+    expect(result.ok).toBe(true);
+    expect(result.problems).toEqual([]);
+    expect(typeof result.milliCU).toBe("bigint");
+  });
+});
+
+describe("Phase 8 remediation — C_risk's lateness term uses the one specified rounding site (§9.6)", () => {
+  test("the probability scales the overrun through scaleByRate, not Math.round", () => {
+    const plan = fixture.brandedPlan();
+    const overrunMilliCU = 120_001n;
+    const lateProbability = 0.5;
+    const result = cRisk.evaluate(plan, fixture.riskInput({ overrunMilliCU, lateProbability }));
+
+    expect(result.ok).toBe(true);
+    // 120001 × 0.5 = 60000.5 — an exact half boundary. ROUND_HALF_AWAY_FROM_ZERO takes it
+    // to 60001, which Math.round also does for a positive value; the assertion pins the
+    // specified mode rather than the coincidence.
+    expect(result.breakdown.lateness.milliCU).toBe(scaleByRate(overrunMilliCU, lateProbability));
+    expect(result.breakdown.lateness.milliCU).toBe(60_001n);
+  });
+
+  test("the source carries no second rounding mode in the priced path", () => {
+    const source = fs.readFileSync(path.join(COST_DIR, "cRisk.js"), "utf8");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    // §9.6: "the conversion boundary is one function", so no cost module may round itself.
+    expect(code).not.toMatch(/Math\s*\.\s*round\s*\(/);
+    expect(code).toMatch(/scaleByRate\(/);
+  });
+
+  test("every cost module rounds through determinism/fixedPoint alone", () => {
+    const offenders = [];
+    for (const file of fs.readdirSync(COST_DIR).filter((name) => name.endsWith(".js"))) {
+      const code = fs
+        .readFileSync(path.join(COST_DIR, file), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^\s*\/\/.*$/gm, "");
+      if (/Math\s*\.\s*(round|floor|ceil|trunc)\s*\(/.test(code)) offenders.push(file);
+    }
+    expect(offenders).toEqual([]);
   });
 });

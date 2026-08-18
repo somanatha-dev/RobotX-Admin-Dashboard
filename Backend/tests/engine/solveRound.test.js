@@ -332,6 +332,57 @@ describe("§9.4 — anytime, at the round level", () => {
     expect(result.anytime.ok).toBe(true);
   });
 
+  test("a Leg the clock stopped is recorded as BUDGET_TRUNCATED, not as having lost to a cheaper Leg", async () => {
+    // The round used to label every un-assigned, un-deferred Leg `LOST_TO_ANOTHER_LEG`, with a
+    // detail asserting that "every agent that could serve this Leg was allocated to a Leg the
+    // objective priced more cheaply". On a budget-limited solve that is a causal claim no solve
+    // established — at a zero budget the solver returns the trivial incumbent without pricing
+    // anything at all — and it is the claim §17.4's anti-starvation ladder would be reading.
+    const { result } = await runPlan({
+      legs: ["L1", "L2"],
+      agents: ["A1", "A2"],
+      pairings: { L1: { A1: 10 }, L2: { A2: 20 } },
+      budgetOverrides: { timeBudgetMs: 0 },
+      elapsedMs: () => 1,
+    });
+
+    expect(result.outcome).toBe(round.ROUND_OUTCOME.BUDGET_LIMITED);
+    expect(result.decisions.map((row) => row.outcome)).toEqual([
+      round.LEG_OUTCOME.BUDGET_TRUNCATED,
+      round.LEG_OUTCOME.BUDGET_TRUNCATED,
+    ]);
+    expect(result.decisions[0].detail).toMatch(/wall-clock budget/);
+    expect(result.decisions[0].detail).not.toMatch(/priced more cheaply/);
+
+    // And the incumbent is still a complete, feasible allocation of both Legs — the round-level
+    // half of the solver fix: no Leg vanishes from the record because the clock ran out.
+    expect(round.assertEveryLegRecorded({ legs: [{ legId: "L1" }, { legId: "L2" }], result }).ok).toBe(true);
+  });
+
+  test("the round's incumbent is the UNION of its partitions, not the cheapest of them", async () => {
+    // Two Legs with disjoint agent sets are two partitions (§9.4), and `round.plan` used to
+    // offer each one to `budgets.offer()` separately. `offer()` keeps a solution only while it
+    // improves the objective — right for competing solutions to one problem, wrong for two
+    // disjoint sub-problems whose allocations compose — so the round published the cheapest
+    // partition's allocation and its objective as the whole round's.
+    //
+    // `observability/shadow.js` compares `budgets.incumbent.objectiveMilliCU` between the
+    // production and shadow rounds, and `workers/counterfactual.worker.js` reads it as the
+    // round's realised objective (§21.6). Both consume a number neither can sanity-check.
+    const { result } = await runPlan({
+      legs: ["L1", "L2", "L3"],
+      agents: ["A1", "A2", "A3"],
+      pairings: { L1: { A1: 10 }, L2: { A2: 20 }, L3: { A3: 30 } },
+    });
+
+    expect(result.partitions).toHaveLength(3);
+
+    const incumbent = result.budgets.incumbent;
+    expect(incumbent.assignments.map((row) => row.legId).sort()).toEqual(["L1", "L2", "L3"]);
+    expect(incumbent.objectiveMilliCU).toBe(toMilliCU(60));
+    expect(incumbent.boundMilliCU).toBe(toMilliCU(60));
+  });
+
   test("a round that assigns nothing reports EMPTY rather than returning nothing", async () => {
     const { result } = await runPlan({ legs: ["L1"], agents: [], pairings: { L1: {} } });
 

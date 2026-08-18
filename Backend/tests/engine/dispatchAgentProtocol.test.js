@@ -378,6 +378,76 @@ describe("state is committed before the effect becomes observable (§11.5)", () 
     expect(believed.highWaterMarks).toEqual(persisted.highWaterMarks);
   });
 
+  test("a failed command for one commitment cannot erase another commitment's applied state", async () => {
+    const { flash, arm, releaseFirstWrite } = gatedFlash();
+    const socket = makeSocket();
+    const agent = makeAgent(flash, socket);
+    await agent.loadDedupState();
+    arm();
+
+    // Two *different* commitments on one agent. The mission-scope revert only ever
+    // touched its own entry, so this case was never the one that broke — asserting it
+    // is what stops a future "simplification" of the revert into a whole-map restore.
+    const failing = agent._onMissionCommand(
+      "OFFER",
+      missionEnvelope({ commitmentId: "CX", fence: 5n, sequence: 0 }),
+    );
+    const succeeding = agent._onMissionCommand(
+      "OFFER",
+      missionEnvelope({ commitmentId: "CY", fence: 9n, sequence: 0, outboxId: "outbox-2" }),
+    );
+
+    releaseFirstWrite();
+    const [failed, applied] = await Promise.all([failing, succeeding]);
+
+    expect(failed).toMatchObject({ applied: false, reason: "DEDUP_STATE_NOT_DURABLE" });
+    expect(applied).toMatchObject({ applied: true });
+
+    // CY survives, in memory and in flash.
+    expect(agent.dedup.highWaterMarks.get("CY")).toEqual({ fence: 9n, sequence: 0 });
+    expect(persistedMark(flash, "CY")).toEqual({ fence: 9n, sequence: 0 });
+    // CX asserts no history it cannot prove.
+    expect(agent.dedup.highWaterMarks.has("CX")).toBe(false);
+    expect(persistedMark(flash, "CX")).toBeNull();
+
+    // And redelivering CY is suppressed rather than applied a second time.
+    const redelivered = await agent._onMissionCommand(
+      "OFFER",
+      missionEnvelope({ commitmentId: "CY", fence: 9n, sequence: 0, outboxId: "outbox-2" }),
+    );
+    expect(redelivered.applied).toBe(false);
+  });
+
+  test("two overlapping agent-scope commands leave the agent under exactly one authority", async () => {
+    const { flash, arm, releaseFirstWrite } = gatedFlash();
+    const socket = makeSocket();
+    const agent = makeAgent(flash, socket);
+    await agent.loadDedupState();
+    arm();
+
+    const failing = agent._onAgentCommand(
+      "STAND_DOWN_ALL",
+      agentEnvelope({ authorityEpoch: 4n, fenceFloor: 6n, sequence: 0 }),
+    );
+    const succeeding = agent._onAgentCommand(
+      "QUARANTINE",
+      agentEnvelope({ command: "QUARANTINE", authorityEpoch: 7n, fenceFloor: 11n, sequence: 1, outboxId: "outbox-agent-2" }),
+    );
+
+    releaseFirstWrite();
+    const [first, second] = await Promise.all([failing, succeeding]);
+
+    expect(first).toMatchObject({ applied: false, reason: "DEDUP_STATE_NOT_DURABLE" });
+    // Whatever the agent believes, it can prove — the authority it enforces and the
+    // authority it recorded are one fact.
+    const persisted = JSON.parse(flash.values.get(`vr:dedup:${ROBOT_ID}`));
+    const believed = agent.dedupReport();
+    expect(believed.authorityEpoch).toBe(persisted.authorityEpoch);
+    expect(believed.fenceFloor).toBe(persisted.fenceFloor);
+    // A failed epoch advance never leaves the agent enforcing an authority it rejected.
+    if (second.applied) expect(BigInt(believed.authorityEpoch)).toBe(7n);
+  });
+
   test("an applied command persists the mark and then acknowledges", async () => {
     const flash = makeFlash();
     const socket = makeSocket();
@@ -393,6 +463,145 @@ describe("state is committed before the effect becomes observable (§11.5)", () 
       sequence: 0,
     });
     expect(socket.of("COMMAND_ACK")).toHaveLength(1);
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   I21 under randomised interleavings
+
+   The two deterministic overlap tests above each pin one interleaving. They are
+   the regression tests; this is the search. A fixed seed makes every failure
+   reproducible and every run identical (T6), and the point is not statistical
+   confidence — it is that a stale-restore defect survives most orderings and
+   fails only a few, so a search over orderings is what finds one at all.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe("I21 holds across randomised command interleavings (§24.5)", () => {
+  /** A seeded LCG — reproducible, and no dependency on the runner's RNG. */
+  function rng(seed) {
+    let state = seed >>> 0;
+    return () => {
+      // @structural Numerical Recipes' LCG multiplier and increment
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 2 ** 32;
+    };
+  }
+
+  /**
+   * A flash whose writes fail and stall on a seeded schedule, so successive
+   * iterations explore different orderings of the same handlers.
+   */
+  function chaoticFlash(random) {
+    const flash = makeFlash();
+    const realSet = flash.set.bind(flash);
+    let armed = false;
+    flash.set = async (key, value) => {
+      if (!armed) return realSet(key, value);
+      // A stall of 0–2 macrotask hops is enough to reorder the handlers against
+      // each other without making the suite slow.
+      const hops = Math.floor(random() * 3);
+      for (let hop = 0; hop < hops; hop += 1) await new Promise((resolve) => setImmediate(resolve));
+      if (random() < 0.4) throw new Error("flash write failed");
+      return realSet(key, value);
+    };
+    return { flash, arm: () => { armed = true; } };
+  }
+
+  const ITERATIONS = 200;
+
+  test(`${ITERATIONS} seeded interleavings never double-apply a command and never divide belief from proof`, async () => {
+    const failures = [];
+
+    for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {
+      const random = rng(iteration + 1);
+      const { flash, arm } = chaoticFlash(random);
+      const socket = makeSocket();
+      const agent = makeAgent(flash, socket);
+      await agent.loadDedupState();
+
+      // Count each command identity's observable effect. §10.5's two namespaces are
+      // disjoint, so the identity is scope-qualified exactly as the outbox key is.
+      const effects = new Map();
+      const countMission = agent._applyMissionEffect.bind(agent);
+      agent._applyMissionEffect = (command, envelope) => {
+        const id = `M:${envelope.commitmentId}/${envelope.fence}/${envelope.sequence}`;
+        effects.set(id, (effects.get(id) || 0) + 1);
+        return countMission(command, envelope);
+      };
+      const countAgent = agent._applyAgentEffect.bind(agent);
+      agent._applyAgentEffect = (command, envelope) => {
+        const id = `A:${envelope.authorityEpoch}/${envelope.sequence}`;
+        effects.set(id, (effects.get(id) || 0) + 1);
+        return countAgent(command, envelope);
+      };
+
+      arm();
+
+      // A mix the specification's two scopes both appear in: same commitment,
+      // different commitment, and an agent-scope command that discards the whole
+      // per-commitment table (§10.3.1's interaction rule).
+      //
+      // The agent-scope floor must dominate every mission fence in the mix, because
+      // that is the only state the server can produce: `fencing.fenceFloorFor` reads
+      // the floor off `agent.fenceCounter`, which is the monotonic counter every one
+      // of those fences was drawn from. A floor *below* an outstanding fence would let
+      // §10.3.1's table-discard clear a mark that the floor then fails to replace, and
+      // a redelivered stale OFFER would be admitted a second time — correct behaviour
+      // for an incoherent input, and not a state any Phase 4 code path can construct.
+      const AGENT_FENCE_FLOOR = 10n;
+      const missionFences = [5n, 6n, 7n];
+      expect(missionFences.every((fence) => fence < AGENT_FENCE_FLOOR)).toBe(true);
+
+      const envelopes = [
+        missionEnvelope({ commitmentId: "C1", fence: missionFences[0], sequence: 0, outboxId: "o1" }),
+        missionEnvelope({ commitmentId: "C1", fence: missionFences[1], sequence: 1, outboxId: "o2" }),
+        missionEnvelope({ commitmentId: "C2", fence: missionFences[2], sequence: 0, outboxId: "o3" }),
+        agentEnvelope({ authorityEpoch: 3n, fenceFloor: AGENT_FENCE_FLOOR, sequence: 0, outboxId: "o4" }),
+      ];
+
+      const issue = (envelope) =>
+        envelope.commandClass === "AGENT"
+          ? agent._onAgentCommand(envelope.command, envelope)
+          : agent._onMissionCommand(envelope.command, envelope);
+
+      // Shuffle the issue order, then start them all before awaiting any.
+      const order = [...envelopes];
+      for (let i = order.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(random() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      await Promise.all(order.map(issue));
+
+      // §11.5 — redelivery is expected, and is exactly what a lost update turns into
+      // a second application.
+      await Promise.all(order.map(issue));
+
+      // 1. No command identity produced its effect twice.
+      for (const [id, count] of effects) {
+        if (count > 1) failures.push(`seed ${iteration + 1}: ${id} applied ${count} times`);
+      }
+
+      // 2. What the agent believes is what it can prove. A stale restore is precisely
+      //    the thing that divides these two, whichever side it lands on.
+      const raw = flash.values.get(`vr:dedup:${ROBOT_ID}`);
+      if (raw) {
+        const persisted = JSON.parse(raw);
+        const believed = agent.dedupReport();
+        if (believed.authorityEpoch !== persisted.authorityEpoch) {
+          failures.push(`seed ${iteration + 1}: epoch believed ${believed.authorityEpoch} proved ${persisted.authorityEpoch}`);
+        }
+        if (believed.fenceFloor !== persisted.fenceFloor) {
+          failures.push(`seed ${iteration + 1}: floor believed ${believed.fenceFloor} proved ${persisted.fenceFloor}`);
+        }
+        if (JSON.stringify(believed.highWaterMarks) !== JSON.stringify(persisted.highWaterMarks)) {
+          failures.push(
+            `seed ${iteration + 1}: marks believed ${JSON.stringify(believed.highWaterMarks)} proved ${JSON.stringify(persisted.highWaterMarks)}`,
+          );
+        }
+      }
+    }
+
+    expect(failures).toEqual([]);
   });
 });
 

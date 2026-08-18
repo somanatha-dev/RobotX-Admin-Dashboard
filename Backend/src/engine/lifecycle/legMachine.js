@@ -199,6 +199,23 @@ function deadlineFor(state) {
 }
 
 /**
+ * The `STRANDED_*` states invariant I22 is stated over, **derived** from §4.3's obstruction
+ * disposition table rather than listed again.
+ *
+ * `observability/invariantChecker.js` deliberately re-declares its own copy of this partition
+ * so it does not inherit this module's mistakes at runtime (§26.1), and
+ * `assertVocabularyAgreesWithDomain()` compares the two at build time. That comparison was
+ * only as good as what this module exported: with no stranded-state export, the checker's
+ * literal was compared against a *second literal in the test file*, so the two could drift
+ * together and the drift check would pass. Deriving the set from the disposition table is what
+ * makes the comparison a comparison against the domain.
+ * @structural §4.3's stranding partition, derived from the disposition table
+ */
+const STRANDED_LEG_STATES = Object.freeze(
+  [...new Set(Object.values(OBSTRUCTION_DISPOSITION).map((row) => row.state))].sort(),
+);
+
+/**
  * The checkable form of §4.5's "every deadline MUST be registered": which non-terminal
  * states have no deadline at all?
  *
@@ -246,6 +263,7 @@ function strandingStateFor(obstructionClass) {
 module.exports = {
   LEG_STATE,
   TERMINAL_LEG_STATES,
+  STRANDED_LEG_STATES,
   LEG_DEADLINES,
   OBSTRUCTION_DISPOSITION,
   isTerminal,

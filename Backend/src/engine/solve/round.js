@@ -382,6 +382,10 @@ async function plan(deps, input) {
   const assignments = [];
   const deferrals = [];
   const partitionReports = [];
+  const partObjectives = [];
+  const partBounds = [];
+  /** Legs whose sub-problem was cut short, so their outcome is the clock's and not the price's. */
+  const budgetTruncatedLegIds = new Set();
 
   for (const part of partitioned.parts) {
     const legsForPart = part.legs.map((leg) => {
@@ -426,12 +430,9 @@ async function plan(deps, input) {
       solverObjectiveMilliCU: solved.objectiveMilliCU,
     });
 
-    budgets.offer({
-      assignments: solved.assignments,
-      objectiveMilliCU: solved.objectiveMilliCU,
-      boundMilliCU: solved.boundMilliCU,
-      source: "MIN_COST_FLOW",
-    });
+    partObjectives.push(solved.objectiveMilliCU);
+    partBounds.push(solved.boundMilliCU);
+    if (solved.budgetLimited === true) for (const leg of part.legs) budgetTruncatedLegIds.add(String(leg.legId));
 
     for (const row of solved.assignments) {
       // §2.6 — the SOFT reservation, in coordinator memory and nowhere else. Its one
@@ -454,7 +455,26 @@ async function plan(deps, input) {
       root: part.root,
       ok: true,
       legCount: part.legs.length,
+      // WHICH Legs this sub-problem decided. `legCount` says how many and never which, and
+      // §21.2's decision record is per Leg: without this, Phase 11 can see that *some*
+      // partition fell back to the reference solver or stopped on its budget and cannot
+      // say whose decision that was. Handoff P11-2 asks Tier A to carry "the partition's
+      // `solver`, `optimalityCertified` and `fallbackFrom`", and "the partition's" is not
+      // resolvable from a count. Additive and read-only: no solve, price or outcome
+      // depends on it.
+      legIds: part.legs.map((leg) => String(leg.legId)).sort(compareStrings),
       columnCount: part.columns.length,
+      // Which algorithm actually decided this sub-problem, and whether it proved its answer.
+      // §20.2 names cost scaling and `minCostFlow.solve()` dispatches to it; the reference
+      // solver is reachable in production on the exactness-fallback path. The implementation
+      // report calls that use "observable rather than silent" — and it was, on the solver's
+      // own result object, which the round then dropped. A round could therefore fall back to
+      // a 23-second exact solve and report nothing about it. These three fields are what let a
+      // production round *prove* it ran §20.2's algorithm rather than infer it from a unit test
+      // that called the solver directly.
+      solver: solved.solver,
+      optimalityCertified: solved.optimalityCertified,
+      fallbackFrom: (solved.solverDiagnostics && solved.solverDiagnostics.fallbackFrom) || null,
       objectiveMilliCU: solved.objectiveMilliCU,
       boundMilliCU: solved.boundMilliCU,
       lpIpGapMilliCU: solved.lpIpGapMilliCU,
@@ -470,6 +490,22 @@ async function plan(deps, input) {
     });
   }
 
+  // §9.4's incumbent is the **round's** allocation, offered once, and it is the union of the
+  // parts rather than the best of them. Offering each part separately was a defect: `offer()`
+  // keeps a solution only while it improves the objective — correctly, for competing solutions
+  // to one problem — but two partitions are two disjoint sub-problems whose allocations
+  // compose, not compete, so a round of three partitions published the cheapest partition's
+  // assignments and its objective as the whole round's. `observability/shadow.js` compares
+  // `budgets.incumbent.objectiveMilliCU` between production and shadow, and
+  // `workers/counterfactual.worker.js` reads it as the round's realised objective (§21.6), so
+  // the under-reported total reached two consumers that cannot detect it.
+  budgets.offer({
+    assignments,
+    objectiveMilliCU: sumMilliCU(partObjectives),
+    boundMilliCU: sumMilliCU(partBounds),
+    source: "MIN_COST_FLOW",
+  });
+
   const assignedLegIds = new Set(assignments.map((row) => row.legId));
   const deferredLegIds = new Set(deferrals.map((row) => row.legId));
 
@@ -480,6 +516,22 @@ async function plan(deps, input) {
       return { ...row, outcome: LEG_OUTCOME.ASSIGNED, agentId: match.agentId, columnIdentity: match.columnIdentity };
     }
     if (deferredLegIds.has(row.legId)) return { ...row, outcome: LEG_OUTCOME.DEFERRED };
+    if (budgetTruncatedLegIds.has(row.legId)) {
+      // The clock, not the price. A Leg whose sub-problem stopped on §9.4's wall-clock budget
+      // was not out-competed — in the worst case the solve never looked at it — and recording
+      // it as `LOST_TO_ANOTHER_LEG` puts a causal claim in the decision record that no solve
+      // established. `BUDGET_TRUNCATED` is the outcome §9.4 actually produced, and it is the
+      // one the §17.4 anti-starvation ladder should be reading when it decides how hard this
+      // Leg has been trying.
+      return {
+        ...row,
+        outcome: LEG_OUTCOME.BUDGET_TRUNCATED,
+        detail:
+          "the sub-problem containing this Leg reached §9.4's wall-clock budget before the solve completed, so " +
+          "the round returned its incumbent. The Leg remains queued for the next round. This is not a statement " +
+          "that a cheaper Leg took its agent — the solve may never have priced this Leg at all.",
+      };
+    }
     return {
       ...row,
       outcome: LEG_OUTCOME.LOST_TO_ANOTHER_LEG,

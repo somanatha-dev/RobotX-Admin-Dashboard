@@ -105,6 +105,196 @@ describe("§21.4 — derivation from the durable record", () => {
     expect(by.search_gap.reportedSeparatelyFrom).toBe("column_generation_gap");
   });
 
+  test("a SHADOW decision's Tier B row does not enter tier_b_write_rate", async () => {
+    // `PHASE_11_INDEPENDENT_VERIFICATION.md` Finding 2. `DecisionRecordB` has no
+    // `shadowLabel` of its own, so the guard every `decisionRecordA` query carried had no
+    // equivalent here and the SLI counted decisions the fleet never executed against
+    // `observability.tier_b_write_budget` — the one thing §21.6 says shadow mode must
+    // never cause ("recorded and never executed").
+    const prisma = fixture.memoryPrisma();
+
+    prisma.__tables.decisionRecords.push(
+      { decisionId: "r1:L1", shardId: "s1", decisionTime: new Date(1000), outcome: { outcome: "ASSIGNED" }, shadowLabel: null },
+      { decisionId: "shadow:cand-a:r1:L1", shardId: "s1", decisionTime: new Date(1000), outcome: { outcome: "ASSIGNED" }, shadowLabel: "cand-a" },
+    );
+    prisma.__tables.tierBRecords.push(
+      { decisionId: "r1:L1", shardId: "s1", decisionTime: new Date(1000), writtenBecause: "SAMPLED" },
+      { decisionId: "shadow:cand-a:r1:L1", shardId: "s1", decisionTime: new Date(1000), writtenBecause: "SAMPLED" },
+    );
+
+    const report = await metrics.derive({ prisma }, { shardId: "s1", fromMs: 0, toMs: 60000, config: { get: () => 5000 } });
+    const by = Object.fromEntries(report.readings.map((row) => [row.id, row]));
+
+    // One production Tier A and one production Tier B. Two of each are in the store.
+    expect(by.tier_a_write_rate.count).toBe(1);
+    expect(by.tier_b_write_rate.value).toBe(1);
+    expect(by.tier_b_write_rate.byWrittenBecause).toEqual({ SAMPLED: 1 });
+  });
+
+  test("the unfiltered query the fix replaced would have counted the shadow row — the leak is real, not theoretical", async () => {
+    // Guards against the fix being "correct" only because the double cannot express the
+    // filter: run the *old* query shape against the same store and show it double-counts.
+    const prisma = fixture.memoryPrisma();
+    prisma.__tables.decisionRecords.push(
+      { decisionId: "r1:L1", shardId: "s1", decisionTime: new Date(1000), shadowLabel: null },
+      { decisionId: "shadow:cand-a:r1:L1", shardId: "s1", decisionTime: new Date(1000), shadowLabel: "cand-a" },
+    );
+    prisma.__tables.tierBRecords.push(
+      { decisionId: "r1:L1", shardId: "s1", decisionTime: new Date(1000), writtenBecause: "SAMPLED" },
+      { decisionId: "shadow:cand-a:r1:L1", shardId: "s1", decisionTime: new Date(1000), writtenBecause: "SAMPLED" },
+    );
+
+    const unfiltered = await prisma.decisionRecordB.groupBy({
+      by: ["writtenBecause"],
+      where: { shardId: "s1", decisionTime: { gte: new Date(0), lt: new Date(60000) } },
+      _count: { _all: true },
+    });
+    const filtered = await prisma.decisionRecordB.groupBy({
+      by: ["writtenBecause"],
+      where: { shardId: "s1", decisionTime: { gte: new Date(0), lt: new Date(60000) }, decision: { shadowLabel: null } },
+      _count: { _all: true },
+    });
+
+    expect(unfiltered[0]._count._all).toBe(2);
+    expect(filtered[0]._count._all).toBe(1);
+  });
+
+  test("the two counterfactual gaps are read back from the registry, not left null for ever", async () => {
+    // Finding 3, and the sibling it did not name. Both are published with `registry.gauge`
+    // by `counterfactual.worker.js`; the old readback scanned `snapshot.counters` only, so
+    // adding the key to that allowlist — the finding's own recommendation — would still
+    // have produced `null`.
+    const prisma = fixture.memoryPrisma();
+    const registry = sli.createRegistry();
+    registry.gauge("sli.column_generation_gap", 4200, { shardId: "s1" });
+    registry.gauge("sli.counterfactual_regret", 1700, { shardId: "s1" });
+
+    const report = await metrics.derive({ prisma }, { shardId: "s1", fromMs: 0, toMs: 60000, registry });
+    const by = Object.fromEntries(report.readings.map((row) => [row.id, row]));
+
+    expect(by.column_generation_gap).toBeDefined();
+    expect(by.column_generation_gap.instrument).toBe("gauges");
+    expect(Object.values(by.column_generation_gap.value)).toEqual([4200]);
+    expect(Object.values(by.counterfactual_regret.value)).toEqual([1700]);
+
+    // Still four distinct quantities, never one. §9.3, §21.6, §21.2.
+    expect(by.column_generation_gap.id).not.toBe(by.search_gap && by.search_gap.id);
+    expect(metrics.METRIC_BY_ID.column_generation_gap.note).toMatch(/Distinct from `search_gap`/);
+  });
+
+  test("every registry-backed metric is read back from whichever instrument produced it", () => {
+    // The defect class, pinned: a producer writing a gauge and a readback scanning counters.
+    const snapshot = { counters: { "sli.a": 1 }, gauges: { "sli.b|{\"x\":1}": 2 }, histograms: { "sli.c": { count: 3 } } };
+    expect(metrics.readBackSeries(snapshot, "a").instrument).toBe("counters");
+    expect(metrics.readBackSeries(snapshot, "b").instrument).toBe("gauges");
+    expect(metrics.readBackSeries(snapshot, "c").instrument).toBe("histograms");
+    // Nothing published is null, never zero and never `{}`.
+    expect(metrics.readBackSeries(snapshot, "d")).toBeNull();
+  });
+
+  test("a metric whose producer HAS landed says so, instead of blaming a future phase", async () => {
+    // Finding 5. Phases 4, 6 and 7 shipped the mechanisms behind these; what is missing is
+    // a query, and a reader who cannot tell the two apart defers the wiring to a phase
+    // that has no reason to do it.
+    const prisma = fixture.memoryPrisma();
+    const report = await metrics.derive({ prisma }, { shardId: "s1", fromMs: 0, toMs: 60000 });
+    const un = Object.fromEntries(report.unavailable.map((row) => [row.id, row]));
+
+    for (const id of ["fence_rejections_commitment_scope", "fence_rejections_agent_scope", "near_miss_margins", "indeterminate_rate"]) {
+      expect(un[id].producerLanded).toBe(true);
+      expect(un[id].unavailableBecause).toMatch(/the producer has landed/);
+      expect(un[id].unavailableBecause).not.toMatch(/no producer has landed yet/);
+    }
+
+    // And the genuinely-unlanded ones still say exactly that. `duty_cycle_gini`'s producer is
+    // §17.2's regulariser, which is a Tier 2 mechanism no phase has shipped.
+    expect(un.duty_cycle_gini.producerLanded).toBe(false);
+    expect(un.duty_cycle_gini.unavailableBecause).toMatch(/no producer has landed yet/);
+
+    // ── PHASE 12 REMEDIATION ────────────────────────────────────────────────────
+    // `invariant_violations` used to be asserted here as "no producer has landed yet — Phase
+    // 12 invariant checker". That was true when this test was written and stopped being true
+    // when Phase 12 landed `InvariantStatus` and the worker that fills it. Leaving the
+    // assertion would have pinned a stale schedule fact in place — the same failure mode this
+    // very test was written to catch, in the opposite direction — so the metric is now derived
+    // and asserted as derived.
+    expect(un.invariant_violations).toBeUndefined();
+
+    // The wiring-debt list may not name a metric the registry does not declare, and may
+    // not name one `derive()` actually produces.
+    const produced = new Set(report.readings.map((row) => row.id));
+    for (const id of metrics.PRODUCER_LANDED_QUERY_NOT_WIRED) {
+      expect(metrics.METRIC_BY_ID[id]).toBeDefined();
+      expect(produced.has(id)).toBe(false);
+    }
+    expect(metrics.assertCoverage().problems).toEqual([]);
+
+    // The three §18.5/§26.1 SLIs Phase 12's own sections name are derived, not declared:
+    // "time spent in each mode is an SLI", the violation count "whose target is exactly zero",
+    // and the suspension that outlives its box.
+    for (const id of ["invariant_violations", "degraded_mode_time", "suspensions_over_time_box"]) {
+      expect(produced.has(id)).toBe(true);
+    }
+  });
+
+  test("PHASE 12 — the mode, violation and stranding SLIs are read from the durable rows", async () => {
+    // Not "the query exists": the query is driven against rows and the numbers are checked.
+    const prisma = fixture.memoryPrisma();
+    const now = 1770000000000;
+
+    // One mode exited inside the window, one still open — an SLI that counted only exited
+    // modes would read zero for the whole of an outage and tell the truth once it was over.
+    prisma.__tables.degradedModeEvents.push(
+      {
+        shardId: "s1", mode: "COLD_INDEX", cause: "B3", enteredAt: new Date(now - 300000),
+        exitedAt: new Date(now - 60000), durationMs: 240000, suspendedInvariants: [], timeBoxExpiresAt: null,
+      },
+      {
+        shardId: "s1", mode: "CUSTODIAL_OPERATION", cause: "B1", enteredAt: new Date(now - 120000),
+        exitedAt: null, durationMs: null, suspendedInvariants: ["I2"],
+        // Past its box, and it suspends something: §26.1's alertable suspension.
+        timeBoxExpiresAt: new Date(now - 30000),
+      },
+    );
+
+    prisma.__tables.invariantStatuses.push(
+      { invariantId: "I1", shardId: "s1", subjectType: "SHARD", status: "VIOLATED", violationCount: 3, checkedAt: new Date(now - 1000) },
+      // A suspended row's findings must not enter a zero-target SLI.
+      { invariantId: "I2", shardId: "s1", subjectType: "SHARD", status: "SUSPENDED", violationCount: 9, checkedAt: new Date(now - 1000) },
+      { invariantId: "I3", shardId: "s1", subjectType: "SHARD", status: "ENFORCED", violationCount: 0, checkedAt: new Date(now - 1000) },
+    );
+
+    prisma.__tables.legRows.push(
+      { id: "l1", state: "STRANDED_OBSTRUCTING", obstructionClass: "BLOCKING_CRITICAL" },
+      { id: "l2", state: "STRANDED_SAFE", obstructionClass: "CLEAR" },
+      { id: "l3", state: "STRANDED_SAFE", obstructionClass: "CLEAR" },
+    );
+
+    prisma.__tables.externalEscalations.push({
+      legId: "l1", step: 1, obstructionClass: "BLOCKING_CRITICAL", disposition: "EMITTED",
+      occurredAt: new Date(now - 200000), clearedAt: new Date(now - 100000),
+    });
+
+    const report = await metrics.derive({ prisma }, { shardId: "s1", fromMs: now - 600000, toMs: now });
+    const by = Object.fromEntries(report.readings.map((row) => [row.id, row]));
+
+    expect(by.degraded_mode_time.value["COLD_INDEX|B3"]).toBe(240);
+    expect(by.degraded_mode_time.value["CUSTODIAL_OPERATION|B1"]).toBe(120);
+    expect(by.degraded_mode_time.extra || by.degraded_mode_time.openModes).toBe(1);
+
+    expect(by.suspensions_over_time_box.value).toEqual({ "CUSTODIAL_OPERATION|I2": 1 });
+    expect(by.suspensions_over_time_box.alertable).toBe(true);
+
+    expect(by.invariant_violations.value).toEqual({ I1: 3 });
+    expect(by.invariant_violations.total).toBe(3);
+    expect(by.invariant_violations.suspended).toEqual(["I2"]);
+    // Three of twenty-two reported is not a green register, and the reading says so.
+    expect(by.invariant_violations.complete).toBe(false);
+
+    expect(by.stranding_events_by_obstruction_class.value).toEqual({ BLOCKING_CRITICAL: 1, CLEAR: 2 });
+    expect(by.stranding_response_time.value.BLOCKING_CRITICAL).toBe(100);
+  });
+
   test("a metric whose producer has not landed reports null WITH the reason, never zero", async () => {
     const prisma = fixture.memoryPrisma();
     const report = await metrics.derive({ prisma }, { shardId: "s1", fromMs: 0, toMs: 60000 });

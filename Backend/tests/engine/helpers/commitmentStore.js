@@ -577,6 +577,19 @@ function createCommitmentStore(seed) {
 
     const findFirst = (table, where) => rows(table).find((row) => matches(row, where)) || null;
 
+    const now = () => new Date(storeTime.getTime());
+
+    /**
+     * Prisma's `@updatedAt`, modelled rather than omitted.
+     *
+     * §11.3's retry pacing reads the last-attempt instant off `Outbox.updatedAt`, which
+     * PostgreSQL maintains on every `update`/`updateMany`. A model that left the column
+     * undefined would have made the backoff filter pass vacuously and reported green for
+     * a schedule it never applied — the Phase 2 lesson about doubles that agree with
+     * whatever they are told, applied to a column instead of to a constraint.
+     */
+    const touch = (row) => ({ ...row, updatedAt: now() });
+
     const modelClient = (table) => ({
       async findUnique({ where }) {
         return findFirst(table, where);
@@ -603,31 +616,31 @@ function createCommitmentStore(seed) {
       },
       async create({ data }) {
         const id = data.id || `${table}-${nextRowId(table)}`;
-        const row = clone({ ...data, id, createdAt: data.createdAt || new Date(storeTime.getTime()) });
+        const row = clone({ ...data, id, createdAt: data.createdAt || now(), updatedAt: data.updatedAt || now() });
         overlay[table].set(id, row);
         return clone(row);
       },
       async update({ where, data }) {
         const existing = findFirst(table, where);
         if (!existing) throw new Error(`no ${table} row matches ${JSON.stringify(where)}`);
-        const row = clone(applyData(existing, data));
+        const row = clone(touch(applyData(existing, data)));
         overlay[table].set(existing.id, row);
         return clone(row);
       },
       async updateMany({ where, data }) {
         const targets = rows(table).filter((row) => matches(row, where));
-        for (const target of targets) overlay[table].set(target.id, clone(applyData(target, data)));
+        for (const target of targets) overlay[table].set(target.id, clone(touch(applyData(target, data))));
         return { count: targets.length };
       },
       async upsert({ where, create, update }) {
         const existing = findFirst(table, where);
         if (existing) {
-          const row = clone(applyData(existing, update));
+          const row = clone(touch(applyData(existing, update)));
           overlay[table].set(existing.id, row);
           return clone(row);
         }
         const id = create.id || `${table}-${create.agentId || create.shardId || nextRowId(table)}`;
-        const row = clone({ ...create, id });
+        const row = clone({ ...create, id, createdAt: create.createdAt || now(), updatedAt: create.updatedAt || now() });
         overlay[table].set(id, row);
         return clone(row);
       },

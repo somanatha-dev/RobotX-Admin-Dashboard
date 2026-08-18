@@ -44,6 +44,9 @@
 const legMachine = require("./legMachine");
 const purpose = require("../domain/purpose");
 const timers = require("../supervision/timers");
+// §4.7's recovery assessment, implemented once. This module's lease-expiry row reports
+// what that assessment decides rather than restating it (see `leaseExpiryTarget`).
+const leases = require("../supervision/leases");
 
 /** §4.4's events, one per row of the table. @structural the enumerated §4.4 events */
 const EVENT = Object.freeze({
@@ -392,20 +395,50 @@ function ANY_NON_TERMINAL() {}
  * §4.4's lease-expiry row: *"`REASSIGNING`, `STRANDED_SAFE`, or `STRANDED_OBSTRUCTING`
  * — by custody state and obstruction class"* (§12.2).
  *
- * Custody `NONE` is a scheduling problem and the Leg is reassigned. Custody `HELD` with
- * an unreachable agent is a physical logistics problem, and no amount of database repair
- * moves the goods — so it strands, at the class the stopping location implies.
+ * Custody `NONE` is a scheduling problem and the Leg is reassigned. Custody that may hold
+ * goods is a physical logistics problem, and no amount of database repair moves them — so
+ * it strands, at the class the stopping location implies, unless §4.7 finds one of its two
+ * other lawful outcomes.
+ *
+ * **This row does not decide anything itself.** §4.7's recovery assessment is implemented
+ * once, in `supervision/leases.assessRecovery`, and this resolver reports the Leg state
+ * that assessment names. Until Phase 5's remediation it restated the decision inline, and
+ * the restatement had drifted in exactly the way a second copy drifts:
+ *
+ *   - it compared `custodyState !== "HELD"` as a literal string, so `DISPUTED` — which
+ *     `domain/custody.holdsGoods` answers **true** for, deliberately, because contested
+ *     evidence resolves to the conservative case (§2.5, T2) — took the custody-`NONE`
+ *     reassignment path, the one §4.7 reserves for an agent that is carrying nothing;
+ *   - it omitted `stillFeasible` from the Resume condition, so an incumbent that recovered
+ *     inside its window but is no longer feasible was resumed rather than assessed;
+ *   - and it resolved Resume to `REASSIGNING` — taking the Leg away from the incumbent —
+ *     where §4.7's Resume mechanism is *"lease renewed, replan route, continue"*.
+ *
+ * `failure/catalogue.js` and `failure/agentFailures.js` both already name
+ * `assessRecovery` as the single implementation of §4.7's outcomes and warn in their own
+ * comments against restating them; this row is now held to the same rule.
  *
  * @param {object} context
  * @returns {string}
  */
 function leaseExpiryTarget(context) {
   const source = context || {};
-  if (source.custodyState !== "HELD") return S.REASSIGNING;
-  // §4.7's "Resume" outcome: the incumbent recovered inside its window and is still
-  // feasible, so the mission continues rather than stranding.
-  if (source.agentReachable === true && source.withinResumeWindow === true) return S.REASSIGNING;
-  return legMachine.strandingStateFor(source.obstructionClass).state;
+  const assessment = leases.assessRecovery(source);
+
+  if (assessment.outcome === leases.RECOVERY_OUTCOME.RESUME) {
+    // §4.7 Resume: the mission continues, so the Leg does not move. `assessRecovery`
+    // reports the Leg's own state for this outcome; a self-transition through `apply` is
+    // what re-arms supervision at the new version, which is precisely what a renewed lease
+    // needs. If the caller supplied no Leg there is no state to continue in, and §4.1
+    // rule 3 forbids inventing one from the absence.
+    if (typeof assessment.legState === "string" && assessment.legState !== "") return assessment.legState;
+    throw new TypeError(
+      "§4.7's Resume outcome continues the Leg in its current state, and no Leg was supplied to read it from. " +
+        "Absence triggers investigation, not assumption (§4.1 rule 3).",
+    );
+  }
+
+  return assessment.legState;
 }
 
 /**

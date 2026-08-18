@@ -126,7 +126,17 @@ export default function AppProvider({ children }) {
       const shouldNavigate = options?.navigate !== false;
       if (shouldNavigate) navigate('/');
 
-      await refreshDbState();
+      // The sign-in already succeeded by this point — the session above is real.
+      // A failure loading robots/tasks is a dashboard problem, not an authentication
+      // one, so it must not propagate: callers (LoginPage) treat a rejection here as
+      // bad credentials and hold the user on the login screen, which locks them out
+      // of a system they are in fact authenticated to. Same guard the session-restore
+      // path already applies below.
+      try {
+        await refreshDbState();
+      } catch {
+        addEvent('Signed in, but live robot/task data could not be loaded', 'warning');
+      }
     },
     [addEvent, navigate, refreshDbState]
   );

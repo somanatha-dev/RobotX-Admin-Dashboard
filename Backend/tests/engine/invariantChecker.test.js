@@ -85,13 +85,34 @@ describe("independence from the enforcing code paths (§26.1)", () => {
 
   test("re-declares the §4.3 state vocabulary, and it agrees with the domain model", () => {
     // Independence at runtime, drift detection at build time.
+    //
+    // ── PHASE 12 REMEDIATION ──────────────────────────────────────────────────
+    // `STRANDED_STATES` used to be a **literal in this file**, which
+    // `PHASE_12_INDEPENDENT_VERIFICATION.md` Finding 1 recorded: `legMachine.js` exported no
+    // stranded-state list, so the comparison was checker-literal against test-literal and the
+    // two could drift together while the drift check passed. `legMachine.STRANDED_LEG_STATES`
+    // is now derived from §4.3's own obstruction-disposition table, so this is a comparison
+    // against the domain — which is what the implementation report's "costs nothing in drift"
+    // claim asserted and, for this one constant, did not hold.
+    expect(legMachine.STRANDED_LEG_STATES).toEqual(["STRANDED_OBSTRUCTING", "STRANDED_SAFE"]);
     expect(
       invariantChecker.assertVocabularyAgreesWithDomain({
         TERMINAL_LEG_STATES: legMachine.TERMINAL_LEG_STATES,
         RECOVERY_STATES: supervisionLeases.RECOVERY_STATES,
-        STRANDED_STATES: ["STRANDED_SAFE", "STRANDED_OBSTRUCTING"],
+        STRANDED_STATES: legMachine.STRANDED_LEG_STATES,
       }),
     ).toEqual({ ok: true, problems: [] });
+  });
+
+  test("…and the drift check fails when the domain disagrees, so it is a check rather than a formality", () => {
+    // A comparison that cannot fail proves nothing about drift.
+    const drifted = invariantChecker.assertVocabularyAgreesWithDomain({
+      TERMINAL_LEG_STATES: legMachine.TERMINAL_LEG_STATES,
+      RECOVERY_STATES: supervisionLeases.RECOVERY_STATES,
+      STRANDED_STATES: ["STRANDED_SAFE"],
+    });
+    expect(drifted.ok).toBe(false);
+    expect(drifted.problems[0]).toMatch(/STRANDED_LEG_STATES/);
   });
 
   test("every one of §26.1's twenty-two invariants has a check, and no check invents a twenty-third", () => {

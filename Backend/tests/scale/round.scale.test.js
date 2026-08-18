@@ -87,8 +87,36 @@ const BATCH_SIZES = Object.freeze([50, 100, 200, 400]);
 /** Candidates per Leg the round is measured across. @structural the measurement grid */
 const CANDIDATE_COUNTS = Object.freeze([10, 20, 40, 80]);
 
-/** Candidates held fixed while the batch size varies. @structural the measurement grid */
-const BATCH_FIT_CANDIDATES = 20;
+/**
+ * Candidates held fixed while the batch size varies.
+ *
+ * ── Why 80 and not 20 ──────────────────────────────────────────────────────
+ * Raised from 20 after the batch-size fit was observed failing its own bound on unchanged,
+ * correct code — 1.633 and 1.754 against a bound of 1.6, in 2 of 5 runs of the **whole scale
+ * lane**, while the same file run alone measured 1.20–1.27 every time. The exponent was not
+ * moving because the solver had changed; it was moving because the fit's smallest point,
+ * 50 Legs × 20 candidates, solves in ~3 ms on a bare process and the lane's earlier suites
+ * leave a heap on which a single collection pause is a large fraction of that. The median of
+ * five 3 ms trials is not a measurement of the algorithm, which is the failure mode this
+ * file's header already names — the grid was doubled once for exactly this reason and the
+ * floor was still too low.
+ *
+ * Widening the candidate set rather than the batch raises every point's absolute time without
+ * leaving the configured envelope: 400 Legs is inside `solve.max_legs_per_round` (500) and 80
+ * candidates is inside `candidate.max_evaluated` (200), and 80 is nearer §20.1's own 200 than
+ * 20 was. Measured effect on this machine, 8 repeats of the fit at each setting:
+ *
+ * ```
+ *   @20 candidates   exponent 1.262 – 1.521   spread 0.259   r² ≥ 0.981   points   3– 50 ms
+ *   @80 candidates   exponent 1.225 – 1.301   spread 0.076   r² ≥ 0.995   points   7–101 ms
+ * ```
+ *
+ * The bound below is unchanged at 1.6, and it still separates the two regimes it was chosen to
+ * separate: successive shortest paths measures 2.134 on this same grid at 80 candidates
+ * (r² = 0.9996), against 2.067 at 20. The fit got quieter; the gate did not get weaker.
+ * @structural the measurement grid
+ */
+const BATCH_FIT_CANDIDATES = 80;
 
 /** Legs held fixed while the candidate count varies. @structural the measurement grid */
 const CANDIDATE_FIT_LEGS = 60;
@@ -151,9 +179,12 @@ describe("§20.2 — the measured complexity of the singleton solve", () => {
     // The bounds are the two regimes, not a tolerance around a measurement. Cost scaling
     // moves all the flow under one tolerance and then tightens the tolerance, so the batch
     // size enters through the size of a sweep rather than as a multiplier on the number of
-    // sweeps: measured 1.15–1.28 across repeats on this machine. Successive shortest paths
-    // measured 2.089 at r² = 1.0000 on the same grid, so the upper bound is what catches a
-    // revert to it — and catches an accidental quadratic arrived at any other way.
+    // sweeps: measured 1.23–1.30 across repeats on a bare process on this machine, and
+    // 1.03–1.10 across five consecutive runs of the whole lane through jest.
+    // Successive shortest paths measures 2.13 at r² = 0.9996 on the same grid, so the upper
+    // bound is what catches a revert to it — and catches an accidental quadratic arrived at
+    // any other way. See `BATCH_FIT_CANDIDATES` for why the grid, not the bound, was the
+    // thing that had to move when this fit was seen failing on correct code.
     expect(fit.exponent).toBeGreaterThan(0.7);
     expect(fit.exponent).toBeLessThan(1.6);
   });

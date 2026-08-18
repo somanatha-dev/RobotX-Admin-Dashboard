@@ -179,6 +179,69 @@ function unexploredRingFloorMilliCU(input) {
  * @param {object} input
  * @returns {Promise<object>} `{ agentId, tier, lbMilliCU, exact }`
  */
+/**
+ * The geometric floor for one already-identified but not-yet-queried cell, derived
+ * from its grid distance to the origin cell — the tier 3/4 analogue of
+ * `unexploredRingFloorMilliCU`'s ring form. §6.4 requires cells to be "visited in
+ * increasing order of their minimum possible `LB`", and the pruning rule to compare
+ * `C*` against the minimum over **all** unexplored cells; a zone or region cell
+ * carries a real bound just as a ring does, and substituting a constant for it is
+ * what makes the rule unsound in the one regime §6.4 singles out (a `C*` at or
+ * below `Δ_opt`, which is ordinary once `C_opportunity` is negative).
+ *
+ * @param {object} input as `unexploredRingFloorMilliCU`, with `originCellId`/
+ *   `cellId` in place of `ringDistance`
+ * @returns {{ ok: boolean, milliCU: bigint|null, missing: string[] }}
+ */
+function unexploredCellFloorMilliCU(input) {
+  const source = input || {};
+  let gridDistance;
+  try {
+    gridDistance = cells.gridDistanceBetween(source.originCellId, source.cellId);
+  } catch (error) {
+    return { ok: false, milliCU: null, missing: [`gridDistanceBetween: ${error.message}`] };
+  }
+  if (!Number.isInteger(gridDistance) || gridDistance < 0) {
+    return { ok: false, milliCU: null, missing: [`gridDistanceBetween(${source.originCellId}, ${source.cellId})`] };
+  }
+  return unexploredRingFloorMilliCU({ ...source, ringDistance: gridDistance });
+}
+
+/**
+ * The lower of two milli-CU floors, either of which may be absent.
+ *
+ * @param {bigint|null} a
+ * @param {bigint|null} b
+ * @returns {bigint|null}
+ */
+function lowestOf(a, b) {
+  if (a === null || a === undefined) return b ?? null;
+  if (b === null || b === undefined) return a;
+  return compareMilliCU(a, b) <= 0 ? a : b;
+}
+
+/**
+ * The minimum floor over a set of not-yet-queried cells — "min LB over all
+ * unexplored cells" for the tier 3/4 sweeps, computed rather than assumed.
+ *
+ * Returns `null` when the set is empty (nothing left unexplored at this tier) and
+ * `null` when no member's floor resolves, which callers must treat as "cannot
+ * prove the stop condition" — never as a satisfied one.
+ *
+ * @param {string[]} cellIds
+ * @param {object} common the shared `unexploredCellFloorMilliCU` input
+ * @returns {bigint|null}
+ */
+function minimumFloorOver(cellIds, common) {
+  let minimum = null;
+  for (const cellId of cellIds) {
+    const floor = unexploredCellFloorMilliCU({ ...common, cellId });
+    if (!floor.ok) return null;
+    if (minimum === null || compareMilliCU(floor.milliCU, minimum) < 0) minimum = floor.milliCU;
+  }
+  return minimum;
+}
+
 async function evaluateOne(input) {
   const { agentId, tier, agentSnapshot, leg, rates, delayParameters, correction, waitUntilAvailableSeconds, energy, evaluateExact } = input;
 
@@ -228,14 +291,57 @@ async function expandCandidates(input) {
   const problems = [];
 
   const originFineCellId = cells.cellForPoint(source.originLat, source.originLon, cells.RESOLUTION.FINE);
+  const originCoarseCellId = cells.coarseParentOf(originFineCellId);
   const maxTiers = Math.min(source.maxExpansionTiers ?? TIER.CROSS_REGION, TIER.CROSS_REGION);
+
+  // §6.3: expansion "is bounded by `candidate.max_expansion_tiers`,
+  // `candidate.max_radius_by_sla_class`, and a wall-clock budget." The tier cap alone
+  // does not bound the k-ring loop — tier 2 is one tier however many rings it grows —
+  // so with neither a radius nor a clock the loop is unbounded whenever nothing
+  // feasible is ever found, which is precisely §6.1's sparse-fleet case. Refuse
+  // rather than spin: `candidate.max_radius_by_sla_class` is `required: true` in the
+  // register with no default, because the containment limit is Ops' to set (§6.3),
+  // and inventing one here would be this module quietly making a policy decision.
+  const hasRadiusBound = isNumber(source.maxRadiusMetres);
+  const hasClockBound = isNumber(source.deadlineMs) && typeof source.elapsedMs === "function";
+  if (maxTiers >= TIER.KRING && !hasRadiusBound && !hasClockBound) {
+    return {
+      ok: false,
+      candidates: [],
+      bestGammaMilliCU: null,
+      achievedGapMilliCU: null,
+      tiersExplored: 0,
+      cellsExplored: 0,
+      agentsEvaluated: 0,
+      achievedGapProven: false,
+      unexploredRingDistance: 0,
+      unresolvedBoundAgentIds: [],
+      truncatedBy: "unbounded_search_refused",
+      problems: [
+        "expansion refused: tier 2 (k-ring expansion) is enabled but neither " +
+          "candidate.max_radius_by_sla_class (maxRadiusMetres) nor a wall-clock budget (deadlineMs + " +
+          "elapsedMs) was supplied, and §6.3 requires expansion to be bounded by one of them. Without " +
+          "either, a Leg with no feasible agent expands without limit (§6.1's bounded-work property, T9).",
+      ],
+    };
+  }
 
   const results = new Map(); // agentId -> evaluateOne() result
   const seenAgentIds = new Set();
+  const unresolvedBoundAgentIds = [];
   let cellsExplored = 0;
   let agentsEvaluated = 0;
   let bestGammaMilliCU = null;
   let truncatedBy = null;
+  // The lowest ring that is still, wholly or partly, unqueried. §6.4's achieved
+  // bound is `C* − min LB over unexplored`, so a truncation taken part-way through
+  // ring `r` leaves ring `r` itself unexplored — not `r + 1`. Reporting `r + 1`'s
+  // (strictly higher) floor would understate a bound the decision record and
+  // §21.4's SLI both present as *proven*.
+  let unexploredRingDistance = 0;
+  // Floors of cells left unvisited when a tier 3/4/6 sweep breaks early, folded
+  // into the same minimum.
+  let remainingCellFloorMilliCU = null;
 
   // The wall-clock budget check reads only the caller-injected `elapsedMs()`
   // function reference — never a clock literal — so this module's source carries
@@ -287,6 +393,13 @@ async function expandCandidates(input) {
 
       agentsEvaluated += 1;
       results.set(agentId, evaluated);
+
+      // An agent whose `LB` cannot be resolved is not scored and not a candidate.
+      // Recorded rather than dropped: §6.1 requires truncation to be quantified and
+      // §6.4 requires it to be reported, and an input gap that silently removes
+      // every agent would otherwise surface as "no candidates, gap 0" — an
+      // unbounded, silent truncation of exactly the kind §6.1 exists to end.
+      if (evaluated.lbMilliCU === null) unresolvedBoundAgentIds.push(agentId);
 
       if (evaluated.exact && evaluated.exact.feasible && typeof evaluated.exact.gammaMilliCU === "bigint") {
         if (bestGammaMilliCU === null || compareMilliCU(evaluated.exact.gammaMilliCU, bestGammaMilliCU) < 0) {
@@ -340,6 +453,16 @@ async function expandCandidates(input) {
   // ring expansion tier 2 requires.
   while (!stopped && maxTiers >= TIER.ORIGIN_CELL && ring <= maxRadiusRings) {
     if (ring >= 1 && maxTiers < TIER.KRING) break;
+    // The wall-clock budget has to bind on the *ring* loop, not only on each agent
+    // considered: a sequence of empty rings consults no agent, so a clock checked
+    // only inside `considerAgentIds` would never be read at all and the search that
+    // §6.3 says is bounded by it would grow without limit.
+    if (ring >= 1 && !stillWithinDeadline()) {
+      truncatedBy = truncatedBy || "wall_clock_budget";
+      break;
+    }
+    // Entering ring `r`: until it is queried in full, `r` is the lowest unexplored ring.
+    unexploredRingDistance = ring;
     const ringCells = ring === 0 ? [originFineCellId] : cells.ringAt(originFineCellId, ring);
     for (const fineCellId of ringCells) {
       // eslint-disable-next-line no-await-in-loop
@@ -350,6 +473,8 @@ async function expandCandidates(input) {
       }
     }
     if (stopped) break;
+    // Ring `r` is now fully queried, so the lowest unexplored ring is `r + 1`.
+    unexploredRingDistance = ring + 1;
 
     // The floor for the *next*, still-unexplored ring — the geometric pruning check.
     // eslint-disable-next-line no-await-in-loop
@@ -375,40 +500,102 @@ async function expandCandidates(input) {
   }
 
   /* ── Tier 3 — origin zone, then adjacent zones ──────────────────────────── */
+  //
+  // Each zone cell carries its own geometric floor, exactly as a ring does, so the
+  // cells are both *ordered* by it (§6.4: "cells are visited in increasing order of
+  // their minimum possible LB") and *pruned* against the minimum over the ones still
+  // unvisited. Both used to be a literal `0n`: the ordering degenerated to cell-id
+  // order, and the stop condition claimed the unexplored minimum was zero, which
+  // terminates the sweep the moment `C* ≤ Δ_opt` — an ordinary state, not an exotic
+  // one, since `C*` may be zero or negative once `C_opportunity` is (§6.4).
+  const zoneFloorInput = {
+    originCellId: originFineCellId,
+    resolution: cells.RESOLUTION.FINE,
+    leg: source.leg,
+    decisionTimeMs: source.decisionTimeMs,
+    fleetBestCase: source.fleetBestCase,
+    rates: source.rates,
+    delayParameters: source.delayParameters,
+    correction: source.correction,
+  };
+
   if (!truncatedBy && maxTiers >= TIER.ZONE && source.zoneCells && Array.isArray(source.zoneCells.cellIds)) {
-    for (const fineCellId of ordering.orderCellsForExpansion(
-      source.zoneCells.cellIds.map((cellId) => ({ cellId, minBoundMilliCU: 0n })),
-    ).map((entry) => entry.cellId)) {
-      // eslint-disable-next-line no-await-in-loop
-      await queryFineCell(fineCellId, READY_CLASSES, TIER.ZONE);
-      if (truncatedBy) break;
-      if (shouldStopExpanding(0n)) {
-        truncatedBy = "pruning_rule_satisfied";
+    const scored = [];
+    let floorsResolved = true;
+    for (const cellId of source.zoneCells.cellIds) {
+      const floor = unexploredCellFloorMilliCU({ ...zoneFloorInput, cellId });
+      if (!floor.ok) {
+        floorsResolved = false;
+        problems.push(...floor.missing.map((name) => `zoneCellFloor: ${name}`));
         break;
+      }
+      scored.push({ cellId, minBoundMilliCU: floor.milliCU });
+    }
+
+    if (floorsResolved) {
+      const ordered = ordering.orderCellsForExpansion(scored);
+      for (let index = 0; index < ordered.length; index += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        await queryFineCell(ordered[index].cellId, READY_CLASSES, TIER.ZONE);
+        if (truncatedBy) {
+          remainingCellFloorMilliCU = lowestOf(remainingCellFloorMilliCU, ordered[index].minBoundMilliCU);
+          break;
+        }
+        // Ascending order, so the next entry's floor *is* the minimum over the rest.
+        const remaining = index + 1 < ordered.length ? ordered[index + 1].minBoundMilliCU : null;
+        if (remaining === null) break;
+        if (shouldStopExpanding(remaining)) {
+          truncatedBy = "pruning_rule_satisfied";
+          remainingCellFloorMilliCU = lowestOf(remainingCellFloorMilliCU, remaining);
+          break;
+        }
       }
     }
   }
 
   /* ── Tier 4 — region-wide coarse-cell sweep ─────────────────────────────── */
+  const regionFloorInput = { ...zoneFloorInput, originCellId: originCoarseCellId, resolution: cells.RESOLUTION.COARSE };
+
   if (!truncatedBy && maxTiers >= TIER.REGION && Array.isArray(source.regionCoarseCellIds)) {
-    for (const coarseCellId of [...source.regionCoarseCellIds].sort(ordering.compareStrings)) {
-      for (const availabilityClass of READY_CLASSES) {
-        // eslint-disable-next-line no-await-in-loop
-        const agentIds = await availabilityIndex.candidatesInCoarseCell(
-          { kv: source.kv },
-          source.shardId,
-          coarseCellId,
-          availabilityClass,
-        );
-        cellsExplored += 1;
-        // eslint-disable-next-line no-await-in-loop
-        await considerAgentIds(ordering.orderAgentsWithinCell(agentIds), TIER.REGION);
-        if (truncatedBy) break;
-      }
-      if (truncatedBy) break;
-      if (shouldStopExpanding(0n)) {
-        truncatedBy = "pruning_rule_satisfied";
+    const scored = [];
+    let floorsResolved = true;
+    for (const cellId of source.regionCoarseCellIds) {
+      const floor = unexploredCellFloorMilliCU({ ...regionFloorInput, cellId });
+      if (!floor.ok) {
+        floorsResolved = false;
+        problems.push(...floor.missing.map((name) => `regionCellFloor: ${name}`));
         break;
+      }
+      scored.push({ cellId, minBoundMilliCU: floor.milliCU });
+    }
+
+    if (floorsResolved) {
+      const ordered = ordering.orderCellsForExpansion(scored);
+      for (let index = 0; index < ordered.length; index += 1) {
+        for (const availabilityClass of READY_CLASSES) {
+          // eslint-disable-next-line no-await-in-loop
+          const agentIds = await availabilityIndex.candidatesInCoarseCell(
+            { kv: source.kv },
+            source.shardId,
+            ordered[index].cellId,
+            availabilityClass,
+          );
+          cellsExplored += 1;
+          // eslint-disable-next-line no-await-in-loop
+          await considerAgentIds(ordering.orderAgentsWithinCell(agentIds), TIER.REGION);
+          if (truncatedBy) break;
+        }
+        if (truncatedBy) {
+          remainingCellFloorMilliCU = lowestOf(remainingCellFloorMilliCU, ordered[index].minBoundMilliCU);
+          break;
+        }
+        const remaining = index + 1 < ordered.length ? ordered[index + 1].minBoundMilliCU : null;
+        if (remaining === null) break;
+        if (shouldStopExpanding(remaining)) {
+          truncatedBy = "pruning_rule_satisfied";
+          remainingCellFloorMilliCU = lowestOf(remainingCellFloorMilliCU, remaining);
+          break;
+        }
       }
     }
   }
@@ -425,14 +612,20 @@ async function expandCandidates(input) {
   }
 
   /* ── Tier 6 — cross-region (explicitly authorised only) ─────────────────── */
+  //
+  // No pruning check here — §6.3 makes tier 6 an authorisation decision, not an
+  // optimisation one — but a cell left unvisited by a budget truncation still has to
+  // enter the achieved bound, or the reported gap would omit part of what was not
+  // searched.
   if (!truncatedBy && maxTiers >= TIER.CROSS_REGION && Array.isArray(source.crossRegionCoarseCellIds)) {
-    for (const coarseCellId of [...source.crossRegionCoarseCellIds].sort(ordering.compareStrings)) {
+    const ordered = [...source.crossRegionCoarseCellIds].sort(ordering.compareStrings);
+    for (let index = 0; index < ordered.length; index += 1) {
       for (const availabilityClass of READY_CLASSES) {
         // eslint-disable-next-line no-await-in-loop
         const agentIds = await availabilityIndex.candidatesInCoarseCell(
           { kv: source.kv },
           source.shardId,
-          coarseCellId,
+          ordered[index],
           availabilityClass,
         );
         cellsExplored += 1;
@@ -440,7 +633,13 @@ async function expandCandidates(input) {
         await considerAgentIds(ordering.orderAgentsWithinCell(agentIds), TIER.CROSS_REGION);
         if (truncatedBy) break;
       }
-      if (truncatedBy) break;
+      if (truncatedBy) {
+        remainingCellFloorMilliCU = lowestOf(
+          remainingCellFloorMilliCU,
+          minimumFloorOver(ordered.slice(index), regionFloorInput),
+        );
+        break;
+      }
     }
   }
 
@@ -457,13 +656,30 @@ async function expandCandidates(input) {
       })),
   );
 
-  // The proven, non-negative search-gap bound (§6.4). Clamped at zero: an
-  // unexplored floor at or above C* proves optimality over the columns generated,
-  // not a negative gap.
+  if (unresolvedBoundAgentIds.length > 0) {
+    problems.push(
+      `LB(a, l) did not resolve for ${unresolvedBoundAgentIds.length} of ${agentsEvaluated} agent(s) reached ` +
+        `(${unresolvedBoundAgentIds.slice(0, 5).join(", ")}${unresolvedBoundAgentIds.length > 5 ? ", …" : ""}); ` +
+        "each was excluded from the candidate set without being priced. §6.1/§6.4 permit truncation only when " +
+        "it is quantified and reported, so this is reported rather than absorbed into an empty candidate list.",
+    );
+    truncatedBy = truncatedBy || "lower_bound_unresolved";
+  }
+
+  // The proven, non-negative search-gap bound (§6.4) — `C* − min LB over
+  // unexplored`, where "unexplored" is the lowest ring still wholly or partly
+  // unqueried *and* any tier 3/4/6 cell a truncation left unvisited, whichever
+  // floor is lower. Taking the lower of the two is the conservative direction: it
+  // can only widen the reported gap, never narrow a bound the decision record and
+  // §21.4's SLI present as proven.
+  //
+  // Clamped at zero: an unexplored floor at or above C* proves optimality over the
+  // columns generated, not a negative gap.
   let achievedGapMilliCU = 0n;
+  let achievedGapProven = false;
   if (bestGammaMilliCU !== null) {
-    const floor = unexploredRingFloorMilliCU({
-      ringDistance: ring + 1,
+    const ringFloor = unexploredRingFloorMilliCU({
+      ringDistance: unexploredRingDistance,
       resolution: cells.RESOLUTION.FINE,
       leg: source.leg,
       decisionTimeMs: source.decisionTimeMs,
@@ -472,10 +688,23 @@ async function expandCandidates(input) {
       delayParameters: source.delayParameters,
       correction: source.correction,
     });
-    if (floor.ok) {
-      const raw = subtract(bestGammaMilliCU, floor.milliCU);
+    const floorMilliCU = ringFloor.ok ? lowestOf(ringFloor.milliCU, remainingCellFloorMilliCU) : null;
+    if (floorMilliCU !== null) {
+      const raw = subtract(bestGammaMilliCU, floorMilliCU);
       achievedGapMilliCU = compareMilliCU(raw, 0n) > 0 ? raw : 0n;
+      achievedGapProven = true;
+    } else {
+      // No floor resolved, so no bound was proven. Saying "gap 0" here would be the
+      // false guarantee §6.4 calls worse than no bound.
+      achievedGapMilliCU = null;
+      problems.push(
+        ...(ringFloor.missing || []).map((name) => `achievedGap: unexploredRingFloor: ${name}`),
+      );
     }
+  } else {
+    // Nothing was priced, so there is no `C*` to bound a gap against. `0n` here
+    // would read as "proven optimal" in the decision record.
+    achievedGapMilliCU = null;
   }
 
   return {
@@ -483,6 +712,9 @@ async function expandCandidates(input) {
     candidates: orderedResults,
     bestGammaMilliCU,
     achievedGapMilliCU,
+    achievedGapProven,
+    unexploredRingDistance,
+    unresolvedBoundAgentIds,
     tiersExplored: Math.min(ring + (truncatedBy ? 0 : 1), maxTiers),
     cellsExplored,
     agentsEvaluated,
@@ -497,5 +729,7 @@ module.exports = {
   WIDENED_CLASSES,
   minimumPossibleDistanceForRingMetres,
   unexploredRingFloorMilliCU,
+  unexploredCellFloorMilliCU,
+  minimumFloorOver,
   expandCandidates,
 };

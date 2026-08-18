@@ -237,17 +237,38 @@ async function checkI3(deps, context) {
     select: { id: true, legId: true, state: true },
   });
 
+  // ── Two set reads, not two reads per Leg ────────────────────────────────────
+  //
+  // This scan used to issue a `findFirst` for the commitment and another for the queue entry per
+  // Leg, which made the pass's cost 2N round trips. Measured against a live PostgreSQL cluster at
+  // 500 Legs, I3 alone took 515 ms of a 2,137 ms pass; the checker runs on a 60 s interval, so a
+  // pass whose cost is linear in *round trips* reaches its own cadence at a fleet size §19.2's
+  // sizing argument treats as small. "Continuously verified" (§26.1) is a claim about the pass
+  // completing, so the shape is part of the requirement rather than an optimisation.
+  //
+  // The set-based form is exactly equivalent: membership in "has an unreleased commitment" and in
+  // "has a queue entry" is what the per-Leg queries were establishing one row at a time.
+  const legIds = legs.map((leg) => leg.id);
+  const committed = new Set(
+    (await deps.prisma.commitment.findMany({
+      where: { legId: { in: legIds }, releasedAt: null },
+      select: { legId: true },
+    })).map((row) => row.legId),
+  );
+  const queuedLegIds = new Set(
+    (await deps.prisma.workQueue.findMany({
+      where: { legId: { in: legIds } },
+      select: { legId: true },
+    })).map((row) => row.legId),
+  );
+
   const soft = new Set(context.softReservedLegIds || []);
   const orphans = [];
   const plannedOrphans = [];
 
   for (const leg of legs) {
-    // eslint-disable-next-line no-await-in-loop
-    const commitment = await deps.prisma.commitment.findFirst({ where: { legId: leg.id, releasedAt: null } });
-    if (commitment) continue;
-    // eslint-disable-next-line no-await-in-loop
-    const queued = await deps.prisma.workQueue.findFirst({ where: { legId: leg.id } });
-    if (queued) continue;
+    if (committed.has(leg.id)) continue;
+    if (queuedLegIds.has(leg.id)) continue;
     if (soft.has(leg.legId) || soft.has(leg.id)) continue;
 
     const row = { legId: leg.legId, state: leg.state };
@@ -284,16 +305,29 @@ async function checkI4(deps, context) {
     select: { id: true, legId: true, state: true, version: true },
   });
 
+  // One read of the pending LEG timers, indexed by entity — not one read per Leg. The same
+  // measurement that reshaped I3 put I4 at 446 ms of a 2,137 ms pass over 500 Legs, and
+  // `Timer` already carries the `(entityType, entityId, timerState)` index this uses.
+  const supervised = new Map();
+  for (const timer of await deps.prisma.timer.findMany({
+    where: { entityType: "LEG", entityId: { in: legs.map((leg) => leg.id) }, timerState: "PENDING" },
+    select: { entityId: true, entityVersion: true },
+  })) {
+    // A Leg with several pending timers is supervised by any of them; the version comparison
+    // below wants the one that matches, so the freshest is kept.
+    const existing = supervised.get(timer.entityId);
+    if (!existing || BigInt(timer.entityVersion) > BigInt(existing.entityVersion)) {
+      supervised.set(timer.entityId, timer);
+    }
+  }
+
   const unsupervised = [];
   for (const leg of legs) {
     // States with no deadline in §4.3 are legitimately timerless; the caller supplies the
     // set rather than this module re-deriving §4.3's deadline column, because deriving it
     // here would be the second copy of a table the lifecycle module already owns.
     if ((context.statesWithoutDeadline || []).includes(leg.state)) continue;
-    // eslint-disable-next-line no-await-in-loop
-    const timer = await deps.prisma.timer.findFirst({
-      where: { entityType: "LEG", entityId: leg.id, timerState: "PENDING" },
-    });
+    const timer = supervised.get(leg.id);
     if (!timer) {
       unsupervised.push({ legId: leg.legId, state: leg.state, problem: "NO_PENDING_TIMER" });
       continue;
@@ -352,24 +386,67 @@ async function checkI5(deps, context) {
   });
 
   const byScope = Object.fromEntries(rows.map((row) => [row.fenceScope, Number(row._count._all || 0)]));
-  const previous = context.previousFenceRejections || {};
+
+  const observedTotal = Object.values(byScope).reduce((sum, count) => sum + count, 0);
+
+  // §26.1's instrument is a **rising baseline**, which is a statement about two windows. A
+  // single window carries no baseline — and `previousFenceRejections` is deliberately
+  // distinguished from an empty object here: `{}` is a real observation (a previous window
+  // with no rejections in any scope), `undefined` is the absence of one.
+  // `workers/invariant.worker.js` carries the observation forward between passes.
+  //
+  // With no baseline there are two cases and they are not the same fact:
+  //
+  //   · **No rejections at all this window.** Zero cannot be a rise from any non-negative
+  //     baseline, so the invariant provably holds and `ENFORCED` is not a guess.
+  //   · **Rejections, and nothing to compare them against.** Whether they are a rise is
+  //     genuinely unknown, and the honest report is "not verified" — not `ENFORCED`, which
+  //     would be a claim about a trend nobody has observed, and not `VIOLATED`, which would
+  //     page for the mechanism working (a rejection *is* the fence doing its job).
+  if (context.previousFenceRejections === undefined || context.previousFenceRejections === null) {
+    return {
+      ...result("I5", {
+        status: observedTotal === 0 ? STATUS.ENFORCED : null,
+        instrument: "fence-rejection counters per scope, compared against the previous window (§26.1)",
+        checkError:
+          observedTotal === 0
+            ? null
+            : "no previous window is on record, so whether this window's fence rejections are a *rising* " +
+              "baseline cannot be established. §26.1 verifies I5 by \"fence-rejection counters, reported per " +
+              "scope; neither may have a rising baseline\" — a comparison over two windows.",
+        detail:
+          `rejections this window by scope: ${JSON.stringify(byScope)}. No previous window on record` +
+          (observedTotal === 0
+            ? "; a count of zero cannot be a rise from any baseline, so the invariant holds on this window alone."
+            : "."),
+      }),
+      fenceRejectionsByScope: byScope,
+    };
+  }
+
+  const previous = context.previousFenceRejections;
   const rising = [];
 
   for (const [scope, count] of Object.entries(byScope)) {
-    const before = Number.isFinite(previous[scope]) ? previous[scope] : null;
-    if (before !== null && count > before) {
+    const before = Number.isFinite(previous[scope]) ? previous[scope] : 0;
+    if (count > before) {
       rising.push({ scope, previous: before, current: count });
     }
   }
 
   const { violations, violationCount } = bounded(rising);
-  return result("I5", {
-    status: violationCount === 0 ? STATUS.ENFORCED : STATUS.VIOLATED,
-    violations,
-    violationCount,
-    instrument: "fence-rejection counters per scope, compared against the previous window (§26.1)",
-    detail: `rejections this window by scope: ${JSON.stringify(byScope)}`,
-  });
+  return {
+    ...result("I5", {
+      status: violationCount === 0 ? STATUS.ENFORCED : STATUS.VIOLATED,
+      violations,
+      violationCount,
+      instrument: "fence-rejection counters per scope, compared against the previous window (§26.1)",
+      detail: `rejections this window by scope: ${JSON.stringify(byScope)}; previous window: ${JSON.stringify(previous)}`,
+    }),
+    // Returned for the worker to carry to the next pass, exactly as I6's marks are. The
+    // check itself writes nothing.
+    fenceRejectionsByScope: byScope,
+  };
 }
 
 /**
@@ -715,7 +792,16 @@ async function checkI12(deps, context) {
       violations,
       violationCount,
       instrument: "write audit on terminal rows, by version comparison across passes (§26.1)",
-      detail: `${terminal.length} terminal rows touched in the window`,
+      // The comparison is only as wide as the marks carried in. Saying so is what stops a
+      // reader taking `ENFORCED` from a pass that had nothing to compare against — which is
+      // exactly what a checker whose caller drops the returned marks produces.
+      detail:
+        `${terminal.length} terminal rows touched in the window; ${marks.size} carried a version mark from ` +
+        "a previous pass and were therefore comparable" +
+        (marks.size === 0 && terminal.length > 0
+          ? ". No mark was carried in, so this pass established the baseline rather than verifying it — a " +
+            "modification is detectable from the next pass onward (§26.1's write audit is a comparison across passes)"
+          : ""),
     }),
     terminalVersionMarks: nextMarks,
   };
@@ -730,6 +816,40 @@ async function checkI12(deps, context) {
  * total budget with no recorded step has stopped progressing.
  */
 async function checkI13(deps, context) {
+  // "Past the ladder's total budget" is the age half of §26.1's instrument, and the budget is
+  // §17.4's. Without it the original comparison degenerated to `enqueuedAt < now`, which makes
+  // **every** unconsidered queue entry a violation the instant it is enqueued — a guaranteed
+  // page on a healthy fleet, produced by a missing argument rather than by the fleet.
+  //
+  // An unresolved budget therefore splits the same two ways I5's missing baseline does: if no
+  // entry is unconsidered at all, no entry can be past *any* budget and the invariant provably
+  // holds; if some are, whether they are past budget is unknown and the check says so.
+  if (!Number.isFinite(context.ladderBudgetSeconds) || context.ladderBudgetSeconds <= 0) {
+    const unconsidered = await deps.prisma.workQueue.findMany({
+      where: {
+        state: { in: ["QUEUED", "DEFERRED"] },
+        ...(context.shardId ? { shardId: context.shardId } : {}),
+      },
+      select: { legId: true, state: true, enqueuedAt: true, roundsConsidered: true },
+    });
+    const never = unconsidered.filter((row) => Number(row.roundsConsidered || 0) === 0);
+    return result("I13", {
+      status: never.length === 0 ? STATUS.ENFORCED : null,
+      instrument: "queue age audit versus ladder step (§26.1)",
+      checkError:
+        never.length === 0
+          ? null
+          : "no §17.4 ladder budget was supplied (sla.assignment_deadline), so \"queued past the ladder's total " +
+            `budget\" has no value to compare against. ${never.length} queue entr${never.length === 1 ? "y has" : "ies have"} ` +
+            "not yet been considered by a round, which may be normal or may be starvation; without the budget " +
+            "the two are indistinguishable, and treating the budget as zero would report every one of them as a " +
+            "violation.",
+      detail:
+        `${unconsidered.length} queued or deferred entries, ${never.length} never considered by a round` +
+        (never.length === 0 ? "; no entry can be past any budget, so the invariant holds regardless of its value." : "."),
+    });
+  }
+
   const stale = await deps.prisma.workQueue.findMany({
     where: {
       state: { in: ["QUEUED", "DEFERRED"] },
@@ -876,39 +996,114 @@ async function checkI16(deps, context) {
  * So T1 and T2 are scored by event count against their budgets and **T3 is not scored here
  * at all**: its instrument is Phase 11's tail calibration, and this check says so rather
  * than producing a confident "0 observed, 0 expected" for a target it has no power to test.
+ *
+ * ── The two timescales are the specification's, and they are not the checker's window ──
+ * §26.1 states the instrument per tier: "T1 by event count over **days**, T2 by event count
+ * over **quarters**". The budgets in the register (`energy.event_budget_per_fleet_year`) are
+ * **fleet-year** rates, so comparing them against a count taken over the checker's few-minute
+ * monotonicity window compares a rate to a count and can never fire: 365 events per fleet-year
+ * is 0.003 events per five minutes, and no integer count of events in five minutes exceeds
+ * 365. Each tier is therefore counted over *its own* window and the annual budget is pro-rated
+ * to it, which is what makes a breach expressible at all.
+ *
+ * @structural §26.1's own per-tier verification timescales — "T1 by event count over days, T2 by
+ *   event count over quarters". A week and a quarter, transcribed from the specification rather
+ *   than chosen: these are not a tuning knob whose value an operator may change, they are the
+ *   instrument the register names, and a registered parameter here would invite exactly the
+ *   re-timing that destroys the statistical power §26.1 spends a paragraph establishing.
  */
-async function checkI17(deps, context) {
-  const rows = await deps.prisma.calibrationObservation.groupBy({
-    by: ["tier"],
-    where: {
-      predictor: "ENERGY_SHORTFALL",
-      eventOccurred: true,
-      observedAt: { gte: new Date(context.windowStartMs), lt: new Date(context.nowMs) },
-    },
-    _count: { _all: true },
-  });
+const TIER_WINDOW_DAYS = Object.freeze({ T1: 7, T2: 91 });
 
-  const observed = Object.fromEntries(rows.map((row) => [row.tier, Number(row._count._all || 0)]));
+/** @structural days per year, for pro-rating a fleet-year budget to a window */
+const DAYS_PER_YEAR = 365;
+
+/** @structural milliseconds per day */
+const MS_PER_DAY = 86400000;
+
+const I17_INSTRUMENT =
+  "T1 over days and T2 over quarters against a pro-rated fleet-year budget; T3 by predictive-tail " +
+  "calibration (§21.5), not here (§26.1)";
+
+async function checkI17(deps, context) {
   const budgets = context.tierEventBudgets || {};
+  const missing = ["T1", "T2"].filter((tier) => !Number.isFinite(budgets[tier]));
+
   const offending = [];
+  const observedByTier = {};
 
   for (const tier of ["T1", "T2"]) {
-    const count = observed[tier] || 0;
-    const budget = budgets[tier];
-    if (Number.isFinite(budget) && count > budget) {
-      offending.push({ tier, observed: count, budget, problem: "REALISED_RATE_EXCEEDS_TIER_BUDGET" });
+    const windowDays = TIER_WINDOW_DAYS[tier];
+    const from = new Date(context.nowMs - windowDays * MS_PER_DAY);
+    // eslint-disable-next-line no-await-in-loop
+    const count = await deps.prisma.calibrationObservation.count({
+      where: {
+        predictor: "ENERGY_SHORTFALL",
+        eventOccurred: true,
+        tier,
+        observedAt: { gte: from, lt: new Date(context.nowMs) },
+      },
+    });
+
+    // I17 is "each tier's realised fleet-year event rate stays **within its budget**". With no
+    // budget resolved there is normally no claim to test — except in the one case where the
+    // answer does not depend on the budget's value: zero observed events are within every
+    // non-negative budget, and `energy.event_budget_per_fleet_year` has `min: 0`. So a fleet
+    // with no shortfall events is `ENFORCED` on the arithmetic, and a fleet *with* them and no
+    // budget is unverified rather than assumed fine.
+    if (!Number.isFinite(budgets[tier])) {
+      observedByTier[tier] = { observed: count, windowDays, allowance: null, fleetYearBudget: null };
+      continue;
+    }
+
+    // The fleet-year budget, pro-rated to this tier's own timescale. A fractional allowance is
+    // kept fractional: rounding 0.35 events up to 1 would grant a whole event of slack a
+    // budget of 4 per fleet-year does not have (T3's, which is why T3 is not scored this way
+    // at all).
+    const allowance = (budgets[tier] * windowDays) / DAYS_PER_YEAR;
+    observedByTier[tier] = { observed: count, windowDays, allowance, fleetYearBudget: budgets[tier] };
+
+    if (count > allowance) {
+      offending.push({
+        tier,
+        observed: count,
+        allowance,
+        windowDays,
+        fleetYearBudget: budgets[tier],
+        problem: "REALISED_RATE_EXCEEDS_TIER_BUDGET",
+      });
     }
   }
 
+  // A tier whose budget is unresolved is unverifiable *unless* it observed nothing, in which
+  // case the comparison's outcome is the same for every admissible budget.
+  const unverifiable = missing.filter((tier) => (observedByTier[tier] || {}).observed > 0);
+
   const { violations, violationCount } = bounded(offending);
+  const detail =
+    `observed shortfall events per tier: ${JSON.stringify(observedByTier)}. T3 is deliberately not scored ` +
+    "by an event count: validating a handful of events per fleet-year by counting occurrences is a category error." +
+    (missing.length > 0
+      ? ` No fleet-year budget was resolved for ${missing.join(", ")} (energy.event_budget_per_fleet_year).`
+      : "");
+
+  if (unverifiable.length > 0) {
+    return result("I17", {
+      status: null,
+      instrument: I17_INSTRUMENT,
+      checkError:
+        `${unverifiable.join(" and ")} observed shortfall events and no fleet-year budget was resolved for ` +
+        "them, so \"within its budget\" has nothing to compare against. Reporting ENFORCED would assert a " +
+        "probabilistic claim on the strength of not having evaluated it.",
+      detail,
+    });
+  }
+
   return result("I17", {
     status: violationCount === 0 ? STATUS.ENFORCED : STATUS.VIOLATED,
     violations,
     violationCount,
-    instrument: "T1 and T2 by event count against budget; T3 by predictive-tail calibration (§21.5), not here (§26.1)",
-    detail:
-      `observed shortfall events in the window: ${JSON.stringify(observed)}. T3 is deliberately not scored ` +
-      "by an event count: validating a 1e-7 target by counting its occurrences is a category error.",
+    instrument: I17_INSTRUMENT,
+    detail,
   });
 }
 
@@ -1395,6 +1590,7 @@ module.exports = {
   STATUS,
   CHECKS,
   SOCKET_EVENT,
+  TIER_WINDOW_DAYS,
   TERMINAL_LEG_STATES,
   RECOVERY_LEG_STATES,
   STRANDED_LEG_STATES,

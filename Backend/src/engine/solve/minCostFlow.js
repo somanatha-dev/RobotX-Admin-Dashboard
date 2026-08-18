@@ -57,8 +57,12 @@
  * `solveSuccessiveShortestPath()`, for two jobs and no others:
  *
  *   1. **The test oracle.** It is a different algorithm reaching the same optimum, so
- *      `tests/engine/solveCostScalingEquivalence.test.js` can compare the two on generated
- *      instances rather than compare the new solver against its own opinion.
+ *      `tests/engine/solveCostScaling.test.js` can compare the two on generated instances
+ *      rather than compare the new solver against its own opinion. It is a *differential*
+ *      oracle and not a complete one: both solvers read the network this module builds, so a
+ *      misunderstanding of the formulation itself would be invisible to the comparison.
+ *      `tests/engine/solveCostScalingOracle.test.js` closes that by enumerating §1.4's
+ *      objective directly from the instance, sharing no code with either solver.
  *   2. **The exactness fallback.** Cost scaling collapses the lexicographic cost into a
  *      single scaled integer, which is exact only while the instance's costs fit inside
  *      float64's exact-integer range. `costScaling.prepare()` establishes that up front and
@@ -405,6 +409,100 @@ function refusal(problems) {
 }
 
 /**
+ * The trivial feasible flow, and the completion of a partial one.
+ *
+ * Every Leg carries an arc straight to the sink — its deferral variable `y[l]`, or the
+ * remain-queued arc that replaces it when the switch is thrown — so the flow that sends one
+ * unit `S → l → T` for **every** Leg is feasible on any network this module builds: it meets
+ * every coverage row with equality and consumes no agent's exclusivity row at all. It is the
+ * allocation `budgets.emptyIncumbent()` already describes in words —
+ *
+ * > no Leg assigned. Feasible by construction: every Leg remains queued and is solved by the
+ * > next round. §9.4 requires the solver to hold a feasible solution at every instant, and
+ * > this is the one it holds before it has found a better one.
+ *
+ * — computed rather than described, which is what §9.4's *"at any point it holds a feasible
+ * solution"* requires of a result and not merely of a tracker. Producing it is one pass over
+ * the arcs and no arithmetic: it is affordable on exactly the path that cannot afford
+ * `prepare()`.
+ *
+ * Given a partial flow it **completes** rather than replaces: a Leg whose supply arc already
+ * carries a unit is left exactly as the solver routed it, and only the Legs the solver never
+ * reached are sent to the sink. A Leg that carries no supply also carries no flow on any arc
+ * out of its node, so both arcs the completion needs are free and the result is a flow.
+ *
+ * @param {object} network
+ * @param {(arc: number) => number} flowOn forward-arc flow of the partial solution
+ * @returns {{ flow: Int32Array, completed: string[] }} the completed flow and the Legs it decided
+ */
+function completeToFeasibleFlow(network, flowOn) {
+  const arcCount = network.arcTo.length;
+  const flow = new Int32Array(arcCount);
+
+  const supplyArcOf = new Map();
+  const sinkArcOf = new Map();
+
+  for (let arc = 0; arc < arcCount; arc += ARC_PAIR_STRIDE) {
+    flow[arc] = flowOn(arc);
+    const role = network.arcRole[arc];
+    if (role === ARC.SUPPLY) supplyArcOf.set(network.arcMeta[arc].legId, arc);
+    else if (role === ARC.DEFER || role === ARC.REMAIN_QUEUED) sinkArcOf.set(network.arcMeta[arc].legId, arc);
+  }
+
+  const completed = [];
+  for (const [legId, supplyArc] of supplyArcOf) {
+    if (flow[supplyArc] > 0) continue;
+    const sinkArc = sinkArcOf.get(legId);
+    // Every Leg has one by construction — see the module header's network diagram. A Leg
+    // without one would be a network-construction defect, and silently skipping it would
+    // return an infeasible flow, which is the very thing this function exists to prevent.
+    if (sinkArc === undefined) continue;
+    flow[supplyArc] = 1;
+    flow[sinkArc] = 1;
+    completed.push(legId);
+  }
+
+  return { flow, completed };
+}
+
+/**
+ * A valid lower bound on the money objective of **any** feasible flow on this network.
+ *
+ * Drop the exclusivity rows and every Leg chooses its cheapest arc independently; the
+ * relaxation's optimum is therefore no greater than the true optimum, and it is the sum over
+ * Legs of the cheapest arc leaving that Leg's node. Every feasible flow routes exactly one
+ * unit out of each Leg node, so its money cost is a sum of one arc price per Leg, each at
+ * least that Leg's minimum — which is the bound, arc for arc.
+ *
+ * Money only, deliberately: the lexicographic first component is an assignment *priority* and
+ * not a price (§1.3), and `objectiveMilliCU` is the money the bound has to bound.
+ *
+ * @param {object} network
+ * @returns {bigint}
+ */
+function relaxedMoneyLowerBound(network) {
+  const cheapestByLegNode = new Map();
+
+  for (let arc = 0; arc < network.arcTo.length; arc += ARC_PAIR_STRIDE) {
+    const tail = network.arcTo[arc + 1];
+    if (network.nodeKind[tail] !== NODE.LEG) continue;
+    if (network.arcCapacity[arc] <= 0) continue;
+    const money = network.arcCost[arc][1];
+    const held = cheapestByLegNode.get(tail);
+    if (held === undefined || compareMilliCU(money, held) < 0) cheapestByLegNode.set(tail, money);
+  }
+
+  // Summed in node order rather than in Map order — the two coincide here, and depending on
+  // that coincidence is how an order-dependent total gets written by accident (§9.6).
+  const perLeg = [];
+  for (let node = 0; node < network.nodeCount; node += 1) {
+    const cheapest = cheapestByLegNode.get(node);
+    if (cheapest !== undefined) perLeg.push(cheapest);
+  }
+  return sumMilliCU(perLeg);
+}
+
+/**
  * Read the allocation off a solved network, in the canonical order §9.6 requirement 2 asks
  * for. Shared by both solvers, so the two cannot report the same flow differently.
  *
@@ -450,6 +548,17 @@ function assemble(network, flowOn, priceOf, meta) {
 
   const objectiveMilliCU = sumMilliCU(costs);
 
+  // §9.4 asks a budget-limited stop to return "the incumbent **with its bound**", and the two
+  // are not the same number once the solve was cut short. On a completed solve they are: §9.3
+  // makes the singleton regime's LP relaxation integral, so the optimum this solver reached
+  // *is* the bound, computed as an equality rather than asserted as one. On a budget-limited
+  // stop the incumbent is ε-optimal — measured at +36.5 % on the 500 × 200 shape at a 250 ms
+  // budget — and publishing `bound = objective` there would report a proven optimum the run
+  // explicitly did not prove, alongside the `optimalityCertified: false` that says it did not.
+  // So the bound becomes a real one: the exclusivity-relaxed lower bound, which is valid for
+  // every feasible flow on this network and is therefore valid for the optimum.
+  const boundMilliCU = meta.budgetLimited === true ? relaxedMoneyLowerBound(network) : objectiveMilliCU;
+
   return Object.freeze({
     ok: true,
     regime: regime.REGIME.SINGLETON,
@@ -458,14 +567,25 @@ function assemble(network, flowOn, priceOf, meta) {
     deferred: Object.freeze(canonicalSort(deferred, compareByLegId)),
     unassigned: Object.freeze(canonicalSort(unassigned, compareByLegId)),
     objectiveMilliCU,
-    // §9.3: in this regime the LP relaxation is integral, so the bound *is* the
-    // objective and the gap is exactly zero. Reported as a computed equality rather than
-    // as a constant, so a future change that broke integrality would show up as a
-    // non-zero gap instead of as a comment that had stopped being true.
-    boundMilliCU: objectiveMilliCU,
+    boundMilliCU,
+    // The **integrality** gap, which §9.3 puts at exactly zero in this regime whatever the
+    // budget did: the constraint matrix is totally unimodular, so the LP relaxation has an
+    // integral optimum and there is no LP–IP gap to report. The distance between a
+    // budget-limited incumbent and `boundMilliCU` is a *truncation* gap and a different
+    // quantity; it is `objectiveMilliCU − boundMilliCU`, available to any caller that wants
+    // it, and it is deliberately not folded in here — §9.3 reports distinct approximations
+    // separately "because they bound different things and summing them would bound neither".
     lpIpGapMilliCU: subtractMilliCU(objectiveMilliCU, objectiveMilliCU),
-    duals: regime.dualsFor(regime.REGIME.SINGLETON, legPrices),
-    agentDuals: regime.dualsFor(regime.REGIME.SINGLETON, agentPrices),
+    // Labelled with what they are on *this* solve, not with what the regime entitles a solve
+    // to. §9.3 permits the singleton regime to publish exact marginal prices of the integer
+    // problem, and a solve that stopped on §9.4's budget did not produce any: cost scaling
+    // publishes the ε-optimal prices there and the reference solver's potentials price a
+    // partially routed network. Both used to be labelled `EXACT_INTEGER_MARGINAL_PRICE` with
+    // `validForCalibrationWithoutQualification: true`, which is the one thing `solve/regime.js`
+    // exists to prevent — §8.3.1's λ_zone calibration reads that field and cannot tell an
+    // ε-optimal price from a marginal one by inspection.
+    duals: regime.dualsFor(regime.REGIME.SINGLETON, legPrices, { proven: meta.budgetLimited !== true }),
+    agentDuals: regime.dualsFor(regime.REGIME.SINGLETON, agentPrices, { proven: meta.budgetLimited !== true }),
     augmentations: routed,
     budgetLimited: meta.budgetLimited === true,
     branched: false,
@@ -497,15 +617,39 @@ function solveByCostScaling(network, settings) {
   // of milliseconds of work, and a round that has already spent its budget should not spend
   // that too. The check is here rather than inside `run()` so it happens exactly once — a
   // second call would record a second §9.4 wall-clock verdict for one exceedance.
+  //
+  // What it returns is the **trivial feasible flow**, not the zero flow. Returning the zero
+  // flow was a defect: `assemble()` reads the allocation off the arcs carrying flow, so a
+  // round that stopped here named no Leg at all — not assigned, not deferred, not queued —
+  // while reporting `ok: true`, and with the `deferral` switch thrown `objective.validate()`
+  // called that **feasible**, because a coverage row reading `≤ 1` is satisfied by zero. §9.4
+  // requires the incumbent to be "a feasible solution and a bound"; an allocation accounting
+  // for none of the round's Legs is not one, and a caller cannot tell it apart from a round
+  // that genuinely decided nothing was worth doing. The trivial flow is a real feasible
+  // solution of this instance, it accounts for every Leg, it costs one pass over the arcs
+  // rather than a `prepare()`, and it is exactly the incumbent §9.4 says the solver holds
+  // before it has found a better one.
   if (settings.budgets) {
     const permitted = settings.budgets.continueSolving();
     if (!permitted.ok) {
+      const trivial = completeToFeasibleFlow(network, () => 0);
       return {
-        result: assemble(network, () => 0, () => 0n, {
+        result: assemble(network, (arc) => trivial.flow[arc], () => 0n, {
           solver: SOLVER.COST_SCALING,
           budgetLimited: true,
           optimalityCertified: false,
-          diagnostics: { scalingPhases: 0, relabels: 0, pushes: 0, finalEpsilon: null, dualsTight: false },
+          diagnostics: {
+            scalingPhases: 0,
+            relabels: 0,
+            pushes: 0,
+            finalEpsilon: null,
+            dualsTight: false,
+            // Named, so a reader of the decision record can tell "every Leg was deferred
+            // because the round ran out of time before it looked at any of them" apart from
+            // "every Leg was deferred because deferral was cheaper", which price the same.
+            trivialIncumbent: true,
+            legsDecidedByTrivialCompletion: trivial.completed.length,
+          },
         }),
         reason: null,
       };
@@ -625,6 +769,14 @@ function solveNetworkBySuccessiveShortestPath(network, settings) {
         // augmentations, where the flow is integral and every unit already pushed is a
         // valid partial allocation. Stopping mid-augmentation would leave a fractional
         // flow, which is not a solution at all.
+        //
+        // Integral is not the same as *complete*, and this used to stop at merely integral:
+        // the Legs the loop had not yet reached carried no flow on any arc, so `assemble()`
+        // reported them in none of its three lists and the round lost them silently — 3 of 20
+        // Legs named, `ok: true`, and with deferral thrown `objective.validate()` called it
+        // feasible. The remaining Legs are therefore routed to the sink before the result is
+        // read, which is the same trivial completion the cost-scaling path takes and leaves
+        // every unit the search *did* place exactly where it placed it.
         budgetLimited = true;
         break;
       }
@@ -710,12 +862,19 @@ function solveNetworkBySuccessiveShortestPath(network, settings) {
     augmentations += 1;
   }
 
-  return assemble(network, (arc) => arcFlowed[arc], (node) => potential[node][1], {
+  const completion = budgetLimited ? completeToFeasibleFlow(network, (arc) => arcFlowed[arc]) : null;
+
+  return assemble(network, (arc) => (completion ? completion.flow[arc] : arcFlowed[arc]), (node) => potential[node][1], {
     solver: SOLVER.SUCCESSIVE_SHORTEST_PATH,
     budgetLimited,
     // Exact by construction and computing no proof of it — see `assemble`.
     optimalityCertified: undefined,
-    diagnostics: { augmentations, fallbackFrom: settings.fallbackFrom || null },
+    diagnostics: {
+      augmentations,
+      fallbackFrom: settings.fallbackFrom || null,
+      trivialIncumbent: completion !== null && augmentations === 0,
+      legsDecidedByTrivialCompletion: completion ? completion.completed.length : 0,
+    },
   });
 }
 

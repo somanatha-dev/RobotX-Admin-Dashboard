@@ -239,6 +239,17 @@ function forPlan(plan, completionByLegId, parametersFor) {
     return { ok: false, milliCU: null, perLeg: [], missing: ["plan.legs"] };
   }
 
+  // §8.7's once-per-Mission rule, enforced before anything is priced. `assertAttribution`
+  // has existed since Phase 8 shipped but had no production caller, so a plan carrying two
+  // terminal Legs of one Mission was summed with `M_breach` charged twice — the exact
+  // over-charge the attribution rule exists to forbid, and one that raises γ silently
+  // rather than failing. Checked here, at the only place a whole plan's Legs are summed,
+  // so no caller can reach the sum without it.
+  const attribution = assertAttribution(legs);
+  if (!attribution.ok) {
+    return { ok: false, milliCU: null, perLeg: [], missing: attribution.problems };
+  }
+
   const perLeg = [];
   const missing = [];
   let accumulated = ZERO;
@@ -272,9 +283,15 @@ function forPlan(plan, completionByLegId, parametersFor) {
  * Check §8.7's once-per-Mission property over a plan's Legs.
  *
  * A plan holding two Legs of the same Mission both marked `TERMINAL` would charge
- * `M_breach` twice, which is the specific over-charge the attribution rule forbids. The
- * check is separate from `forPlan` so a caller can run it over a *proposed* plan before
+ * `M_breach` twice, which is the specific over-charge the attribution rule forbids.
+ *
+ * `forPlan()` calls this before summing, so the sum is unreachable without the check; it
+ * remains exported and separate so a caller can also run it over a *proposed* plan before
  * pricing, and so the failure names the Mission rather than surfacing as a large number.
+ * A Leg carrying no `missionId` keys as the empty Mission, which means two unidentified
+ * terminal Legs are refused rather than assumed distinct — the same "neither default is
+ * safe" reasoning `forLeg()` applies to an unstated role, in the direction that cannot
+ * silently over-charge.
  *
  * @param {Array<{legId: string, missionId: string, role: string}>} legs
  * @returns {{ ok: boolean, problems: string[] }}

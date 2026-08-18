@@ -123,9 +123,15 @@ const METRICS = Object.freeze([
   { id: "search_gap", group: GROUP.ALLOCATION_QUALITY, unit: "milli-CU", source: SOURCE.DURABLE, dimensions: ["shard"],
     question: "How much could candidate-set truncation have cost us?", producer: "Phase 9 admissible bound",
     note: "Reported separately from the column-generation gap and never summed: §9.3 — they bound different approximations and a single combined figure would bound neither." },
-  { id: "column_generation_gap", group: GROUP.ALLOCATION_QUALITY, unit: "milli-CU", source: SOURCE.DURABLE, dimensions: ["shard"],
+  { id: "column_generation_gap", group: GROUP.ALLOCATION_QUALITY, unit: "milli-CU", source: SOURCE.REGISTRY, dimensions: ["shard"],
     question: "How much could a poor column set have cost us?", producer: "Phase 11 counterfactual evaluator (§21.6)",
-    note: "The one approximation the in-round machinery cannot bound for itself." },
+    note:
+      "The one approximation the in-round machinery cannot bound for itself. REGISTRY, not DURABLE: it is not a " +
+      "column of any row — it is the offline evaluator's re-solve, published to `sli.column_generation_gap` by " +
+      "`workers/counterfactual.worker.js`. Declaring it DURABLE was the reason its readback was written against " +
+      "the wrong surface (Finding 3). Distinct from `search_gap` (candidate truncation, §9.3), from the round's " +
+      "`lpIpGapMilliCU` (integrality, exactly zero in the singleton regime), and from a decision's truncation " +
+      "gap (objective − bound on a budget-limited solve, §21.2). None of the four is a substitute for another." },
   { id: "cells_visited_from_omega", group: GROUP.ALLOCATION_QUALITY, unit: "count", source: SOURCE.DURABLE, dimensions: ["shard"],
     question: "Are the Ω admissibility corrections costing us search?", producer: "Phase 9 Ω corrections",
     note: "§21.4: a large value means policy credit ceilings exceed their realised use and should be tightened." },
@@ -143,8 +149,12 @@ const METRICS = Object.freeze([
     question: "How often does the rolling horizon revise itself?", producer: "Phase 8 C_churn" },
   { id: "churn_cost_fraction", group: GROUP.ALLOCATION_QUALITY, unit: "ratio", source: SOURCE.DURABLE, dimensions: ["shard"],
     question: "What share of total cost is hysteresis?", producer: "Phase 8 C_churn" },
-  { id: "counterfactual_regret", group: GROUP.ALLOCATION_QUALITY, unit: "milli-CU", source: SOURCE.DURABLE, dimensions: ["shard"],
-    question: "What did our own approximations cost, measured against a relaxed re-solve?", producer: "Phase 11 counterfactual evaluator" },
+  { id: "counterfactual_regret", group: GROUP.ALLOCATION_QUALITY, unit: "milli-CU", source: SOURCE.REGISTRY, dimensions: ["shard"],
+    question: "What did our own approximations cost, measured against a relaxed re-solve?", producer: "Phase 11 counterfactual evaluator",
+    note:
+      "Published to `sli.counterfactual_regret` beside the column-generation gap, and read back the same way. " +
+      "It carries the CANDIDATE_SET relaxation's gap specifically — §21.6's four relaxations are reported " +
+      "separately and never summed." },
 
   /* ── Fleet health and utilisation ───────────────────────────────────────── */
   { id: "duty_cycle_distribution", group: GROUP.FLEET_HEALTH, unit: "ratio", source: SOURCE.DURABLE, dimensions: ["agentClass"],
@@ -300,6 +310,77 @@ const METRICS = Object.freeze([
 const METRIC_BY_ID = Object.freeze(METRICS.reduce((index, row) => Object.assign(index, { [row.id]: row }), Object.create(null)));
 
 /**
+ * The metrics whose **producing phase has already landed**, but for which this module
+ * has not yet written a query.
+ *
+ * ── Why this list exists ────────────────────────────────────────────────────
+ * `derive()` used to give every unproduced metric the same reason: *"no producer has
+ * landed yet"*. For twenty-two of them that is true — Phase 12's degraded-mode register,
+ * Phase 16's Tier 2 mechanisms — and for these it is **false**, which
+ * `PHASE_11_INDEPENDENT_VERIFICATION.md` Finding 5 recorded: the fence-rejection counts,
+ * the near-miss margins and the indeterminate rate were attributed to "Phase 12's and
+ * Phase 16's" producers when Phases 4, 6 and 7 had already shipped them.
+ *
+ * The distinction is not pedantry, because the two states have different owners and
+ * different remedies. "The producer has not landed" is a *schedule* fact and nobody
+ * should act on it. "The producer exists and nothing reads it" is an *observability
+ * debt* with a name, and a reader who cannot tell them apart will defer the wiring to a
+ * phase that has no reason to do it — which is precisely what the finding observed
+ * happening in prose.
+ *
+ * Re-derived here from the repository rather than copied from the finding: a metric is on
+ * this list when the rows, aggregates or registry series it reads are written by code
+ * that is in the build today. It is deliberately a flat list of ids and not a computed
+ * predicate over the `producer` string, because a regex over prose is exactly how the
+ * wrong attribution got made in the first place. `assertCoverage()` refuses an id here
+ * that is not a metric, and refuses one that `derive()` does in fact produce.
+ */
+const PRODUCER_LANDED_QUERY_NOT_WIRED = Object.freeze([
+  "ack_latency",
+  "active_regime",
+  "cell_pair_cache_hit_rate",
+  "cells_visited_from_omega",
+  "charge_wait_time",
+  "charger_contention",
+  "charger_projection_error",
+  "charger_reachability_cache_hit_rate",
+  "churn_cost_fraction",
+  "churn_rate",
+  "commit_rate",
+  "completion_rate",
+  "cost_per_mission",
+  "decline_rate",
+  "dedup_generation_advance_rate",
+  "energy_per_mission",
+  "energy_shortfall_events_by_tier",
+  "eta_accuracy",
+  "feasible_candidate_count",
+  "fence_rejections_agent_scope",
+  "fence_rejections_commitment_scope",
+  "idle_time_by_cause",
+  "implausible_observation_rate",
+  "indeterminate_rate",
+  "intake_to_first_movement",
+  "intake_to_offer",
+  "lateness_distribution",
+  "lease_expiry_rate",
+  "nack_rate",
+  "near_miss_margins",
+  "payload_discrepancy_rate",
+  "realised_versus_predicted_cost",
+  "reassignment_rate",
+  "regime_calibration_age",
+  "round_time_by_stage",
+  "routing_cache_hit_rate",
+  "sla_attainment",
+  "timer_store_lag",
+  "unrehearsed_combination_time",
+  "verification_failure_rate",
+]);
+
+const PRODUCER_LANDED = Object.freeze(new Set(PRODUCER_LANDED_QUERY_NOT_WIRED));
+
+/**
  * Refuse a malformed metric set: seven groups, every group non-empty, every metric with
  * a question, a unit, a source, and a named producer.
  *
@@ -325,14 +406,88 @@ function assertCoverage() {
     if (byGroup[group.id] === 0) problems.push(`group ${group.id} has no metrics`);
   }
 
+  // The wiring-debt list must name real metrics, or a reader chasing an id finds nothing
+  // and concludes the list is stale rather than that the entry is wrong.
+  for (const id of PRODUCER_LANDED_QUERY_NOT_WIRED) {
+    if (!Object.prototype.hasOwnProperty.call(METRIC_BY_ID, id)) {
+      problems.push(`${id}: named as producer-landed-but-unwired and is not a §21.4 metric`);
+    }
+  }
+
   return { ok: problems.length === 0, problems, byGroup };
 }
 
 /** @structural milliseconds per second, for turning an age into seconds */
 const MS_PER_SECOND = 1000;
 
+/**
+ * @structural the size of §26.1's register. A register with fewer rows reported than invariants
+ *   is not a green register, and "0 violations over 3 reported" is a different fact from "0 over
+ *   22" — so the count is on the wire beside the SLI rather than inferred by a reader.
+ */
+const INVARIANT_COUNT = 22;
+
 /** @structural milliseconds per minute, for turning a count into a per-minute rate */
 const MS_PER_MINUTE = 60000;
+
+/**
+ * The §21.4 metrics whose value comes from `sli.js`'s in-process registry rather than
+ * from a `GROUP BY` — the quantities no durable row records.
+ *
+ * ── Why this is a list and not three literals inline ────────────────────────
+ * `PHASE_11_INDEPENDENT_VERIFICATION.md` Finding 3 recorded that
+ * `column_generation_gap` was written to the registry by `counterfactual.worker.js` and
+ * never read back, so a metric §21.4 requires to be "reported separately" from the
+ * proven search gap silently resolved to `null` for ever.
+ *
+ * Re-deriving it here found the finding was *understated in two ways*, and both are the
+ * same class of defect rather than one metric's oversight:
+ *
+ *   1. `counterfactual_regret` — "what did our own approximations cost, measured against
+ *      a relaxed re-solve?" — has the identical shape: a real producer on the same line
+ *      of the same worker, and no readback. Fixing only the named metric would have left
+ *      its sibling broken.
+ *   2. The readback scanned `snapshot.counters` **only**, and both of those metrics are
+ *      published with `registry.gauge()`. Adding the key to the old allowlist, which is
+ *      what Finding 3 recommended, would therefore still have produced `null` — the
+ *      recommendation was necessary and not sufficient.
+ *
+ * `readBackSeries()` consequently reads all three instruments. A producer's choice
+ * between a counter, a gauge and a histogram is a local decision, and a readback that
+ * silently returns nothing when that choice changes is a metric that dies quietly.
+ */
+const REGISTRY_BACKED = Object.freeze([
+  "explanation_answers_by_source",
+  "tier_b_shedding_count",
+  "round_time_by_stage",
+  "counterfactual_regret",
+  "column_generation_gap",
+]);
+
+/**
+ * Read one metric's series out of an `sli.js` snapshot, whichever instrument produced it.
+ *
+ * Returns `null` — not zero, and not an empty object — when nothing has been published.
+ * §21.4's rule holds here exactly as it holds for an unlanded producer: a metric reading
+ * zero because nothing feeds it is indistinguishable from a system that is behaving.
+ *
+ * @param {object} snapshot an `sli.createRegistry().snapshot()` or `sli.merge()` result
+ * @param {string} id the metric id, published under `sli.<id>` with optional `|labels`
+ * @returns {{ value: object, instrument: string }|null}
+ */
+function readBackSeries(snapshot, id) {
+  const belongs = (key) => key === `sli.${id}` || key.startsWith(`sli.${id}|`);
+
+  for (const instrument of ["counters", "gauges", "histograms"]) {
+    const series = (snapshot && snapshot[instrument]) || {};
+    const matching = Object.entries(series)
+      .filter(([key]) => belongs(key))
+      .sort((a, b) => compareStrings(a[0], b[0]));
+    if (matching.length > 0) return { value: Object.fromEntries(matching), instrument };
+  }
+
+  return null;
+}
 
 /**
  * A reading. `value === null` with a stated `unavailableBecause` is the honest answer
@@ -409,7 +564,15 @@ async function derive(deps, input) {
     await attempt("tier_b_write_rate", async () => {
       const rows = await deps.prisma.decisionRecordB.groupBy({
         by: ["writtenBecause"],
-        where: { ...shardFilter, decisionTime: { gte: from, lt: to } },
+        // §21.6 through the relation, because `DecisionRecordB` has no `shadowLabel` of its
+        // own — it carries only `decisionId`, and the shadow marker lives on the
+        // `DecisionRecordA` it points at. A shadow round DOES write Tier B rows
+        // (`shadow.worker.js` calls the same `decisionRecord.writeRound()`), so this query
+        // without the relation filter counted decisions the fleet never executed against
+        // `observability.tier_b_write_budget` — the exact contamination §21.6 forbids
+        // ("recorded and never executed"). Spelled with `decisionRecord.PRODUCTION_ONLY`
+        // rather than a literal so the two tables' filters cannot drift apart.
+        where: { ...shardFilter, decisionTime: { gte: from, lt: to }, decision: { ...decisionRecord.PRODUCTION_ONLY } },
         _count: { _all: true },
       });
       const total = rows.reduce((sum, row) => sum + Number(row._count._all || 0), 0);
@@ -535,6 +698,147 @@ async function derive(deps, input) {
       return reading("reconciler_repair_rate", byCategory, { categories: rows.length });
     });
 
+    /* ── PHASE 12 — §18.5's mode SLI, §26.1's violation SLI, §4.3's stranding SLI ──
+     *
+     * Four of these are named as SLIs by the sections that create them, and one is a *gate*:
+     *
+     *   · §18.5 rule 1 — "Time spent in each mode is an SLI (§21.4)."
+     *   · §26.1 — the violation count "is an SLI whose target is exactly zero", and a
+     *     suspension is "itself alertable if it persists beyond the mode's bound".
+     *   · §26.1 I22 — "response-time SLI per class".
+     *
+     * They were left null with the reason "no producer has landed yet — Phase 12", which was
+     * true when Phase 11 wrote it and stopped being true when Phase 12 landed its three tables.
+     * A metric whose stated reason for being null is a schedule fact nobody should act on is a
+     * metric nobody wires; that is the exact confusion `PRODUCER_LANDED_QUERY_NOT_WIRED` exists
+     * to prevent, and it had happened again in the other direction.
+     *
+     * The §17.4 ladder metrics (`outstanding_escalations`, `escalation_saturation_time`,
+     * `ladder_step_distribution`) are deliberately **not** wired here: their producer is the
+     * anti-starvation ladder of §17.4, which is its own phase's, and `src/engine/fairness/`
+     * still holds no ladder. Wiring a plausible-looking query over the wrong rows is worse
+     * than a null with a correct reason.
+     */
+    await attempt("degraded_mode_time", async () => {
+      const closed = await deps.prisma.degradedModeEvent.findMany({
+        where: { ...shardFilter, exitedAt: { gte: from, lt: to } },
+        select: { mode: true, cause: true, durationMs: true },
+      });
+      const open = await deps.prisma.degradedModeEvent.findMany({
+        where: { ...shardFilter, exitedAt: null },
+        select: { mode: true, cause: true, enteredAt: true },
+      });
+
+      // Open modes count toward the SLI at their elapsed duration. A "time spent degraded"
+      // metric that only counted modes already exited would read zero for the whole of an
+      // outage and report the truth only once it was over.
+      const seconds = new Map();
+      const add = (mode, cause, ms) => {
+        const key = `${mode}|${cause ?? "unstated"}`;
+        seconds.set(key, (seconds.get(key) || 0) + ms / MS_PER_SECOND);
+      };
+      for (const row of closed) add(row.mode, row.cause, Number(row.durationMs || 0));
+      for (const row of open) add(row.mode, row.cause, Math.max(0, toMs - row.enteredAt.getTime()));
+
+      return reading(
+        "degraded_mode_time",
+        Object.fromEntries([...seconds.entries()].sort((a, b) => compareStrings(a[0], b[0]))),
+        { openModes: open.length, exitedInWindow: closed.length, dimensions: ["mode", "entryCause"] },
+      );
+    });
+
+    await attempt("suspensions_over_time_box", async () => {
+      const overdue = await deps.prisma.degradedModeEvent.findMany({
+        where: { ...shardFilter, exitedAt: null, timeBoxExpiresAt: { lt: to } },
+        select: { mode: true, suspendedInvariants: true, timeBoxExpiresAt: true },
+      });
+      const counts = new Map();
+      for (const row of overdue) {
+        // §26.1's clause is about *suspensions* outliving their box. An overdue mode that
+        // suspends nothing is a slow recovery, not a guarantee nobody is verifying, and
+        // counting it here would make the alert mean two different things.
+        for (const invariant of row.suspendedInvariants || []) {
+          const key = `${row.mode}|${invariant}`;
+          counts.set(key, (counts.get(key) || 0) + 1);
+        }
+      }
+      return reading(
+        "suspensions_over_time_box",
+        Object.fromEntries([...counts.entries()].sort((a, b) => compareStrings(a[0], b[0]))),
+        { overdueModes: overdue.length, mustBeZero: true, alertable: counts.size > 0 },
+      );
+    });
+
+    await attempt("invariant_violations", async () => {
+      const rows = await deps.prisma.invariantStatus.findMany({
+        where: { ...shardFilter, subjectType: "SHARD" },
+        select: { invariantId: true, status: true, violationCount: true, checkedAt: true },
+      });
+      // Only `VIOLATED` rows contribute. A suspended check keeps its findings on purpose
+      // (§18.5's reconciliation input), and folding them in would make the zero-target SLI
+      // non-zero for the whole of an authorised suspension — which is the page §26.1's third
+      // status exists to prevent.
+      const violated = rows.filter((row) => row.status === "VIOLATED");
+      const byInvariant = Object.fromEntries(
+        violated.map((row) => [row.invariantId, Number(row.violationCount || 0)]).sort((a, b) => compareStrings(a[0], b[0])),
+      );
+      const oldest = rows.reduce((min, row) => (min === null || row.checkedAt < min ? row.checkedAt : min), null);
+      return reading("invariant_violations", byInvariant, {
+        total: violated.reduce((sum, row) => sum + Number(row.violationCount || 0), 0),
+        mustBeZero: true,
+        // A register that has not reported on every invariant is not a green register, and an
+        // SLI of 0 over 3 reported invariants is not the same fact as 0 over 22.
+        reported: rows.length,
+        expected: INVARIANT_COUNT,
+        complete: rows.length === INVARIANT_COUNT,
+        suspended: rows.filter((row) => row.status === "SUSPENDED").map((row) => row.invariantId),
+        oldestCheckedAt: oldest,
+      });
+    });
+
+    await attempt("stranding_events_by_obstruction_class", async () => {
+      const rows = await deps.prisma.leg.groupBy({
+        by: ["obstructionClass"],
+        where: { state: { in: ["STRANDED_SAFE", "STRANDED_OBSTRUCTING"] } },
+        _count: { _all: true },
+      });
+      return reading(
+        "stranding_events_by_obstruction_class",
+        Object.fromEntries(
+          rows.map((row) => [row.obstructionClass ?? "UNCLASSIFIED", Number(row._count._all || 0)]).sort((a, b) => compareStrings(a[0], b[0])),
+        ),
+        { currentlyStranded: rows.reduce((sum, row) => sum + Number(row._count._all || 0), 0) },
+      );
+    });
+
+    await attempt("stranding_response_time", async () => {
+      const cleared = await deps.prisma.externalEscalation.findMany({
+        where: { step: 1, clearedAt: { gte: from, lt: to } },
+        select: { obstructionClass: true, occurredAt: true, clearedAt: true },
+      });
+      if (cleared.length === 0) {
+        // Distinguished from "no query": nothing was cleared in the window, which is a real
+        // observation about a window and not an unfed metric.
+        return reading("stranding_response_time", null, { clearedInWindow: 0, note: "no chain cleared in this window" });
+      }
+      const byClass = new Map();
+      for (const row of cleared) {
+        const key = row.obstructionClass ?? "UNCLASSIFIED";
+        const list = byClass.get(key) || [];
+        list.push((row.clearedAt.getTime() - row.occurredAt.getTime()) / MS_PER_SECOND);
+        byClass.set(key, list);
+      }
+      return reading(
+        "stranding_response_time",
+        Object.fromEntries(
+          [...byClass.entries()]
+            .map(([key, list]) => [key, list.reduce((sum, value) => sum + value, 0) / list.length])
+            .sort((a, b) => compareStrings(a[0], b[0])),
+        ),
+        { clearedInWindow: cleared.length, statistic: "mean seconds from step 1 to clearance, per class" },
+      );
+    });
+
     /* ── §7.7's aggregate, exact over 100 % of decisions ────────────────────── */
     await attempt("rejection_histogram", async () => {
       const rows = await deps.prisma.rejectionAggregate.groupBy({
@@ -585,11 +889,9 @@ async function derive(deps, input) {
   /* ── The advisory registry's own series ──────────────────────────────────── */
   if (source.registry) {
     const snapshot = source.registry.snapshot();
-    for (const id of ["explanation_answers_by_source", "tier_b_shedding_count", "round_time_by_stage"]) {
-      const matching = Object.entries(snapshot.counters)
-        .filter(([key]) => key === `sli.${id}` || key.startsWith(`sli.${id}|`))
-        .sort((a, b) => compareStrings(a[0], b[0]));
-      if (matching.length > 0) readings.push(reading(id, Object.fromEntries(matching), { advisory: true }));
+    for (const id of REGISTRY_BACKED) {
+      const found = readBackSeries(snapshot, id);
+      if (found !== null) readings.push(reading(id, found.value, { advisory: true, instrument: found.instrument }));
     }
   }
 
@@ -598,10 +900,17 @@ async function derive(deps, input) {
   for (const metric of METRICS) {
     if (produced.has(metric.id)) continue;
     if (unavailable.some((row) => row.id === metric.id)) continue;
+    // Two different states, two different reasons, two different owners. Collapsing them
+    // into one sentence is what sent Finding 5's four metrics to a phase with no reason
+    // to wire them.
+    const landed = PRODUCER_LANDED.has(metric.id);
     unavailable.push(
       reading(metric.id, null, {
-        unavailableBecause: `no producer has landed yet — ${metric.producer}`,
+        unavailableBecause: landed
+          ? `the producer has landed (${metric.producer}) and no query reads it yet — observability wiring, not a missing mechanism`
+          : `no producer has landed yet — ${metric.producer}`,
         producer: metric.producer,
+        producerLanded: landed,
       }),
     );
   }
@@ -622,9 +931,12 @@ module.exports = {
   SOURCE,
   METRICS,
   METRIC_BY_ID,
+  PRODUCER_LANDED_QUERY_NOT_WIRED,
+  REGISTRY_BACKED,
   MS_PER_SECOND,
   MS_PER_MINUTE,
   assertCoverage,
+  readBackSeries,
   reading,
   derive,
 };

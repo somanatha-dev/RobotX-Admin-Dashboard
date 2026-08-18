@@ -441,9 +441,59 @@ async function diagnoseMissingRow(tx, table, businessColumn, value) {
 /** @structural PostgreSQL's unique-violation SQLSTATE */
 const UNIQUE_VIOLATION = "23505";
 
+/** @structural Prisma's own error code for a unique-constraint violation */
+const PRISMA_UNIQUE_VIOLATION = "P2002";
+
+/** @structural the partial unique index of §10.3.2 */
+const CAPACITY_SLOT_INDEX = "Commitment_agent_capacity_slot_active_key";
+
+/** @structural the column both halves of the capacity backstop are keyed on */
+const CAPACITY_SLOT_COLUMN = "capacitySlot";
+
+/** @structural the wording the slot-bound trigger raises with, and nothing else does */
+const SLOT_TRIGGER_WORDING = "capacity slot";
+
+/**
+ * Does this value — a Prisma `meta.target`, which is an array of column names or a
+ * single one — name the capacity slot?
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function namesTheCapacitySlot(value) {
+  if (value === undefined || value === null) return false;
+  const entries = Array.isArray(value) ? value : [value];
+  return entries.some((entry) => String(entry).includes(CAPACITY_SLOT_COLUMN));
+}
+
 /**
  * Did the capacity backstop — the partial unique index or the slot-bound trigger —
  * reject this write?
+ *
+ * ── Why this is matched on four shapes rather than one ──────────────────────
+ * The three ways the backstop can fire produce three *different* error objects, and
+ * this was established by executing each of them against PostgreSQL 18.3 through the
+ * Prisma 5.22 driver rather than by reading the driver's documentation:
+ *
+ *   1. `tx.commitment.create` hitting the partial unique index — the shape the commit
+ *      path actually produces — is a `PrismaClientKnownRequestError` with
+ *      `code === "P2002"` and `meta.target === ["agentId", "capacitySlot"]`. **The
+ *      index's name never appears anywhere in it**, and neither does the SQLSTATE.
+ *   2. The same violation through `$executeRawUnsafe` is `code === "P2010"` with the
+ *      SQLSTATE in `meta.code` and the offending key in `meta.message`.
+ *   3. The slot-bound trigger is a `PrismaClientUnknownRequestError` carrying no code
+ *      at all — only the `RAISE EXCEPTION` text inside `message`.
+ *
+ * Matching on the constraint name alone therefore classified case 3 and missed cases
+ * 1 and 2, which meant `commit()` re-threw a raw driver error instead of returning the
+ * graceful `CAPACITY_CONSTRAINT_VIOLATED` abort §10.3.2 asks for. Nothing was ever
+ * persisted — the database still refused the write — so this was a reporting defect
+ * rather than a safety one, but the abort is what returns the pairing to the next round
+ * with a cause, and a thrown driver error does not.
+ *
+ * A unique violation on `commitmentId` is deliberately **not** classified here: it is an
+ * idempotency-key collision, not a capacity violation, and the two need different
+ * responses.
  *
  * @param {unknown} error
  * @returns {boolean}
@@ -451,10 +501,24 @@ const UNIQUE_VIOLATION = "23505";
 function isCapacityConstraintViolation(error) {
   if (!error) return false;
   const message = typeof error.message === "string" ? error.message : "";
-  if (message.includes("Commitment_agent_capacity_slot_active_key")) return true;
-  if (message.includes("capacity slot")) return true;
-  const code = error.code || (error.meta && error.meta.code);
-  if (code === UNIQUE_VIOLATION && message.includes("capacitySlot")) return true;
+  const meta = error.meta || {};
+
+  // The index named outright, and the trigger's own wording. Nothing else in the
+  // schema raises either.
+  if (message.includes(CAPACITY_SLOT_INDEX)) return true;
+  if (message.includes(SLOT_TRIGGER_WORDING)) return true;
+
+  // Shape 1 — Prisma's model API. The columns reach `meta.target`; the index name does
+  // not reach anything.
+  if (error.code === PRISMA_UNIQUE_VIOLATION && namesTheCapacitySlot(meta.target)) return true;
+
+  // Shape 2 — the raw-SQL path. The SQLSTATE lands in `meta.code` beneath Prisma's own
+  // `P2010`, so the outer code must not shadow it.
+  const sqlState = meta.code || error.code;
+  if (sqlState === UNIQUE_VIOLATION && (namesTheCapacitySlot(meta.message) || message.includes(CAPACITY_SLOT_COLUMN))) {
+    return true;
+  }
+
   return false;
 }
 

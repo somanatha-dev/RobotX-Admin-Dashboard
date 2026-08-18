@@ -165,6 +165,97 @@ function backoffSeconds(input) {
 }
 
 /**
+ * A jitter fraction in [0, 1) drawn from the row's own identity rather than from a
+ * random source.
+ *
+ * §11.3 wants jitter so that a fleet's retries decorrelate instead of arriving as a
+ * synchronised herd after a shared outage. What it does **not** want is a schedule that
+ * differs between two replays of the same dispatch trace (T6). Both are satisfied by
+ * making the fraction a pure function of the row id: distinct rows get distinct
+ * fractions, and the same row gets the same fraction on every pass, in every worker,
+ * after every restart. A worker that redrew the fraction on each pass would also make
+ * `retryDueAt` non-monotonic — a row could be due, then not due, then due again —
+ * which is a worse property than no jitter at all.
+ *
+ * @param {string} seed the row id
+ * @returns {number} in [0, 1)
+ */
+function jitterFractionFor(seed) {
+  // @structural FNV-1a's offset basis — a hash function's constant, not a threshold
+  const FNV_OFFSET_BASIS = 2166136261;
+  // @structural FNV-1a's prime — a hash function's constant, not a threshold
+  const FNV_PRIME = 16777619;
+  // @structural the 32-bit space the hash is reduced over
+  const HASH_SPACE = 2 ** 32;
+
+  let hash = FNV_OFFSET_BASIS;
+  const text = String(seed === undefined || seed === null ? "" : seed);
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, FNV_PRIME);
+  }
+  return (hash >>> 0) / HASH_SPACE;
+}
+
+/**
+ * §11.3 — the instant a row that has already been attempted becomes eligible for the
+ * next attempt.
+ *
+ * This is what makes `backoffSeconds` an *enforcement* mechanism rather than a number
+ * that only ever reached a log line. Without it the drain loop reclaimed every
+ * `PENDING` row on every pass, so the actual retry cadence was the worker's tick
+ * interval — constant, unjittered, and identical across the whole fleet, which is the
+ * one shape §11.3 names as prohibited.
+ *
+ * Two properties the caller relies on:
+ *
+ *   - **A row that has never been attempted is due immediately.** Backoff paces
+ *     *retries*; delaying a command's first delivery would add latency to the healthy
+ *     path to solve a problem only the unhealthy path has.
+ *   - **The last-attempt instant is the row's own `updatedAt`.** A row sitting in
+ *     `PENDING` with `attempts > 0` was last written by `recordAttempt`'s undelivered
+ *     branch; every other transition moves it out of `PENDING`. Reading the column the
+ *     store already maintains avoids a second timestamp that could disagree with it.
+ *
+ * @param {object} input
+ * @param {object} input.row the outbox row
+ * @param {number} input.retryWindowSeconds `dispatch.retry_window`
+ * @returns {Date|null} the instant, or `null` when the row is due now
+ */
+function retryDueAt(input) {
+  const settings = input || {};
+  const row = settings.row;
+  if (!row) return null;
+
+  const attempts = Number.isInteger(row.attempts) ? row.attempts : 0;
+  if (attempts <= 0) return null;
+
+  const lastAttempt = row.updatedAt instanceof Date ? row.updatedAt : row.updatedAt ? new Date(row.updatedAt) : null;
+  if (lastAttempt === null || Number.isNaN(lastAttempt.getTime())) return null;
+
+  const seconds = backoffSeconds({
+    attempts,
+    retryWindowSeconds: settings.retryWindowSeconds,
+    jitterFraction: jitterFractionFor(row.id),
+  });
+  return clock.deadlineFrom(lastAttempt, seconds);
+}
+
+/**
+ * Is this row's next delivery attempt due?
+ *
+ * @param {object} input as `retryDueAt`, plus `storeTime`
+ * @param {Date} input.storeTime the Commitment Store's clock (§10.6)
+ * @returns {boolean}
+ */
+function isRetryDue(input) {
+  const settings = input || {};
+  const dueAt = retryDueAt(settings);
+  if (dueAt === null) return true;
+  return clock.hasPassed(dueAt, settings.storeTime);
+}
+
+/**
  * The `lastError` a row carries once its §11.4 step-2 withdrawal has been performed.
  * @structural the step-2 completion marker, written by the drain worker
  */
@@ -311,6 +402,9 @@ module.exports = {
   isMarkedUnresponsive,
   assessRow,
   backoffSeconds,
+  jitterFractionFor,
+  retryDueAt,
+  isRetryDue,
   assessAgent,
   assessShard,
   systemicDirective,

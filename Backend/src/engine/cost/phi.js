@@ -65,6 +65,19 @@
  * (that §8.2 and §8.5 price two different wear mechanisms that happen to share a
  * coefficient name) would require §8.10 to register two rates, which it does not.
  *
+ * ── What a violated declaration does ───────────────────────────────────────
+ * §8.1 declares each term's sign and, where it may be negative, its bound, because §6.4's
+ * pruning bound is admissible only while those declarations hold. `evaluate()` therefore
+ * **refuses** a plan whose terms violate them, rather than returning the value with a note:
+ * `problems` has no consumer anywhere in `src/`, so a note there reached nothing, while
+ * `ok: false` reaches `plan/columnBuilder.js`, which prunes the column and records the
+ * reason in the decision record. In development and test the same finding additionally
+ * throws (`escalationEnabled()`), which is the escalation the Phase 8 checklist asks for
+ * "at runtime in dev/test".
+ *
+ * A `BOUNDED_BELOW` term whose bound was not supplied at all is reported as a missing
+ * input by name, the way every other unresolved input in this module is.
+ *
  * ── Integer arithmetic throughout ──────────────────────────────────────────
  * Every addend arrives as `BigInt` milli-CU and the sum is exact and order-independent
  * (§9.6 requirement 1). No float ever enters `Φ` itself; the conversions happen inside the
@@ -171,6 +184,75 @@ function evaluatorFor(term) {
 }
 
 /**
+ * Is the throwing escalation of §8.1's sign discipline enabled in this environment?
+ *
+ * The Phase 8 checklist requires the declared signs and lower bounds to be asserted "at
+ * runtime **in dev/test**", and `signDiscipline.js`'s own docstring says `assertOrThrow()`
+ * "is the escalation the development and test environments enable". Neither was true as
+ * shipped: nothing under `src/` called it in any environment.
+ *
+ * Enabled on an *explicit* `test` or `development` value only. An unset `NODE_ENV` is
+ * common in production deployments, so treating "not production" as "development" would
+ * turn a reporting path into a throwing one exactly where throwing is least wanted — the
+ * failure direction §22.5 rule 1 tells this engine to avoid.
+ *
+ * @returns {boolean}
+ */
+function escalationEnabled() {
+  const environment = process.env.NODE_ENV;
+  return environment === "test" || environment === "development";
+}
+
+/**
+ * Escalate a sign-discipline or attribution finding where the environment enables it.
+ *
+ * @param {string[]} findings
+ * @returns {void}
+ * @throws {RangeError} in development and test
+ */
+function escalate(findings) {
+  if (findings.length === 0 || !escalationEnabled()) return;
+  throw new RangeError(
+    `cost/phi.evaluate: ${findings.join(" | ")}. §8.1 declares every term's sign and, where it may be ` +
+      "negative, its bound; §6.4's pruning bound is admissible only because those declarations hold. " +
+      "This throws in development and test and is reported as an unpriceable candidate in production.",
+  );
+}
+
+/**
+ * The bound each `BOUNDED_BELOW` term needs, checked before the term is summed.
+ *
+ * `signDiscipline.check()` already refuses a `BOUNDED_BELOW` term whose bound was not
+ * supplied — "an unbounded negative term cannot be pruned against" — but Φ used to record
+ * that refusal in `problems` and still return `ok: true`, so a caller that simply omitted
+ * `bounds` got a priced column carrying no admissibility guarantee at all. An absent bound
+ * is a missing *input*, not an anomaly in a computed value, so it is reported the way every
+ * other missing input in this module is: by name, with `ok: false`. `cOpportunity.evaluate`
+ * already refuses an absent `Ω_terminal` on exactly this reasoning.
+ *
+ * @param {string[]} terms the term names Φ will sum
+ * @param {object} [bounds]
+ * @returns {string[]} missing bound names
+ */
+function missingBoundsFor(terms, bounds) {
+  const supplied = bounds || {};
+  const missing = [];
+  for (const term of terms) {
+    const declaration = signDiscipline.DECLARATIONS[term];
+    if (!declaration || declaration.sign !== signDiscipline.SIGN.BOUNDED_BELOW) continue;
+    const field = signDiscipline.BOUND_FIELD[term];
+    if (typeof supplied[field] !== "bigint") {
+      missing.push(
+        `bounds.${field} — ${term} may be negative and is bounded below by ${declaration.bound}. ` +
+          "§6.4 subtracts exactly that quantity to keep the pruning bound admissible, so pricing " +
+          "without it produces a cost no bound covers",
+      );
+    }
+  }
+  return missing;
+}
+
+/**
  * Prove that `cost.wear.cu_per_metre · d_mission` is charged exactly once.
  *
  * @param {object} directBreakdown from `cDirect.evaluate()`
@@ -268,6 +350,16 @@ function evaluate(plan, input) {
   const delay = cDelay.forPlan(plan, source.completionByLegId, source.delayParametersFor);
   if (!delay.ok) missing.push(...delay.missing.map((name) => `C_delay: ${name}`));
 
+  // The bounds the `BOUNDED_BELOW` terms of this evaluation need. `C_policy` is always
+  // summed; `C_opportunity` is summed only when its Tier 2 evaluator is registered, so an
+  // unregistered term requires no bound — the omission is recorded instead.
+  missing.push(
+    ...missingBoundsFor(
+      registered.has("C_opportunity") ? ["C_policy", "C_opportunity"] : ["C_policy"],
+      source.bounds,
+    ),
+  );
+
   if (missing.length > 0) {
     return {
       ok: false,
@@ -327,6 +419,27 @@ function evaluate(plan, input) {
   const checked = signDiscipline.checkBreakdown(perTerm, source.bounds);
   if (!checked.ok) problems.push(...checked.findings);
 
+  // ── The escalation §8.1 requires, and the failure it produces ─────────────
+  // A term beneath its declared floor, or a distance-wear rate charged twice, makes the
+  // priced value one §6.4's bound does not cover. Returning it with `ok: true` and a note
+  // in `problems` was the shipped behaviour, and `problems` has no consumer anywhere in
+  // `src/` — so the anomaly reached no decision record and no operator. `ok: false` puts
+  // it on the one path that *is* recorded: `plan/columnBuilder.js` prunes an unpriceable
+  // column and carries the reason into the decision record, so the round proceeds on its
+  // remaining candidates and the refusal is auditable rather than silent.
+  if (problems.length > 0) {
+    escalate(problems);
+    return {
+      ok: false,
+      milliCU: null,
+      breakdown: null,
+      signDiscipline: checked,
+      omittedTerms,
+      missing: [],
+      problems,
+    };
+  }
+
   const summed = total(...Object.keys(perTerm).sort().map((term) => milli(perTerm[term])));
   assertCost(summed, "cost/phi.evaluate");
 
@@ -380,6 +493,8 @@ module.exports = {
   clearTerms,
   registeredTerms,
   evaluatorFor,
+  escalationEnabled,
+  missingBoundsFor,
   assertWearChargedOnce,
   evaluate,
   empty,

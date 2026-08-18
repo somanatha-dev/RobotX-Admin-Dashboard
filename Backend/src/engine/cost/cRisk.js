@@ -59,6 +59,7 @@
 const { assertFeasible } = require("../guards/tenets");
 const { cu, milli, ZERO, total } = require("./units");
 const { apply } = require("./exchangeRates");
+const { scaleByRate } = require("../determinism/fixedPoint");
 
 /** @structural milliseconds in one second */
 const MS_PER_SECOND = 1000;
@@ -237,9 +238,15 @@ function evaluate(plan, input) {
   // The overrun is already a priced delay cost in milli-CU, so the probability scales an
   // integer quantity rather than a float one: one rounding, at the same boundary as the
   // rest of the term.
-  const lateness = milli(
-    BigInt(Math.round(Number(source.overrunMilliCU) * source.lateProbability)),
-  );
+  //
+  // Through `scaleByRate`, which is that boundary. `Math.round` was a *second* rounding
+  // mode in the priced path — it rounds half toward +∞, where §9.6 specifies
+  // ROUND_HALF_AWAY_FROM_ZERO, and the two disagree on every negative half-boundary — and
+  // it skipped the int64 range check that makes an overflow an error rather than a
+  // silently wrapped cost. The two agree on today's inputs (a delay cost is non-negative),
+  // which is exactly why the divergence would have been found only after some later change
+  // made a negative overrun reachable.
+  const lateness = milli(scaleByRate(source.overrunMilliCU, source.lateProbability));
   const hazard = cu(source.routeHazardCu);
 
   const summed = total(failure, milli(energy.milliCU), lateness, milli(staleness.milliCU), hazard);

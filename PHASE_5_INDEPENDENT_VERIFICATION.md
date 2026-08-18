@@ -1,5 +1,25 @@
 # Phase 5 — Independent Software Verification Report
 
+> **RESOLUTION UPDATE — 2026-08-17.** Every finding below was independently reproduced against the
+> current tree and resolved. **No finding in this document has been removed, softened, or reworded**;
+> this banner and the closing table are the only additions.
+>
+> | # | Finding | Severity | Resolution |
+> |---|---|---|---|
+> | 1 | `transitions.leaseExpiryTarget` treats `DISPUTED` custody as `NONE` | Medium-High | **FIXED.** Reproduced exactly as described. Fixed at root cause — the resolver now reports `leases.assessRecovery`'s decision instead of restating it — which also closed two further drifts in the same function this review did not reach. 5 regression tests, all proved to fail against the old semantics. |
+> | 2 | A third Phase-4-scope fix (`registerOfferHandlers` wiring) was undisclosed | Low-Moderate | **DOCUMENTATION CORRECTED.** Disclosed as §0.3 of `PHASE_5_IMPLEMENTATION_REPORT.md`. The code was already correct. |
+> | 3 | `timers.register`'s `FORBIDDEN_VERSION_SOURCES` check inspects the wrong object | Low | **FIXED.** The guard now inspects `input.entity`. Verified against the live schema that no supervised entity kind carries an agent-scope counter, so no legitimate row can be refused. 6 regression tests. |
+> | — | Part 7's *unverified* caveat: concurrent registration of one timer key | Low | **VERIFIED SAFE.** Reproduced against live PostgreSQL by forcing the interleaving: the loser receives `P2002` and one timer exists. The documented "return the existing row" is not safely implementable inside the caller's transaction, so the module's comment was corrected rather than its code. |
+> | — | Part 4.4's inherited gap: no migration executed against live PostgreSQL | Elevated | **DISCHARGED for Phase 5.** 21/21 migrations applied to a disposable PostgreSQL 18.3 instance; `tools/verify/phase5LiveDatabase.js` drove the shipped modules against it — **105/105 checks**. Including this review's own named highest-risk item: `Timer.entityVersion` round-trips `2^53 + 1` exactly. |
+>
+> One finding this review did **not** make was found during remediation: four of §12.4's ten
+> divergence classes had no test that constructed their divergence, and passed the full-sweep
+> assertion vacuously (a scan that detects nothing reports zero and passes). Fixed; see
+> **`PHASE_5_REMEDIATION_AND_CLOSURE.md`** §3, finding 4.
+>
+> **Phase 5 is now CLOSED.** This review's verdict of *PASS WITH MINOR ISSUES* was accurate when
+> written and remained accurate until 2026-08-17.
+
 **Verifier role:** Independent Software Verification Engineer (did not implement Phase 5; did not
 redesign, optimise, simplify, or implement anything during this review)
 **Date:** 2026-08-03 · **Branch:** `feature/dashboard` · **Working tree at verification:** `4244b3d`
@@ -514,6 +534,19 @@ the class of error §4.1 rule 4 exists to prevent.
    now five phases deep; this review repeats the recommendation to discharge it before it compounds
    further, without making it a blocking condition for Phase 6 — consistent with how Phase 3 and
    Phase 4's reviews treated the same inherited item.
+
+> **[2026-08-17] All four discharged.** Items 1–3 are fixed or disclosed and item 4 is discharged
+> for Phase 5, as recorded in the banner at the top of this document and in detail in
+> `PHASE_5_REMEDIATION_AND_CLOSURE.md`.
+>
+> This list was written as a pre-Phase-15 condition. Phase 15 has since landed (`cbe540e`,
+> `62d8141`) **with item 1 still open** — the condition was not enforced at the time, and the defect
+> reached the tree Phase 15 was built on. It caused no live harm, because Phase 15's bootstrap does
+> not yet connect a fired timer to `transitions.apply` and `EVENT.LEASE_EXPIRY` still has no
+> production caller, which is exactly the reachability this review used to rate the finding
+> Medium-High rather than blocking. The sequencing risk it identified was real nonetheless, and is
+> worth recording: a finding scheduled against a future phase needs an owner at that phase, not only
+> a note in the phase that found it.
 
 ---
 

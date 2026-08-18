@@ -47,12 +47,22 @@ Read these in this order depending on what you need.
 | [`docs/runbooks/`](docs/runbooks/) | [`cutover.md`](docs/runbooks/cutover.md) and [`rollback.md`](docs/runbooks/rollback.md). **Read rollback first** |
 | [`docs/safety-case/SAFETY_CASE.md`](docs/safety-case/SAFETY_CASE.md) | Generated safety case — `npm run safety:case`. Do not hand-edit |
 | [`Backend/src/engine/ARCHITECTURE.md`](Backend/src/engine/ARCHITECTURE.md) · [`TIERS.md`](Backend/src/engine/TIERS.md) | Engine module map and obligation tiers |
-| `PHASE_*_IMPLEMENTATION_REPORT.md` · `PHASE_*_INDEPENDENT_VERIFICATION.md` | Historical engineering evidence, one pair per phase |
+| `PHASE_*_IMPLEMENTATION_REPORT.md` · `PHASE_*_INDEPENDENT_VERIFICATION.md` | Historical engineering evidence, one pair per phase — **except Phase 0, which has an implementation report but was never independently verified** (see note below) |
 | [`docs/history/`](docs/history/) | **Superseded documentation.** Describes deleted systems — not current authority |
 
 > **Two of these are build dependencies.** Four tests read `NEXT_GENERATION_ASSIGNMENT_ENGINE.md`
 > and `docs/adr/**` from disk and assert against their contents; three more read `TIERS.md`.
 > Moving, renaming, or reformatting them breaks the build.
+
+> **Phase 0 was never independently verified.** `PHASE_0_IMPLEMENTATION_REPORT.md` exists;
+> `PHASE_0_INDEPENDENT_VERIFICATION.md` does not, and never did. Phases 1–15 each have both.
+> This was first raised as issue 5 of `PHASE_4_INDEPENDENT_VERIFICATION.md` and is recorded here
+> rather than closed, because the honest options were to write a retrospective review of a phase
+> whose working tree no longer exists — which would be a fabricated artefact, not evidence — or to
+> say plainly that the review did not happen. Phase 0's scaffolding is nonetheless exercised
+> continuously: its tests run in every later phase's suite, and the tier, parameter and tenet gates
+> it introduced now govern 183–277 modules on every `npm run verify`. Treat Phase 0's *report* as
+> an implementer's claim that no independent reviewer has ever checked.
 
 ---
 

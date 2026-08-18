@@ -756,3 +756,424 @@ Verification should concentrate on:
 **Phase 15 is not complete and is not claimed complete.** This report discharges one blocker —
 the §20.2 solver — and the §20.1 release gate remains undischarged pending a run on
 representative hardware. **Phase 16 is not started and no Phase 16 module exists.**
+
+---
+---
+
+# PART II — REOPENED AUDIT AND REMEDIATION (2026-08-18)
+
+**Author role:** Senior algorithms / distributed-systems / verification engineer, auditing the
+work described in Part I rather than having written it.
+**Relationship to Part I:** Part I is preserved unchanged above. Nothing in it has been edited,
+deleted or silently corrected. Where a number in Part I does not reproduce on the hardware used
+here, this Part says so and gives the number that does.
+**Relationship to `PHASE_10_COST_SCALING_INDEPENDENT_VERIFICATION.md`:** that document's Part I
+("PASS WITH RESERVATIONS") was treated as a mandatory input. Two of its five findings do not
+survive re-measurement; §II.9 below says which and why, and Part II of that document carries the
+independent re-verification.
+
+## II.1 Executive summary
+
+The shipped cost-scaling solver is **correct**. That is not an inherited claim: it was re-checked
+here against a brute-force oracle that shares no code with either solver, over 30 000 generated
+instances, with zero mismatches. Determinism, exactness, the optimality certificate, the fallback,
+regime discipline and the production dispatch all hold as Part I describes them.
+
+Three things were wrong, and all three are fixed in this pass:
+
+1. **A §9.4 anytime defect (production code).** The scaling loop consulted the time budget at the
+   top of *every* iteration, including the first — which is not "between phases" but *before* the
+   first phase, where the pseudoflow is the empty one and every unit of supply is still sitting on
+   the source. A round that ran out of budget at that exact point returned a result that
+   `assemble()` read as an allocation naming **no Leg at all**, with `ok: true`, and — with
+   deferral disabled — `objective.validate()` called it feasible. Reachable in production at the
+   §20.1 shape with any budget between roughly 60 ms and 100 ms on this machine. Fixed, with two
+   new deterministic regression tests.
+2. **A flaky release-lane gate (test code).** `tests/scale/round.scale.test.js`'s batch-size
+   exponent bound failed on unchanged, correct code in **2 of 5** runs of the whole scale lane.
+   The cause was the fit's smallest point being a ~3 ms measurement, not a change in the solver.
+   Fixed by raising the measurement floor; the bound itself is unchanged.
+3. **A documentation reference to a test file that does not exist** (`minCostFlow.js` named
+   `tests/engine/solveCostScalingEquivalence.test.js`). Corrected, and the same comment now states
+   the limit of what a differential oracle can prove.
+
+One thing was **added**: `tests/engine/solveCostScalingOracle.test.js`, a brute-force oracle that
+enumerates §1.4's objective directly from the instance. Before this pass the repository's strongest
+correctness evidence was a differential comparison against the successive-shortest-path solver —
+but both solvers read the same network from `minCostFlow.buildNetwork()`, so a misunderstanding of
+the *formulation* would be invisible to it. The oracle closes that.
+
+**§20.1 is NOT PASSED.** It is not close. See §II.8.
+
+## II.2 Measurement environment
+
+| | |
+|---|---|
+| CPU | 12th Gen Intel Core i5-1235U, 12 logical cores |
+| Memory | 15.7 GB |
+| OS | Windows 11 Home Single Language 10.0.26200 |
+| Node | v22.17.0 |
+| Repository | branch `feature/dashboard`, `solve/` clean at `cbe540e` before this pass |
+
+Every figure below is from this machine. None is copied from Part I or from any other document.
+Figures are labelled **bare process** (plain `node`, which is what production runs) or **through
+jest** (inside the test runner), because §II.9 shows the two disagree by up to 4x and that the
+disagreement is not uniform across stages.
+
+## II.3 What was verified, and how
+
+| Property | Method | Result |
+|---|---|---|
+| Optimum is the true optimum | 30 000 seeded instances vs an independent brute-force enumeration of §1.4's objective, through the production dispatch | **0 mismatches**; 30 000/30 000 certified; 0 fallbacks |
+| Equivalence with the reference solver | repository's own 300-instance differential sweep | objective, flow value and counts identical on 300/300; allocation byte-identical on **292/300** — Part I's figure reproduced exactly |
+| Optimality certificate discriminates | existing hand-built suboptimal-flow test, re-read and re-run | `certify()` returns `ok: false` on a cost-110 flow where the optimum is 50 |
+| Certificate is not merely cheap-and-vacuous | sub-stage profile | certificate is 8.4–9.6 ms of a 364–388 ms solve, and it *fails* when it should |
+| Exactness of the lexicographic collapse | re-derived from `prepare()`'s own arithmetic | holds — see §II.4 |
+| Negative gamma | all-negative and mixed-sign families in both the oracle sweep and the existing suite | exact; no clamping, no sign assumption |
+| Determinism | repository's 10-run byte-equality test over allocation, objective, bound, gap, flow, both dual vectors and diagnostics | identical; source scan of `costScaling.js` finds no clock, no randomness, no Map/Set/object-key iteration |
+| Anytime | new deterministic stopping-point sweep + real-clock overshoot sweep at 500 x 200 | **defect found and fixed** — §II.6 |
+| Fallback | existing too-wide-cost test; oracle sweep records fallback count | refuses with a named reason and the reference solver answers correctly |
+| Production dispatch reaches cost scaling | `round.js:410` read; and asserted by running, in both the scale suite and the new oracle suite | `minCostFlow.solve(instance, { budgets })`, no solver override |
+| Regime discipline | `regime.js` read in full | column regime recognised and refused; no exactness claim leaks |
+| Full regression suite | `npx jest --runInBand --forceExit`, twice (before and after this pass's changes) | before: **147 suites, 6 480 tests, 0 failures**; after: **148 suites, 6 497 tests, 0 failures** |
+| Release gates | `npm run gates` | all **7 PASS** |
+
+## II.4 The lexicographic collapse, re-derived independently
+
+`prepare()` collapses the pair `(unassigned, milliCU)` to `w = unassigned * K + milliCU` with
+`K = 1 + 2 * n * max|milliCU|`, `n` the node count.
+
+The claim to check is that `compare(w_a, w_b)` agrees with the lexicographic comparison on every
+pair the algorithm ever forms. Every quantity the algorithm compares is a sum of at most `n` arc
+costs — the longest simple path is `S -> Leg -> agent -> T` and the longest simple cycle is bounded
+by the node count — so the money component of any such sum lies in
+`[-n*max|milliCU|, +n*max|milliCU|]`, i.e. strictly inside `(-K/2, +K/2)`. Two sums whose
+`unassigned` components differ by at least one therefore differ by at least `K` in the first term
+and by less than `K` in the second, so the first term decides. Two sums whose `unassigned`
+components are equal have that term cancel, so the money term decides. That is exactly
+lexicographic order. **The derivation holds; the factor 2 is load-bearing and is not a tuning
+constant.**
+
+`prepare()` refuses rather than assuming: `moneyCeiling`, `collapseK` and the scaled-cost headroom
+are each checked against `Number.MAX_SAFE_INTEGER` **before** the run, with `MINIMUM_HEADROOM = 8`
+and `PRICE_LIMIT_DIVISOR = 4` leaving room for prices to move. The runtime price guard
+(`if (best < -priceLimit) return OUTCOME.OVERFLOW`) is checked in the only direction prices move —
+relabelling is a strict decrease — which is correct rather than merely lucky.
+
+Nothing downstream rests on the derivation being right, because `certify()` recomputes exact
+lexicographic potentials in the *uncollapsed* pair and checks LP duality directly. The collapse is
+a device for finding a candidate flow; the certificate is what makes it safe.
+
+## II.5 Where the time actually goes
+
+This is the part of Part I that most needed re-measuring, and the part where the existing
+independent verification reached a conclusion this audit does not share. Both stages are split into
+sub-stages here rather than reported as opaque totals.
+
+**500 Legs x 200 candidates, 100 000 columns, bare process, median of 5, three independent runs:**
+
+| Solve sub-stage | ms | share |
+|---|---|---|
+| `minCostFlow.buildNetwork` | 52 – 62 | ~15 % |
+| `costScaling.prepare` (collapse + flatten) | 44 – 47 | ~12 % |
+| `costScaling.run` (the epsilon-scaling loop) | **253 – 282** | **~72 %** |
+| `costScaling.certify` | 8.4 – 9.6 | ~2.5 % |
+| `assemble` and the rest | 5 – 11 | ~2 % |
+| **whole `minCostFlow.solve`** | **364 – 388** | |
+
+| `buildInstance` sub-stage | ms | share |
+|---|---|---|
+| T1/I14 brand assertion over 100 000 columns | 1.6 – 1.7 | <1 % |
+| `canonicalSort` under `compareColumnsForSolve` | **90.6 – 96.1** | **~40 %** |
+| frozen column-variable construction | 70.5 – 74.2 | ~31 % |
+| grouping pass, rows, freezes | 54 – 72 | ~27 % |
+| **whole `buildInstance`** | **225 – 237** | |
+
+Three things follow, and none of them was visible from the totals alone.
+
+1. **The algorithm is 72 % of the solve.** The remaining 28 % is network construction and the
+   collapse — work that is proportional to the column count and is not push-relabel at all. A
+   future optimisation aimed at "the solver" that did not separate these would be aimed at the
+   wrong 28 %.
+2. **The certificate is cheap.** 8.4–9.6 ms, ~2.5 % of the solve. Part I records a defect where the
+   certificate cost 2 975 ms against a 250 ms budget; that defect is definitively fixed, and the
+   proof is affordable on every solve.
+3. **`buildInstance`'s dominant term is the canonical sort**, which exists because §9.6 requirement
+   2 requires an explicit total order over columns. It is not a defect and it is not the repeated-
+   scan hot spot that was removed earlier — that fix is intact, and the grouping pass is ~27 %
+   including the row construction and the freezes. There is no cheap win here that does not trade
+   against determinism.
+
+**No optimisation was attempted on `buildInstance` in this pass**, because the profile says the
+solver is the larger of the two on the hardware production runs on, and because the brief's own
+discipline is measure-then-optimise rather than optimise-then-justify.
+
+## II.6 The §9.4 anytime defect — found, reproduced, fixed
+
+### How it was found
+
+Not by reading. By sweeping real budgets against a real clock at the §20.1 shape and printing, for
+each, whether the returned allocation accounted for all 500 Legs. At `timeBudgetMs: 100` it did
+not: `scalingPhases: 0`, `finalEpsilon: 306043625202` (so the loop *was* entered), and
+`assignments + deferred + unassigned = 0` for a batch of 500.
+
+### The defect
+
+`costScaling.run()` consulted the budget at the top of every iteration of the scaling loop. The
+module's own header claims that stopping there is safe because "between phases the flow is complete
+and feasible — every Leg is routed, to an agent or to the sink". That claim is true from the second
+iteration onward. On the **first** iteration no phase has run: `refine()` is what drives the supply
+to the sink, and before it the state is the empty pseudoflow. `assemble()` reads flow off residual
+capacities, finds none, and reports an allocation naming no Leg.
+
+Deterministic reproduction, with an injected clock expiring after *n* consultations (consultation 1
+is the pre-`prepare()` check in `minCostFlow.js`, consultation 2 is the loop's first iteration):
+
+```
+BEFORE                                            AFTER
+deferral=false passes=1  phases=0  0/5 legs       phases=1  5/5 legs
+deferral=true  passes=1  phases=0  0/5 legs       phases=1  5/5 legs
+deferral=false passes=2  phases=1  5/5 legs       phases=2  5/5 legs
+```
+
+With deferral disabled the coverage row reads `<= 1`, which zero satisfies, so
+`objective.validate()` called the empty result **feasible** — a round could therefore report
+`constraintsSatisfied: true` and `unassigned: []` having decided nothing about 500 Legs.
+
+### The fix
+
+One guard, in `costScaling.run()`:
+
+```js
+if (settings.budgets && phasesCompleted > 0) { ... }
+```
+
+The budget may not be honoured before an incumbent exists, because §9.4 asks the incumbent to be
+"a feasible solution and a bound" and before the first phase there is no such thing to return. The
+cost is one scaling phase at the coarsest epsilon, **measured at 3.5 ms (median of 5) against a
+~380 ms whole solve** at 500 x 200.
+
+### Budget overshoot, re-measured after the fix
+
+500 x 200, real clock, single bare process:
+
+| budget | returned | overshoot | phases | Legs accounted for | certified |
+|---|---|---|---|---|---|
+| 0 ms | 85 ms | +85 ms | 0 | **0/500** | false |
+| 25 ms | 51 ms | +26 ms | 0 | **0/500** | false |
+| 50 ms | 62 ms | +12 ms | 0 | **0/500** | false |
+| 100 ms | 132 ms | +32 ms | 1 | 500/500 | false |
+| 250 ms | 261 ms | **+11 ms** | 21 | 500/500 | false |
+| 500 ms | 461 ms | — | 40 | 500/500 | **true** |
+
+At and above the point where the loop is reached, overshoot is one phase — 11 ms at the default
+250 ms budget, which is 4 % of the budget. Below it, the round exits inside
+`solveByCostScaling`'s pre-`prepare()` check, which is a deliberate, documented decision from Part I
+(do not spend ~100 ms collapsing a network for a round that has no time left).
+
+**That path is a remaining issue, not a fixed one — see §II.10, issue 1.** It was left alone
+deliberately: changing it means either doing ~100 ms of work a budget-exhausted round explicitly
+does not have, or fabricating a decision (`deferred`) the solver never made. Both are worse than
+the honest under-report, and the information is present in the result (`augmentations: 0` against
+`network.requiredFlow: 500`) for a caller that checks.
+
+## II.7 The flaky release-lane gate — diagnosed and fixed without weakening it
+
+`round.scale.test.js`'s batch-size exponent test asserts `0.7 < exponent < 1.6`. Running the whole
+scale lane five times on unchanged code:
+
+```
+run 1  1.273  PASS      run 2  1.633  FAIL      run 3  1.233  PASS
+run 4  1.754  FAIL      run 5  ~1.2   PASS
+```
+
+**2 failures in 5 runs, with no code change.** Running the same file *alone* gave 1.201, 1.207,
+1.236, 1.206 — four passes. So the exponent was not measuring the solver; it was measuring what the
+lane's earlier suites had done to the process.
+
+The cause is the fit's floor. The grid was `[50, 100, 200, 400]` at 20 candidates, whose smallest
+point — 1 000 columns — solves in ~3 ms on a bare process. The median of five 3 ms trials moves
+under a single collection pause, and a power-law fit is most sensitive at its endpoints. This is the
+exact failure mode the file's own header already names, and the grid had already been doubled once
+for it; the floor was still too low.
+
+**The fix raises the floor without leaving the configured envelope and without touching the bound:**
+`BATCH_FIT_CANDIDATES` 20 -> 80. 400 Legs is inside `solve.max_legs_per_round` (500) and 80
+candidates is inside `candidate.max_evaluated` (200), and 80 is nearer §20.1's own 200 than 20 was.
+
+Eight repeats of the fit at each setting, bare process:
+
+| grid | exponent range | spread | r-squared | smallest point |
+|---|---|---|---|---|
+| `[50,100,200,400]` @ 20 candidates | 1.262 – 1.521 | 0.259 | >= 0.981 | 3 ms |
+| `[50,100,200,400]` @ 80 candidates | 1.225 – 1.301 | **0.076** | >= 0.995 | 7 ms |
+
+The bound still separates the two regimes it was chosen to separate: successive shortest paths
+measures **2.134** (r-squared 0.9996) on the same grid at 80 candidates, against 2.067 at 20. **The
+fit got quieter; the gate did not get weaker.**
+
+Five consecutive runs of the whole scale lane after the change: **1.104, 1.084, 1.032, 1.085,
+1.092 — 5/5 pass, r-squared >= 0.9975.**
+
+## II.8 §20.1 — **NOT PASSED**
+
+§20.1 requires **round wall-clock at 500 Legs x 200 candidates < 250 ms**. That is a *whole-round*
+target: candidate generation, feasibility, plan/column building, `buildInstance`, solve, routing,
+commit.
+
+Measured here, bare process, at exactly that shape, counting only two of those stages:
+
+| | ms |
+|---|---|
+| `buildInstance` | 231 – 253 |
+| `minCostFlow.solve` (cost scaling, certified optimal) | 391 – 408 |
+| **build + solve alone** | **622 – 661** |
+| §20.1 target for the **whole round** | **250** |
+
+**Two stages of the round are already 2.5–2.6x the whole round's budget**, before candidate
+generation, feasibility, routing or commit are counted at all. §20.1 is **NOT PASSED** and cannot
+be declared passed from any measurement in this document.
+
+The four quantities the brief asks to be kept apart:
+
+| | value | status |
+|---|---|---|
+| A. solver alone | 391 – 408 ms | 1.6x over the whole-round target on its own |
+| B. solve + `buildInstance` | 622 – 661 ms | 2.5 – 2.6x over |
+| C. whole round | **not measured here** | the remaining stages were not instrumented in this pass |
+| D. representative production hardware | **not measured, ever** | the only kind of run that can discharge §20.1 |
+
+What *has* changed is the size of the gap. Against the same shape on the same machine:
+
+| | SSP (before) | cost scaling (now) |
+|---|---|---|
+| solve at 500 x 200 | **23 455 ms** | **391 – 408 ms** |
+| speed-up | — | **58.6x** |
+| exponent in Legs | 2.067 – 2.134 | 1.03 – 1.30 |
+
+The gap has gone from ~94x to ~2.6x on the two stages that were measured. That is a large, real
+improvement and it is not gate discharge.
+
+**`scale_targets` cannot go GREEN from this work.** `PHASE_15_BLOCKER_RESOLUTION_PLAN.md` names two
+independent causes for that gate — the solver algorithm class and **B1 routing**, which §20.3 calls
+the dominant term. B1 was not touched, not measured and not analysed in this pass. Phase 10 does not
+unblock Phase 16.
+
+## II.9 Numbers from earlier documents, labelled
+
+Per the brief's instruction that no prior figure be repeated without reproducing it:
+
+| Claim | Source | Status here |
+|---|---|---|
+| SSP at 500 x 200 = 23 536 ms | Part I | **REPRODUCED** — 23 455 ms |
+| SSP exponent in Legs ~ 2.089 | Part I | **REPRODUCED** — 2.067 @20 cand, 2.134 @80 cand |
+| cost scaling at 500 x 200 = 345 ms | Part I (session start) | **REPRODUCED WITHIN DRIFT** — 391–408 ms bare process |
+| speed-up "45x – 68x" | Part I | **REPRODUCED, NARROWED** — 58.6x measured directly, one process, both arms |
+| build + solve = 610 – 869 ms | Part I | **REPRODUCED** — 622–661 ms |
+| identical allocation on 292/300 | Part I & verification Part I | **REPRODUCED EXACTLY** |
+| "136 suites, 6 059 tests" | Part I & verification Part I | **STALE** — the repository now has **147 suites / 6 480 tests** before this pass's changes, **148 / 6 497** after |
+| retained heap 33.5 MB, steady RSS 153 MB | Part I | **NOT REPRODUCED on the same basis** — see §II.11; different measurement basis, and the qualitative direction (cost scaling retains less than SSP) does hold |
+| "buildInstance is now the larger of the two costs (1275–1347 ms vs 727–763 ms)" | verification Part I, Finding 2 | **NOT REPRODUCED — and explained.** See below |
+| "the `solve/` ownership guard is still a directory prefix" | verification Part I, Finding 3 | **STALE — already fixed.** `phase0Scaffold.test.js` lists `solve/` file-by-file (7 files) and carries a planted-module test that refuses `solve/setPartitioning.js`, `solve/branchAndBound.js` and `solve/localSearch.js` |
+
+### Why Finding 2 does not reproduce
+
+It reproduces **inside jest** and not outside it, and the inversion is an artefact of the runner.
+
+| | bare process | through jest |
+|---|---|---|
+| `buildInstance` | 228 – 253 ms | 929 – 988 ms (**~4.1x**) |
+| `minCostFlow.solve` | 391 – 428 ms | 577 – 608 ms (**~1.4x**) |
+| ratio build / solve | **0.56 – 0.62** | **1.59 – 1.62** |
+
+Three jest runs and three bare runs; the ratio is stable within each environment and inverts between
+them. The mechanism is visible in the sub-stage profile of §II.5: `buildInstance` is allocation-bound
+(~300 000 short-lived objects and frozen arrays per call) and the epsilon-scaling loop is
+typed-array arithmetic. A `vm`-sandboxed module registry taxes the first far more than the second.
+
+The competing explanation — that the scale lane's earlier suites leave a large live heap — was
+tested and **refuted**: retaining all twelve instances the lane's three fits build changed the ratio
+from 0.56 to 0.62, nowhere near 1.6. The measurement was then repeated in a *cold* jest process
+running nothing else, which reproduced 1.59–1.62 immediately. It is the runner, not the heap.
+
+**Consequence.** Production runs in a bare Node process, so the solver, not `buildInstance`, is the
+larger of the two stages there. Optimisation effort aimed at `buildInstance` on the strength of
+Finding 2 would have been aimed at the smaller half.
+
+## II.10 Remaining issues
+
+1. **A budget exhausted before `prepare()` still returns an allocation naming no Leg.** Unfixed,
+   deliberately (§II.6). Detectable by the caller as `augmentations: 0` against
+   `network.requiredFlow: N` with `budgetLimited: true`, but `unassigned` is `[]` where it should
+   arguably list every Leg. `assemble()`'s result shape has no way to say "undecided", and the two
+   available alternatives are worse. **The right owner is Phase 11**, which owns what the decision
+   record says; a `decidedNothingBecause` field on the result would close it honestly.
+   Reachable at 500 x 200 with any budget below ~60 ms on this machine.
+2. **§20.1 remains undischarged and stages C and D of §II.8 remain unmeasured.** Nothing in this
+   pass measured a whole round, and nothing has ever measured representative hardware.
+3. **`buildInstance`'s canonical sort is 40 % of instance construction** and is inherent to §9.6
+   requirement 2. It is not a defect; it is the standing price of determinism, and it is recorded
+   here so a future optimisation starts from a measurement rather than from a guess.
+4. **The 8 of 300 differential instances with different-but-equal-cost allocations are unchanged
+   and were not "fixed".** They are not a defect: the objective, flow value and all counts agree,
+   both allocations are feasible and both satisfy every invariant, and no specification names one
+   member of a tied optimal set.
+5. **`overloadAndSoak.scale.test.js` and `locality.scale.test.js` were run but not audited.** They
+   pass; their internals were out of scope for this pass.
+
+## II.11 Memory
+
+Per-process, 500 x 200, forced GC before and after, instance retained throughout:
+
+| | cost scaling (5 solves) | SSP (1 solve) |
+|---|---|---|
+| RSS with the instance built, before solving | 119.9 MB | 120.3 MB |
+| peak RSS during solving | 307.2 MB | 295.9 MB |
+| RSS retained after GC | **213.2 MB** | **283.9 MB** |
+| heap retained after GC | 55.9 MB | 54.9 MB |
+
+The retained heap is the instance itself (55.7 MB before either solver ran), so **neither solver
+retains a measurable amount** and there is no leak: five consecutive cost-scaling solves retain what
+one does. The RSS difference is the allocator's, and it is in cost scaling's favour despite its arm
+running five times as many solves — consistent with Part I's qualitative claim, though not with its
+absolute figures (§II.9).
+
+## II.12 Phase boundaries — what was deliberately NOT implemented
+
+Verified by directory walk and by `phase0Scaffold.test.js`'s own ownership test, which passes:
+
+- **Phase 11** — no observability, calibration, shadow worker, `InputSnapshot`, `DecisionRecordB`,
+  `CalibrationObservation`, `AuditEvent`, Explanation API or sampling work was written in this pass.
+  Those modules exist in the repository from Phase 11's own work and were not touched.
+- **Phase 15** — no routing engine decision, **no B1 routing work of any kind**, no production
+  cutover, no engine enablement. `routing/` was not opened.
+- **Phase 16** — `solve/` contains exactly seven files: `budgets.js`, `cadence.js`,
+  `costScaling.js`, `minCostFlow.js`, `objective.js`, `regime.js`, `round.js`. No
+  `setPartitioning.js`, no `branchAndBound.js`, no `localSearch.js`, no `batch.js`, no column-regime
+  solver, no local search.
+- **The network formulation was not changed.** `buildNetwork()` is untouched: same nodes, same arcs,
+  same capacities, same lexicographic pair costs, exclusivity still `<= 1` **per agent**.
+- **The successive-shortest-path reference was not removed.**
+
+## II.13 Files changed in this pass
+
+| File | Change |
+|---|---|
+| `src/engine/solve/costScaling.js` | the §9.4 anytime fix — the budget may not be consulted before the first scaling phase completes; header comment states why and what it costs |
+| `src/engine/solve/minCostFlow.js` | comment only — corrected a reference to a non-existent test file, and stated the limit of a differential oracle |
+| `tests/engine/solveCostScaling.test.js` | +3 tests: the anytime regression (deferral on and off) and a sweep proving every later stopping point returns a whole allocation |
+| `tests/engine/solveCostScalingOracle.test.js` | **new** — 8 000-instance brute-force oracle plus 6 hand-built shapes, sharing no code with either solver |
+| `tests/scale/round.scale.test.js` | `BATCH_FIT_CANDIDATES` 20 -> 80, with the measurement that justifies it; bound unchanged |
+
+No production behaviour changed except the anytime stopping point. No test was weakened, skipped or
+deleted. No gate was modified. No frozen architecture document was edited.
+
+## II.14 Recommendation
+
+Accept Phase 10's cost-scaling solver as **correct, deterministic, exact, certified and
+regression-safe**, and accept this pass's three fixes.
+
+Do **not** read this document as discharging `scale_targets`, as passing §20.1, or as unblocking
+Phase 16. The next measurement that would change the picture is a **whole-round** measurement at
+500 x 200 on representative hardware — stages C and D of §II.8 — and that is Phase 15's to take,
+alongside the B1 routing decision that shares the same gate.

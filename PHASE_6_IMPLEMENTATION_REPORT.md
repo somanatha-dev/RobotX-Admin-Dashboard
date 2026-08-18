@@ -469,3 +469,48 @@ npm run test:legacy  # 22 suites, 169 tests
 ---
 
 *End of Phase 6 Implementation Report.*
+
+---
+
+# ADDENDUM — Closure status as of 2026-08-17
+
+*Appended at Phase 6 closure. Nothing above this line has been altered: the report is preserved as
+written on 2026-08-04, including its statement that Phase 7 did not exist, which was true then.*
+
+**Phase 6 is now CLOSED.** See `PHASE_6_REMEDIATION_AND_CLOSURE.md` for the full evidence.
+
+What changed since this report was written:
+
+1. **The Phase 7 prerequisite is resolved.** Phase 7 is implemented and independently verified, and
+   the seven predicates this report listed as awaiting it (F22–F26, F34, F35) are now composed
+   end-to-end with the real `energy/` and `payload/` producers and exercised through the whole gate
+   by `tests/engine/feasibilityPhase7Integration.test.js` (26 tests). The sentence above —
+   "Phase 7 has not been implemented" — was accurate on 2026-08-04 and is superseded, not corrected.
+
+2. **Two defects were found at closure and fixed**, neither of which this report or the independent
+   verification could have caught by inspection:
+
+   - **R1 (HIGH, class I, permissive direction)** — `f34.js` resolved `α[tier]` from
+     `energy.shortfall_probability` with the SLA-class index **transposed** relative to
+     `energy/tiers.js`. Under a class-keyed map, F34 returned `SATISFIED` against the looser fleet
+     default while the authoritative energy model called the same plan infeasible. Fixed: F34 now
+     replicates the producer's precedence exactly, refuses any other map shape, and enforces
+     Appendix A's `(0, 1)` bound on α. Five regression tests.
+   - **R2 (HIGH, functional)** — `rejectionAggregation.worker.js`'s typed `upsert()` **threw** for
+     37 of the 38 predicates, because four of the seven aggregation-key dimensions are NULL in the
+     ordinary case and a compound-unique `where` containing a NULL is refused by the client. §7.7's
+     "exact over 100 % of decisions" therefore held for F34 alone. Fixed by a parameterised
+     `INSERT … ON CONFLICT … DO UPDATE` plus migration
+     `20260817120000_rejection_aggregate_nulls_not_distinct`. Four regression tests, and the flush
+     mock is now strict so a revert fails the suite.
+
+3. **The migration has been applied to a live PostgreSQL 18.3 database** — the limitation §6 of this
+   report disclosed. That is how R2 was found.
+
+4. **The A5 decision (per-predicate indeterminate policy as code, not Config Service) is confirmed
+   compliant** with §7.2's "never overridable by anyone", with the reasoning recorded in the closure
+   report. It remains an item for formal Safety ratification, which is a governance act.
+
+5. **Test counts at closure:** 146 suites / 6436 tests, all passing; 7 of 7 build gates PASS.
+
+*End of addendum.*

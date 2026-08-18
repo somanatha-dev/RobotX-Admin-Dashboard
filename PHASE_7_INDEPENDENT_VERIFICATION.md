@@ -692,3 +692,37 @@ npm run test:legacy
 ```
 
 *End of Phase 7 Independent Verification Report.*
+
+---
+
+## CLOSURE ADDENDUM — appended 2026-08-18
+
+**Nothing above has been removed, edited, or rewritten.** This note exists so that a reader arriving
+at this report is not left acting on a conclusion that has since been overtaken.
+
+Phase 7 was formally closed on **2026-08-18**. The authoritative closure record is
+[`PHASE_7_REMEDIATION_AND_CLOSURE.md`](PHASE_7_REMEDIATION_AND_CLOSURE.md).
+
+**Two things above are now stale, and are corrected there rather than here.**
+
+1. **"Phase 8 may begin" / "no Phase 8 mechanism present."** True on 2026-08-04. Phases 8–15 have
+   since been implemented and have their own reports; `plan/`, `solve/`, `pricing/`, `candidates/`
+   and `cost/` are populated. Every count in Part 11 is likewise measured against the 2026-08-04
+   tree (3 gates, 1 779 tests) and is superseded by the closure record's §11 (7 gates, 6 442 tests).
+2. **Finding 1 — `F26`'s unreachable `requiredLockClass` branch — was under-assessed.** The finding
+   itself is correct: the field has no producer and the branch cannot fire. The assessment that it
+   is therefore benign holds only for today's producer. Deleting the branch — the recommended
+   remedy — would have left F26 reading *"a security-classified item requires **a** lock class"*
+   while `container.satisfiesSecurityClass()` reads *"requires **its own** lock class"*, i.e. a
+   class **R** predicate admitting a strict superset of what its producer admits. Reproduced at
+   verdict level: six of sixteen security-class × lock-class cells returned `SATISFIED` where the
+   container model refuses the placement. Fixed at closure by replacing the dead branch with §15.3
+   tier 1's compatibility relation, strengthening F26 rather than removing a condition from it, with
+   six regression tests and a divergence probe (`tools/verify/phase7SecurityClassProbe.js`).
+
+| Issue recorded in Part 14 | Disposition at closure |
+|---|---|
+| 1 — F26's unreachable branch | **RESOLVED** (and reclassified from LOW/informational to a real permissive-direction divergence) |
+| 2 — V9 combined conservatism | **DEFERRED**, governed Safety decision, owner B8 / Phase 15 calibration |
+| 3 — no live database | **RESOLVED** — live PostgreSQL 18.3, 82 checks, 0 failures |
+| 4 — `PHASE_0_INDEPENDENT_VERIFICATION.md` absent | **Documentation gap**; not required by the execution plan |

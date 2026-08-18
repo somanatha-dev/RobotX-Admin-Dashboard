@@ -408,7 +408,11 @@ function confirmEmergencyServices(input) {
   const source = input || {};
   const operator = source.operator || {};
 
-  if (!operator.operatorId) {
+  // Presence, not truthiness. `!operator.operatorId` also rejected a legitimate numeric id of
+  // `0`; that failed closed — an over-refusal, never an unauthorised call — but a gate that
+  // refuses a valid operator is a gate somebody works around under pressure, which is the one
+  // way this particular gate fails.
+  if (operator.operatorId === undefined || operator.operatorId === null || operator.operatorId === "") {
     throw new TypeError(
       "§18.6 step 4 requires a named operator. Automatic calls to emergency services are not an appropriate " +
         "output of an allocation engine, and a false positive has real external cost. This step is " +

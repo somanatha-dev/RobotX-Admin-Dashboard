@@ -321,12 +321,27 @@ function assessDeliverability(row, storeTime) {
  * plan's Redis row is advisory on top of this, never instead of it (§3.3's
  * cache-authority rule; invariant I16).
  *
+ * ── Why the candidate window is wider than the batch ────────────────────────
+ * `isRetryDue` (§11.3's backoff, supplied by the worker) can decline a candidate that
+ * has already been attempted. Candidates arrive oldest-first, and the oldest rows are
+ * precisely the ones most likely to be inside a backoff interval — so a window equal to
+ * the batch size would let a cohort of backing-off rows sit at the head of the queue and
+ * starve the never-attempted rows behind them, converting one agent's outage into a
+ * fleet-wide delivery stall. Over-reading by a bounded multiple keeps the pass's cost
+ * bounded while leaving ready work reachable past a backlog of deferred work.
+ *
  * @param {object} prisma the base client
  * @param {object} input
  * @param {string} input.workerId
  * @param {Date} input.storeTime
  * @param {number} input.limit
  * @param {number} input.claimTtlSeconds how long the claim lease lasts
+ * @param {(row: object) => boolean} [input.isRetryDue] §11.3's retry pacing. Consulted
+ *   for `PENDING` rows only: a `CLAIMED` row is reclaimed on its **lease** expiring,
+ *   which is the mechanism that bounds how long a dead worker's rows are invisible, and
+ *   pacing it a second time would delay recovery from a crash rather than a rejection.
+ *   Absent, every candidate is due — which is the pre-§11.3 behaviour and is why the
+ *   worker always supplies it.
  * @returns {Promise<object[]>} the rows this worker now owns
  */
 async function claim(prisma, input) {
@@ -341,6 +356,7 @@ async function claim(prisma, input) {
   }
 
   const claimExpiresAt = clock.deadlineFrom(storeTime, claimTtlSeconds);
+  const isRetryDue = typeof settings.isRetryDue === "function" ? settings.isRetryDue : () => true;
 
   const candidates = await prisma.outbox.findMany({
     where: {
@@ -354,11 +370,17 @@ async function claim(prisma, input) {
       notValidAfter: { gt: storeTime },
     },
     orderBy: [{ createdAt: "asc" }, { sequence: "asc" }],
-    take: limit,
+    take: limit * CANDIDATE_WINDOW_MULTIPLE,
   });
 
   const claimed = [];
   for (const candidate of candidates) {
+    if (claimed.length >= limit) break;
+    // §11.3 — a row inside its backoff interval is not a candidate this pass. Skipped
+    // rather than claimed-and-released, so the attempt counter and the claim lease both
+    // stay meaningful.
+    if (candidate.state === OUTBOX_STATE.PENDING && !isRetryDue(candidate)) continue;
+
     const result = await prisma.outbox.updateMany({
       where: {
         id: candidate.id,
@@ -542,7 +564,15 @@ async function readSli(prisma, storeTime) {
 /** @structural milliseconds per second — a unit conversion, not a threshold */
 const MILLIS_PER_SECOND = 1000;
 
+/**
+ * How many batches' worth of candidates one claim pass reads before filtering them
+ * through §11.3's backoff. See `claim`'s note on starvation.
+ * @structural the claim query's over-read, expressed in batches
+ */
+const CANDIDATE_WINDOW_MULTIPLE = 4;
+
 module.exports = {
+  CANDIDATE_WINDOW_MULTIPLE,
   OUTBOX_STATE,
   TERMINAL_STATES,
   OUTSTANDING_STATES,

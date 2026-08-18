@@ -92,31 +92,48 @@ async function flushSnapshot(deps, snapshot, context) {
   for (const row of snapshot.distribution || []) {
     // Upsert-and-add. A retry after a partial flush adds the same counts again only if
     // the aggregator was not drained, which `drain()` makes impossible for one flush.
-    await prisma.rejectionAggregate.upsert({
-      where: {
-        shardId_zoneId_missionClass_legPurpose_predicateId_tier_bucketStart: {
-          shardId: row.shardId === undefined ? shardId : row.shardId,
-          zoneId: row.zoneId,
-          missionClass: row.missionClass,
-          legPurpose: row.legPurpose,
-          predicateId: row.predicateId,
-          tier: row.tier,
-          bucketStart,
-        },
-      },
-      create: {
-        shardId: row.shardId === undefined ? shardId : row.shardId,
-        zoneId: row.zoneId,
-        missionClass: row.missionClass,
-        legPurpose: row.legPurpose,
-        predicateId: row.predicateId,
-        tier: row.tier,
-        bucketStart,
-        bucketEnd,
-        count: BigInt(row.count),
-      },
-      update: { count: { increment: BigInt(row.count) }, bucketEnd },
-    });
+    //
+    // ── Why this is raw SQL and not `prisma.rejectionAggregate.upsert()` ──────
+    // Four of the seven key dimensions are nullable and are NULL in the common case:
+    // only F34 carries a `tier`, and `zoneId` / `missionClass` / `legPurpose` are absent
+    // whenever the decision did not supply them. A compound-unique `where` containing a
+    // NULL is refused outright by the client — "Argument `tier` must not be null" — so
+    // the typed upsert **threw** rather than accumulating, for 37 of the 38 predicates.
+    // It was never caught because the only flush test drives F34, the one predicate that
+    // always has a tier, against a mock client that accepts any argument shape.
+    //
+    // §7.7 requires the two derived SLIs be exact over **100 % of decisions**, so the
+    // conflict target is addressed in SQL instead, against the unique index the
+    // `20260817120000_rejection_aggregate_nulls_not_distinct` migration redeclared
+    // NULLS NOT DISTINCT. In this table an absent dimension is a determinate fact about
+    // the rejection — "this rejection had no zone" — not missing information, so two
+    // rejections agreeing on all seven dimensions belong in one bucket.
+    //
+    // `$executeRaw` is parameterised by tag, so every value below is bound, not
+    // interpolated.
+    await prisma.$executeRaw`
+      INSERT INTO "RejectionAggregate" (
+        "id", "shardId", "zoneId", "missionClass", "legPurpose",
+        "predicateId", "tier", "bucketStart", "bucketEnd", "count", "updatedAt"
+      ) VALUES (
+        gen_random_uuid()::text,
+        ${row.shardId === undefined ? shardId : row.shardId},
+        ${row.zoneId ?? null},
+        ${row.missionClass ?? null},
+        ${row.legPurpose ?? null},
+        ${row.predicateId},
+        ${row.tier ?? null},
+        ${bucketStart},
+        ${bucketEnd},
+        ${BigInt(row.count)},
+        CURRENT_TIMESTAMP
+      )
+      ON CONFLICT ("shardId", "zoneId", "missionClass", "legPurpose", "predicateId", "tier", "bucketStart")
+      DO UPDATE SET
+        "count" = "RejectionAggregate"."count" + EXCLUDED."count",
+        "bucketEnd" = EXCLUDED."bucketEnd",
+        "updatedAt" = CURRENT_TIMESTAMP
+    `;
     aggregatesWritten += 1;
   }
 

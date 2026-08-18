@@ -1,0 +1,13 @@
+{
+  "id": "RD-2026-08-18-01",
+  "recorded": "2026-08-18",
+  "owner": "release owner",
+  "section": "§21.6",
+  "path": "Backend/src/engine/plan/columnBuilder.js",
+  "baseBlob": "748372cb054fbeda3e22d7c4813ad763ef76a199",
+  "currentBlob": "78fa8756381cd013d5cebf2e58895c84e4963fd6",
+  "surfacesAffected": [],
+  "record": "docs/release-decisions/RD-2026-08-18-01-columnbuilder-singleton-guard.md",
+  "discharges": "PHASE_11_REMEDIATION_AND_CLOSURE.md BLOCKER-1, by path (b)",
+  "rationale": "Release-owner decision: the current columnBuilder.js modification only wires the existing assertSingletonRegime() invariant guard into the column-builder execution path. It does not alter clustering rules, bundle-size policy, enumeration order, pruning rules, or kept-column selection. Therefore this change is outside the §21.6 counterfactual surfaces enumerated by the specification and does not require a counterfactual corpus/report for release gating. The §21.6 gate remains fully enabled for changes that do affect those surfaces. This decision applies ONLY to the exact content named by baseBlob/currentBlob; it is not a general exemption for this file or for any future change to it."
+}

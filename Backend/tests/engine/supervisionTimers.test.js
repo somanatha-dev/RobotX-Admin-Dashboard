@@ -139,6 +139,57 @@ describe("§4.5 — timers are keyed on the supervised entity's own version", ()
     const base = { entityType: "LEG", entityId: "leg-1", state: "OFFERED", handler: "WITHDRAW_EXCLUDE_REPLAN" };
     expect(timers.timerKey({ ...base, entityVersion: 1 })).not.toBe(timers.timerKey({ ...base, entityVersion: 2 }));
   });
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     REGRESSION — Phase 5 remediation, finding 3. The `FORBIDDEN_VERSION_SOURCES`
+     guard inspected the call arguments rather than the entity, so it could not
+     fire through the module's own call pattern: the check the module's header
+     and its own error message both claim was never reachable.
+     ───────────────────────────────────────────────────────────────────────── */
+
+  describe("§4.5 — an entity carrying an agent-scope counter is refused by name", () => {
+    const dueAt = new Date(STORE_NOW.getTime() + 60_000);
+
+    async function registerWith(entity) {
+      const store = fixtures.storeFor(fixtures.seed());
+      return store.client.$transaction((tx) =>
+        timers.register(tx, {
+          entityType: "LEG",
+          entityId: fixtures.LEG_ROW_ID,
+          state: "OFFERED",
+          entity,
+          dueAt,
+          handler: "WITHDRAW_EXCLUDE_REPLAN",
+        }),
+      );
+    }
+
+    test.each(timers.FORBIDDEN_VERSION_SOURCES)(
+      "an entity widened with %s is refused, even when it also carries a plausible version",
+      async (forbidden) => {
+        // The dangerous shape: an object that *would* key correctly today, because
+        // `VERSION_SOURCE` reads `version` and ignores everything else, but whose caller
+        // has conflated the agent scope with the entity scope. The structural guarantee
+        // cannot see this; the guard is what names it.
+        await expect(
+          registerWith({ id: fixtures.LEG_ROW_ID, version: 0, state: "OFFERED", [forbidden]: 7 }),
+        ).rejects.toThrow(new RegExp(`may not be keyed on "${forbidden}"`));
+      },
+    );
+
+    test("the refusal explains why an over-invalidated timer is worse than a loud failure", async () => {
+      await expect(registerWith({ id: fixtures.LEG_ROW_ID, version: 0, authorityEpoch: 3 })).rejects.toThrow(
+        /removes supervision from missions that are executing normally/,
+      );
+    });
+
+    test("an ordinary Leg row still registers — the guard rejects the defect, not the call pattern", async () => {
+      // The counterpart assertion. A guard that refused legitimate rows would be found by
+      // the rest of this suite, but only after it had been shipped; this states it.
+      const registered = await registerWith({ id: fixtures.LEG_ROW_ID, version: 0, state: "OFFERED" });
+      expect(registered.entityVersion).toBe(0n);
+    });
+  });
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════

@@ -78,6 +78,12 @@ const ADVISORY_KEY_PREFIX = "engine:mode:";
  */
 const ADVISORY_TTL_SECONDS = 120;
 
+/** @structural Prisma's error code for a unique-constraint violation */
+const PRISMA_UNIQUE_VIOLATION = "P2002";
+
+/** @structural PostgreSQL's SQLSTATE for `unique_violation`, beneath the Prisma wrapper */
+const POSTGRES_UNIQUE_VIOLATION = "23505";
+
 /**
  * The key one shard's advisory mode broadcast lands on.
  *
@@ -135,23 +141,62 @@ async function enter(deps, input) {
     return { entered: false, alreadyOpen: true, row: existing, event };
   }
 
-  const row = await deps.prisma.degradedModeEvent.create({
-    data: {
-      shardId: event.shardId,
-      mode: event.mode,
-      cause: event.cause,
-      enteringComponent: event.enteringComponent,
-      suspendedInvariants: event.suspendedInvariants,
-      degradedInvariants: event.degradedInvariants,
-      enteredAt: new Date(event.enteredAtMs),
-      timeBoxExpiresAt: event.timeBox.expiresAtMs === null ? null : new Date(event.timeBox.expiresAtMs),
-      exitCriterion: event.exitWhen,
-      envelope: event.envelope,
-      detail: event.detail,
-    },
-  });
+  const data = {
+    shardId: event.shardId,
+    mode: event.mode,
+    cause: event.cause,
+    enteringComponent: event.enteringComponent,
+    suspendedInvariants: event.suspendedInvariants,
+    degradedInvariants: event.degradedInvariants,
+    enteredAt: new Date(event.enteredAtMs),
+    timeBoxExpiresAt: event.timeBox.expiresAtMs === null ? null : new Date(event.timeBox.expiresAtMs),
+    exitCriterion: event.exitWhen,
+    envelope: event.envelope,
+    detail: event.detail,
+  };
+
+  let row;
+  try {
+    row = await deps.prisma.degradedModeEvent.create({ data });
+  } catch (error) {
+    // ── The read-then-create race ──────────────────────────────────────────────
+    //
+    // Two detectors observing one Commitment Store outage at the same instant both find no
+    // open row and both insert. `DegradedModeEvent_one_open_per_shard_mode` is the backstop
+    // and it does its job — the second insert is refused — but a refusal that propagates as
+    // an exception makes the *detector* fail, which is the component least able to afford it:
+    // it would log an error and move on, having neither entered the mode nor learned that the
+    // mode is open. The schema's answer to a duplicate entry is the same as this function's:
+    // the shard is already in the mode. So the constraint violation is resolved into exactly
+    // the `alreadyOpen` result the sequential path returns.
+    //
+    // Only the unique violation is swallowed. Any other failure is the caller's to see.
+    if (!isUniqueViolation(error)) throw error;
+
+    const raced = await deps.prisma.degradedModeEvent.findFirst({
+      where: { shardId: event.shardId, mode: event.mode, exitedAt: null },
+    });
+    if (!raced) throw error;
+    return { entered: false, alreadyOpen: true, row: raced, event, racedWith: "a concurrent entry" };
+  }
 
   return { entered: true, alreadyOpen: false, row, event };
+}
+
+/**
+ * Is this the unique-constraint violation the partial index raises?
+ *
+ * Matched on Prisma's `P2002` and on the Postgres SQLSTATE beneath it, so a store reached
+ * without the Prisma error wrapper — a raw client, a test double — is recognised too. Matching
+ * on the message text alone would make the behaviour depend on a driver's wording.
+ *
+ * @param {*} error
+ * @returns {boolean}
+ */
+function isUniqueViolation(error) {
+  if (!error) return false;
+  if (error.code === PRISMA_UNIQUE_VIOLATION || error.code === POSTGRES_UNIQUE_VIOLATION) return true;
+  return /unique constraint|duplicate key value/i.test(String(error.message || ""));
 }
 
 /**
@@ -452,6 +497,7 @@ module.exports = {
   openRows,
   activeModes,
   enter,
+  isUniqueViolation,
   exit,
   exitCriterionMet,
   mayResumeRounds,

@@ -408,11 +408,36 @@ describe("the aggregation flusher", () => {
     expect(outcome.aggregatesWritten).toBe(0);
   });
 
-  test("a snapshot folds into both tables", async () => {
-    const writes = { aggregates: [], sketches: [] };
-    const prisma = {
+  /** A mock that rejects a NULL inside a compound-unique `where`, as Prisma does.
+   *
+   * The strictness is the point. An earlier version of this mock accepted any argument
+   * shape, and the only flush test drove F34 — the **one** predicate of the 38 that
+   * always carries a `tier`. Four of the seven aggregation-key dimensions (`tier`,
+   * `zoneId`, `missionClass`, `legPurpose`) are NULL in the ordinary case, and a real
+   * client refuses a compound-unique `where` containing a NULL outright ("Argument
+   * `tier` must not be null"). The typed `upsert()` therefore *threw* for 37 of the 38
+   * predicates, against §7.7's requirement that the two derived SLIs be exact over
+   * 100 % of decisions — and a permissive mock is exactly why nothing said so.
+   *
+   * So this mock fails the way the real client fails, and the tests below can only pass
+   * if the flush addresses its conflict target in SQL, against the NULLS NOT DISTINCT
+   * index `20260817120000_rejection_aggregate_nulls_not_distinct` declares.
+   */
+  function strictPrisma(writes) {
+    const refuseNulls = (args) => {
+      const key = args.where && args.where.shardId_zoneId_missionClass_legPurpose_predicateId_tier_bucketStart;
+      for (const [name, value] of Object.entries(key || {})) {
+        if (value === null) throw new Error(`Argument \`${name}\` must not be null.`);
+      }
+    };
+    return {
+      async $executeRaw(strings, ...values) {
+        writes.raw.push({ sql: strings.join("?"), values });
+        return 1;
+      },
       rejectionAggregate: {
         async upsert(args) {
+          refuseNulls(args);
           writes.aggregates.push(args);
         },
       },
@@ -425,7 +450,10 @@ describe("the aggregation flusher", () => {
         },
       },
     };
+  }
 
+  test("a snapshot folds into both tables", async () => {
+    const writes = { aggregates: [], sketches: [], raw: [] };
     const aggregator = telemetry.createAggregator();
     aggregator.record(
       telemetry.tupleFrom({
@@ -437,15 +465,74 @@ describe("the aggregation flusher", () => {
     );
 
     const outcome = await worker.flushOnce(
-      { prisma, aggregator, now: () => fx.DECISION_TIME_MS },
+      { prisma: strictPrisma(writes), aggregator, now: () => fx.DECISION_TIME_MS },
       { shardId: "shard-1" },
     );
 
     expect(outcome.aggregatesWritten).toBe(1);
     expect(outcome.sketchesWritten).toBe(1);
-    expect(writes.aggregates[0].create.predicateId).toBe("F34");
-    expect(writes.aggregates[0].create.tier).toBe("T1");
-    // Upsert-and-add is what makes an at-least-once retry safe.
-    expect(writes.aggregates[0].update.count).toEqual({ increment: BigInt(1) });
+    // The same three facts the typed-upsert form asserted, through the SQL that
+    // replaced it: the predicate and its binding tier are written, and the conflict
+    // branch **adds** rather than replacing — which is what makes an at-least-once
+    // retry safe (§7.7).
+    expect(writes.raw[0].values).toContain("F34");
+    expect(writes.raw[0].values).toContain("T1");
+    expect(writes.raw[0].values).toContain(BigInt(1));
+    expect(writes.raw[0].sql).toMatch(/"count"\s*=\s*"RejectionAggregate"\."count"\s*\+\s*EXCLUDED\."count"/);
+    // The sketch path is unchanged: its four key dimensions are all non-null.
+    expect(writes.sketches[0].create.predicateId).toBe("F34");
+    expect(writes.sketches[0].update.total).toEqual({ increment: BigInt(1) });
+  });
+
+  test.each([
+    ["F13", {}, { zoneId: "zone-1", missionClass: "PARCEL", legPurpose: "DELIVER" }],
+    ["F16", {}, {}],
+    ["F22", {}, { zoneId: "zone-1" }],
+  ])("a %s rejection with NULL key dimensions still flushes", async (predicateId, observed, dimensions) => {
+    const writes = { aggregates: [], sketches: [], raw: [] };
+    const aggregator = telemetry.createAggregator();
+    aggregator.record(
+      telemetry.tupleFrom({
+        agentId: "a",
+        predicateId,
+        result: { outcome: OUTCOME.VIOLATED, margin: -0.03, marginUnit: "prob", observed },
+        dimensions: { shardId: "shard-1", ...dimensions },
+      }),
+    );
+
+    const outcome = await worker.flushOnce(
+      { prisma: strictPrisma(writes), aggregator, now: () => fx.DECISION_TIME_MS },
+      { shardId: "shard-1" },
+    );
+
+    expect(outcome.aggregatesWritten).toBe(1);
+    expect(writes.raw).toHaveLength(1);
+    // Addressed by ON CONFLICT against the NULLS NOT DISTINCT index, and accumulating —
+    // `count = existing + EXCLUDED`, not a replacement, which is what keeps an
+    // at-least-once retry safe.
+    expect(writes.raw[0].sql).toMatch(/ON CONFLICT/);
+    expect(writes.raw[0].sql).toMatch(/"count"\s*=\s*"RejectionAggregate"\."count"\s*\+\s*EXCLUDED\."count"/);
+    // Every value is bound, never interpolated.
+    expect(writes.raw[0].values).toContain(predicateId);
+  });
+
+  test("the tier is still recorded when the predicate has one, and bound as a parameter", async () => {
+    const writes = { aggregates: [], sketches: [], raw: [] };
+    const aggregator = telemetry.createAggregator();
+    aggregator.record(
+      telemetry.tupleFrom({
+        agentId: "a",
+        predicateId: "F34",
+        result: { outcome: OUTCOME.VIOLATED, margin: -0.03, marginUnit: "prob", observed: { bindingTier: "T3" } },
+        dimensions: DIMENSIONS,
+      }),
+    );
+
+    await worker.flushOnce(
+      { prisma: strictPrisma(writes), aggregator, now: () => fx.DECISION_TIME_MS },
+      { shardId: "shard-1" },
+    );
+    // §7.7 keys F34 rejections on the binding tier, so two tiers must not merge.
+    expect(writes.raw[0].values).toContain("T3");
   });
 });

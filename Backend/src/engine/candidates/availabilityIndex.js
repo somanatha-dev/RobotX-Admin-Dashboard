@@ -114,6 +114,25 @@ function containerKey(shardId, containerClass) {
  * `IDLE_READY` is never also filed under a busier class, which is what keeps the
  * common-case lookup restricted to the smallest partition (§6.2).
  *
+ * ── Charging is checked before readiness, and why ────────────────────────────
+ * §6.3 places `CHARGING_INTERRUPTIBLE` at **tier 5** — "considered when tiers 0–4
+ * yield no acceptable option" — so a charging agent must not appear in any class
+ * tiers 1–4 search (`expansion.READY_CLASSES`). It previously could: this function
+ * tested `idle` first, and `indexMaintainer.worker.js` derives `idle` from the
+ * commitment count alone, so a robot parked on a charger with no commitments
+ * classified `IDLE_READY` and was offered work at tier 1 ahead of a genuinely idle
+ * one. A robot whose charging session may **not** be interrupted is worse still:
+ * it cannot leave the charger at all, so it is not indexed, which is the narrowing
+ * direction the maintainer's own defaults follow ("only *narrow* eligibility, never
+ * fabricate it") and which the index's advisory nature (§3.3, I16) makes free —
+ * feasibility is re-verified at commit regardless.
+ *
+ * `QUEUE_CAPACITY_AVAILABLE` likewise requires an active commitment. §6.3 tier 0
+ * defines the class by what it is for — "agents **already committed** to a
+ * compatible nearby Leg with spare queue capacity" — and without that precondition
+ * every uncommitted agent with a configured `capacity` satisfied `queueDepth <
+ * capacity` and landed here rather than in its own true class.
+ *
  * @param {object} state
  * @param {boolean} state.lifecycleEligible from `domain/agent.isLifecycleEligible`
  * @param {boolean} state.hasActiveCommitment whether the agent currently holds any
@@ -135,9 +154,15 @@ function classify(state, decisionTimeMs, finishingSoonHorizonSeconds) {
 
   if (!source.lifecycleEligible) return null;
 
-  if (!source.hasActiveCommitment && source.idle) return AVAILABILITY_CLASS.IDLE_READY;
+  // Charging with no interruption permitted: the agent cannot leave the charger,
+  // so it belongs to no partition at all (§6.3 tier 5 admits only the
+  // *interruptible* half of charging).
+  if (source.charging && !source.chargingInterruptible) return null;
+
+  if (!source.hasActiveCommitment && source.idle && !source.charging) return AVAILABILITY_CLASS.IDLE_READY;
 
   if (
+    source.hasActiveCommitment &&
     typeof source.queueDepth === "number" &&
     typeof source.capacity === "number" &&
     source.queueDepth < source.capacity

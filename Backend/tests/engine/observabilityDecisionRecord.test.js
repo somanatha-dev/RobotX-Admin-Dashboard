@@ -214,21 +214,68 @@ describe("§21.2 — Tier A is O(1) in candidate count and inside §20.1's 2 KB 
     const sized = tierA.size(worstCase, limit);
 
     // MEASURED, and stated rather than asserted away. A fully-populated §21.2 record
-    // serialised as self-describing canonical JSON runs about 2.3–2.7 KB against
+    // serialised as self-describing canonical JSON runs about 2.4–3.1 KB against
     // §20.1's `< 2 KB`. The overshoot is field names, not data: the record is ~1.8 KB
     // before a single candidate is considered, and adding 196 candidates costs under
     // 100 bytes. Closing it would mean abbreviating the field names of the one artefact
     // in the system whose purpose is that a human can read it.
     //
-    // This bound is a Phase 15 release-gate target (§20.1), and what Phase 11 owes is
-    // that it is measured, recorded per row, and visible — which it is: `sizeBytes` on
-    // every `DecisionRecordA`, an SLI target in `sli.TARGETS`, and an `oversize` list
-    // from the writer. The residual is recorded in the implementation report rather
-    // than hidden behind a relaxed assertion.
+    // The upper fence moved from 3 000 to 3 200 at the Phase 11 remediation, and the
+    // reason is recorded rather than absorbed: Phase 10's handoffs P11-2 and P11-3 added
+    // six fields to `searchAndSolveBounds` (`solver`, `optimalityCertified`,
+    // `fallbackFrom`, `objectiveMilliCU`, `boundMilliCU`, `truncationGapMilliCU`). Their
+    // cost is measured directly by the next test, and it is ~130 bytes — the fence tracks
+    // a measurement that grew for a stated reason, not a target that was relaxed to make
+    // a red test green. The *requirement* — `limitBytes` 2 048, `withinLimit` false — is
+    // asserted unchanged and still fails, which is the point.
+    //
+    // This bound is a release-gate target (§20.1), and what Phase 11 owes is that it is
+    // measured, recorded per row, and visible — which it is: `sizeBytes` on every
+    // `DecisionRecordA`, an SLI target in `sli.TARGETS`, and an `oversize` list from the
+    // writer. The residual is recorded in the closure document, not hidden behind a
+    // relaxed assertion.
     expect(sized.bytes).toBeGreaterThan(2000);
-    expect(sized.bytes).toBeLessThan(3000);
+    expect(sized.bytes).toBeLessThan(3200);
     expect(sized.withinLimit).toBe(false);
     expect(sized.limitBytes).toBe(2048);
+  });
+
+  test("the Phase 10 solver fields cost about 130 bytes, and the overshoot does not depend on them", () => {
+    // The honest accounting behind the fence above. Removing the six fields would still
+    // leave the record over §20.1's 2 KB, so P11-2 and P11-3 did not create the overshoot
+    // and reverting them would not close it — which is the fact the size decision in
+    // `PHASE_11_REMEDIATION_AND_CLOSURE.md` §8 rests on.
+    const base = tierA.build(tierAInput({ candidates: candidates(200) }));
+    const withSolve = tierA.build(
+      tierAInput({
+        candidates: candidates(200),
+        searchAndSolveBounds: {
+          ...tierAInput().searchAndSolveBounds,
+          solver: "COST_SCALING",
+          optimalityCertified: true,
+          fallbackFrom: null,
+          objectiveMilliCU: MILLI(1240),
+          boundMilliCU: MILLI(1240),
+          truncationGapMilliCU: 0n,
+        },
+      }),
+    );
+
+    const populatedCost = tierA.size(withSolve).bytes - tierA.size(base).bytes;
+    // Populating the six fields over their nulls is small; the fields' *presence* is the
+    // ~130 bytes, and both are far short of the 900-byte overshoot.
+    expect(populatedCost).toBeLessThan(100);
+
+    const withoutSolveFields = { ...base, searchAndSolveBounds: { ...base.searchAndSolveBounds } };
+    for (const field of ["solver", "optimalityCertified", "fallbackFrom", "objectiveMilliCU", "boundMilliCU", "truncationGapMilliCU"]) {
+      delete withoutSolveFields.searchAndSolveBounds[field];
+    }
+    const strippedBytes = Buffer.byteLength(tierA.serialise(withoutSolveFields), "utf8");
+
+    expect(tierA.size(base).bytes - strippedBytes).toBeGreaterThan(100);
+    expect(tierA.size(base).bytes - strippedBytes).toBeLessThan(200);
+    // The load-bearing claim: still over 2 KB with every one of them removed.
+    expect(strippedBytes).toBeGreaterThan(2048);
   });
 
   test("a record whose sections are absent is refused — an absent section is not an empty one", () => {

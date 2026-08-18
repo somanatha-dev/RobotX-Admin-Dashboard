@@ -332,6 +332,44 @@ describe("§13.2 — service time and waiting", () => {
     expect(priced(three.totals)).toBe(three.totals.durationSeconds);
     expect(priced(two.totals)).toBe(two.totals.durationSeconds);
   });
+
+  // Phase 8 remediation — the assertion above is exercised at `decisionTimeMs`
+  // undefined, so `releaseDelaySeconds` is 0 and it never reaches §8.2's `t_wait`
+  // "time until the agent can start". With a real release delay the six components
+  // price **decision-time → plan end**, while `durationSeconds` measures **release →
+  // plan end**; the two differ by exactly the release delay. Independent verification
+  // confirmed the arithmetic is right and that the intervals are disjoint, so this
+  // states the identity that actually holds rather than the one that happens to hold
+  // at zero.
+  test("with a real release delay, the six components price decision-time to plan end", () => {
+    const decisionTimeMs = 0;
+    const startMs = 60_000; // the agent is released a minute after the decision
+    const projected = timeline.project({
+      startMs,
+      decisionTimeMs,
+      stops: [
+        { sequence: 1, serviceSeconds: 100, serviceSdSeconds: 0 },
+        { sequence: 2, serviceSeconds: 100, serviceSdSeconds: 0 },
+      ],
+      hops: [
+        { distanceM: 10, travelSeconds: 10, travelSdSeconds: 0 },
+        { distanceM: 10, travelSeconds: 10, travelSdSeconds: 0 },
+      ],
+    });
+    const t = projected.totals;
+    const priced =
+      t.waitSeconds + t.approachSeconds + t.serviceFirstSeconds + t.linehaulSeconds + t.serviceLastSeconds;
+
+    expect(t.releaseDelaySeconds).toBe(60);
+    // The identity: the six components (less `t_terminal`, which the Plan Builder owns)
+    // cover decision-time → plan end, with no gap and no overlap.
+    expect(priced).toBe((t.endMs - decisionTimeMs) / 1000);
+    // And the excess over the plan's own duration is exactly the release delay — the
+    // two intervals are adjacent, so nothing is charged twice.
+    expect(priced - t.durationSeconds).toBe(t.releaseDelaySeconds);
+    // The wait is reported split, so an explanation can tell the two kinds apart.
+    expect(t.waitSeconds).toBe(t.releaseDelaySeconds + t.windowWaitSeconds);
+  });
 });
 
 describe("§13.4 — charging is a planned stop, not a refusal", () => {
@@ -630,6 +668,24 @@ describe("§9.3 — the Column Builder builds singleton columns only", () => {
     const verdict = columnBuilder.assertSingletonRegime([{ identity: "x", legIds: ["a", "b"] }]);
     expect(verdict.ok).toBe(false);
     expect(verdict.problems[0]).toMatch(/multi_leg_columns/);
+  });
+
+  // Phase 8 remediation. The guard above shipped correct and unit-tested but uncalled, so
+  // the singleton restriction rested on `build()` happening to take one legId per
+  // candidate rather than on the named check. These pin it as a live guard.
+  test("build() runs the singleton guard over the set it emits", () => {
+    const built = columnBuilder.build({ candidates: [candidate("agent-1", "leg-1")], maxColumnsPerRound: 10 });
+    expect(built.ok).toBe(true);
+    expect(built.problems).toEqual([]);
+    expect(built.columns.every((entry) => entry.singleton)).toBe(true);
+  });
+
+  test("a multi-Leg column reaching the emitted set fails build(), it does not pass unremarked", () => {
+    const emitted = [{ identity: "x", agentId: "a", legIds: ["l1", "l2"], singleton: false, gammaMilliCU: 0n }];
+    const verdict = columnBuilder.assertSingletonRegime(emitted);
+    expect(verdict.ok).toBe(false);
+    // `build()` returns `ok: regimeCheck.ok`, so the same verdict is the build's verdict.
+    expect(verdict.problems[0]).toMatch(/covers 2 Legs/);
   });
 });
 

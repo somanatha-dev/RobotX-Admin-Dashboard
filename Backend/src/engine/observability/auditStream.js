@@ -15,10 +15,38 @@
  *
  * Each event's `hash` covers its own content **and its predecessor's hash**, so altering
  * any event breaks every link after it. That catches edits. It does not, on its own,
- * catch a *removal* from the end of the chain — so the sequence is dense and starts at
- * zero, and a missing ordinal is as visible as a broken link. Two properties, because
- * neither alone catches both failures, and a tamper-evidence scheme that catches one of
- * two attacks is a scheme that will be defeated by the other one.
+ * catch a *removal* — so the sequence is dense and starts at zero, and a missing ordinal
+ * is as visible as a broken link. Two properties, because neither alone catches both
+ * failures, and a tamper-evidence scheme that catches one of two attacks is a scheme that
+ * will be defeated by the other one.
+ *
+ * ── Exactly which removals those two properties catch, and which they do not ─
+ * The pair above was written as though it covered every removal. It does not, and the
+ * difference was found by deleting rows on a live PostgreSQL rather than by reading this
+ * file (`tools/verify/phase11LiveDatabase.js`). Stated precisely:
+ *
+ *   · **A removal from the MIDDLE** leaves a hole. `verify()` reports it as a gap, and the
+ *     event after the hole also fails its `previousHash` check. Caught twice.
+ *   · **A removal from the HEAD** leaves the new first event carrying a `previousHash`
+ *     where `null` is expected, and — with `expectedFirstSequence` — a first ordinal that
+ *     is not zero. Caught twice.
+ *   · **A removal from the TAIL is not detectable from the stream alone, by
+ *     construction.** A truncated chain is indistinguishable from a chain that was never
+ *     longer: every remaining link verifies, and the sequence is still dense. Worse, the
+ *     freed ordinal is *reused* — `append()` reads the tail and takes the next number —
+ *     so deleting the last event and appending a replacement yields a chain that verifies
+ *     completely clean.
+ *
+ * Detecting truncation needs an anchor the attacker does not hold: a high-water mark
+ * recorded elsewhere. `verify()` therefore accepts `expectedLastSequence`, and reports a
+ * shortfall as a **truncation** rather than as a gap, because the two have different
+ * remedies — a gap is a hole to investigate, a truncation is evidence that the tail was
+ * removed and that everything after the anchor is unaccounted for.
+ *
+ * Nothing in this repository holds such an anchor yet: publishing the high-water mark to
+ * a store outside this table is a deployment decision, and §21.7 does not name one. What
+ * this module owes is that the limit is stated rather than implied away, and that a
+ * caller who *does* hold an anchor can use it. Both are true here; neither was before.
  *
  * ── Why this module is separate from the decision record ───────────────────
  * §21.7 says "separate", and the separation is not filing. A decision record answers
@@ -184,16 +212,25 @@ async function append(deps, input) {
 }
 
 /**
- * Verify a chain: every link, and the density of the sequence.
+ * Verify a chain: every link, the density of the sequence, and — when the caller holds an
+ * anchor — that the tail is where the anchor says it is.
  *
  * @param {object[]} events in ascending sequence order
+ * @param {object} [options]
+ * @param {bigint|string|number} [options.expectedFirstSequence] the ordinal the stream
+ *   must begin at. Pass `0` when reading a whole stream; omit for a window.
+ * @param {bigint|string|number} [options.expectedLastSequence] a high-water mark recorded
+ *   OUTSIDE this table. Without one, a truncated tail is indistinguishable from a chain
+ *   that was never longer — see the module header.
  * @returns {{ ok: boolean, checked: number, brokenLinks: object[], gaps: object[],
- *             firstSequence: string|null, lastSequence: string|null }}
+ *             truncations: object[], firstSequence: string|null, lastSequence: string|null }}
  */
-function verify(events) {
+function verify(events, options) {
+  const settings = options || {};
   const rows = [...(events || [])].sort((a, b) => (BigInt(a.sequence) < BigInt(b.sequence) ? -1 : BigInt(a.sequence) > BigInt(b.sequence) ? 1 : 0));
   const brokenLinks = [];
   const gaps = [];
+  const truncations = [];
 
   let expectedPrevious = null;
   let expectedSequence = rows.length > 0 ? BigInt(rows[0].sequence) : 0n;
@@ -244,31 +281,92 @@ function verify(events) {
     expectedSequence = sequence + 1n;
   }
 
+  const firstSequence = rows.length > 0 ? BigInt(rows[0].sequence) : null;
+  const lastSequence = rows.length > 0 ? BigInt(rows[rows.length - 1].sequence) : null;
+
+  // A HEAD removal. The `previousHash` check above already catches it, but only as a
+  // broken link — which reads as "the chain was edited" when what happened is that its
+  // beginning was deleted. Naming it makes the density claim in the header true rather
+  // than incidentally satisfied.
+  if (settings.expectedFirstSequence !== undefined && settings.expectedFirstSequence !== null) {
+    const expectedFirst = BigInt(settings.expectedFirstSequence);
+    if (firstSequence === null || firstSequence !== expectedFirst) {
+      truncations.push({
+        end: "HEAD",
+        expected: expectedFirst.toString(),
+        found: firstSequence === null ? null : firstSequence.toString(),
+        why: "the stream does not begin where it must — its opening events were removed",
+      });
+    }
+  }
+
+  // A TAIL removal, which nothing inside the stream can reveal: every remaining link
+  // verifies and the sequence is still dense. Only an anchor recorded elsewhere detects it.
+  if (settings.expectedLastSequence !== undefined && settings.expectedLastSequence !== null) {
+    const expectedLast = BigInt(settings.expectedLastSequence);
+    if (lastSequence === null || lastSequence < expectedLast) {
+      truncations.push({
+        end: "TAIL",
+        expected: expectedLast.toString(),
+        found: lastSequence === null ? null : lastSequence.toString(),
+        why:
+          "the stream ends before the recorded high-water mark: the tail was removed, and every event after the " +
+          "anchor is unaccounted for. A truncated chain is otherwise indistinguishable from a shorter one.",
+      });
+    }
+  }
+
   return {
-    ok: brokenLinks.length === 0 && gaps.length === 0,
+    ok: brokenLinks.length === 0 && gaps.length === 0 && truncations.length === 0,
     checked: rows.length,
     brokenLinks,
     gaps,
-    firstSequence: rows.length > 0 ? String(rows[0].sequence) : null,
-    lastSequence: rows.length > 0 ? String(rows[rows.length - 1].sequence) : null,
+    truncations,
+    // Stated so a caller can record it as the anchor for the next verification.
+    firstSequence: firstSequence === null ? null : firstSequence.toString(),
+    lastSequence: lastSequence === null ? null : lastSequence.toString(),
+    tailIsAnchored: settings.expectedLastSequence !== undefined && settings.expectedLastSequence !== null,
   };
 }
 
 /**
  * Read and verify a whole stream.
  *
+ * A whole-stream read must begin at ordinal zero, so that check is applied by default —
+ * the caller does not have to know to ask for it, and a stream whose opening events were
+ * deleted is named as a HEAD truncation rather than reported as an ambiguous broken link.
+ * A windowed read (`take`) is not a whole stream and is exempt.
+ *
+ * `expectedLastSequence` is never defaulted, because the database cannot supply it: the
+ * anchor has to come from outside the table it is anchoring. Passing one is what makes a
+ * TAIL truncation detectable at all.
+ *
  * @param {object} deps `{ prisma }`
  * @param {string} streamId
- * @param {object} [options] `{ take }`
+ * @param {object} [options] `{ take, expectedFirstSequence, expectedLastSequence }`
  * @returns {Promise<object>}
  */
 async function verifyStream(deps, streamId, options) {
+  const settings = options || {};
+  const windowed = Number.isFinite(settings.take);
+
   const events = await deps.prisma.auditEvent.findMany({
     where: { streamId: String(streamId) },
     orderBy: { sequence: "asc" },
-    ...(options && Number.isFinite(options.take) ? { take: options.take } : {}),
+    ...(windowed ? { take: settings.take } : {}),
   });
-  return { streamId: String(streamId), ...verify(events) };
+
+  const expectedFirstSequence =
+    settings.expectedFirstSequence !== undefined
+      ? settings.expectedFirstSequence
+      : windowed || events.length === 0
+        ? null
+        : 0n;
+
+  return {
+    streamId: String(streamId),
+    ...verify(events, { expectedFirstSequence, expectedLastSequence: settings.expectedLastSequence }),
+  };
 }
 
 module.exports = {

@@ -464,7 +464,23 @@ async function runRound(deps, input) {
 
   deps.planState.beginRound(roundId);
 
-  const startedAtMs = decisionTimeMs;
+  // The instant the round *started running here*, read from the local clock — deliberately
+  // not `decisionTimeMs`.
+  //
+  // `decisionTimeMs` is an **input** (§9.6 requirement 4), and a caller that pins it pins it
+  // to the *store's* clock, which §10.6 makes the authority for anything durable. Measuring
+  // elapsed time as `Date.now() − decisionTimeMs` therefore subtracts one clock's instant
+  // from another's, and charges the difference to §9.4's solve budget: at this config's own
+  // tolerated `maxClockSkewMillis` of 1 000 ms, a skew four times the entire 250 ms
+  // `solve.time_budget` is *within specification* and would exhaust the budget before the
+  // first candidate is expanded. The round would then return its trivial incumbent — every
+  // Leg deferred, nothing assigned — on a shard whose only fault was a clock a second out.
+  //
+  // Two clocks, two jobs: the store's instant decides *what the round sees* (and is pinned,
+  // recorded, and replayed); the local clock measures *how long the round has taken*. This
+  // read is in the worker, outside the decision path, exactly as before — §9.6 requirement 4
+  // is about what the decision depends on, and no decision depends on this.
+  const startedAtMs = Date.now();
   const budgets = budgetModel.create({
     config: {
       maxLegsPerRound: cadenceVerdict.maxLegsThisRound,

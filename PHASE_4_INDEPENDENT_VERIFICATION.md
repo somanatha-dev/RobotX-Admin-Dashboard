@@ -1,3 +1,27 @@
+> ## ⚠️ SUPERSEDED VERDICT — read this first
+>
+> **This report's `FAIL` verdict (Part 14) no longer describes the repository.** It is preserved
+> unedited as the historical record; nothing below has been removed, softened or rewritten.
+>
+> **Phase 4 is now CLOSED.** See [`PHASE_4_REMEDIATION_AND_CLOSURE.md`](PHASE_4_REMEDIATION_AND_CLOSURE.md)
+> (2026-08-17) for the reproduction, remediation and re-verification of every finding below.
+>
+> | Finding | Severity | Disposition |
+> |---|---|---|
+> | 1 — stale revert in `VirtualRobot.js` erases a concurrently applied command | High, blocking | **FIXED** in `cf9103f` (per-key serialisation + compare-and-restore). Independently reproduced against a reconstruction of the defective code, confirmed fixed, and the fix proven load-bearing: reverting it fails 4 tests |
+> | 2 — escalation step 2 has zero production callers | High, blocking | **FIXED** in `cf9103f`. `outbox.worker.js:296` now calls `offers.withdrawExpiredOffer` in its own transaction; verified end-to-end against live PostgreSQL |
+> | 3 — `backoffSeconds` computed but never consulted | Low-moderate | **FIXED 2026-08-17.** This was the one issue genuinely still open. `claim` now consults §11.3's schedule; 6 new regression tests |
+> | 4 — `OUTBOX_STATE.FAILED` never assigned | Moderate | **FIXED** in `cf9103f`; assigned at five sites, lifecycle documented |
+> | 5 — `PHASE_0_INDEPENDENT_VERIFICATION.md` does not exist | Low | **DOCUMENTATION CORRECTED.** Not fabricated; the gap is now recorded in `README.md` |
+> | 6 — no migration executed against live PostgreSQL | Elevated (inherited) | **DISCHARGED for Phase 4.** 21/21 migrations applied to a disposable PostgreSQL 18.3; `tools/verify/phase4LiveDatabase.js` → 55/55 checks |
+>
+> **A note on the two-week gap.** Findings 1, 2 and 4 were remediated in commit `cf9103f` on
+> 2026-08-03 — the same day this report was written — but neither Phase 4 document was updated, so
+> this `FAIL` stood as the repository's statement about Phase 4 long after the code had moved on.
+> The report's own lesson ("do not accept existence as execution") has a documentation counterpart.
+
+---
+
 # Phase 4 — Independent Software Verification Report
 
 **Verifier role:** Independent Software Verification Engineer (did not implement Phase 4; did not

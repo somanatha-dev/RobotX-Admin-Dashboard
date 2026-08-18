@@ -661,3 +661,64 @@ node -e 'console.log(require("./src/engine/feasibility/volatileSubset").assertSu
 ```
 
 *End of Phase 6 Independent Verification Report.*
+
+---
+
+# ADDENDUM — Closure re-verification, 2026-08-17
+
+*Appended at Phase 6 closure. Nothing above this line has been altered. In particular, the
+`PASS WITH MINOR ISSUES` verdict, the five issues, and Part 2's finding that a plan-stated hard
+prerequisite was not honoured are preserved exactly as recorded on 2026-08-04. They were correct
+then and the record of them is not rewritten now.*
+
+**Closure verdict: PHASE 6 CLOSED.** Full evidence in `PHASE_6_REMEDIATION_AND_CLOSURE.md`.
+
+## Disposition of this review's five issues
+
+| # | Issue as recorded | Disposition at closure |
+|---|---|---|
+| 1 | MEDIUM — Phase 7 was a hard prerequisite and was not implemented first | **RESOLVED.** Phase 7 is implemented and independently verified (21/21, `PASS WITH MINOR ISSUES`). This review's recommendation — "Phase 7 should be implemented next … Phase 6 cannot be integration-tested without it" — was followed, and the integration test it called for now exists: `feasibilityPhase7Integration.test.js`, 26 tests, every plan built by running the real producers. This review's prediction that "no rework of Phase 6's predicates is anticipated" was **very nearly** right: one predicate, F34, needed a change, for a reason only composition could expose (R1 below). |
+| 2 | LOW — the claimed Phase 5 precedent was overstated | **STANDS.** Re-checked against `IMPLEMENTATION_EXECUTION_PLAN.md:442`; this review's reading was correct. Documentation only, no action. |
+| 3 | LOW — "315 new tests" not decomposable from the four-row table | **STANDS.** Re-checked; the total was correct. The closure report states its own decomposition explicitly so the same gap is not reintroduced. |
+| 4 | LOW — indeterminate policy in `register.js`, not the Config Service | **ASSESSED AND CONFIRMED COMPLIANT.** The closure examined whether the architecture actually satisfies the frozen requirement rather than deferring again, and agrees with this review: §7.2's "never overridable by anyone, including operators and manual assignment" is incompatible with a config key that could change a class I policy. Additionally proven non-decorative by planting a class I predicate declaring `ADMIT` — the register rejects it and `evaluate.js` refuses to load. Remains an item for formal Safety ratification. |
+| 5 | Informational — no live database | **RESOLVED.** The full migration chain has been applied to a disposable PostgreSQL 18.3 cluster on port 55432, and Phase 6's two tables and five CHECK constraints were exercised against it (17 live checks, all passing). This is how R2 was found. |
+
+## Two defects this review did not find, and why
+
+Both were on the permissive side of a safety boundary, and neither was reachable by the methods this
+review used — which were sound, and are not being criticised here; they are being characterised, so
+the next review knows where to point a different instrument.
+
+**R1 — F34 and `energy/tiers.js` transposed the SLA-class index of `energy.shortfall_probability`.**
+This review checked Part 1 item 8 and Part 8 that F34's binding-tier selection was consistent across
+its own two branches, which it was. The defect was not inside F34 and not inside the producer; it
+was in the *relationship* between two modules that did not yet both exist, and it is invisible under
+the flat tier-keyed map published today. Under a class-keyed map, F34 returned `SATISFIED` against
+the fleet default while the energy model called the plan infeasible — a false positive on a class I
+predicate. Found by running one module through the other under every map shape the configuration
+system permits. Fixed; five regression tests.
+
+**R2 — the aggregation flusher threw for 37 of the 38 predicates.** This review's Part 1 item 13 and
+Part 7 correctly established that `record()` and `retainRow()` are distinct paths called in the
+right order, and that `drain()` cannot double-count. All true. What no static reading could reach is
+that `RejectionAggregate`'s compound unique key contains four dimensions that are NULL in the
+ordinary case, that PostgreSQL's UNIQUE default is `NULLS DISTINCT`, and that the client refuses a
+compound-unique `where` containing a NULL. The flush did not fragment — it *threw*, so §7.7's
+"exact over 100 % of decisions" held for F34 alone. It went unseen because the single flush test
+drove F34, the one predicate of the 38 that always carries a tier, against a mock that accepted any
+argument shape. Both halves of that were needed for it to hide. Fixed by a parameterised
+`ON CONFLICT` upsert against a `NULLS NOT DISTINCT` index; four regression tests; the mock is now
+strict.
+
+## Everything this review verified that closure re-verified and confirmed
+
+The 18/18 checklist, the 38-row register transcription, the volatile subset, the cache tiers, the
+dual-class governance, the sole-caller property for `brandFeasible`, and the determinism scan were
+all independently re-derived at closure and **found correct exactly as this review reported them**.
+Three properties were additionally strengthened from *asserted* to *proven*: the I14 bypass now
+fails a planted violation in `src/engine/cost/` (and passes when it is removed); the register and
+volatile-subset self-checks now catch five planted defects out of five; and the brand is shown to
+survive no copy path — spread, JSON round trip, `Object.assign`, `structuredClone` — and to be
+unforgeable by re-branding.
+
+*End of addendum.*

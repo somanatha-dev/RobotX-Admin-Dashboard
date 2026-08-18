@@ -66,6 +66,19 @@ const DUAL_KIND = Object.freeze({
   EXACT_INTEGER: "EXACT_INTEGER_MARGINAL_PRICE",
   /** Prices of the relaxation. §8.3.1 requires this to be recorded as such. */
   RELAXATION: "LP_RELAXATION_PRICE",
+  /**
+   * Prices from a solve that stopped on §9.4's wall-clock budget. The flow they price is
+   * feasible and ε-optimal rather than optimal, so they are dual-*feasible* at best and are
+   * not marginal prices of anything — the marginal price of a column is the price at which
+   * the chosen column is indifferent, and no column was proven chosen.
+   *
+   * The regime is not the only thing that can void a dual claim, and this is the second
+   * axis: a singleton round is *entitled* to exact integer duals, and a singleton round that
+   * ran out of time did not *earn* them. Publishing them under the regime's label would send
+   * ε-optimal numbers into §8.3.1's λ_zone calibration under a guarantee they do not carry,
+   * which is the failure this module exists to make impossible.
+   */
+  BUDGET_LIMITED: "EPSILON_OPTIMAL_UNPROVEN_PRICE",
 });
 
 /**
@@ -250,18 +263,30 @@ function assertClaim(regime, claim) {
  *
  * @param {string} regime
  * @param {Record<string, bigint>} duals leg id → price in milli-CU
+ * @param {{ proven?: boolean }} [options] `proven: false` when the solve stopped on §9.4's
+ *   wall-clock budget. Absent means proven, which is what every completed solve is and what
+ *   every call site meant before the budget axis was distinguished from the regime axis.
  * @returns {object}
  */
-function dualsFor(regime, duals) {
+function dualsFor(regime, duals, options) {
   const guarantees = guaranteesFor(regime);
+  const proven = !options || options.proven !== false;
+
+  const kind = proven ? guarantees.dualKind : DUAL_KIND.BUDGET_LIMITED;
+  const validity = proven
+    ? guarantees.dualValidity
+    : "the solve stopped on §9.4's wall-clock budget, so the flow these price is ε-optimal rather than optimal. " +
+      "They are not marginal prices of the integer problem and §8.3.1 may not consume them as ones — the round " +
+      "returned its incumbent, which is what §9.4 asks for, and an incumbent has no marginal price.";
+
   return Object.freeze({
-    kind: guarantees.dualKind,
-    validity: guarantees.dualValidity,
+    kind,
+    validity,
     regime,
     // §8.3.1's own condition for feeding duals back into λ_zone calibration. False in
     // the column regime, and the consumer reads this field rather than inferring it
     // from the regime name.
-    validForCalibrationWithoutQualification: guarantees.dualKind === DUAL_KIND.EXACT_INTEGER,
+    validForCalibrationWithoutQualification: kind === DUAL_KIND.EXACT_INTEGER,
     prices: Object.freeze({ ...(duals || {}) }),
   });
 }

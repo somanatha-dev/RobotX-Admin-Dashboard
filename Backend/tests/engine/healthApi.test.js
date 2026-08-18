@@ -177,6 +177,37 @@ describe("GET /api/health/invariants", () => {
     expect(response.body.summary.invariantViolations).toBe(7);
     expect(response.body.summary.violated).toBe(2);
   });
+
+  test("REGRESSION — a suspended invariant's findings do not enter the zero-target SLI", async () => {
+    // The defect: the SLI summed `violationCount` across **every** row. A suspended check keeps
+    // its findings deliberately — `checkOne` retains them because on mode exit they are the
+    // reconciliation input §18.5 requires — so during a Commitment Store outage the register
+    // read "I2 SUSPENDED" and the SLI whose target is exactly zero read one per expired lease.
+    // That is precisely the continuous page §26.1 created the third status to prevent,
+    // reintroduced one aggregation later.
+    mockPrismaClient.invariantStatus.findMany.mockResolvedValue([
+      statusRow("I2", { status: "SUSPENDED", violationCount: 12, authorisingMode: "CUSTODIAL_OPERATION" }),
+      statusRow("I1", { status: "ENFORCED", violationCount: 0 }),
+    ]);
+    mockPrismaClient.degradedModeEvent.findMany.mockResolvedValue([
+      {
+        id: "dme-1", shardId: "shard-a", mode: "CUSTODIAL_OPERATION", cause: "B1",
+        enteringComponent: "test", suspendedInvariants: ["I2"], degradedInvariants: ["I11", "I13"],
+        enteredAt: new Date(NOW - 60000), timeBoxExpiresAt: new Date(NOW + 600000), exitedAt: null,
+      },
+    ]);
+
+    const response = await request(app).get("/api/health/invariants").set("Cookie", [`token=${token()}`]);
+
+    expect(response.body.summary.invariantViolations).toBe(0);
+    expect(response.body.summary.violated).toBe(0);
+    // The findings are still visible — under their own name, where they cannot be mistaken for
+    // violations, because discarding them would lose §18.5's reconciliation input.
+    expect(response.body.summary.suspendedFindings).toBe(12);
+    expect(response.body.summary.suspended).toBe(1);
+    const i2 = response.body.invariants.find((row) => row.invariantId === "I2");
+    expect(i2).toMatchObject({ status: "SUSPENDED", authorisingMode: "CUSTODIAL_OPERATION", matchesMatrix: true });
+  });
 });
 
 describe("GET /api/health/modes", () => {

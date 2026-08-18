@@ -301,15 +301,39 @@ async function fit(deps, input) {
 /**
  * Load one version into the map `plan/timeline.serviceTimeFor()` reads.
  *
+ * ── Why the read is ordered, and why a collision is refused ─────────────────
+ * §9.6 requirement 6 pins the model version so a decision replays against the same dwell
+ * distributions it was taken against. That pin only delivers replay if one version maps
+ * to one distribution per cohort. As shipped, this function read the version with no
+ * `ORDER BY` and assigned `models[key]` as rows arrived, so two rows claiming one cohort
+ * key left whichever the database listed last — and the unique index could not prevent
+ * that pair, because four of its five columns are NULL for exactly the broad cohorts
+ * §13.2's ladder falls back to and PostgreSQL's UNIQUE default is NULLS DISTINCT.
+ *
+ * Migration `20260818090000_service_time_model_nulls_not_distinct` closes that at the
+ * storage layer. This is the second, independent half: the read is ordered so it is
+ * reproducible against *any* database state, and a cohort claimed twice is **refused**
+ * rather than resolved by arrival order. A pinned version that cannot name one
+ * distribution per cohort is not a version a decision can be replayed against, and
+ * silently picking one of two is precisely the failure the pin exists to exclude.
+ *
  * @param {object} deps `{ prisma }`
  * @param {number} version
- * @returns {Promise<Record<string, object>>}
+ * @returns {Promise<Record<string, object>>} keyed by `timeline.cohortKey()`
+ * @throws {Error} when one cohort key is claimed by more than one row
  */
 async function loadVersion(deps, version) {
   const prisma = (deps && deps.prisma) || getPrisma();
-  const rows = await prisma.serviceTimeModel.findMany({ where: { version } });
+  const rows = await prisma.serviceTimeModel.findMany({
+    where: { version },
+    // Total and deterministic: `id` is unique, so the order does not depend on the plan
+    // the database happened to choose.
+    orderBy: [{ sampleCount: "desc" }, { fittedAt: "desc" }, { id: "asc" }],
+  });
 
   const models = Object.create(null);
+  const claimedBy = new Map();
+
   for (const row of rows) {
     for (const level of timeline.COHORT_LEVELS) {
       const key = timeline.cohortKey(level, row);
@@ -320,9 +344,21 @@ async function loadVersion(deps, version) {
       const noExtras = ["siteId", "stopType", "missionClass", "hourOfWeek"]
         .filter((field) => !level.includes(field))
         .every((field) => row[field] === null || row[field] === undefined);
-      if (matches && noExtras) {
-        models[key] = { n: row.sampleCount, meanSeconds: row.meanSeconds, sdSeconds: row.sdSeconds };
+      if (!matches || !noExtras) continue;
+
+      const incumbent = claimedBy.get(key);
+      if (incumbent !== undefined) {
+        throw new Error(
+          `ServiceTimeModel version ${version} holds two rows for cohort "${key}" (${incumbent} and ` +
+            `${row.id}). §9.6 requirement 6 pins the model version so a decision replays against the ` +
+            "dwell distributions it was priced with; a version that cannot name one distribution per " +
+            "cohort cannot deliver that, and choosing between them here would make the choice depend on " +
+            "read order. Apply migration 20260818090000_service_time_model_nulls_not_distinct, which " +
+            "reduces such groups and redeclares the key NULLS NOT DISTINCT so the pair cannot recur.",
+        );
       }
+      claimedBy.set(key, row.id);
+      models[key] = { n: row.sampleCount, meanSeconds: row.meanSeconds, sdSeconds: row.sdSeconds };
     }
   }
 

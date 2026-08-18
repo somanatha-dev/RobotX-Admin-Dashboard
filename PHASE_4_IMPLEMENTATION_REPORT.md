@@ -1,6 +1,29 @@
+> ## ⚠️ Two claims in this report were overstated — read this first
+>
+> This report is preserved unedited as the historical record. **Phase 4 is now CLOSED** — see
+> [`PHASE_4_REMEDIATION_AND_CLOSURE.md`](PHASE_4_REMEDIATION_AND_CLOSURE.md) (2026-08-17) — but two
+> of its claims were not true when written, and a reader should not take them at face value:
+>
+> 1. **"Escalation ladder steps 1–4 operational"** drew a distinction between steps 1–2 ("acted on")
+>    and steps 3–4 ("assessed, with their owning phase named"). At the time of writing, step 2's
+>    substantive action — the fence advance, commitment release, Leg requeue and `WITHDRAW` dispatch
+>    — had **no production caller at all**. It does now (`outbox.worker.js:296`), and is verified
+>    end-to-end against live PostgreSQL, but the claim preceded the wiring.
+> 2. **"not one command was applied twice … Invariant I21"** held only for the sequential scenarios
+>    the shipped suite constructed. Under two genuinely overlapping in-flight commands the agent's
+>    persist-failure revert restored a stale snapshot and a command could be applied **twice**.
+>    Fixed in `cf9103f`; reproduced, and the fix proven load-bearing, on 2026-08-17.
+>
+> Both were found by `PHASE_4_INDEPENDENT_VERIFICATION.md`, which is why that review exists. A third
+> claim — that `escalation.backoffSeconds` implements §11.3's "bounded exponential backoff with
+> jitter" — was true of the *function* but not of the *system*: nothing consulted it until
+> 2026-08-17. The §11.3 retry cadence is now enforced rather than reported.
+
+---
+
 # Phase 4 — Dispatch and the agent protocol · Implementation Report
 
-**Phase:** 4 of 16 · **Status:** ✅ **COMPLETE — awaiting independent verification before Phase 5**
+**Phase:** 4 of 16 · **Status:** ✅ **CLOSED** (2026-08-17) — originally written as "COMPLETE — awaiting independent verification before Phase 5"
 **Date:** 2026-07-30 · **Branch:** `feature/dashboard` · **Working tree at implementation:** `4244b3d` + uncommitted Phases 1–4
 **Authority:** `IMPLEMENTATION_EXECUTION_PLAN.md` §3 "PHASE 4" and §7 "Phase 4" checklist
 **Specification:** `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` (FROZEN) — §2.5, §2.6, §4.1, §10.3.1, §10.5, §10.6, §11, §18.5, §23.3, §24.5, §26

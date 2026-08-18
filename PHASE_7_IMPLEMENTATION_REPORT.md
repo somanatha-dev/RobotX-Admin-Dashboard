@@ -514,3 +514,23 @@ npm run test:legacy  # 22 suites, 169 tests
 ---
 
 *End of Phase 7 Implementation Report.*
+
+---
+
+## CLOSURE ADDENDUM — appended 2026-08-18
+
+**Nothing above has been removed, edited, or rewritten.** This note exists so that a reader arriving
+at this report is not left acting on its open items.
+
+Phase 7 was formally closed on **2026-08-18**. The authoritative closure record is
+[`PHASE_7_REMEDIATION_AND_CLOSURE.md`](PHASE_7_REMEDIATION_AND_CLOSURE.md).
+
+| Item recorded above | Disposition at closure |
+|---|---|
+| §14.1 — V9 blocks on combined degraded conservatism 2.0125 vs cap 1.6 | **DEFERRED / governed Safety decision** (blocking decision B8). The closure additionally establishes that the four factors are Appendix A's *own defaults*, so the inconsistency is in the specification's default table rather than in any implementation phase; and that the report's option (b) is arithmetically ineffective. Unresolved, and it blocks publication — the conservative direction. |
+| §14.6, §15.2 — the migration has not been applied to a live database | **RESOLVED.** Applied to a disposable PostgreSQL 18.3 cluster carrying the complete real migration chain; 82 live checks passed, including all five hand-written CHECK constraints made to fire. |
+| §15.1 — `PHASE_0_INDEPENDENT_VERIFICATION.md` does not exist | **Documentation gap only.** The execution plan does not require one for Phase 0. Phase 0's actual completion criterion — both gates fail on planted violations — was evidenced live at closure. |
+| Everything else | Phase 7's 15 modules are unchanged since this report was written and are committed at `cbe540e`. |
+
+One defect **not** recorded above was found at closure, in `f26.js` (a Phase 6 file, on the seam this
+report's producers feed): see the closure record §4.

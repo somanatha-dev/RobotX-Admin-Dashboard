@@ -2461,6 +2461,20 @@ model RejectionAggregate {
 
   /// One row per dimension tuple per bucket. The flusher upserts on this key, which is
   /// what makes a re-run of a flush idempotent rather than double-counting.
+  ///
+  /// **This index is `NULLS NOT DISTINCT` in the database, which Prisma cannot express.**
+  /// Migration `20260817120000_rejection_aggregate_nulls_not_distinct` redeclares it, for
+  /// the reason recorded there: four of these seven dimensions are NULL in the ordinary
+  /// case — only F34 carries a `tier` — and under PostgreSQL's `NULLS DISTINCT` default
+  /// two rows that both say "no zone, no tier" do not collide, so the key could not
+  /// address the rows that need it most. In this table an absent dimension is a
+  /// determinate fact about the rejection, not missing information.
+  ///
+  /// Consequence for anyone regenerating: `prisma migrate dev` and `migrate diff` will
+  /// report drift here and propose recreating the index **without** the clause, exactly
+  /// as they do for this model's two hand-written CHECK constraints, which also live only
+  /// in the migration. Do not accept that proposal — it silently reintroduces the defect
+  /// (`tools/verify/phase6NullTierProbe.js` catches it against a live database).
   @@unique([shardId, zoneId, missionClass, legPurpose, predicateId, tier, bucketStart])
   @@index([predicateId, bucketStart])
   @@index([zoneId, bucketStart])
@@ -2822,6 +2836,24 @@ model ServiceTimeModel {
 
   fittedAt DateTime @default(now())
 
+  /// One row per cohort per fitted version, and §13.2's hierarchy *is* the NULL pattern:
+  /// a row with `hourOfWeek IS NULL` is the cohort marginalised over the hour, and a row
+  /// with every discriminator NULL is the global cohort the ladder falls back to.
+  ///
+  /// **This index is `NULLS NOT DISTINCT` in the database, which Prisma cannot express.**
+  /// Migration `20260818090000_service_time_model_nulls_not_distinct` redeclares it, for
+  /// the reason recorded there: under PostgreSQL's `NULLS DISTINCT` default two rows that
+  /// both say "every discriminator absent" do not collide, so the key did not bind the
+  /// rows the ladder depends on most, and `loadVersion()` — which reads a pinned version
+  /// with no ORDER BY — would then return whichever duplicate the database listed last.
+  /// That makes a *pinned* model version produce different dwell times on two loads,
+  /// which §9.6 requirement 6 pins the version precisely to prevent.
+  ///
+  /// Consequence for anyone regenerating: `prisma migrate dev` and `migrate diff` will
+  /// report drift here and propose recreating the index **without** the clause, exactly as
+  /// they do for this model's hand-written CHECK constraint, which also lives only in the
+  /// migration. Do not accept that proposal — it silently reintroduces the defect
+  /// (`tools/verify/phase8LiveDatabase.js` catches it against a live database).
   @@unique([version, siteId, stopType, missionClass, hourOfWeek])
   @@index([version])
   @@index([siteId, stopType])

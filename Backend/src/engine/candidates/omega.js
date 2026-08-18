@@ -168,7 +168,22 @@ function omegaTerminalMilliCU(input) {
  * @param {object} input.snapshot
  * @param {object} [input.context]
  * @param {number} [input.omegaTerminalCu]
- * @returns {{ ok: boolean, correctionMilliCU: bigint|null, policy: object, terminal: object, problems: string[] }}
+ * @returns {{ ok: boolean, milliCU: bigint|null, correctionMilliCU: bigint|null,
+ *   breakdown: object|null, policy: object, terminal: object, problems: string[] }}
+ *
+ * ── Why `milliCU` is the field name, and `correctionMilliCU` only its alias ──
+ * `lowerBound()` and `expansion.unexploredRingFloorMilliCU()` both read
+ * `correction.milliCU` and reject anything else — that is the contract
+ * `lowerBound()`'s own `@param` already states ("`{ milliCU: bigint, breakdown?: object }`
+ * ... from `candidates/omega.combinedCorrection()`"). This function used to return
+ * the quantity under `correctionMilliCU` alone, so every real composition of the
+ * two — the only one that existed, `diagnostics.controller.getLegCandidates` —
+ * handed `lowerBound()` an object whose `.milliCU` was `undefined`, and the bound
+ * failed to resolve on every agent, every request. No test caught it because every
+ * fixture built the `{ milliCU }` object by hand instead of calling this function
+ * (`tests/engine/helpers/candidateFixture.zeroCorrection`). The producer now
+ * satisfies the consumer's contract directly; `correctionMilliCU` is retained so
+ * nothing reading the old name breaks.
  */
 function combinedCorrection(input) {
   const source = input || {};
@@ -177,12 +192,24 @@ function combinedCorrection(input) {
 
   const problems = [...policy.problems, ...terminal.problems];
   if (!policy.ok || !terminal.ok) {
-    return { ok: false, correctionMilliCU: null, policy, terminal, problems };
+    // `milliCU: null` keeps the failure fail-closed at the consumer too: a
+    // non-bigint is exactly what `lowerBound()`/`unexploredRingFloorMilliCU()`
+    // refuse, so an unresolved Ω can never be silently read as "no correction".
+    return { ok: false, milliCU: null, correctionMilliCU: null, breakdown: null, policy, terminal, problems };
   }
 
+  const milliCU = assertInt64(policy.milliCU + terminal.milliCU, "combinedCorrection");
   return {
     ok: true,
-    correctionMilliCU: assertInt64(policy.milliCU + terminal.milliCU, "combinedCorrection"),
+    milliCU,
+    correctionMilliCU: milliCU,
+    breakdown: Object.freeze({
+      omegaPolicyMilliCU: policy.milliCU,
+      omegaPolicyCu: policy.cu,
+      omegaTerminalMilliCU: terminal.milliCU,
+      omegaTerminalCu: terminal.cu,
+      opportunityTermActive: terminal.active,
+    }),
     policy,
     terminal,
     problems: [],

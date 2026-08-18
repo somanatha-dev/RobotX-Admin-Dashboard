@@ -55,16 +55,17 @@ const rejectionTelemetry = require("./src/engine/feasibility/rejectionTelemetry"
  * leadership lifecycle. Starting them at boot would be the single most dangerous line in
  * this file, so their absence is stated rather than left to be noticed.
  *
- * @param {{ prisma: object, kv: object, config: object, logger: object }} context
+ * @param {{ prisma: object, kv: object, config: object, logger: object, io?: object }} context
  * @returns {{ handles: object[], running: string[] }}
  */
 function startScheduledWorkers(context) {
-  const { prisma, kv, config, logger: log } = context;
+  const { prisma, kv, config, logger: log, io } = context;
   const values = config && config.values;
   const seconds = (name) => {
     const value = values && typeof values.get === "function" ? values.get(name) : undefined;
     return Number.isFinite(value) ? value : undefined;
   };
+  const parameter = (name) => (values && typeof values.get === "function" ? values.get(name) : undefined);
 
   const registry = sli.createRegistry();
   const budget = sampling.createBudget({
@@ -82,11 +83,58 @@ function startScheduledWorkers(context) {
     running.push(id);
   };
 
+  // ── PHASE 12 — the invariant checker, its mode sweep, and §18.6's chain ─────
+  //
+  // Three dependencies this call used to omit, each of which silently disabled a Phase 12
+  // deliverable rather than failing:
+  //
+  //   · `kv` — without it `transitions.publishAdvisory()` returns "no advisory cache
+  //     configured" and `engine:mode:{shard}`, the one Redis key §18.5's plan row reserves,
+  //     is never written. The durable `DegradedModeEvent` stream remains the authority
+  //     either way (§3.3); what was lost is the mirror every reader polls instead of it.
+  //   · `emit` — the worker builds `INVARIANT_STATUS_CHANGED` and `STRANDING_ESCALATED`
+  //     payloads and returns them. Nothing called `socketMessages()`, so both events had a
+  //     producer and no wire. The worker still takes no Socket.IO dependency: this is a
+  //     function, and the room is chosen here.
+  //   · the check context — `invariant.monotonicity_window`, §17.4's ladder budget and the
+  //     energy tier budgets. Two checks (I4, I13) reported `VIOLATED` on a healthy fleet
+  //     without them and four audited shadow decisions as production; the worker now derives
+  //     what it can and reports the rest as *unverified* rather than clean, so an omission
+  //     here shows up as an incomplete register instead of a false page.
   started(
     "invariant",
     invariantWorker.start(
-      { prisma, onError: onError("invariant") },
-      { shardId: process.env.SHARD_ID || "default", checkIntervalSeconds: seconds("invariant.check_interval") },
+      {
+        prisma,
+        kv,
+        emit: async (message) => {
+          if (!io) return;
+          try {
+            io.to("dashboard").emit(message.event, message.payload);
+          } catch (error) {
+            // An emit that fails costs visibility, never correctness — the durable
+            // `InvariantStatus` and `ExternalEscalation` rows are the authority and the two
+            // REST surfaces read them. It must not take the checker's tick down.
+            log.warn("Invariant worker socket emit failed", { event: message.event, message: error && error.message });
+          }
+        },
+        onError: onError("invariant"),
+      },
+      {
+        shardId: process.env.SHARD_ID || "default",
+        checkIntervalSeconds: seconds("invariant.check_interval"),
+        windowMs: seconds("invariant.monotonicity_window") ? seconds("invariant.monotonicity_window") * 1000 : undefined,
+        // §17.4's ladder is invoked at `sla.assignment_deadline` ("how long work may remain
+        // unassigned before the §17.4 anti-starvation ladder is invoked"), so an entry older
+        // than it that no round has ever considered is not on the ladder — which is exactly
+        // I13's failure case. The ladder's own step budgets are §17.4's phase, not this one's.
+        ladderBudgetSeconds: seconds("sla.assignment_deadline"),
+        tierEventBudgets: parameter("energy.event_budget_per_fleet_year"),
+        maxAgeSeconds: seconds("map.obstruction_class_max_age"),
+        escalationContacts: parameter("ops.external_escalation_contacts"),
+        contactReviewPeriodSeconds: seconds("ops.escalation_contact_review_period"),
+        emergencyServicesThreshold: parameter("ops.emergency_services_hazard_threshold"),
+      },
     ),
   );
 
@@ -361,7 +409,7 @@ async function start() {
     // PHASE 15 — the rest of the registry's `SCHEDULED` set. Started after the supervisor
     // and inside the same gate: a process that is not participating in the engine has
     // nothing for an invariant checker to check or a reservoir to drain.
-    engineWorkers = startScheduledWorkers({ prisma, kv, config: app.locals.config, logger });
+    engineWorkers = startScheduledWorkers({ prisma, kv, config: app.locals.config, logger, io });
   } else {
     logger.info(
       "Engine workers not started: ENGINE_ENABLED is not true for this process. " +

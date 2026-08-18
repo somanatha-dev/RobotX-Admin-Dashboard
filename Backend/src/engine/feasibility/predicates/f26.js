@@ -21,9 +21,20 @@
  *      incompatibility declarations are not symmetric in practice — an oxidiser's
  *      manifest lists flammables far more reliably than the reverse.
  *   2. **Security.** A security-classified item requires a compartment with a lock
- *      class. Where the item names a *specific* required lock class, the compartment
- *      must carry that class; naming one and accepting any would make the declaration
- *      decorative.
+ *      class, and the lock class must be *compatible* with the item's security class —
+ *      §15.3 tier 1 requires "thermal, hazard, and security classes have a compatible
+ *      compartment", and §15.1/§15.2 give the item a **security class** and the
+ *      compartment a **lock class** as the two sides of that relation. Naming a class
+ *      and then accepting any would make the declaration decorative.
+ *
+ *      The relation is transcribed here **independently** of
+ *      `payload/container.satisfiesSecurityClass()`, which enforces the same rule at
+ *      placement time. A predicate must not take its rule from the module whose output
+ *      it checks (the reason F35 re-transcribes `BASIS` rather than importing it), so
+ *      the two are kept as two transcriptions and a test asserts they agree. What makes
+ *      that safe is the direction: the set of loads F26 admits is a **subset** of the
+ *      set the container model admits, so "F26 admits ⟹ the container model agrees"
+ *      holds structurally rather than by coincidence.
  *
  * ── Undeclared is not "none" ────────────────────────────────────────────────
  * An item whose hazard classes are absent is `INDETERMINATE`, not hazard-free. Class R
@@ -145,16 +156,16 @@ function evaluate(context) {
         });
       }
 
-      const requiredLockClass = item.requiredLockClass === undefined ? null : item.requiredLockClass;
-      if (requiredLockClass !== null && requiredLockClass !== lockClass) {
+      if (lockClass !== securityClass) {
         return tv.violated({
           observed: { compartmentId, itemId: item.itemId === undefined ? null : item.itemId, lockClass },
-          required: { securityClass, lockClass: requiredLockClass },
+          required: { securityClass, lockClass: securityClass },
           inputSource: "CONTROL_PLANE",
           reason:
-            `item "${String(item.itemId)}" requires lock class "${requiredLockClass}" and its ` +
-            `compartment carries "${lockClass}". Naming a specific class and accepting any would ` +
-            "make the declaration decorative (§7.5 F26)",
+            `item "${String(item.itemId)}" is security-classified "${securityClass}" and its ` +
+            `compartment carries lock class "${lockClass}". A security class requires a *compatible* ` +
+            "compartment (§15.3 tier 1), not merely a locked one; naming a class and accepting any " +
+            "would make the declaration decorative (§7.5 F26)",
         });
       }
     }

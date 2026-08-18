@@ -106,16 +106,44 @@ function memoryPrisma() {
   const snapshots = [];
   const calibrationObservations = [];
   const auditEvents = [];
+  // PHASE 12 — §18.5's mode events, §26's status rows, §18.6's chain, and the Legs the
+  // stranding SLIs group over.
+  const degradedModeEvents = [];
+  const invariantStatuses = [];
+  const externalEscalations = [];
+  const legRows = [];
   let sequence = 0;
 
-  const matches = (row, where) => {
+  /**
+   * `to-one` relations this double can resolve, as `table.field → resolver`.
+   *
+   * `DecisionRecordB` has no `shadowLabel` column of its own — §21.6's marker lives on
+   * the `DecisionRecordA` it points at — so the production filter on a Tier B query is
+   * necessarily a *relation* condition (`decision: { shadowLabel: null }`). A double that
+   * could not resolve one would silently treat that filter as a plain column comparison
+   * against `undefined` and match nothing, which would let a broken query and a correct
+   * one produce the same answer here. That is the failure this fixture exists to refuse.
+   */
+  const RELATIONS = {
+    tierBRecords: {
+      decision: (row) => decisionRecords.find((entry) => entry.decisionId === row.decisionId) || null,
+    },
+  };
+
+  const matches = (row, where, relations) => {
     for (const [key, condition] of Object.entries(where || {})) {
       if (key === "OR") {
-        if (!condition.some((clause) => matches(row, clause))) return false;
+        if (!condition.some((clause) => matches(row, clause, relations))) return false;
         continue;
       }
       if (key === "NOT") {
-        if (matches(row, condition)) return false;
+        if (matches(row, condition, relations)) return false;
+        continue;
+      }
+      if (relations && Object.prototype.hasOwnProperty.call(relations, key)) {
+        const related = relations[key](row);
+        // Prisma's to-one relation filter does not match when the relation is absent.
+        if (related === null || !matches(related, condition)) return false;
         continue;
       }
       const value = row[key];
@@ -145,7 +173,10 @@ function memoryPrisma() {
   };
 
   return {
-    __tables: { workQueue, rounds, decisionRecords, tierBRecords, snapshots, calibrationObservations, auditEvents },
+    __tables: {
+      workQueue, rounds, decisionRecords, tierBRecords, snapshots, calibrationObservations, auditEvents,
+      degradedModeEvents, invariantStatuses, externalEscalations, legRows,
+    },
     workQueue: {
       // Every read returns a COPY, exactly as a real Prisma client does. A double that
       // handed back live references would let a caller mutate the store by accident and,
@@ -258,17 +289,17 @@ function memoryPrisma() {
         return { ...data };
       },
       async findMany({ where } = {}) {
-        return tierBRecords.filter((row) => matches(row, where)).map((row) => ({ ...row }));
+        return tierBRecords.filter((row) => matches(row, where, RELATIONS.tierBRecords)).map((row) => ({ ...row }));
       },
       async deleteMany({ where } = {}) {
-        const keep = tierBRecords.filter((row) => !matches(row, where));
+        const keep = tierBRecords.filter((row) => !matches(row, where, RELATIONS.tierBRecords));
         const removed = tierBRecords.length - keep.length;
         tierBRecords.length = 0;
         tierBRecords.push(...keep);
         return { count: removed };
       },
       async groupBy({ by, where }) {
-        const rows = tierBRecords.filter((row) => matches(row, where));
+        const rows = tierBRecords.filter((row) => matches(row, where, RELATIONS.tierBRecords));
         const groups = new Map();
         for (const row of rows) {
           const key = by.map((field) => row[field]).join("|");
@@ -336,6 +367,63 @@ function memoryPrisma() {
     reconcilerRepair: {
       async groupBy() {
         return [];
+      },
+    },
+    // PHASE 12 — the three tables §18.5's mode SLI, §26.1's violation SLI and §4.3's
+    // stranding SLIs are derived from. Backed by real arrays rather than by `return []` stubs:
+    // a metric derived from a table the double cannot represent fails as "the derivation query
+    // failed", which reads identically to a metric nobody wired — the exact confusion the
+    // producer-landed classification exists to prevent.
+    degradedModeEvent: {
+      async create({ data }) {
+        degradedModeEvents.push({ ...data });
+        return { ...data };
+      },
+      async findMany({ where, orderBy, take } = {}) {
+        const rows = sortRows(degradedModeEvents.filter((row) => matches(row, where)), orderBy).map((row) => ({ ...row }));
+        return take === undefined ? rows : rows.slice(0, take);
+      },
+    },
+    invariantStatus: {
+      async upsert({ where, create, update }) {
+        const key = where.invariantId_shardId_subjectId || where;
+        const row = invariantStatuses.find((entry) => matches(entry, key));
+        if (row) {
+          Object.assign(row, update);
+          return { ...row };
+        }
+        const created = { ...key, ...create };
+        invariantStatuses.push(created);
+        return { ...created };
+      },
+      async findMany({ where } = {}) {
+        return invariantStatuses.filter((row) => matches(row, where)).map((row) => ({ ...row }));
+      },
+    },
+    externalEscalation: {
+      async create({ data }) {
+        externalEscalations.push({ ...data });
+        return { ...data };
+      },
+      async findMany({ where, orderBy } = {}) {
+        return sortRows(externalEscalations.filter((row) => matches(row, where)), orderBy).map((row) => ({ ...row }));
+      },
+    },
+    leg: {
+      async groupBy({ by, where }) {
+        const groups = new Map();
+        for (const row of legRows.filter((entry) => matches(entry, where))) {
+          const key = by.map((field) => row[field]).join("|");
+          if (!groups.has(key)) groups.set(key, { row, count: 0 });
+          groups.get(key).count += 1;
+        }
+        return [...groups.values()].map(({ row, count }) => ({
+          ...Object.fromEntries(by.map((field) => [field, row[field]])),
+          _count: { _all: count },
+        }));
+      },
+      async findMany({ where } = {}) {
+        return legRows.filter((row) => matches(row, where)).map((row) => ({ ...row }));
       },
     },
     rejectionAggregate: {

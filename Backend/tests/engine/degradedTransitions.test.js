@@ -79,6 +79,74 @@ describe("mode entry and exit against the store", () => {
     expect(await transitions.activeModes({ prisma }, SHARD)).toEqual([modeRegister.MODE.COLD_INDEX]);
   });
 
+  test("REGRESSION — a concurrent entry resolves to alreadyOpen rather than throwing", async () => {
+    // `enter()` reads, then creates. Two detectors observing one Commitment Store outage at the
+    // same instant both find no open row and both insert; the partial unique index
+    // `DegradedModeEvent_one_open_per_shard_mode` refuses the second, and before this fix that
+    // refusal propagated as a P2002 exception to the *detector* — the component least able to
+    // afford one. It would log an error and move on, having neither entered the mode nor
+    // learned that the mode was open, which is a shard that believes it may still command
+    // while another process has entered Custodial Operation.
+    //
+    // Simulated here by a store whose `create` raises the constraint the database raises; the
+    // same property is exercised against a real Postgres cluster with two genuinely concurrent
+    // transactions in `tools/verify/phase12LiveDatabase.js`.
+    const prisma = memoryStore();
+    const first = await transitions.enter({ prisma }, entry(modeRegister.MODE.CUSTODIAL_OPERATION));
+    expect(first.entered).toBe(true);
+
+    const racing = {
+      ...prisma,
+      degradedModeEvent: {
+        ...prisma.degradedModeEvent,
+        // The loser's view of the world: its own read saw nothing.
+        findFirst: async (...args) => {
+          if (racing.__readCount === undefined) racing.__readCount = 0;
+          racing.__readCount += 1;
+          // First call is `enter`'s pre-check (raced: sees nothing); the second is the
+          // post-violation re-read, which must see the winner's row.
+          return racing.__readCount === 1 ? null : prisma.degradedModeEvent.findFirst(...args);
+        },
+        create: async () => {
+          const error = new Error(
+            'Unique constraint failed on the fields: ("shardId","mode")',
+          );
+          error.code = "P2002";
+          throw error;
+        },
+      },
+    };
+
+    const loser = await transitions.enter({ prisma: racing }, entry(modeRegister.MODE.CUSTODIAL_OPERATION, { atMs: NOW + 1 }));
+    expect(loser.entered).toBe(false);
+    expect(loser.alreadyOpen).toBe(true);
+    expect(loser.racedWith).toBe("a concurrent entry");
+    expect(loser.row.id).toBe(first.row.id);
+
+    // Exactly one open row, so the time-in-mode SLI is not double-counted.
+    expect(await transitions.activeModes({ prisma }, SHARD)).toEqual([modeRegister.MODE.CUSTODIAL_OPERATION]);
+  });
+
+  test("a create failure that is not a unique violation still reaches the caller", async () => {
+    // The swallow is narrow on purpose: a store that is down must not look like a mode that is
+    // already open, or the detector would report success for a mode nobody recorded.
+    const prisma = memoryStore();
+    const broken = {
+      ...prisma,
+      degradedModeEvent: {
+        ...prisma.degradedModeEvent,
+        findFirst: async () => null,
+        create: async () => {
+          const error = new Error("the Commitment Store is unavailable");
+          error.code = "P1001";
+          throw error;
+        },
+      },
+    };
+
+    await expect(transitions.enter({ prisma: broken }, entry(modeRegister.MODE.COLD_INDEX))).rejects.toThrow(/unavailable/);
+  });
+
   test("several modes can be open at once, and the advisory payload unions their suspensions", async () => {
     const prisma = memoryStore();
     await transitions.enter({ prisma }, entry(modeRegister.MODE.CUSTODIAL_OPERATION));

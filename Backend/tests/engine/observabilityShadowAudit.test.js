@@ -177,6 +177,31 @@ describe("§21.6 — shadow records are invisible to every production read", () 
     }
   });
 
+  test("no Phase 11 SLI queries decisionRecordB without the production filter EITHER", () => {
+    // `PHASE_11_INDEPENDENT_VERIFICATION.md` Finding 2. The scan above covered
+    // `decisionRecordA` only, so the one query in this phase that reads the *sibling*
+    // table was invisible to the test written to catch exactly this class of mistake.
+    //
+    // `DecisionRecordB` carries no `shadowLabel`: §21.6's marker is on the
+    // `DecisionRecordA` it points at, so the guard here must be a RELATION condition.
+    // A scan that accepted a bare `shadowLabel` mention would accept a filter that can
+    // never match a column of this table.
+    const metricsSource = fs.readFileSync(path.join(BACKEND_ROOT, "src/engine/observability/metrics.js"), "utf8");
+    const code = metricsSource.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    const queries = [...code.matchAll(/decisionRecordB\.(findFirst|findMany|findUnique|count|groupBy)\(([\s\S]*?)\n\s{0,6}\}\)/g)];
+
+    // The scan is worthless if it matches nothing; the leak was one query, and a regex
+    // that silently found zero would report green for having looked at nothing.
+    expect(queries.length).toBeGreaterThan(0);
+
+    for (const [statement] of queries) {
+      expect({ statement: statement.slice(0, 90), guarded: /decision:\s*\{[^}]*PRODUCTION_ONLY/.test(statement) }).toEqual({
+        statement: statement.slice(0, 90),
+        guarded: true,
+      });
+    }
+  });
+
   test("replayDecision refuses a shadow record outright", async () => {
     const replay = require("../../tools/replay/replayDecision");
     const prisma = fixture.memoryPrisma();
@@ -263,7 +288,13 @@ describe("§21.7 — the hash-chained audit stream", () => {
     expect(verdict.gaps).toEqual([{ expected: "1", found: "2" }]);
   });
 
-  test("truncating the tail is caught too", async () => {
+  test("truncating the tail is NOT caught by the chain alone — the limit, stated rather than implied away", async () => {
+    // This test used to be called "truncating the tail is caught too" while asserting
+    // `ok: true`, which is the opposite of what the name says. Deleting the tail leaves
+    // every remaining link intact and the sequence still dense, so a truncated chain is
+    // indistinguishable from one that was never longer. The module header claimed the
+    // dense sequence covered removals; it covers a hole, not a truncation, and
+    // `tools/verify/phase11LiveDatabase.js` found the difference by deleting real rows.
     const prisma = fixture.memoryPrisma();
     for (let index = 0; index < 4; index += 1) {
       // eslint-disable-next-line no-await-in-loop
@@ -273,11 +304,90 @@ describe("§21.7 — the hash-chained audit stream", () => {
     prisma.__tables.auditEvents.pop();
     const truncated = await auditStream.verifyStream({ prisma }, "shard-a");
 
-    // The chain still verifies as a chain — deleting the tail leaves every remaining
-    // link intact — so the detection is that the last sequence moved backwards, which is
-    // what the persisted high-water discipline is for.
     expect(truncated.ok).toBe(true);
+    expect(truncated.tailIsAnchored).toBe(false);
     expect(Number(truncated.lastSequence)).toBeLessThan(Number(full.lastSequence));
+  });
+
+  test("the SAME truncation is caught against a high-water mark, and is named a truncation, not a gap", async () => {
+    const prisma = fixture.memoryPrisma();
+    let anchor = null;
+    for (let index = 0; index < 4; index += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      const appended = await auditStream.append({ prisma }, event({ recordedAtMs: 1000 + index }));
+      anchor = appended.event.sequence;
+    }
+    prisma.__tables.auditEvents.pop();
+
+    const verdict = await auditStream.verifyStream({ prisma }, "shard-a", { expectedLastSequence: anchor });
+
+    expect(verdict.ok).toBe(false);
+    expect(verdict.tailIsAnchored).toBe(true);
+    // A gap is a hole to investigate; a truncation is evidence the tail was removed and
+    // that everything after the anchor is unaccounted for. Different remedies, so they
+    // are reported apart.
+    expect(verdict.gaps).toEqual([]);
+    expect(verdict.brokenLinks).toEqual([]);
+    expect(verdict.truncations).toEqual([
+      expect.objectContaining({ end: "TAIL", expected: "3", found: "2" }),
+    ]);
+  });
+
+  test("deleting the tail and appending a replacement REUSES the ordinal and verifies clean without an anchor", async () => {
+    // The sharpest form of the limit, and the reason the anchor is not optional for a
+    // non-repudiation claim: `append()` reads the tail and takes the next number, so a
+    // removed last event's ordinal is handed to its replacement. The result is a chain
+    // that is dense, correctly linked, and missing an event nobody can see is missing.
+    const prisma = fixture.memoryPrisma();
+    for (let index = 0; index < 3; index += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await auditStream.append({ prisma }, event({ recordedAtMs: 1000 + index, reason: `original-${index}` }));
+    }
+    const anchor = 2n;
+
+    prisma.__tables.auditEvents.pop();
+    const replacement = await auditStream.append({ prisma }, event({ recordedAtMs: 9999, reason: "replacement" }));
+
+    expect(String(replacement.event.sequence)).toBe("2");
+    expect((await auditStream.verifyStream({ prisma }, "shard-a")).ok).toBe(true);
+
+    // The anchor cannot catch this one either — the ordinal is back — which is exactly
+    // why the record of what was replaced has to live outside the stream. What the
+    // anchor DOES catch is the window in which the tail is short.
+    const anchored = await auditStream.verifyStream({ prisma }, "shard-a", { expectedLastSequence: anchor });
+    expect(anchored.ok).toBe(true);
+    expect(prisma.__tables.auditEvents.map((row) => row.reason)).toContain("replacement");
+    expect(prisma.__tables.auditEvents.map((row) => row.reason)).not.toContain("original-2");
+  });
+
+  test("a HEAD removal is named as such on a whole-stream read, without the caller asking", async () => {
+    const prisma = fixture.memoryPrisma();
+    for (let index = 0; index < 3; index += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await auditStream.append({ prisma }, event({ recordedAtMs: 1000 + index }));
+    }
+    prisma.__tables.auditEvents.shift();
+
+    const verdict = await auditStream.verifyStream({ prisma }, "shard-a");
+
+    expect(verdict.ok).toBe(false);
+    expect(verdict.truncations).toEqual([expect.objectContaining({ end: "HEAD", expected: "0", found: "1" })]);
+    // And the link check catches it independently, which is the second of the two
+    // properties the header claims.
+    expect(verdict.brokenLinks.length).toBeGreaterThan(0);
+  });
+
+  test("a WINDOWED read is exempt from the starts-at-zero check — a window is not a whole stream", async () => {
+    const prisma = fixture.memoryPrisma();
+    for (let index = 0; index < 4; index += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await auditStream.append({ prisma }, event({ recordedAtMs: 1000 + index }));
+    }
+
+    const windowed = await auditStream.verifyStream({ prisma }, "shard-a", { take: 2 });
+    expect(windowed.ok).toBe(true);
+    expect(windowed.checked).toBe(2);
+    expect(windowed.truncations).toEqual([]);
   });
 
   test("a concurrent append collides on (streamId, sequence) and is surfaced, never swallowed", async () => {
