@@ -415,6 +415,44 @@ function runCorpus(options) {
         `cost. §23.7: that field is an identifying field wrongly admitted into the decision path. Fields erased in ` +
         `this run: ${applied.erasedFields.map((field) => field.path).join(", ") || "(none — the divergence is not an erasure effect)"}.`;
     }
+
+    // ── PHASE 14 remediation (P14-R13) — §23.7's *first* bullet, which this gate did
+    // not enforce ──────────────────────────────────────────────────────────
+    //
+    // §23.7 states two things and this gate implemented one of them:
+    //
+    //   > **No decision record or input snapshot stores an identifying value directly.**
+    //   > … The build gate enforces the separation. The reconstruction-equivalence gate
+    //   > is run additionally over a corpus in which erasure has been applied, and MUST
+    //   > still reproduce Tier B byte-for-byte.
+    //
+    // The byte-for-byte half catches a field whose erasure *changes a replayed cost*. It
+    // does not catch a field that is merely **stored**: a street address planted into a
+    // Tier A section that no cost reads was demonstrated during this remediation to be
+    // reported by this gate (`erasedFields` went from 0 to 1) and to **pass** it. The
+    // storage rule was therefore enforced by nothing at build — `checkIdentityIsolation`
+    // is a static scan of four module *sources* for field names, not a check of any
+    // record's content.
+    //
+    // Scoped to `tierA`, deliberately. §23.7's rule binds "decision records and input
+    // snapshots"; `reconstructionInput` is the replay harness's own input bundle and is
+    // not one, so an identifying field there is reported and not failed on.
+    const storedInARecord = applied.erasedFields.filter((field) => String(field.path || "").startsWith("tierA"));
+    for (const field of storedInARecord) {
+      failures.push({
+        name: field.name,
+        decisionId: null,
+        reason: "IDENTIFYING_VALUE_STORED_IN_A_DECISION_RECORD",
+        path: field.path,
+        field: field.field,
+        erasureDefect:
+          `the Tier A record holds an identifying value at "${field.path}". §23.7: "No decision record or input ` +
+          'snapshot stores an identifying value directly. Both store a stable surrogate key into a separate, ' +
+          'access-controlled identity store, plus the derived, non-identifying quantities the decision actually ' +
+          'consumed." This is caught here even though erasing it changed no replayed cost — a value that is stored ' +
+          "is a value that leaks, whether or not any arithmetic read it.",
+      });
+    }
   }
 
   return {

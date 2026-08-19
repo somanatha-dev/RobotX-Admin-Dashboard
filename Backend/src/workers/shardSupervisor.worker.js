@@ -14,7 +14,8 @@
  *   2. `failoverPass()` — on a *fresh* acquisition, run the full §19.5 reconciliation and
  *      only then promote the session to one that may commit.
  *   3. `sizingPass()` — evaluate both §3.5 bounds and record the binding one.
- *   4. `migrationPass()` — perform **at most one** migration per tick.
+ *   4. `migrationPass()` — perform **at most one** migration per tick, against the durable
+ *      `ShardRebalance` intent the control plane recorded.
  *
  * ── Why the migration pass moves one agent per tick ─────────────────────────
  * §19.2 says migration proceeds "one at a time". A loop inside one tick would satisfy the
@@ -139,8 +140,21 @@ async function renewalPass(deps, context) {
 /**
  * §19.5's reconciliation, run once per acquisition and never skipped.
  *
+ * ── `reconcileConfig` and `maxPasses` are overrides, not dependencies ────────
+ * Neither is supplied by `server.js`, and that is deliberate rather than an omission of the
+ * kind P13-R1 and P13-R8 were. §12.4's own configuration lives with the **injected sweep**
+ * — `server.js` binds `reconciler.sweep` with `sla.assignment_deadline`,
+ * `health.unresponsive_strikes` and `energy.deviation_tolerance` already applied, and lets
+ * this function's `shardId` win over them — so the sweep cannot be reached unconfigured by
+ * any caller, which a settings key passed through this seam would not have guaranteed.
+ * `maxPasses` falls back to `failover.DEFAULT_MAX_PASSES`, which is a loop bound rather
+ * than a tuning parameter and has no register entry.
+ *
+ * `tests/engine/shardSchema.test.js` asserts that the binding carries all three values, so
+ * the arrangement is checked rather than merely described.
+ *
  * @param {object} deps `{ prisma, reconcile }`
- * @param {object} context `{ session, storeTime, reconcileConfig, maxPasses }`
+ * @param {object} context `{ session, storeTime, reconcileConfig?, maxPasses? }`
  * @returns {Promise<{ session: object, result: object|null, ran: boolean }>}
  */
 async function failoverPass(deps, context) {
@@ -224,7 +238,22 @@ async function sizingPass(deps, context) {
 }
 
 /**
- * At most one migration per tick (§19.2).
+ * The refusals that make a plan **un-executable** rather than merely blocked this tick.
+ *
+ * Both mean the target shard can no longer receive members. Retrying either forever would
+ * hold the source shard out of service indefinitely, which is precisely the stranding the
+ * durable intent was introduced to eliminate — so the intent is cancelled with the reason
+ * and the shard goes back to serving. The agents that did not move are still where they
+ * were, which is why cancelling is safe as well as terminating.
+ * @structural the refusals that terminate an intent rather than retry it
+ */
+const FATAL_MIGRATION_REFUSALS = Object.freeze([
+  membership.REFUSAL.TARGET_UNKNOWN,
+  membership.REFUSAL.TARGET_NOT_ACCEPTING,
+]);
+
+/**
+ * At most one migration per tick (§19.2), against the **durable** rebalance intent.
  *
  * Takes the plan rather than computing it, because *which* agents move where is a
  * control-plane decision — a split, a merge, a redistricting — and a supervisor that chose
@@ -232,9 +261,23 @@ async function sizingPass(deps, context) {
  * owns is the **pacing**: one move, no sooner than `shard.migration_min_interval` after the
  * last.
  *
+ * ── Where the plan comes from, and why it is not a settings key ──────────────
+ * It used to be `settings.plan`, fixed at boot. Nothing ever set it, so this pass returned
+ * `{ skipped: "NO_PLAN" }` on every tick of every deployment while
+ * `POST /api/shards/:id/rebalance` moved shards to DRAINING and returned plans into HTTP
+ * response bodies that were their only copy (P13-R4). It now reads
+ * `ShardRebalance` — scoped to **this** shard as the source, which is what stops one
+ * shard's coordinator executing another's — so the plan survives a restart, survives a
+ * leadership handoff, and is executed by whichever process currently holds the lease.
+ *
+ * ── Why progress is recomputed rather than counted ──────────────────────────
+ * What remains outstanding is derived every tick from current membership, so a process
+ * that dies between a committed migration and its bookkeeping resumes correctly and no
+ * agent is moved twice. `shardModel.outstandingMoves()` states that argument in full.
+ *
  * @param {object} deps `{ prisma, runSerializable, selectForUpdate }`
- * @param {object} context `{ session, storeTime, plan, lastMigrationAtMs, minIntervalMs,
- *                            commandTtlSeconds, signingKey, movedBy }`
+ * @param {object} context `{ session, storeTime, minIntervalMs, commandTtlSeconds,
+ *                            signingKey, movedBy }`
  * @returns {Promise<object>}
  */
 async function migrationPass(deps, context) {
@@ -245,19 +288,73 @@ async function migrationPass(deps, context) {
     return { migrated: 0, skipped: "NOT_A_COMMITTING_LEADER", outcomes: [] };
   }
 
-  const moves = (settings.plan && settings.plan.moves) || [];
-  if (moves.length === 0) return { migrated: 0, skipped: "NOTHING_PLANNED", outcomes: [] };
+  const rebalance = await shardModel.readOpenRebalance(deps.prisma, session.shardId);
+  if (!rebalance) return { migrated: 0, skipped: "NO_OPEN_REBALANCE", outcomes: [] };
 
+  const members = await membership.membersOf(deps.prisma, { shardId: session.shardId });
+  const progress = shardModel.outstandingMoves({
+    rebalance,
+    currentMemberAgentIds: new Set(members.map((member) => String(member.agentId))),
+  });
+
+  // Nothing left to do. Terminalising here rather than only after a successful move is
+  // what closes the crash window: a process that died between the last migration and its
+  // bookkeeping arrives here on the next tick and finishes the job.
+  if (progress.outstanding.length === 0) {
+    const closed = await shardModel.closeRebalance(deps, {
+      rebalance,
+      state: shardModel.REBALANCE_STATE.COMPLETED,
+      at: settings.storeTime,
+      closedReason:
+        `every planned move is resolved: ${rebalance.completedMoves} migrated, ${progress.resolved} no longer ` +
+        `members of this shard, ${progress.blockedAgentIds.length} retired unmoved. Shard restored to ` +
+        `${rebalance.restoreState} (§19.2).`,
+    });
+    return { migrated: 0, skipped: "PLAN_EXHAUSTED", rebalanceId: rebalance.id, closed, outcomes: [] };
+  }
+
+  // §19.2's pacing, timed from the **durable** last move rather than from an in-memory
+  // value. In-memory would reset on every restart and every leadership change, which are
+  // exactly the moments a fleet is least able to absorb a burst of `authority_epoch`
+  // advances — and G3 aborts a round for every one of them.
   const minInterval = Number.isFinite(settings.minIntervalMs) ? settings.minIntervalMs : 0;
-  const since = Number.isFinite(settings.lastMigrationAtMs)
-    ? settings.storeTime.getTime() - settings.lastMigrationAtMs
-    : Number.POSITIVE_INFINITY;
+  const lastMoveAtMs = rebalance.lastMoveAt ? new Date(rebalance.lastMoveAt).getTime() : null;
+  const since = lastMoveAtMs === null ? Number.POSITIVE_INFINITY : settings.storeTime.getTime() - lastMoveAtMs;
   if (since < minInterval) {
-    return { migrated: 0, skipped: "PACED", waitedMs: since, minIntervalMs: minInterval, outcomes: [] };
+    return {
+      migrated: 0,
+      skipped: "PACED",
+      waitedMs: since,
+      minIntervalMs: minInterval,
+      rebalanceId: rebalance.id,
+      remaining: progress.outstanding.length,
+      outcomes: [],
+    };
+  }
+
+  // §23.3 — a command with no signature is one an attacker, or an innocent misrouted
+  // queue, can synthesise. `commandSigning.sign` refuses an absent key and
+  // `clock.deadlineFrom` refuses an absent TTL, both by throwing; a throw here would be
+  // swallowed by the interval callback and present as a supervisor that never migrates.
+  // Refused as a *reported* skip instead, so the reason reaches `GET /api/shards` and an
+  // operator, and the intent stays open and cancellable rather than half-executed.
+  if (!settings.signingKey || !Number.isFinite(settings.commandTtlSeconds) || settings.commandTtlSeconds <= 0) {
+    return {
+      migrated: 0,
+      skipped: "NO_COMMAND_CREDENTIALS",
+      rebalanceId: rebalance.id,
+      remaining: progress.outstanding.length,
+      detail:
+        "§19.2's handoff enqueues a signed, time-bounded SHARD_MIGRATE (§23.3, §11.1). Without a signing key and a " +
+        "positive command TTL this pass would either throw every tick or write an unsigned command; it does " +
+        "neither. The intent stays open and can be cancelled through POST /api/shards/:id/rebalance.",
+      outcomes: [],
+    };
   }
 
   const outcomes = [];
-  for (const move of moves.slice(0, MIGRATIONS_PER_TICK)) {
+  const effects = [];
+  for (const move of progress.outstanding.slice(0, MIGRATIONS_PER_TICK)) {
     // eslint-disable-next-line no-await-in-loop
     const outcome = await membership.migrate(deps, {
       agentId: move.agentId,
@@ -268,14 +365,62 @@ async function migrationPass(deps, context) {
       commandTtlSeconds: settings.commandTtlSeconds,
       signingKey: settings.signingKey,
       allowCustodyTransfer: move.allowCustodyTransfer === true,
+      // §19.3 — the fence this session believes it holds, re-read inside the migration's
+      // own transaction. A coordinator superseded between choosing this move and
+      // performing it must not advance an `authority_epoch`.
+      leadershipGuard: {
+        shardId: session.shardId,
+        holder: session.candidateId,
+        leadershipFence: session.leadershipFence,
+      },
     });
     outcomes.push(outcome);
+
+    if (outcome.ok) {
+      // eslint-disable-next-line no-await-in-loop
+      effects.push(await shardModel.recordRebalanceMove(deps, { rebalance, at: settings.storeTime }));
+      continue;
+    }
+
+    if (outcome.refusal === membership.REFUSAL.HOLDS_CUSTODY) {
+      // §2.5 — an accountable transfer, not an implicit one. Retire the move so the intent
+      // can terminate, and record which agent and why: a shard held out of service by an
+      // agent carrying a parcel is the failure mode of retrying this forever.
+      // eslint-disable-next-line no-await-in-loop
+      effects.push(
+        await shardModel.blockRebalanceMove(deps, {
+          rebalance,
+          agentId: move.agentId,
+          refusal: outcome.refusal,
+          detail: outcome.detail,
+          at: settings.storeTime,
+        }),
+      );
+      continue;
+    }
+
+    if (FATAL_MIGRATION_REFUSALS.includes(outcome.refusal)) {
+      // eslint-disable-next-line no-await-in-loop
+      effects.push(
+        await shardModel.closeRebalance(deps, {
+          rebalance,
+          state: shardModel.REBALANCE_STATE.CANCELLED,
+          at: settings.storeTime,
+          closedReason: `${outcome.refusal}: ${outcome.detail || "the plan can no longer be carried out"}`,
+        }),
+      );
+    }
+    // Everything else — a concurrent membership change, a superseded fence — is transient
+    // by construction and is simply retried on the next tick.
   }
 
+  const migrated = outcomes.filter((outcome) => outcome.ok).length;
   return {
-    migrated: outcomes.filter((outcome) => outcome.ok).length,
+    migrated,
     skipped: null,
-    remaining: Math.max(0, moves.length - MIGRATIONS_PER_TICK),
+    rebalanceId: rebalance.id,
+    remaining: Math.max(0, progress.outstanding.length - migrated),
+    effects,
     outcomes,
   };
 }
@@ -346,9 +491,10 @@ async function runOnce(deps, context) {
   const renewal = await renewalPass(deps, { ...settings, storeTime });
   const recovery = await failoverPass(deps, { ...settings, storeTime, session: renewal.session });
   const sizingResult = await sizingPass(deps, { ...settings, storeTime, session: recovery.session });
-  const migration = settings.plan
-    ? await migrationPass(deps, { ...settings, storeTime, session: recovery.session })
-    : { migrated: 0, skipped: "NO_PLAN", outcomes: [] };
+  // Unconditional. It used to be gated on `settings.plan`, a key nothing in production ever
+  // set, so the pass never ran anywhere — the consumer half of P13-R4. The plan now lives
+  // in `ShardRebalance` and the pass decides for itself whether there is one.
+  const migration = await migrationPass(deps, { ...settings, storeTime, session: recovery.session });
 
   const hint = await publishLeaderHint(deps, { session: recovery.session, nowMs: storeTime.getTime() });
 
@@ -434,6 +580,45 @@ function start(deps, context) {
   // tick would be a check somebody could be tempted to make non-fatal.
   election.assertConsensusStore(deps.store);
 
+  // ── The rest of the contract, asserted in the same place and for a sharper reason ──
+  //
+  // Every dependency below is reached from inside the interval callback, whose `.catch`
+  // deliberately swallows a failed tick so one lost renewal cannot take the process down
+  // (§19.3). That disposition is right for a *transient* failure and catastrophic for a
+  // *structural* one: a missing dependency throws on every tick forever, the session
+  // variable is never reassigned, and the supervisor sits in a follower loop logging a
+  // tick error while looking alive. A composition that cannot work must therefore fail
+  // here, at boot, where a deployment sees it — not once per tick, where nothing does.
+  //
+  // This assertion exists because that is precisely what happened: `server.js` supplied
+  // four of the seven dependencies, and no test caught it because every test injects all
+  // of them.
+  const missing = [];
+  if (!deps || !deps.prisma) missing.push("prisma (the store client)");
+  if (!deps || typeof deps.reconcile !== "function") {
+    missing.push("reconcile (§12.4's sweep — §19.5 forbids resuming rounds without it)");
+  }
+  if (!deps || typeof deps.runSerializable !== "function") {
+    missing.push("runSerializable (§19.2's handoff opens the transaction the epoch advance lives in)");
+  }
+  if (!deps || typeof deps.selectForUpdate !== "function") {
+    missing.push("selectForUpdate (§10.3.2 step 1's explicit row lock, taken on the migrating agent)");
+  }
+  if (missing.length > 0) {
+    throw new TypeError(
+      `the shard supervisor cannot start without ${missing.join("; ")}. A tick that throws is swallowed by design, ` +
+        "so an incomplete composition would present as a live supervisor that never leads, never reconciles, and " +
+        "never migrates. It is refused here instead.",
+    );
+  }
+  if (!Number.isFinite(settings.leaseDurationSeconds) || settings.leaseDurationSeconds <= 0) {
+    throw new RangeError(
+      "the shard supervisor needs `shard.lease_duration` as a positive number of seconds. It sizes the leadership " +
+        "lease every acquisition and renewal is written against (§19.5); without it `tryAcquire` cannot compute a " +
+        "lease expiry and no leader is ever elected.",
+    );
+  }
+
   let session = election.followerSession({ shardId: settings.shardId, candidateId: settings.candidateId });
 
   const handle = setInterval(() => {
@@ -489,6 +674,7 @@ async function drain(deps, session, input) {
 module.exports = {
   DEFAULT_INTERVAL_MS,
   MIGRATIONS_PER_TICK,
+  FATAL_MIGRATION_REFUSALS,
   LEADER_HINT_KEY_PREFIX,
   LEADER_HINT_TTL_SECONDS,
   renewalPass,

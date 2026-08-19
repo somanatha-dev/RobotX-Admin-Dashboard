@@ -46,6 +46,94 @@ function clearImplausibleReports(robotId) {
   if (implausibleReportCounts.has(robotId)) implausibleReportCounts.delete(robotId);
 }
 
+/**
+ * Agents for which the unconfigured-threshold warning has already been issued.
+ *
+ * Logged once per agent rather than once per refused frame: the condition is a
+ * deployment-level configuration defect, and a line per telemetry tick would bury it.
+ */
+const thresholdWarningIssued = new Set();
+
+/**
+ * §23.5 — "Persistent implausibility triggers quarantine and a security event."
+ *
+ * PHASE 14 remediation (P14-R2). One emitter for both refusal paths (the capability
+ * claim and the position/energy verdict), because before this only the second one could
+ * ever raise the event and the first counted a refusal that nothing ever read.
+ *
+ * It also states the case §23.5 has no rule for: a threshold that did not resolve. The
+ * control is then *off*, and an operator who has never seen this line has no way to tell
+ * "no agent has misbehaved" from "the check cannot fire".
+ *
+ * @param {object} io
+ * @param {object} log
+ * @param {object} input `{ robotId, escalation, atMs }`
+ */
+function emitPersistentImplausibility(io, log, input) {
+  const source = input || {};
+  const escalation = source.escalation || {};
+
+  if (escalation.thresholdConfigured === false) {
+    if (!thresholdWarningIssued.has(source.robotId)) {
+      thresholdWarningIssued.add(source.robotId);
+      log.error?.(
+        "SECURITY CONTROL OFF: security.implausible_report_quarantine_threshold did not resolve, so persistent " +
+          "implausibility cannot trigger quarantine or a security event (§23.5). Reports are still refused; the " +
+          "escalation is not.",
+        { robotId: source.robotId, consecutive: escalation.count },
+      );
+    }
+    return;
+  }
+
+  if (!escalation.quarantine) return;
+
+  // The event is emitted here; the quarantine itself is the engine's own path
+  // (`QUARANTINE`, an agent-scope command), which this handler does not own.
+  log.error?.("SECURITY: persistent implausibility", { robotId: source.robotId, detail: escalation.reason });
+  io.to("dashboard").emit("SECURITY_EVENT", {
+    kind: "PERSISTENT_IMPLAUSIBILITY",
+    robotId: source.robotId,
+    consecutive: escalation.count,
+    reason: escalation.reason,
+    timestamp: source.atMs,
+  });
+}
+
+/**
+ * The health tier a legacy `Robot.status` stands for — PHASE 14 remediation (P14-R15).
+ *
+ * `trustBoundaries.direction()` compares two tiers and calls a *rise* an expansion. The
+ * legacy status enum is not a tier, so it is mapped onto one here rather than the module
+ * being taught the legacy vocabulary: §23.5's rule is about the direction of the change,
+ * and the mapping is the smallest thing that makes the direction computable.
+ *
+ * Ordered by how much work the agent may be given, not by severity: `ERROR` and `OFFLINE`
+ * admit none, `ISSUES` and `PAUSED` admit reduced work, `IDLE`, `ACTIVE` and `CHARGING`
+ * are the unrestricted states. A move *up* this scale is the agent declaring itself fitter
+ * than the server believes it to be, which is the case §23.5 refuses.
+ * @structural the legacy status → §16.4 health-tier ordering
+ */
+const HEALTH_TIER = Object.freeze({
+  OFFLINE: 0,
+  ERROR: 0,
+  ISSUES: 1,
+  PAUSED: 1,
+  CHARGING: 2,
+  IDLE: 2,
+  ACTIVE: 2,
+});
+
+/**
+ * @param {string} status
+ * @returns {number|null} null for a status outside the enum, which `direction()` reads as
+ *   NEUTRAL — unknown is never an expansion *or* a restriction.
+ */
+function healthTierOf(status) {
+  const tier = HEALTH_TIER[String(status || "").toUpperCase()];
+  return Number.isFinite(tier) ? tier : null;
+}
+
 /** When the last accepted fix for each agent was taken, for the kinematic check. */
 const lastAcceptedFixAt = new Map();
 
@@ -234,8 +322,20 @@ function computeSnapshotDecision(
   return false;
 }
 
-function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
+function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }) {
   const log = logger || console;
+
+  // PHASE 14 remediation (P14-R1) — the pinned configuration snapshot.
+  //
+  // This handler previously read `socket?.request?.app?.locals?.config`. `socket.request`
+  // is the raw HTTP upgrade request; it never passes through the express app, so it has
+  // no `app` property and the expression was `undefined` in every deployment. The three
+  // §23.5 parameters below therefore never reached `trustBoundaries.js`, and the most
+  // consequential of them — `security.implausible_report_quarantine_threshold` — defaults
+  // to `Infinity` inside `persistentImplausibility()`, so **persistent implausibility
+  // could never trigger quarantine or a security event**, which is the control §23.5
+  // names in its own closing sentence.
+  const configOf = () => appLocals?.config ?? socket?.request?.app?.locals?.config ?? null;
 
   const bufferedLimit = Number(process.env.SOCKET_BUFFER_LIMIT_BYTES || 1_000_000);
 
@@ -313,6 +413,13 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
       // trying to escalate carry on reporting position as though nothing had happened,
       // and the security event would be the only trace; dropping makes the attempt cost
       // the attacker their telemetry, which is the correct incentive.
+      // P14-R2: the threshold is resolved once per frame and reused, so the capability
+      // path below counts against the same §23.5 threshold the position/energy path does.
+      // It previously called `recordImplausibleReport(robotId)` with no threshold at all,
+      // which meant an agent could send capability claims without limit and never reach
+      // quarantine even in a deployment where the threshold *was* resolvable.
+      const quarantineThreshold = configValue(configOf(), "security.implausible_report_quarantine_threshold", undefined);
+
       const capabilityClaims = attestation.findCapabilityClaims(payload);
       if (capabilityClaims.length > 0) {
         log.warn("TELEMETRY carrying a capability claim — frame rejected entirely (§23.2, §23.5)", {
@@ -323,7 +430,8 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
             "from agent telemetry. A compromised agent claiming hazmat_certified must not thereby become eligible " +
             "for hazmat work.",
         });
-        recordImplausibleReport(robotId);
+        const claimEscalation = recordImplausibleReport(robotId, quarantineThreshold);
+        emitPersistentImplausibility(io, log, { robotId, escalation: claimEscalation, atMs: Date.now() });
         return;
       }
 
@@ -386,7 +494,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
         existing,
         reported: { lat, lon, battery, atMs: nowMs },
         charging: statusRaw === "CHARGING",
-        config: socket?.request?.app?.locals?.config,
+        config: configOf(),
       });
 
       if (trustVerdict.refused) {
@@ -398,19 +506,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
           consecutive: escalation.count,
           enforced: trustVerdict.enforced,
         });
-        if (escalation.quarantine) {
-          // §23.5 — "Persistent implausibility triggers quarantine and a security event."
-          // The event is emitted here; the quarantine itself is the engine's own path
-          // (`QUARANTINE`, an agent-scope command), which this handler does not own.
-          log.error?.("SECURITY: persistent implausibility", { robotId, detail: escalation.reason });
-          io.to("dashboard").emit("SECURITY_EVENT", {
-            kind: "PERSISTENT_IMPLAUSIBILITY",
-            robotId,
-            consecutive: escalation.count,
-            reason: escalation.reason,
-            timestamp: nowMs,
-          });
-        }
+        emitPersistentImplausibility(io, log, { robotId, escalation, atMs: nowMs });
         if (trustVerdict.enforced) return;
       } else {
         // §23.5's threshold is about *persistent* implausibility; a counter that never
@@ -423,7 +519,52 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger }) {
         const cur = String(existing.status || "");
         const allowed = TRANSITIONS[cur];
         if (!allowed || allowed.has(statusDb) || cur === statusDb) {
-          statusUpdate = { status: statusDb };
+          // ── PHASE 14 remediation (P14-R15) — §23.5 row 4, the asymmetric health rule ──
+          //
+          //   > | Health / self-report | Accepted for **restricting** the agent (an agent
+          //   > may always declare itself unfit) but never for **expanding** eligibility |
+          //
+          //   > The asymmetry in the health row is deliberate and important: self-reported
+          //   > degradation is trusted because a false positive costs one agent-shift,
+          //   > while self-reported fitness is not trusted because a false positive risks
+          //   > an incident. **This asymmetric trust rule applies to every agent-reported
+          //   > field.**
+          //
+          // The transition table alone is symmetric: `TRANSITIONS.ERROR` admits `IDLE` and
+          // `ACTIVE`, so an agent in a fault state could clear its own fault by reporting
+          // itself healthy — a self-report expanding its own eligibility, which is exactly
+          // the sentence above forbidding it. `trustBoundaries.validateHealth()` was
+          // written for this row and, until this remediation, had no production caller.
+          //
+          // Staged exactly as §23.5's position and energy rows already are: computed and
+          // **logged** while `ENGINE_ENABLED` is false so the rate is observable before it
+          // is load-bearing, enforced at the same cutover. Returning to service is an
+          // operator action — `POST /api/robots/:id/clear-fault`, gated as a
+          // `QUARANTINE_OVERRIDE` — not something the agent grants itself.
+          const health = trustBoundaries.validateHealth({
+            reportedTier: healthTierOf(statusDb),
+            currentTier: healthTierOf(cur),
+          });
+
+          if (health.applied || !engineEnabled()) {
+            if (!health.applied) {
+              log.warn("Self-reported health would expand eligibility — recorded, not applied when enforced (§23.5)", {
+                robotId,
+                from: cur,
+                to: statusDb,
+                reasons: health.reasons,
+                enforced: false,
+              });
+            }
+            statusUpdate = { status: statusDb };
+          } else {
+            log.warn("Self-reported health refused: an agent may declare itself unfit, never fit (§23.5)", {
+              robotId,
+              from: cur,
+              to: statusDb,
+              reasons: health.reasons,
+            });
+          }
         } else {
           log.warn("Invalid robot status transition", { robotId, from: cur, to: statusDb, raw: statusRaw });
         }

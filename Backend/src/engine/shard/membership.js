@@ -25,7 +25,8 @@
  * parameter fails a test rather than shipping.
  *
  * ── Everything in one transaction, and what "everything" is ─────────────────
- * A migration is five writes and they are indivisible:
+ * A migration is **five load-bearing actions**, carried by **nine write statements**, and
+ * they are indivisible. The five are what §19.2 is about:
  *
  *   1. Advance the agent's `authority_epoch` (§10.3.1, §19.2).
  *   2. Supersede the current `ShardMembership` row.
@@ -37,10 +38,25 @@
  *   5. Enqueue the `SHARD_MIGRATE` command, carrying the new `authority_epoch` and the
  *      `fence_floor` §10.3.1's interaction rule requires beside it.
  *
+ * The other four are bookkeeping that must not be able to disagree with the five, which is
+ * why they are inside the same transaction rather than after it:
+ *
+ *   6. `AgentFenceAudit` — the epoch advance's own audit row (§10.3.1).
+ *   7. The dispatch sequence allocation the outbox row is numbered with (§11.1).
+ *   8. `Shard.agentCount` on the source, decremented.
+ *   9. `Shard.agentCount` on the target, incremented.
+ *
+ * The enumeration is exhaustive on purpose. An earlier version of this comment said "five
+ * writes" and listed the five actions, which read as a complete inventory of what the
+ * transaction touches and was not one — a future reader reasoning about lock footprint or
+ * about what a partial failure could leave behind would have been reasoning from a list
+ * missing four statements. `PHASE_13_INDEPENDENT_VERIFICATION.md` Finding 1 records it.
+ *
  * Splitting any of these would leave a window: an epoch advanced without a command is an
  * agent nobody told; a command enqueued without the advance is a command carrying an
  * authority that does not exist (§4.1 rule 5 — "no external side effect precedes the
- * guarded write that authorises it").
+ * guarded write that authorises it"); a count updated outside the transaction is the drift
+ * `GET /api/shards` has to report with a `consistent` flag.
  *
  * ── What this module never does ─────────────────────────────────────────────
  * It never infers membership from an agent's position, never moves an agent whose
@@ -52,6 +68,7 @@
 
 const fencing = require("../commitment/fencing");
 const clock = require("../commitment/clock");
+const leadership = require("./leadership");
 const commandSigning = require("../security/commandSigning");
 const outbox = require("../dispatch/outbox");
 const sequence = require("../dispatch/sequence");
@@ -69,6 +86,11 @@ const REFUSAL = Object.freeze({
   TARGET_NOT_ACCEPTING: "TARGET_SHARD_DOES_NOT_ADMIT_MEMBERS",
   HOLDS_CUSTODY: "AGENT_HOLDS_CUSTODY",
   CONCURRENT_MIGRATION: "MEMBERSHIP_CHANGED_CONCURRENTLY",
+  /**
+   * §19.3 / guard G1 — the caller's leadership was superseded between the tick that chose
+   * this move and the transaction that would perform it.
+   */
+  NOT_THE_LEADER: "LEADERSHIP_FENCE_ADVANCED_OR_HELD_BY_ANOTHER",
 });
 
 /**
@@ -266,6 +288,10 @@ function assessMigration(input) {
  * @param {number} input.commandTtlSeconds `dispatch.offer_ttl` or the agent-command equivalent
  * @param {string|Buffer} input.signingKey §23.3
  * @param {boolean} [input.allowCustodyTransfer]
+ * @param {{ shardId: string, holder: string, leadershipFence: bigint }} [input.leadershipGuard]
+ *   §19.3 — the leadership this caller believes it holds. When supplied, the fence is
+ *   re-read inside the transaction and the migration aborts if it has advanced or changed
+ *   hands, so a superseded coordinator cannot perform the handoff.
  * @returns {Promise<object>} the outcome
  */
 async function migrate(deps, input) {
@@ -291,6 +317,42 @@ async function migrate(deps, input) {
   const targetShardId = String(settings.targetShardId);
 
   return deps.runSerializable(deps.prisma, async (tx) => {
+    // ── Guard G1's discipline, applied to §19.2's write ──────────────────────
+    //
+    // §19.3: "exclusivity of the writer is enforced by the database rather than inferred
+    // from a lease the writer thinks it still holds." That sentence is about the commit
+    // transaction, and a migration is not a commit — but it is unambiguously a *write by
+    // the shard's single writer*, and it is the one write whose whole purpose is to change
+    // who may command an agent. A superseded coordinator performing it would advance an
+    // `authority_epoch` and enqueue a `SHARD_MIGRATE` under an authority it no longer has.
+    //
+    // So when the caller supplies the leadership it believes it holds, the fence is
+    // **re-read inside this transaction** and the migration aborts if it has advanced or
+    // changed hands — the same read `commit.js` performs, through the same Phase 3
+    // function, taking the same `FOR SHARE` lock. It is optional so that `place()`'s
+    // sibling operations and the control-plane tests are unaffected; the supervisor always
+    // supplies it, and `shardSupervisorWorker.test.js` asserts that it does.
+    const guard = settings.leadershipGuard;
+    if (guard) {
+      const record = await leadership.readLeadership(tx, guard.shardId);
+      const held = record && record.holder === guard.holder;
+      const unmoved = record && BigInt(record.leadershipFence) === BigInt(guard.leadershipFence);
+      if (!held || !unmoved) {
+        return Object.freeze({
+          ok: false,
+          refusal: REFUSAL.NOT_THE_LEADER,
+          detail:
+            `the leadership record for ${guard.shardId} now reads holder=${record ? String(record.holder) : "none"} ` +
+            `fence=${record ? String(record.leadershipFence) : "none"}, not holder=${String(guard.holder)} ` +
+            `fence=${String(guard.leadershipFence)}. §19.3 enforces the single writer at the database rather than ` +
+            "from a lease this process thinks it still holds; a superseded coordinator must not advance an " +
+            "authority_epoch or enqueue a command under an authority it no longer has.",
+          membership: null,
+          command: null,
+        });
+      }
+    }
+
     // The agent row under a write lock, exactly as the commit transaction takes it
     // (§10.3.2 step 1). Without it, two control-plane operations could each read the same
     // `authority_epoch` and each advance it to the same value — producing two migrations
@@ -518,7 +580,8 @@ function assertNotBulk(request) {
  * authority that a round is currently relying on, and G3 will abort that round's commit.
  * Both are correct; only one is free.
  *
- * @param {object} input `{ members, liveCommitmentCountByAgentId, surplus, targetShardId, reason }`
+ * @param {object} input `{ members, liveCommitmentCountByAgentId, surplus, targetShardId,
+ *                          reason, allowCustodyTransfer }`
  * @returns {{ moves: object[], surplus: number, note: string }}
  */
 function planRebalance(input) {
@@ -541,6 +604,10 @@ function planRebalance(input) {
     targetShardId: String(source.targetShardId),
     reason: source.reason || shardModel.MEMBERSHIP_REASON.REBALANCE_SPLIT,
     liveCommitments: Number(counts[member.agentId] || 0),
+    // §2.5 — carried onto each move so the executor reads the operator's consent off the
+    // plan rather than re-deriving it. Absent unless asked for: migrating an agent that
+    // holds goods hands a physical obligation to a coordinator that did not create it.
+    allowCustodyTransfer: source.allowCustodyTransfer === true,
   }));
 
   return {

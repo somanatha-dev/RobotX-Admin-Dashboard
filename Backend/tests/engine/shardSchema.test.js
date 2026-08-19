@@ -182,6 +182,105 @@ describe("the hand-written constraints Prisma cannot express", () => {
   });
 });
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   PHASE 13 REMEDIATION — the rebalance intent's own migration (P13-R4)
+
+   Held to exactly the standard the Phase 13 migration is held to, and to one
+   more: it must not have disturbed the Phase 13 migration at all. That is what
+   makes "additive" a checked property rather than a claim in a comment.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe("the ShardRebalance migration — durable §19.2 intent, added without touching what shipped", () => {
+  const REMEDIATION_DIR = "20260819090000_shard_rebalance_intent";
+  const REMEDIATION = fs.readFileSync(path.join(BACKEND_ROOT, "prisma", "migrations", REMEDIATION_DIR, "migration.sql"), "utf8");
+
+  test("its CREATE TABLE is byte-identical to Prisma's own generated one", () => {
+    const header = 'CREATE TABLE "ShardRebalance" (';
+    expect(normalise(block(REMEDIATION, header))).toBe(normalise(block(generatedSql(), header)));
+  });
+
+  test("every index and foreign key matches the generated output", () => {
+    for (const statement of [
+      'CREATE INDEX "ShardRebalance_sourceShardId_state_idx" ON "ShardRebalance"("sourceShardId", "state");',
+      'CREATE INDEX "ShardRebalance_state_idx" ON "ShardRebalance"("state");',
+      'ALTER TABLE "ShardRebalance" ADD CONSTRAINT "ShardRebalance_sourceShardId_fkey" FOREIGN KEY ("sourceShardId") REFERENCES "Shard"("shardId") ON DELETE RESTRICT ON UPDATE CASCADE;',
+      'ALTER TABLE "ShardRebalance" ADD CONSTRAINT "ShardRebalance_targetShardId_fkey" FOREIGN KEY ("targetShardId") REFERENCES "Shard"("shardId") ON DELETE RESTRICT ON UPDATE CASCADE;',
+    ]) {
+      expect({ statement, inMigration: REMEDIATION.includes(statement) }).toEqual({ statement, inMigration: true });
+      expect({ statement, inGenerated: generatedSql().includes(statement) }).toEqual({ statement, inGenerated: true });
+    }
+  });
+
+  // **The load-bearing assertion of this block.** The alternative shape — a
+  // `rebalanceTargetShardId` column on `Shard` — would have forced either an edit to an
+  // already-applied migration (Prisma checksum drift everywhere it has been applied) or a
+  // weakening of the byte-equality assertion at the top of this file. A separate table
+  // costs neither, and this is the proof rather than the claim.
+  test("**the Phase 13 migration is untouched**: `Shard` gains no column, and only one new table is created", () => {
+    expect(MIGRATION).not.toContain("ShardRebalance");
+    expect(REMEDIATION).not.toMatch(/ALTER TABLE "Shard"\s+ADD COLUMN/);
+    expect(REMEDIATION).not.toMatch(/ALTER TABLE "ShardLeadership"/);
+    expect(REMEDIATION).not.toMatch(/ALTER COLUMN/);
+    expect(REMEDIATION).not.toMatch(/\bDROP\b/);
+
+    // Statements only. The header prose names `CREATE TABLE "Shard"` while explaining why
+    // it is deliberately *not* re-issued here, and an assertion about DDL that a comment
+    // can fail is an assertion about prose.
+    const statements = REMEDIATION.split("\n").filter((line) => !line.trimStart().startsWith("--")).join("\n");
+    const created = [...statements.matchAll(/CREATE TABLE "(\w+)"/g)].map((match) => match[1]);
+    expect(created).toEqual(["ShardRebalance"]);
+    const altered = [...new Set([...statements.matchAll(/ALTER TABLE "(\w+)"/g)].map((match) => match[1]))];
+    expect(altered).toEqual(["ShardRebalance"]);
+
+    // And the shape that makes that possible: two back-relations on `Shard`, which add no
+    // column, so its generated CREATE TABLE is unchanged.
+    const model = /model Shard \{[\s\S]*?\n\}/.exec(SCHEMA)[0];
+    expect(model).toMatch(/rebalancesOut ShardRebalance\[\] @relation\("ShardRebalanceSource"\)/);
+    expect(model).toMatch(/rebalancesIn\s+ShardRebalance\[\] @relation\("ShardRebalanceTarget"\)/);
+    expect(block(generatedSql(), 'CREATE TABLE "Shard" (')).not.toContain("rebalance");
+  });
+
+  const REBALANCE_CHECKS = [
+    "ShardRebalance_state_known",
+    "ShardRebalance_moves_between_two_shards",
+    "ShardRebalance_reason_known",
+    "ShardRebalance_restore_state_admits_work",
+    "ShardRebalance_plan_is_not_empty",
+    "ShardRebalance_completed_within_plan",
+    "ShardRebalance_terminal_is_timed",
+  ];
+
+  test.each(REBALANCE_CHECKS.map((name) => [name]))("%s is written by hand and is absent from Prisma's output", (name) => {
+    expect({ name, inMigration: REMEDIATION.includes(name) }).toEqual({ name, inMigration: true });
+    expect({ name, inGenerated: generatedSql().includes(name) }).toEqual({ name, inGenerated: false });
+  });
+
+  test("at most one open intent per source shard, as a partial unique index", () => {
+    expect(REMEDIATION).toContain('CREATE UNIQUE INDEX "ShardRebalance_one_open_per_source"');
+    expect(REMEDIATION).toContain(`ON "ShardRebalance"("sourceShardId") WHERE "state" IN ('PENDING', 'EXECUTING')`);
+    expect(generatedSql()).not.toContain("ShardRebalance_one_open_per_source");
+  });
+
+  // The schema's own statement of "no shard can be stranded": whatever terminal disposition
+  // this row reaches, the state it restores its source shard to is one that admits work.
+  test("**the restore target is constrained to a serving state** — stranding is unrepresentable", () => {
+    expect(REMEDIATION).toMatch(
+      /ShardRebalance_restore_state_admits_work[\s\S]*?"restoreState" IN \('ACTIVE', 'REBALANCING'\)/,
+    );
+  });
+
+  test("COMMISSIONING is excluded from the reason vocabulary — a rebalance is never a placement", () => {
+    expect(REMEDIATION).toMatch(
+      /ShardRebalance_reason_known[\s\S]*?"reason" IN \('REBALANCE_SPLIT', 'REBALANCE_MERGE', 'REDISTRICTING', 'OPERATOR'\)/,
+    );
+    const shardModel = require("../../src/engine/shard/shardModel");
+    expect(shardModel.REBALANCE_REASONS).not.toContain("COMMISSIONING");
+    expect([...shardModel.REBALANCE_REASONS].sort()).toEqual(
+      Object.values(shardModel.MEMBERSHIP_REASON).filter((reason) => reason !== "COMMISSIONING").sort(),
+    );
+  });
+});
+
 describe("Phase 13's schema shape", () => {
   test("Shard.regionId is unique — region → shard is a function (§3.5)", () => {
     const model = /model Shard \{[\s\S]*?\n\}/.exec(SCHEMA)[0];
@@ -286,6 +385,81 @@ describe("Phase 13 module tree and tier placement", () => {
     expect(gateIndex).toBeGreaterThan(-1);
     expect(startIndex).toBeGreaterThan(gateIndex);
     expect(server.split("shardSupervisor.start(").length - 1).toBe(1);
+  });
+
+  /* PHASE 13 REMEDIATION — the composition itself, asserted at the only layer that can see
+   * it (P13-R8, P13-R9, P13-R11, P13-R12).
+   *
+   * Every defect this remediation found on the production path had the same shape: a key
+   * the supervisor or one of its callees reads, and that `server.js` did not supply. Not
+   * one was visible to a unit test, because every unit test injects the value. The
+   * composition root has no unit test — it is a boot script — so these read it.
+   *
+   * The strongest of them is the last: a **mistyped register name** resolves to `undefined`
+   * exactly like an omitted key, and produces exactly the same silent failure.
+   */
+  describe("the shard supervisor's composition in server.js", () => {
+    const server = fs.readFileSync(path.join(BACKEND_ROOT, "server.js"), "utf8");
+    // The `shardSupervisor.start(` call and everything up to the log line after it.
+    const callSite = server.slice(server.indexOf("shardSupervisor.start("), server.indexOf("Shard coordinator standing for election"));
+
+    test.each([
+      ["runSerializable", "§19.2's handoff opens the transaction the epoch advance lives in"],
+      ["selectForUpdate", "§10.3.2 step 1's row lock on the migrating agent"],
+      ["reconcile", "§19.5 refuses to resume rounds without §12.4's sweep"],
+      ["leaseDurationSeconds", "without it tryAcquire throws and no leader is ever elected"],
+      ["maxClockSkewMillis", "§19.5's renewal margin"],
+      ["storeRoundTripMillis", "§19.5's renewal margin"],
+      ["minIntervalMs", "§19.2's migration pacing"],
+      ["commandTtlSeconds", "§23.3's not_valid_after on the SHARD_MIGRATE command"],
+      ["signingKey", "§23.3 — an unsigned command is one an attacker can synthesise"],
+      ["config", "§3.5's two sizing bounds; without it both report unevaluated"],
+      ["onTick", "the wire for SHARD_LEADERSHIP_CHANGED and SHARD_MIGRATED"],
+    ])("supplies `%s` — %s", (key) => {
+      // `key:` or the shorthand `key,` — both supply it, and a check that accepted only the
+      // first would fail for a style choice rather than for a missing dependency.
+      expect({ key, supplied: new RegExp(`\\b${key}\\s*[:,]`).test(callSite) }).toEqual({ key, supplied: true });
+    });
+
+    test("the §12.4 sweep is given its own configuration, not only a shardId", () => {
+      // `failover.run()` calls `deps.reconcile({ ...reconcileConfig, shardId })`. With no
+      // `assignmentDeadlineSeconds` the orphan requeue reaches `timers.deadlineFrom(…,
+      // undefined)`, which throws — so §19.5's reconciliation died on the first Leg it had
+      // to reconstruct, which is the one case a failover exists for.
+      for (const key of ["assignmentDeadlineSeconds", "unresponsiveStrikes", "energyDeviationTolerance"]) {
+        expect({ key, supplied: callSite.includes(`${key}:`) }).toEqual({ key, supplied: true });
+      }
+      // …and the caller's own `shardId` still wins, because `failover.run()` scopes it.
+      expect(callSite).toMatch(/energyDeviationTolerance[\s\S]*?\.\.\.sweepConfig/);
+    });
+
+    test("the sizing pass is given all four inputs §3.5's serial-commit bound needs", () => {
+      for (const key of ["missionRatePerAgentHour", "txnPerMissionLifecycle", "commitTxnServiceTimeMs", "maxSerialUtilisation"]) {
+        expect({ key, supplied: callSite.includes(`${key}:`) }).toEqual({ key, supplied: true });
+      }
+    });
+
+    // **The one that catches a typo.** A misspelt register name resolves to `undefined`,
+    // which is indistinguishable at the call site from an omitted key and produces the same
+    // silent failure — a supervisor that logs a tick error and otherwise looks alive.
+    test("every parameter name server.js reads is registered and resolves", () => {
+      const service = require("../../src/engine/config/service");
+      const snapshot = service.defaultSnapshot();
+      const names = [...new Set([...callSite.matchAll(/finite\("([^"]+)"\)/g)].map((match) => match[1]))];
+
+      expect(names.length).toBeGreaterThanOrEqual(9);
+      for (const name of names) {
+        expect({ name, resolves: Number.isFinite(snapshot.values.get(name)) }).toEqual({ name, resolves: true });
+      }
+    });
+
+    test("the signing key is read from the environment and never defaulted", () => {
+      // The same posture `SHARD_CONSENSUS_REPLICATION` is read with: the code will not
+      // invent an operator's declaration. There is no `|| "..."` fallback here, and there
+      // must not be — a default signing key is a key an attacker also has.
+      expect(callSite).toContain("signingKey: process.env.COMMAND_SIGNING_KEY");
+      expect(callSite).not.toMatch(/COMMAND_SIGNING_KEY\s*\|\|/);
+    });
   });
 
   // Phase 14 has landed. What this file keeps asserting is the property it was written

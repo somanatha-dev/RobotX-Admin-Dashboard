@@ -109,7 +109,11 @@ const requestErasure = asyncHandler(async (req, res) => {
   });
 });
 
-// GET /api/privacy/erasure/:identityKey — what a surrogate key resolves to now.
+// GET /api/privacy/identity/:identityKey — what a surrogate key resolves to now.
+//
+// (The path was documented here as `/erasure/:identityKey` until the Phase 14
+// remediation. `privacy.routes.js` has always mounted it at `/identity/:identityKey`; only
+// this comment was wrong.)
 //
 // Deliberately does **not** return the identifying fields. It answers the one question a
 // dispute turns on: does this key still resolve to a person, or has it been erased? That

@@ -11,6 +11,9 @@ const robotStateCache = require("../cache/robotStateCache");
 // controller applies them at the one operator surface that returns a withdrawn agent to
 // service.
 const override = require("../engine/security/override");
+// PHASE 14 remediation (P14-R3 / P14-R5) — one policy and one audit writer, shared with
+// the action-class middleware.
+const { policyFor, recordAuthorisation } = require("../middlewares/auth_middleware");
 
 async function writeRobotLiveState(kv, robot, { exSeconds = 15 } = {}) {
   if (!kv || !robot) return;
@@ -416,19 +419,32 @@ const clearRobotFault = asyncHandler(async (req, res) => {
   // privilege escalation away from being negotiable.
   const waiveRequest = toStringOrNull(req.body?.waivePredicate);
   if (waiveRequest) {
-    const decision = override.authoriseWaiver(
-      {
-        predicateId: waiveRequest,
-        // Both predicates this endpoint's state touches are class I (§7.5: F3 is the
-        // operator-hold/quarantine check, F8 the blocking-fault check).
-        constraintClass: "I",
-        actorId: req.user?.id ?? null,
-        actorRole: req.user?.role ?? null,
-        reason: toStringOrNull(req.body?.reason),
-      },
-      { elevatedRoles: [] },
-      {},
-    );
+    const request = {
+      predicateId: waiveRequest,
+      // Both predicates this endpoint's state touches are class I (§7.5: F3 is the
+      // operator-hold/quarantine check, F8 the blocking-fault check).
+      constraintClass: "I",
+      actorId: req.user?.id ?? null,
+      actorRole: req.user?.role ?? null,
+      reason: toStringOrNull(req.body?.reason),
+    };
+    const subject = { subjectType: "ROBOT", subjectId: robotCode };
+
+    // PHASE 14 remediation (P14-R3) — the real policy. The refusal here is unconditional
+    // because the class is I and `authoriseWaiver` refuses before it reads the role at
+    // all, so this changes no outcome; passing the literal empty list nonetheless said
+    // something false about the deployment's role model, and the same literal *was*
+    // load-bearing at the other call site.
+    const decision = override.authoriseWaiver(request, policyFor(req), subject);
+
+    // PHASE 14 remediation (P14-R5) — §23.6: "Refusals are audited too. A refused class I
+    // waiver is exactly the event a later investigation wants to find, and a stream that
+    // recorded only successes would answer 'nobody tried' to a question whose true answer
+    // was 'somebody tried eleven times'." That sentence is `override.js`'s own, and until
+    // this remediation nothing acted on it: no attempted class-I waiver was recorded
+    // anywhere.
+    await recordAuthorisation(req, decision, request, subject);
+
     res.status(403).json({
       ok: false,
       error: "Forbidden",

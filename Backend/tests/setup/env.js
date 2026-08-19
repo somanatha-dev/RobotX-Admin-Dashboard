@@ -30,3 +30,15 @@ process.env.ENGINE_ENABLED = "false";
 // session without a valid, unrevoked certificate is refused — which is the end state, and
 // which the simulated fleet does not yet satisfy.
 process.env.AGENT_MTLS_REQUIRED = "false";
+
+// The identity store's two secrets (Phase 14, §23.7).
+//
+// Set here rather than left unset because the Phase 14 remediation made the production
+// intake path a writer of `Stop.identityKey`: `task.service.sealIdentities()` **throws**
+// on a missing secret rather than skipping, since a skip would produce exactly the state
+// §23.7 exists to prevent — an address with no identity record and no erasure route.
+// Fixed, non-random values, so a surrogate key computed in one test file is the same key
+// in the next: the stability of the key is the property §23.7 rests on, and a per-run
+// secret would make it untestable.
+process.env.PRIVACY_SURROGATE_SECRET = "test-surrogate-secret-do-not-use-in-prod";
+process.env.PRIVACY_IDENTITY_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

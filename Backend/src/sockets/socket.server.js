@@ -165,7 +165,13 @@ function startDtaroSweep(prisma, kv, { logger } = {}) {
     if (typeof ekbSweep.unref === "function") ekbSweep.unref();
 }
 
-function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig } = {}) {
+// PHASE 14 remediation (P14-R1) — `appLocals` is the express app's `locals`, threaded
+// through so the agent handlers can read the pinned configuration snapshot
+// (`app.locals.config`). They previously reached for it through `socket.request.app`,
+// which does not exist: the Socket.IO upgrade request never passes through the express
+// app. The object is passed by reference and read at call time, so a republished snapshot
+// is picked up without re-registering a handler.
+function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig, appLocals } = {}) {
     // PHASE 5 — exactly one loop owns this fact. With the engine on, it is the
     // reconciler (§12.4 row 9); with it off, it is the legacy sweep above. Never both:
     // a divergence repaired twice, by two loops with different notions of "stale", is
@@ -252,16 +258,16 @@ function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig } = {})
         });
 
         // Robot auth + lifecycle
-        registerRobotHandlers(io, socket, { prisma, kv, logger });
+        registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals });
 
         // Telemetry pipeline (Redis live state + DB source of truth + snapshots)
-        registerTelemetryHandlers(io, socket, { prisma, kv, logger });
+        registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals });
 
         // Command ACK tracking
         registerCommandHandlers(io, socket, { prisma, kv, logger });
 
         // DTARO: obstacle reports, task completion, fault reporting
-        registerDtaroHandlers(io, socket, { prisma, kv, logger });
+        registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals });
 
         // PHASE 4 — §11.2 offer responses (OFFER_ACCEPT / OFFER_REJECT / OFFER_DEFER).
         //

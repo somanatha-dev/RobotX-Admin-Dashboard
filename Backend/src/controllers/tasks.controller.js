@@ -10,6 +10,10 @@ const { updateAssignedTask, updatePlannedPath } = require("../services/robotRegi
 // that can disagree about whether something is class I.
 const override = require("../engine/security/override");
 const feasibilityRegister = require("../engine/feasibility/register");
+// PHASE 14 remediation (P14-R3 / P14-R5) — the same policy and the same audit writer the
+// action-class middleware uses. Two policies, or two audit shapes, is how a route gate and
+// a controller come to disagree about who may waive what.
+const { policyFor, recordAuthorisation } = require("../middlewares/auth_middleware");
 
 /**
  * PHASE 15 — the API version this controller answers under.
@@ -94,20 +98,34 @@ const assignTask = asyncHandler(async (req, res) => {
   const waived = toStringOrNull(req.body?.waivePredicate);
   if (waived) {
     const entry = feasibilityRegister.predicate(waived.toUpperCase());
-    const decision = override.authoriseWaiver(
-      {
-        predicateId: waived.toUpperCase(),
-        // An unknown predicate id resolves to no class, and `authoriseWaiver` refuses an
-        // unknown class outright: unknown is never permission (T2).
-        constraintClass: entry ? entry.constraintClass : null,
-        actorId: req.user?.id ?? null,
-        actorRole: req.user?.role ?? null,
-        reason: toStringOrNull(req.body?.reason),
-        secondApproverId: toStringOrNull(req.body?.secondApproverId),
-      },
-      { elevatedRoles: [] },
-      {},
-    );
+    const waiverRequest = {
+      predicateId: waived.toUpperCase(),
+      // An unknown predicate id resolves to no class, and `authoriseWaiver` refuses an
+      // unknown class outright: unknown is never permission (T2).
+      constraintClass: entry ? entry.constraintClass : null,
+      actorId: req.user?.id ?? null,
+      actorRole: req.user?.role ?? null,
+      reason: toStringOrNull(req.body?.reason),
+      secondApproverId: toStringOrNull(req.body?.secondApproverId),
+    };
+    const waiverSubject = { subjectType: "TASK", subjectId: toStringOrNull(req.body?.taskId) };
+
+    // PHASE 14 remediation (P14-R3) — the **real** policy, not `{ elevatedRoles: [] }`.
+    //
+    // The literal empty list was a deliberate "the route gate already checked the role",
+    // which was true only while the route gate always fired. It did not (P14-R4), and an
+    // empty list meant "every role is elevated" rather than "none is" (P14-R3), so the two
+    // defects composed into a class-P waiver granted to any authenticated caller. Reading
+    // the same `policyFor(req)` the middleware reads means the two can never disagree.
+    const decision = override.authoriseWaiver(waiverRequest, policyFor(req), waiverSubject);
+
+    // PHASE 14 remediation (P14-R5) — §23.6: "Every override is audited and counted."
+    //
+    // Granted **and** refused, and with the predicate and its class on the row: this is
+    // the only writer that populates `OverrideAudit.predicateId` / `constraintClass`, and
+    // without it §23.6's per-predicate override rate had no data source at all — the
+    // monitoring half of the rule was reading an empty table by construction.
+    await recordAuthorisation(req, decision, waiverRequest, waiverSubject);
 
     if (!decision.granted) {
       res.status(403).json({

@@ -131,6 +131,32 @@ const attestation = require("../../engine/security/attestation");
  */
 const REKEY_VALIDITY_MS = 60_000;
 
+/**
+ * Is this stored `session:{agentId}` value a §23.2 certificate binding rather than a
+ * legacy bearer token? — PHASE 14 remediation (P14-R8).
+ *
+ * The two share one Redis key. A binding is a JSON object carrying a fingerprint and a
+ * session id; a token is an opaque string. Telling them apart is what stops the first
+ * being compared as though it were the second — see the call site for why that mattered.
+ *
+ * @param {unknown} stored the raw value read from the cache
+ * @returns {boolean}
+ */
+function isCertificateBinding(stored) {
+  if (stored === null || stored === undefined) return false;
+  if (typeof stored === "object") return typeof stored.fingerprint === "string" && typeof stored.sessionId === "string";
+  if (typeof stored !== "string") return false;
+  // A bearer token is a UUID and never starts with `{`; parsing is attempted only for a
+  // value that is shaped like an object, so an ordinary token costs no parse.
+  if (stored.trimStart()[0] !== "{") return false;
+  try {
+    const parsed = JSON.parse(stored);
+    return Boolean(parsed) && typeof parsed.fingerprint === "string" && typeof parsed.sessionId === "string";
+  } catch {
+    return false;
+  }
+}
+
 /** Is mutual TLS mandatory for agent sessions in this deployment? */
 function mtlsRequired() {
   return String(process.env.AGENT_MTLS_REQUIRED || "").toLowerCase() === "true";
@@ -296,8 +322,21 @@ async function runDedupHandshake(prisma, robotId, reportedDedupState, log) {
   }
 }
 
-function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
+function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
   const log = logger || console;
+
+  // PHASE 14 remediation (P14-R1) — the pinned configuration snapshot, from the express
+  // app's locals, supplied by `socket.server.js`.
+  //
+  // This function previously reached for `io?.engine?.config || socket?.request?.app?.
+  // locals?.config`. **Neither exists.** `io.engine` is the Engine.IO server and has no
+  // `config`; `socket.request` is the raw upgrade request, which never passes through the
+  // express app, so it has no `app` property at all. Both were therefore always
+  // `undefined`, and every `configNumber()` call below returned `undefined` in every
+  // deployment — so `security.session_max_age` never bounded a session and
+  // `security.certificate_revocation_recheck_interval` never spaced a re-check. Read at
+  // call time rather than captured, so a republished snapshot is picked up.
+  const configOf = () => appLocals?.config ?? socket?.request?.app?.locals?.config ?? null;
 
   async function isPairingLocked(robotId) {
     try {
@@ -394,7 +433,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
       // session-token branches so that a presented certificate is never ignored in favour
       // of a weaker credential that happens to also be present.
       const certificateSession = await establishCertificateSession(
-        { prisma, kv, config: io?.engine?.config || socket?.request?.app?.locals?.config, log },
+        { prisma, kv, config: configOf(), log },
         { socket, robotId, auth, now: new Date() },
       );
 
@@ -420,9 +459,32 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
         socket.data.certificateBinding = certificateSession.binding;
       }
 
-      const [sessionToken, storedCode] = certificateSession.mode === "MTLS"
+      const [storedSession, storedCode] = certificateSession.mode === "MTLS"
         ? [null, null]
         : await Promise.all([kv.get(`session:${robotId}`), kv.get(`pairing:${robotId}`)]);
+
+      // PHASE 14 remediation (P14-R8) — the `session:` namespace holds two different
+      // kinds of thing, and only one of them is a credential.
+      //
+      // §23.2's binding replaced the bearer token *in the same key*, on the argument that
+      // reusing the namespace stops a deployment running both schemes at once. What it
+      // actually produced was a type confusion: an agent that established an mTLS session
+      // wrote a JSON binding into `session:{agentId}`, and this legacy branch then
+      // compared that JSON **as a shared secret** against a caller-supplied `token`. The
+      // binding is not a secret — it names a certificate fingerprint, which is public —
+      // so anyone who learned it could authenticate as that agent without a certificate,
+      // by presenting it as a token, whenever `AGENT_MTLS_REQUIRED` was false.
+      //
+      // A stored value that is a binding is therefore refused as a token rather than
+      // compared. The agent falls through to the pairing branch, which is the correct
+      // answer for a certificate-bound agent that has connected without its certificate.
+      const sessionToken = isCertificateBinding(storedSession) ? null : storedSession;
+      if (sessionToken === null && storedSession !== null && storedSession !== undefined) {
+        log.warn("Stored session value is a certificate binding, not a bearer token — refused as a credential (§23.2)", {
+          robotId,
+          socketId: socket.id,
+        });
+      }
 
       let nextToken = null;
 
@@ -651,7 +713,36 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
     const expired = Number.isFinite(binding.expiresAtMs) && binding.expiresAtMs !== null && now.getTime() >= binding.expiresAtMs;
     if (!expired && !sessionBinding.dueForRecheck(binding, now)) return;
 
-    const config = socket?.request?.app?.locals?.config;
+    // PHASE 14 remediation (P14-R9) — §23.2's "a session cannot act for another agent",
+    // checked where the binding is *used* and not only where it was established.
+    //
+    // `sessionBinding.assertBound()` is the module's own answer to "may this socket speak
+    // for this agent id", and its header says it is "checked on every command delivery,
+    // not only at establishment". Until this remediation it had no production caller at
+    // all: the guard was written, tested, and never run. The socket carries the agent id,
+    // so the three-way comparison is a defence-in-depth check rather than the only thing
+    // standing between an attacker and another agent's session — but a guard nothing
+    // calls is a guard nobody will notice has stopped working.
+    // `now` is deliberately **not** passed. `assertBound()` would otherwise refuse an
+    // expired session, and an expired session is precisely the case this function exists
+    // to *rekey* rather than to drop — trigger 1 above. What is checked here is the
+    // three-component identity, which is what "cannot act for another agent" means.
+    const bound = sessionBinding.assertBound(binding, {
+      agentId: socket.data.robotId,
+      sessionId: binding.sessionId,
+      fingerprint: binding.fingerprint,
+    });
+    if (!bound.ok) {
+      log.warn("Agent session binding no longer holds — session terminated (§23.2)", {
+        robotId: socket.data.robotId,
+        refusal: bound.refusal,
+      });
+      try { await kv.del(sessionBinding.sessionKey(socket.data.robotId)); } catch { /* best effort */ }
+      socket.disconnect(true);
+      return;
+    }
+
+    const config = configOf();
     const rechecked = await sessionBinding.recheck({ prisma }, binding, {
       now,
       recheckIntervalSeconds: configNumber(config, "security.certificate_revocation_recheck_interval"),
@@ -694,7 +785,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger }) {
       const binding = socket.data.certificateBinding;
       if (!binding) return;
 
-      const config = socket?.request?.app?.locals?.config;
+      const config = configOf();
       const rotated = await sessionBinding.rekey({ prisma }, binding, {
         // The agent proposes a session id; the **agent id is not a parameter**, so a rekey
         // cannot change which agent this session speaks for. That would be a privilege

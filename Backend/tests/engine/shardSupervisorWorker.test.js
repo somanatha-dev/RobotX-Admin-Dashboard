@@ -25,12 +25,53 @@ const SKEW_MS = 500;
 const ROUND_TRIP_MS = 500;
 const NOW = new Date("2026-07-29T12:00:00.000Z");
 
+/** `fixture()`'s agent id, named so a plan can be built before the store exists. */
+const AGENT_ID = "agent-1";
+/** `extraMembers()`'s ids, for the same reason. */
+const EXTRA_AGENT_IDS = ["agent-extra-0", "agent-extra-1"];
+
+/**
+ * PHASE 13 REMEDIATION — extra members in `shard-a`, so a plan longer than one move has
+ * agents that are genuinely current members of the source shard.
+ *
+ * `shardModel.outstandingMoves()` derives what is left to do from **current membership**
+ * rather than from a counter, which is what makes execution crash-safe and idempotent. A
+ * fixture that named agents with no membership row would therefore exercise the
+ * already-resolved branch rather than the migration branch.
+ *
+ * @param {number} count
+ * @returns {{ agents: object[], memberships: object[] }}
+ */
+function extraMembers(count) {
+  const agents = [];
+  const memberships = [];
+  for (let index = 0; index < count; index += 1) {
+    const id = `agent-extra-${index}`;
+    agents.push({ id, agentId: id, lifecycleState: "ACTIVE", authorityEpoch: 3n, fenceCounter: 11n, capacityOverride: null });
+    memberships.push({
+      id: `m-extra-${index}`,
+      agentId: id,
+      shardId: "shard-a",
+      fromShardId: null,
+      movedAt: NOW,
+      supersededAt: null,
+      authorityEpochBefore: 3n,
+      authorityEpochAfter: 3n,
+      reason: "COMMISSIONING",
+      movedBy: "seed",
+    });
+  }
+  return { agents, memberships };
+}
+
 function seeded(options) {
   const settings = options || {};
   const seed = fixture({ legs: 1 });
+  const extra = extraMembers(settings.extraMembers || 0);
   const store = createCommitmentStore({
-    agent: [seed.agent],
+    agent: [seed.agent, ...extra.agents],
     leg: seed.legs,
+    shardRebalance: settings.rebalance ? [settings.rebalance] : [],
     shardLeadership: [{ ...seed.leadership, shardId: "shard-a", holder: null, leaseExpiry: null }],
     shard: [
       {
@@ -39,7 +80,7 @@ function seeded(options) {
         regionId: "region-a",
         state: "ACTIVE",
         drainingSince: null,
-        agentCount: settings.agentCount === undefined ? 1 : settings.agentCount,
+        agentCount: settings.agentCount === undefined ? 1 + (settings.extraMembers || 0) : settings.agentCount,
         bindingBound: "NEITHER_EVALUATED",
       },
       { id: "s-b", shardId: "shard-b", regionId: "region-b", state: "ACTIVE", drainingSince: null, agentCount: 0, bindingBound: "NEITHER_EVALUATED" },
@@ -57,9 +98,55 @@ function seeded(options) {
         reason: "COMMISSIONING",
         movedBy: "seed",
       },
+      ...extra.memberships,
     ],
   });
-  return { seed, store };
+  return { seed, store, extraAgentIds: extra.agents.map((agent) => agent.id) };
+}
+
+/**
+ * A durable `ShardRebalance` row shaped as `shardModel.openRebalance()` writes one.
+ *
+ * @param {object} overrides
+ * @returns {object}
+ */
+function rebalanceRow(overrides) {
+  const settings = overrides || {};
+  const moves = settings.moves || [];
+  return {
+    id: settings.id || "rb-1",
+    sourceShardId: "shard-a",
+    targetShardId: "shard-b",
+    state: "PENDING",
+    reason: "REBALANCE_MERGE",
+    restoreState: "ACTIVE",
+    plan: { moves, surplus: moves.length, note: "test plan" },
+    plannedMoves: moves.length,
+    completedMoves: 0,
+    blocked: null,
+    requestedBy: "operator-1",
+    requestedAt: NOW,
+    startedAt: null,
+    lastMoveAt: null,
+    closedAt: null,
+    closedReason: null,
+    detail: null,
+    ...settings,
+  };
+}
+
+/** One planned move, in the shape `membership.planRebalance()` emits. */
+function move(agentId, overrides) {
+  return {
+    order: 0,
+    agentId,
+    fromShardId: "shard-a",
+    targetShardId: "shard-b",
+    reason: "REBALANCE_MERGE",
+    liveCommitments: 0,
+    allowCustodyTransfer: false,
+    ...(overrides || {}),
+  };
 }
 
 function deps(store, overrides) {
@@ -267,77 +354,307 @@ describe("migrationPass — §19.2's pacing", () => {
     return recovery.session;
   }
 
+  const credentials = { commandTtlSeconds: 60, signingKey: SIGNING_KEY };
+
+  /**
+   * PHASE 13 REMEDIATION (P13-R4) — every test below drives the pass through the **durable
+   * intent** rather than through an injected `settings.plan`.
+   *
+   * The injected form is gone, and its removal is the point rather than a refactor: nothing
+   * in production ever set `settings.plan`, so `migrationPass` returned `NO_PLAN` on every
+   * tick of every deployment while `POST /api/shards/:id/rebalance` moved shards to
+   * DRAINING and returned plans into HTTP response bodies that were their only copy. Thirty-
+   * two tests passed against a plan source that did not exist. These now seed the row the
+   * controller writes.
+   */
   test("**at most one agent moves per tick**, however long the plan is", async () => {
-    const { seed, store } = seeded();
+    const { seed, store } = seeded({
+      extraMembers: 2,
+      rebalance: rebalanceRow({
+        moves: [move(AGENT_ID), move(EXTRA_AGENT_IDS[0], { order: 1 }), move(EXTRA_AGENT_IDS[1], { order: 2 })],
+      }),
+    });
     const session = await committingLeader(store);
 
-    const outcome = await shardSupervisor.migrationPass(
-      deps(store),
-      context(store, {
-        session,
-        plan: {
-          moves: [
-            { agentId: seed.agent.id, targetShardId: "shard-b", reason: "REBALANCE_MERGE" },
-            { agentId: "another", targetShardId: "shard-b", reason: "REBALANCE_MERGE" },
-            { agentId: "a-third", targetShardId: "shard-b", reason: "REBALANCE_MERGE" },
-          ],
-        },
-        commandTtlSeconds: 60,
-        signingKey: SIGNING_KEY,
-      }),
-    );
+    const outcome = await shardSupervisor.migrationPass(deps(store), context(store, { session, ...credentials }));
 
     expect(shardSupervisor.MIGRATIONS_PER_TICK).toBe(1);
     expect(outcome.outcomes).toHaveLength(1);
     expect(outcome.migrated).toBe(1);
     expect(outcome.remaining).toBe(2);
+    // The intent advanced with it, and only once.
+    const row = store.rows("shardRebalance")[0];
+    expect(row).toMatchObject({ state: "EXECUTING", completedMoves: 1 });
+    expect(row.lastMoveAt).toEqual(store.now());
   });
 
-  test("the pace is respected — a tick too soon after the last migration moves nothing", async () => {
-    const { seed, store } = seeded();
+  test("the pace is respected, timed from the **durable** last move rather than from memory", async () => {
+    const { seed, store } = seeded({
+      rebalance: rebalanceRow({
+        moves: [move(AGENT_ID)],
+        state: "EXECUTING",
+        startedAt: new Date(NOW.getTime() - 500),
+        // The row a previous process — or a previous leader — left behind.
+        lastMoveAt: new Date(NOW.getTime() - 500),
+      }),
+    });
     const session = await committingLeader(store);
 
     const outcome = await shardSupervisor.migrationPass(
       deps(store),
-      context(store, {
-        session,
-        plan: { moves: [{ agentId: seed.agent.id, targetShardId: "shard-b", reason: "REBALANCE_MERGE" }] },
-        lastMigrationAtMs: store.now().getTime() - 500,
-        minIntervalMs: 2000,
-        commandTtlSeconds: 60,
-        signingKey: SIGNING_KEY,
-      }),
+      context(store, { session, minIntervalMs: 2000, ...credentials }),
     );
 
     expect(outcome.migrated).toBe(0);
     expect(outcome.skipped).toBe("PACED");
+    expect(outcome.waitedMs).toBe(500);
     expect(store.rows("outbox")).toEqual([]);
   });
 
   test("a session that may not commit migrates nothing — a rebalance is a write", async () => {
-    const { seed, store } = seeded();
+    const { seed, store } = seeded({ rebalance: rebalanceRow({ moves: [move(AGENT_ID)] }) });
     const renewal = await shardSupervisor.renewalPass(deps(store), context(store));
 
     const outcome = await shardSupervisor.migrationPass(
       deps(store),
-      context(store, {
-        // Un-promoted: reconciliation has not completed.
-        session: renewal.session,
-        plan: { moves: [{ agentId: seed.agent.id, targetShardId: "shard-b", reason: "REBALANCE_MERGE" }] },
-        commandTtlSeconds: 60,
-        signingKey: SIGNING_KEY,
-      }),
+      // Un-promoted: reconciliation has not completed.
+      context(store, { session: renewal.session, ...credentials }),
     );
 
     expect(outcome.migrated).toBe(0);
     expect(outcome.skipped).toBe("NOT_A_COMMITTING_LEADER");
+    expect(store.rows("shardRebalance")[0].state).toBe("PENDING");
   });
 
-  test("an absent plan is not an error — the supervisor does not choose which agents move", async () => {
+  test("no open intent is not an error — the supervisor does not choose which agents move", async () => {
     const { store } = seeded();
     const session = await committingLeader(store);
-    const tick = await shardSupervisor.runOnce(deps(store), context(store, { session }));
-    expect(tick.migration.skipped).toBe("NO_PLAN");
+    const tick = await shardSupervisor.runOnce(deps(store), context(store, { session, ...credentials }));
+    expect(tick.migration.skipped).toBe("NO_OPEN_REBALANCE");
+  });
+
+  test("the migration pass runs on every tick — it is no longer gated on a settings key nothing sets", async () => {
+    const { seed, store } = seeded({ rebalance: rebalanceRow({ moves: [move(AGENT_ID)] }) });
+    // No `plan` anywhere in the context, which is exactly the production composition.
+    // One tick acquires, reconciles, promotes, and migrates — because the pass now finds
+    // the plan for itself instead of waiting for a settings key nothing sets.
+    const tick = await shardSupervisor.runOnce(deps(store), context(store, credentials));
+    expect(tick.migration.migrated).toBe(1);
+    expect(store.rows("shardMembership").filter((row) => row.shardId === "shard-b" && row.supersededAt === null)).toHaveLength(1);
+
+    // And the next tick terminalises it and restores the shard, still with no injected plan.
+    const second = await shardSupervisor.runOnce(deps(store), context(store, { session: tick.session, ...credentials }));
+    expect(second.migration.skipped).toBe("PLAN_EXHAUSTED");
+    expect(store.rows("shardRebalance")[0].state).toBe("COMPLETED");
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Pass 4 continued — the rebalance lifecycle (§19.2), which is what P13-R4 was
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe("the rebalance intent terminates, and cannot strand a shard", () => {
+  const SIGNING_KEY = "a-signing-key-long-enough-for-§23.3-to-accept-it";
+  const credentials = { commandTtlSeconds: 60, signingKey: SIGNING_KEY };
+
+  async function committingLeader(store) {
+    const renewal = await shardSupervisor.renewalPass(deps(store), context(store));
+    const recovery = await shardSupervisor.failoverPass(deps(store), context(store, { session: renewal.session }));
+    return recovery.session;
+  }
+
+  /** Drive ticks until the intent is terminal or the bound is reached. */
+  async function drive(store, session, ticks) {
+    let last = null;
+    for (let index = 0; index < (ticks || 6); index += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      last = await shardSupervisor.migrationPass(deps(store), context(store, { session, ...credentials }));
+      if (last.skipped === "PLAN_EXHAUSTED") break;
+    }
+    return last;
+  }
+
+  test("the last move completes the intent **and restores the shard**", async () => {
+    const { seed, store } = seeded({
+      agentCount: 1,
+      rebalance: rebalanceRow({ moves: [move(AGENT_ID)] }),
+    });
+    // The state the endpoint would have left behind: a full drain.
+    await store.client.shard.update({ where: { shardId: "shard-a" }, data: { state: "DRAINING", drainingSince: NOW } });
+    const session = await committingLeader(store);
+
+    await drive(store, session);
+
+    const intent = store.rows("shardRebalance")[0];
+    expect(intent.state).toBe("COMPLETED");
+    expect(intent.closedAt).not.toBeNull();
+    expect(intent.closedReason).toMatch(/restored to ACTIVE/);
+
+    const shard = store.rows("shard").find((row) => row.shardId === "shard-a");
+    expect(shard.state).toBe("ACTIVE");
+    expect(shard.drainingSince).toBeNull();
+  });
+
+  test("a crash between the migration and its bookkeeping is resumed, and the agent is not moved twice", async () => {
+    const { seed, store } = seeded({ rebalance: rebalanceRow({ moves: [move(AGENT_ID)] }) });
+    await store.client.shard.update({ where: { shardId: "shard-a" }, data: { state: "DRAINING", drainingSince: NOW } });
+    const session = await committingLeader(store);
+
+    // The migration commits…
+    const first = await shardSupervisor.migrationPass(deps(store), context(store, { session, ...credentials }));
+    expect(first.migrated).toBe(1);
+
+    // …and the process dies before the intent could be closed. Simulated by rewinding the
+    // intent to exactly what it was before the bookkeeping: still open, still PENDING.
+    await store.client.shardRebalance.updateMany({
+      where: { id: "rb-1" },
+      data: { state: "PENDING", completedMoves: 0, startedAt: null, lastMoveAt: null },
+    });
+
+    const resumed = await shardSupervisor.migrationPass(deps(store), context(store, { session, ...credentials }));
+
+    // Nothing re-migrated: the agent is no longer a member of the source shard, so the
+    // move is no longer outstanding. Progress is derived, not counted.
+    expect(resumed.migrated).toBe(0);
+    expect(resumed.skipped).toBe("PLAN_EXHAUSTED");
+    expect(store.rows("shardRebalance")[0].state).toBe("COMPLETED");
+    expect(store.rows("shard").find((row) => row.shardId === "shard-a").state).toBe("ACTIVE");
+    // One migration, one command — not two.
+    expect(store.rows("outbox").filter((row) => row.command === "SHARD_MIGRATE")).toHaveLength(1);
+  });
+
+  test("a target that stopped admitting members cancels the intent rather than retrying forever", async () => {
+    const { seed, store } = seeded({ rebalance: rebalanceRow({ moves: [move(AGENT_ID)] }) });
+    await store.client.shard.update({ where: { shardId: "shard-a" }, data: { state: "DRAINING", drainingSince: NOW } });
+    // The target drains after the intent was opened — legal, and previously a permanent stall.
+    await store.client.shard.update({ where: { shardId: "shard-b" }, data: { state: "DRAINING", drainingSince: NOW } });
+    const session = await committingLeader(store);
+
+    const outcome = await shardSupervisor.migrationPass(deps(store), context(store, { session, ...credentials }));
+
+    expect(outcome.migrated).toBe(0);
+    const intent = store.rows("shardRebalance")[0];
+    expect(intent.state).toBe("CANCELLED");
+    expect(intent.closedReason).toMatch(/TARGET_SHARD_DOES_NOT_ADMIT_MEMBERS/);
+    // And the source shard is serving again rather than draining into nowhere.
+    expect(store.rows("shard").find((row) => row.shardId === "shard-a").state).toBe("ACTIVE");
+  });
+
+  test("an agent holding goods is retired from the plan, with the reason, so the intent still terminates", async () => {
+    const { seed, store } = seeded({ rebalance: rebalanceRow({ moves: [move(AGENT_ID)] }) });
+    await store.client.shard.update({ where: { shardId: "shard-a" }, data: { state: "DRAINING", drainingSince: NOW } });
+    // A live commitment on a Leg whose goods are aboard. §2.5 makes the transfer accountable.
+    await store.client.leg.update({ where: { id: "leg-0" }, data: { custodyState: "HELD" } });
+    await store.client.commitment.create({
+      data: { id: "c-1", commitmentId: "c-1", legId: "leg-0", agentId: AGENT_ID, agentCapacitySlot: 0, kind: "HARD", releasedAt: null, leadershipFence: 1n, fenceCounter: 41n, authorityEpoch: 7n, leaseExpiry: new Date(NOW.getTime() + 60000) },
+    });
+    const session = await committingLeader(store);
+
+    const first = await shardSupervisor.migrationPass(deps(store), context(store, { session, ...credentials }));
+    expect(first.outcomes[0].refusal).toBe("AGENT_HOLDS_CUSTODY");
+    expect(store.rows("shardRebalance")[0].blocked.agentIds).toEqual([seed.agent.id]);
+
+    // The next tick finds nothing outstanding — the blocked move is retired, not retried —
+    // so the intent terminates and the shard serves again.
+    const second = await shardSupervisor.migrationPass(deps(store), context(store, { session, ...credentials }));
+    expect(second.skipped).toBe("PLAN_EXHAUSTED");
+    expect(store.rows("shardRebalance")[0].state).toBe("COMPLETED");
+    expect(store.rows("shardRebalance")[0].closedReason).toMatch(/1 retired unmoved/);
+    expect(store.rows("shard").find((row) => row.shardId === "shard-a").state).toBe("ACTIVE");
+    // The agent did not move, which is the whole point of refusing.
+    expect(store.rows("outbox")).toEqual([]);
+  });
+
+  test("**a superseded leader cannot migrate** — the fence is re-read inside the handoff transaction", async () => {
+    const { seed, store } = seeded({ rebalance: rebalanceRow({ moves: [move(AGENT_ID)] }) });
+    const session = await committingLeader(store);
+
+    // Another coordinator takes the shard. The lease lapses first, so this is an ordinary
+    // failover rather than a theft.
+    store.advanceClock(SHARD_LEASE_SECONDS + 1);
+    const successor = await shardSupervisor.renewalPass(deps(store), context(store, { candidateId: "coordinator-b", storeTime: store.now() }));
+    expect(successor.transition).toBe("ACQUIRED");
+
+    // The old leader still believes it leads and still holds a promoted session.
+    const outcome = await shardSupervisor.migrationPass(
+      deps(store),
+      context(store, { session, storeTime: store.now(), ...credentials }),
+    );
+
+    expect(outcome.migrated).toBe(0);
+    expect(outcome.outcomes[0].refusal).toBe("LEADERSHIP_FENCE_ADVANCED_OR_HELD_BY_ANOTHER");
+    // No authority_epoch advanced, no command enqueued, no membership row written.
+    expect(store.rows("agent").find((row) => row.id === seed.agent.id).authorityEpoch).toBe(seed.agent.authorityEpoch);
+    expect(store.rows("outbox")).toEqual([]);
+    expect(store.rows("shardMembership").filter((row) => row.shardId === "shard-b")).toEqual([]);
+    // And the intent is untouched, so the successor picks it up.
+    expect(store.rows("shardRebalance")[0]).toMatchObject({ state: "PENDING", completedMoves: 0 });
+  });
+
+  test("the successor resumes the same intent — the plan survives a leadership handoff", async () => {
+    const { seed, store } = seeded({
+      extraMembers: 1,
+      rebalance: rebalanceRow({ moves: [move(AGENT_ID), move(EXTRA_AGENT_IDS[0], { order: 1 })] }),
+    });
+    const first = await committingLeader(store);
+    await shardSupervisor.migrationPass(deps(store), context(store, { session: first, ...credentials }));
+
+    store.advanceClock(SHARD_LEASE_SECONDS + 1);
+    const renewal = await shardSupervisor.renewalPass(deps(store), context(store, { candidateId: "coordinator-b", storeTime: store.now() }));
+    const recovery = await shardSupervisor.failoverPass(deps(store), context(store, { session: renewal.session, storeTime: store.now() }));
+
+    const outcome = await shardSupervisor.migrationPass(
+      deps(store),
+      context(store, { session: recovery.session, storeTime: store.now(), ...credentials }),
+    );
+
+    expect(outcome.migrated).toBe(1);
+    expect(store.rows("shardRebalance")[0].completedMoves).toBe(2);
+    expect(store.rows("shardMembership").filter((row) => row.shardId === "shard-b" && row.supersededAt === null)).toHaveLength(2);
+  });
+
+  test("an intent whose moves are already resolved closes on the first tick — no shard stays draining", async () => {
+    // The exact durable state P13-R4 left behind, reconstructed: a DRAINING shard whose
+    // plan names an agent that is no longer one of its members.
+    const { store } = seeded({ rebalance: rebalanceRow({ moves: [move("agent-that-left")] }) });
+    await store.client.shard.update({ where: { shardId: "shard-a" }, data: { state: "DRAINING", drainingSince: NOW } });
+    const session = await committingLeader(store);
+
+    const outcome = await shardSupervisor.migrationPass(deps(store), context(store, { session, ...credentials }));
+
+    expect(outcome.skipped).toBe("PLAN_EXHAUSTED");
+    expect(store.rows("shard").find((row) => row.shardId === "shard-a")).toMatchObject({ state: "ACTIVE", drainingSince: null });
+  });
+
+  test("without a signing key nothing is migrated, nothing is signed, and the intent stays cancellable", async () => {
+    const { seed, store } = seeded({ rebalance: rebalanceRow({ moves: [move(AGENT_ID)] }) });
+    const session = await committingLeader(store);
+
+    const outcome = await shardSupervisor.migrationPass(
+      deps(store),
+      context(store, { session, commandTtlSeconds: 60 }),
+    );
+
+    expect(outcome.skipped).toBe("NO_COMMAND_CREDENTIALS");
+    expect(outcome.detail).toMatch(/§23.3/);
+    expect(store.rows("outbox")).toEqual([]);
+    // Reported rather than thrown: a throw would be swallowed by the interval callback and
+    // present as a supervisor that simply never migrates.
+    expect(store.rows("shardRebalance")[0].state).toBe("PENDING");
+  });
+
+  test("a shard's supervisor reads only its own shard's intents", async () => {
+    const { seed, store } = seeded({
+      rebalance: rebalanceRow({ id: "rb-other", sourceShardId: "shard-b", targetShardId: "shard-a", moves: [move(AGENT_ID)] }),
+    });
+    const session = await committingLeader(store);
+
+    const outcome = await shardSupervisor.migrationPass(deps(store), context(store, { session, ...credentials }));
+
+    // `shard-a`'s leader must not execute `shard-b`'s rebalance, even though the agent it
+    // names is one of `shard-a`'s members.
+    expect(outcome.skipped).toBe("NO_OPEN_REBALANCE");
+    expect(store.rows("shardRebalance")[0]).toMatchObject({ state: "PENDING", completedMoves: 0 });
   });
 });
 
@@ -468,5 +785,172 @@ describe("socket messages", () => {
     const source = require("fs").readFileSync(require.resolve("../../src/workers/shardSupervisor.worker.js"), "utf8");
     expect(source).not.toMatch(/socket\.io|require\(["']socket/);
     expect(source).not.toMatch(/\bio\.(to|emit)\b/);
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PHASE 13 REMEDIATION — the composition itself, not only the module.
+
+   Every test above this block injects a complete dependency set, which is exactly
+   why the production composition could be — and was — incomplete while all of them
+   passed. `server.js` supplied four of the seven dependencies `start()` documents.
+   The consequences, each reproduced before the fix:
+
+     · no `leaseDurationSeconds` → `tryAcquire` throws RangeError from
+       `clock.deadlineFrom`; no leader is ever elected and the fence never moves.
+     · no `reconcile`            → `failover.run()` throws by design (§19.5);
+       `election.promote()` is never reached and `mayCommit` stays false forever.
+     · no `runSerializable` /
+       `selectForUpdate`         → `membership.migrate()` cannot take the agent row
+       under the commit path's lock; no migration can execute.
+
+   A tick that throws is swallowed by `start()`'s `.catch` (correctly — one lost
+   renewal must not take the process down), so none of these was ever visible as a
+   failure. They are asserted here in two layers: the module refuses an incomplete
+   composition at boot, and `server.js` is checked for actually supplying it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe("start() — an incomplete composition is refused at boot, not swallowed per tick", () => {
+  const cases = [
+    ["reconcile", /reconcile \(§12\.4's sweep/],
+    ["runSerializable", /runSerializable \(§19\.2's handoff/],
+    ["selectForUpdate", /selectForUpdate \(§10\.3\.2 step 1's/],
+  ];
+
+  test.each(cases)("a composition missing `%s` is refused, naming what it is for", (key, message) => {
+    const { store } = seeded();
+    const incomplete = deps(store);
+    delete incomplete[key];
+    expect(() => shardSupervisor.start(incomplete, context(store))).toThrow(message);
+  });
+
+  test("a composition missing the store client is refused", () => {
+    const { store } = seeded();
+    const incomplete = deps(store);
+    delete incomplete.prisma;
+    expect(() => shardSupervisor.start(incomplete, context(store))).toThrow(/prisma \(the store client\)/);
+  });
+
+  test("a missing `shard.lease_duration` is refused, because without it no leader is ever elected", () => {
+    const { store } = seeded();
+    expect(() => shardSupervisor.start(deps(store), context(store, { leaseDurationSeconds: undefined }))).toThrow(
+      /needs `shard\.lease_duration` as a positive number of seconds/,
+    );
+  });
+
+  test("a non-positive lease duration is refused too", () => {
+    const { store } = seeded();
+    expect(() => shardSupervisor.start(deps(store), context(store, { leaseDurationSeconds: 0 }))).toThrow(RangeError);
+  });
+
+  // The store assertion must still come first: a store that cannot fence a leader is a
+  // deployment error of a different and more serious kind, and it kept its own message.
+  test("the consensus-store refusal still precedes the dependency check", () => {
+    const { store } = seeded();
+    const unsafe = election.postgresLeadershipStore(store.client, { replicationPosture: "ASYNCHRONOUS_FAILOVER" });
+    expect(() => shardSupervisor.start({ prisma: store.client, store: unsafe }, context(store))).toThrow(
+      /No leader election over a non-consensus store/,
+    );
+  });
+});
+
+describe("the production composition in server.js", () => {
+  const source = require("fs").readFileSync(require.resolve("../../server.js"), "utf8");
+  const call = source.slice(source.indexOf("shardSupervisor.start("), source.indexOf("logger.info(\"Shard coordinator standing for election\""));
+
+  test("the call site is where the plan's Phase 13 row puts it, and it is reachable", () => {
+    expect(call).toContain("shardSupervisor.start(");
+    expect(source).toContain("const engineEnabled = cutoverEnabled.processEnabled();");
+  });
+
+  test.each([
+    ["prisma"],
+    ["store"],
+    ["reconcile"],
+    ["runSerializable"],
+    ["selectForUpdate"],
+  ])("`server.js` supplies the `%s` dependency", (key) => {
+    expect(call).toMatch(new RegExp(`\\b${key}\\b`));
+  });
+
+  test.each([
+    ["shard.lease_duration"],
+    ["shard.renewal_interval"],
+    ["time.max_clock_skew"],
+    ["shard.store_round_trip_budget"],
+    ["shard.migration_min_interval"],
+  ])("`server.js` reads `%s` from the register rather than hard-coding it", (parameter) => {
+    expect(call).toContain(`"${parameter}"`);
+  });
+
+  // §19.5's reconciliation must be *the* sweep, not a second implementation. `failover.js`
+  // takes it injected precisely so the shard has one requeue path and one set of §4.5
+  // timer obligations attached to it.
+  test("the injected `reconcile` is §12.4's own sweep", () => {
+    expect(call).toMatch(/reconciler\.sweep\(/);
+    expect(source).toContain('require("./src/engine/supervision/reconciler")');
+  });
+
+  // The plan's Phase 13 Socket.IO row names two dashboard events. The worker returns them
+  // rather than emitting them, so a caller must choose the room — and until this remediation
+  // no caller did, leaving both events with a producer and no wire.
+  test("`server.js` gives the two dashboard events a wire", () => {
+    expect(call).toMatch(/onTick:/);
+    expect(call).toMatch(/shardSupervisor\.socketMessages\(tick\)/);
+    expect(call).toMatch(/io\.to\("dashboard"\)\.emit/);
+  });
+
+  // §11.1 — an agent-scope command reaches its agent through the outbox, never a broadcast.
+  test("…and does not broadcast the agent-scope command", () => {
+    expect(call).not.toMatch(/emit\(\s*["']SHARD_MIGRATE["']/);
+  });
+
+  test("the register's units are respected — lease in seconds, the rest in milliseconds", () => {
+    expect(call).toMatch(/leaseDurationSeconds:\s*finite\("shard\.lease_duration"\)/);
+    expect(call).toMatch(/intervalMs:\s*finite\("shard\.renewal_interval"\)/);
+    expect(call).toMatch(/maxClockSkewMillis:\s*finite\("time\.max_clock_skew"\)/);
+    expect(call).toMatch(/storeRoundTripMillis:\s*finite\("shard\.store_round_trip_budget"\)/);
+    expect(call).toMatch(/minIntervalMs:\s*finite\("shard\.migration_min_interval"\)/);
+  });
+});
+
+describe("a tick under the production-shaped dependency set", () => {
+  // The point of this test is not that a tick works — the tests above already show that.
+  // It is that a tick works when the dependencies are the ones `server.js` builds, which
+  // is the claim no Phase 13 test made and the one that turned out to be false.
+  test("acquires, reconciles, promotes, and reports that a round may run", async () => {
+    const { store } = seeded();
+    const production = {
+      prisma: store.client,
+      kv: { set: async () => "OK" },
+      store: election.postgresLeadershipStore(store.client, { replicationPosture: "SYNCHRONOUS_QUORUM" }),
+      runSerializable: (client, fn) => client.$transaction(fn),
+      selectForUpdate: async (tx, table, column, value) => {
+        const rows = await tx.$queryRawUnsafe(`SELECT * FROM "${table}" WHERE "${column}" = $1 FOR UPDATE`, value);
+        return rows.length > 0 ? rows[0] : null;
+      },
+      reconcile: async () => ({ total: 0, results: [] }),
+      onError: () => {},
+    };
+    const settings = {
+      shardId: "shard-a",
+      candidateId: "host:1234",
+      leaseDurationSeconds: 5,
+      intervalMs: 1500,
+      maxClockSkewMillis: 500,
+      storeRoundTripMillis: 500,
+      minIntervalMs: 2000,
+    };
+
+    const tick = await shardSupervisor.runOnce(production, { ...settings, storeTime: store.now() });
+
+    expect(tick.transition).toBe("ACQUIRED");
+    expect(tick.session.state).toBe(election.LEADERSHIP_STATE.LEADER);
+    expect(tick.failoverRan).toBe(true);
+    expect(tick.session.mayCommit).toBe(true);
+    expect(tick.mayRunRound).toBe(true);
+
+    const row = await store.client.shardLeadership.findUnique({ where: { shardId: "shard-a" } });
+    expect(row.holder).toBe("host:1234");
   });
 });

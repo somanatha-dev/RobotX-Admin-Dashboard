@@ -31,14 +31,21 @@
  * destroyed the columns the running system reads would be a data-loss event with a
  * migration's name on it.
  *
- * It also does not resolve the derived quantities from the spatial layer. `fineCell` and
- * `zoneId` are computed here from the coordinate through `spatial/cells.js`, because that
- * is a pure function; `routingNodeId`, `geofenceResult`, `accessWindowClass` and
+ * It also does not resolve the derived quantities from the spatial layer. `fineCell` is
+ * computed here from the coordinate through `spatial/cells.js`, because that is a pure
+ * function; `zoneId`, `routingNodeId`, `geofenceResult`, `accessWindowClass` and
  * `serviceTimeCohort` require the routing graph, the geofence service and the
- * service-time model, none of which is available to an offline migration. They are left
- * null and populated by the engine when it next plans against the Stop — which is
- * correct, because a derived quantity invented by a migration is a derived quantity
- * nothing derived.
+ * service-time model, none of which is available to an offline migration. A derived
+ * quantity invented by a migration is a derived quantity nothing derived, so they are
+ * left null.
+ *
+ * **Corrected at the Phase 14 remediation (P14-R7).** This header previously said the
+ * five were "populated by the engine when it next plans against the Stop". They are not:
+ * no module in `src/` writes any of the six columns, and the sentence was a handoff to a
+ * consumer that does not exist — the same shape of defect the Phase 10 and Phase 12
+ * closures found. `src/services/task.service.sealIdentities()` is now the production
+ * producer of `Stop.identityKey` and `fineCell`; the remaining five are recorded as an
+ * open, owned boundary in `PHASE_14_REMEDIATION_AND_CLOSURE.md` rather than as a claim.
  *
  * Usage:
  *   node tools/migrate/backfillIdentities.js [--dry-run] [--batch <n>] [--redact] [--json]
@@ -47,6 +54,7 @@
 
 const identityStore = require("../../src/engine/privacy/identityStore");
 const surrogateKeys = require("../../src/engine/privacy/surrogateKeys");
+const privacyKeys = require("../../src/config/privacyKeys");
 
 /** @structural a page size, not a threshold */
 const DEFAULT_BATCH = 500;
@@ -61,23 +69,11 @@ const DEFAULT_BATCH = 500;
  * @returns {{ secret: string, encryptionKey: Buffer }}
  */
 function keysFromEnvironment() {
-  const secret = process.env.PRIVACY_SURROGATE_SECRET;
-  const keyHex = process.env.PRIVACY_IDENTITY_KEY;
-
-  if (!secret) {
-    throw new Error(
-      "PRIVACY_SURROGATE_SECRET is unset. The surrogate key is a keyed digest; an unkeyed one over an address is " +
-        "reversible by enumeration, because the space of real addresses is small (§23.7).",
-    );
-  }
-  if (!keyHex) {
-    throw new Error(
-      "PRIVACY_IDENTITY_KEY is unset. §23.7 requires encryption at rest for the identity store specifically; storing " +
-        "it in plaintext would put every delivery address in the fleet's history into any database backup.",
-    );
-  }
-
-  return { secret, encryptionKey: identityStore.requireEncryptionKey(Buffer.from(keyHex, "hex")) };
+  // P14-R7: delegated to `src/config/privacyKeys.js`, which is now the single boundary
+  // where the two §23.7 secrets are read. Two readers is two sets of variable names that
+  // eventually disagree, and the production intake path needs the same pair this job does
+  // — a Stop backfilled yesterday and a Stop created today must mint the same key.
+  return privacyKeys.fromEnvironment();
 }
 
 /**

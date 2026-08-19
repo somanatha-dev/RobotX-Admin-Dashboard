@@ -61,6 +61,59 @@ describe("scoping — which Legs belong to this shard", () => {
     expect([...scope.legIds].sort()).toEqual(["leg-defect-orphan", "leg-planned-committed", "leg-planned-orphan"]);
     expect(scope.legIds.has("leg-south")).toBe(false);
   });
+
+  /* PHASE 13 REMEDIATION (P13-R17) — attribution is not routing.
+   *
+   * This function used to build its map with `regionShardMap()`, which excludes shards that
+   * admit no new work. A rebalance's entire job is to put its source shard into DRAINING,
+   * so a working rebalance made both halves below reachable. Neither was reachable while
+   * the rebalance endpoint did nothing, which is why the two defects were found together.
+   */
+  test("**a DRAINING shard still owns its region's Legs** — attribution does not stop when admission does", async () => {
+    const world = postFailoverWorld({ nowMs: NOW_MS });
+    world.shard = world.shard.map((shard) =>
+      shard.shardId === "shard-north" ? { ...shard, state: "DRAINING", drainingSince: new Date(NOW_MS) } : shard,
+    );
+    // The `WorkQueue` rows removed, so only the region→shard fallback can attribute. Before
+    // the fix this reported "the mission regions this shard owns (none)" and an empty set:
+    // §19.5's reconciliation ran over nothing for the shard most likely to hold half-written
+    // state, because it was the one being rebalanced.
+    world.workQueue = [];
+    const prisma = memoryStore(world);
+
+    const scope = await failover.legsInShard({ prisma }, { shardId: "shard-north" });
+
+    expect(scope.scoped).toBe(true);
+    expect([...scope.legIds].sort()).toEqual(["leg-defect-orphan", "leg-planned-committed", "leg-planned-orphan"]);
+    expect(scope.legIds.has("leg-south")).toBe(false);
+  });
+
+  test("**a fleet whose every shard is draining is still a multi-shard fleet**, not a single-shard deployment", async () => {
+    const world = postFailoverWorld({ nowMs: NOW_MS });
+    world.shard = world.shard.map((shard) => ({ ...shard, state: "DRAINING", drainingSince: new Date(NOW_MS) }));
+    const prisma = memoryStore(world);
+
+    const scope = await failover.legsInShard({ prisma }, { shardId: "shard-north" });
+
+    // Before the fix the routing map was empty, which read as "no map is published" — the
+    // single-shard branch — and **every shard's leader would have reconciled the whole
+    // fleet**. That is the second writer §19.3 exists to prevent, originating inside this
+    // phase rather than in §12.4's sweep.
+    expect(scope.scoped).toBe(true);
+    expect(scope.legIds.has("leg-south")).toBe(false);
+    expect(scope.note).not.toMatch(/single-shard deployment/);
+  });
+
+  test("the routing map is unchanged — a draining shard still admits no new Leg at intake", () => {
+    const shardModel = require("../../src/engine/shard/shardModel");
+    const shards = [
+      { shardId: "shard-north", regionId: "region-north", state: "DRAINING" },
+      { shardId: "shard-south", regionId: "region-south", state: "ACTIVE" },
+    ];
+    // The two maps answer two different questions and must not be collapsed into one.
+    expect(shardModel.regionShardMap(shards)).toEqual({ "region-south": "shard-south" });
+    expect(shardModel.regionOwnershipMap(shards)).toEqual({ "region-north": "shard-north", "region-south": "shard-south" });
+  });
 });
 
 describe("recovering the durable state (§19.5's first job)", () => {
@@ -74,6 +127,44 @@ describe("recovering the durable state (§19.5's first job)", () => {
     expect(inventory[failover.DURABLE_CATEGORY.OUTBOX].staleClaims).toBe(1);
     expect(inventory[failover.DURABLE_CATEGORY.TIMERS].pending).toBe(2);
     expect(inventory[failover.DURABLE_CATEGORY.TIMERS].overdue).toBe(1);
+  });
+
+  // PHASE 13 REMEDIATION (P13-R10) — the inventory presented itself as "the durable state
+  // the new leader inherits" for this shard, and counted the *fleet's* timers and outbox
+  // rows. `t-3` in the fixture belongs to `shard-south`; before the fix it was in
+  // `shard-north`'s pending count.
+  test("timer counts are scoped to the shard — another shard's timers are not this leader's inheritance", async () => {
+    const prisma = memoryStore(postFailoverWorld({ nowMs: NOW_MS }));
+
+    const north = await failover.inventory({ prisma }, { shardId: "shard-north", storeTime: STORE_TIME });
+    const south = await failover.inventory({ prisma }, { shardId: "shard-south", storeTime: STORE_TIME });
+
+    expect(north[failover.DURABLE_CATEGORY.TIMERS]).toMatchObject({ pending: 2, overdue: 1, scope: "SHARD" });
+    expect(south[failover.DURABLE_CATEGORY.TIMERS]).toMatchObject({ pending: 1, overdue: 1, scope: "SHARD" });
+    // The whole fleet holds three; neither shard claims all three.
+    expect(await prisma.timer.count({ where: { timerState: "PENDING" } })).toBe(3);
+  });
+
+  test("the outbox count says it is the fleet's, because Outbox carries no shardId", async () => {
+    const prisma = memoryStore(postFailoverWorld({ nowMs: NOW_MS }));
+    const inventory = await failover.inventory({ prisma }, { shardId: "shard-north", storeTime: STORE_TIME });
+
+    // Not silently wrong and not silently dropped: reported with the scope it actually has.
+    expect(inventory[failover.DURABLE_CATEGORY.OUTBOX].scope).toBe("FLEET");
+    expect(inventory[failover.DURABLE_CATEGORY.OUTBOX].note).toMatch(/no shardId/);
+    expect(inventory.note).toMatch(/whether its count is this shard's or the fleet's/);
+  });
+
+  test("in the single-shard deployment every category says FLEET, because the two sets are the same", async () => {
+    const prisma = memoryStore({
+      leg: [{ id: "leg-1", state: "PLANNED" }],
+      timer: [{ id: "t-x", timerKey: "k", entityType: "LEG", entityId: "leg-1", timerState: "PENDING", dueAt: new Date(NOW_MS + 1000) }],
+    });
+    const inventory = await failover.inventory({ prisma }, { shardId: "default", storeTime: STORE_TIME });
+
+    expect(inventory.scope.scoped).toBe(false);
+    expect(inventory[failover.DURABLE_CATEGORY.TIMERS]).toMatchObject({ pending: 1, scope: "FLEET" });
+    expect(inventory[failover.DURABLE_CATEGORY.HARD_COMMITMENTS].scope).toBe("FLEET");
   });
 
   test("it is an inventory, not a repair list — it names the owner of each repair", async () => {
@@ -274,6 +365,56 @@ describe("persistence — the shard row records the failover", () => {
     const prisma = memoryStore(twoShardWorld({ nowMs: NOW_MS }));
     await failover.persist({ prisma }, { shardId: "shard-north", at: STORE_TIME, result: { complete: true, reconstruction: { reconstructedLegCount: 0 }, inventory: {} } });
     expect(prisma.__store.shard.find((entry) => entry.shardId === "shard-north").lastLeadershipChangeAt).toEqual(STORE_TIME);
+  });
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     PHASE 13 REMEDIATION — the single-shard deployment.
+
+     A `Shard` row is published configuration: it carries a foreign key to a
+     `Region`, and §3.5's region→shard map is something an operator publishes.
+     The default deployment therefore has NO `Shard` row, and this module treats
+     that as legal everywhere else — `legsInShard()` says so explicitly.
+
+     `persist()` used `update()`, which raises P2025 when it matches nothing.
+     That threw out of the supervisor's `failoverPass()` **after** the §12.4
+     sweep had already run; the interval callback swallowed it (correctly), so
+     the session was never promoted and the loop re-entered as a follower
+     forever, re-running the full sweep every tick. A coordinator that
+     reconciled continuously and never resumed a round.
+
+     Verified against live PostgreSQL 18.3 before the fix: P2025 from
+     `failover.js:423`, with the sweep already having run.
+     ───────────────────────────────────────────────────────────────────────── */
+  test("a shard with no published Shard row does not throw — the single-shard deployment is legal", async () => {
+    const prisma = memoryStore(twoShardWorld({ nowMs: NOW_MS }));
+    const outcome = await failover.persist(
+      { prisma },
+      { shardId: "shard-that-was-never-published", at: STORE_TIME, result: { complete: true, reconstruction: { reconstructedLegCount: 0 }, inventory: {} } },
+    );
+    expect(outcome.persisted).toBe(false);
+    expect(outcome.note).toMatch(/single-shard deployment/);
+  });
+
+  test("…and it says so rather than reporting a write it did not make", async () => {
+    const prisma = memoryStore(twoShardWorld({ nowMs: NOW_MS }));
+    const before = prisma.__store.shard.map((entry) => ({ ...entry }));
+
+    await failover.persist(
+      { prisma },
+      { shardId: "absent", at: STORE_TIME, result: { complete: true, reconstruction: { reconstructedLegCount: 7 }, inventory: {} } },
+    );
+
+    // No unrelated shard row may absorb the write.
+    expect(prisma.__store.shard).toEqual(before);
+  });
+
+  test("a published shard still reports the write it did make", async () => {
+    const prisma = memoryStore(twoShardWorld({ nowMs: NOW_MS }));
+    const outcome = await failover.persist(
+      { prisma },
+      { shardId: "shard-north", at: STORE_TIME, result: { complete: true, reconstruction: { reconstructedLegCount: 0 }, inventory: {} } },
+    );
+    expect(outcome).toMatchObject({ persisted: true, shardId: "shard-north", note: null });
   });
 });
 

@@ -57,6 +57,11 @@ const cadence = require("../engine/solve/cadence");
 const cutoverEnabled = require("../engine/cutover/enabled");
 const { taskToWork } = require("../engine/domain/mappers/legacyTask");
 const { PURPOSES } = require("../engine/domain/purpose");
+// PHASE 14 — §23.7's separation, applied by the production intake path.
+const identityStore = require("../engine/privacy/identityStore");
+const surrogateKeys = require("../engine/privacy/surrogateKeys");
+const cells = require("../engine/spatial/cells");
+const privacyKeys = require("../config/privacyKeys");
 
 /**
  * Is the engine the decision path for the shard this request resolves to?
@@ -74,6 +79,142 @@ function engineEnabled(context) {
     snapshot: settings.config || null,
     shard: { regionId: settings.regionId || null, shardId: settings.shardId || null },
   });
+}
+
+/**
+ * PHASE 14 — §23.7: seal the identifying values of one submission into the identity
+ * store and write back the surrogate keys.
+ *
+ * ── Why here, and why on the write rather than after it ─────────────────────
+ * §23.7's rule is that the *technical* record holds a stable surrogate key and the
+ * derived, non-identifying quantities, and that the identifying values live in a
+ * separate, access-controlled store. `backfillIdentities.js` applies that rule to rows
+ * that already exist; nothing applied it to rows this system creates, which meant the
+ * separation held for history and not for anything the fleet did next. This is the
+ * missing producer.
+ *
+ * ── Fail closed, and why that is safe here ──────────────────────────────────
+ * A missing secret throws rather than skipping. A skip would produce exactly the state
+ * §23.7 exists to prevent — an address in `Stop.label` with no identity record, no key,
+ * and no erasure route — and it would do so silently, at the one moment the address is
+ * in hand. It is safe to throw because this function is only reached from `assignTask`,
+ * *after* its cutover gate: while the engine is not live for a shard the request is
+ * already refused with 503, so the hard dependency lands at the same cutover that makes
+ * the path reachable at all.
+ *
+ * ── Which derived quantities are written, and which are honestly not ────────
+ * `fineCell` only. It is a pure function of the coordinate (`spatial/cells.js`), which is
+ * what §3.4's "no routing provider is consulted on the request path" permits. The other
+ * five §23.7 quantities — the zone, the geofence result, the access-window class, the
+ * service-time cohort, the routing-graph node — are products of the round, not of the
+ * submission: each needs the routing graph, the geofence service or the service-time
+ * model, and inventing one here would be a derived quantity nothing derived. They are
+ * left null, and `PHASE_14_REMEDIATION_AND_CLOSURE.md` records the boundary and its owner
+ * rather than leaving it to be discovered.
+ *
+ * @param {object} prisma
+ * @param {object} input `{ task, work, privacyKeys }`
+ * @returns {Promise<{ stops: number, ends: number }>}
+ */
+async function sealIdentities(prisma, input) {
+  const source = input || {};
+  const work = source.work || {};
+  const task = source.task || {};
+
+  const keys = source.privacyKeys || privacyKeys.fromEnvironment();
+
+  let stops = 0;
+  for (const stop of work.stops || []) {
+    const natural = stopNaturalId(stop);
+    if (natural === null) continue;
+
+    // eslint-disable-next-line no-await-in-loop
+    const stored = await identityStore.put(
+      { prisma },
+      {
+        subjectType: surrogateKeys.SUBJECT_TYPE.STOP,
+        naturalId: natural,
+        fields: identifyingFieldsOf(stop),
+        subjectId: stop.stopId,
+        secret: keys.secret,
+        encryptionKey: keys.encryptionKey,
+      },
+    );
+
+    // eslint-disable-next-line no-await-in-loop
+    await prisma.stop.update({
+      where: { id: stop.id },
+      data: {
+        identityKey: stored.identityKey,
+        ...(Number.isFinite(stop.lat) && Number.isFinite(stop.lon)
+          ? { fineCell: cells.cellForPoint(stop.lat, stop.lon, cells.RESOLUTION.FINE) }
+          : {}),
+      },
+    });
+    stops += 1;
+  }
+
+  // Two keys for the Task, never one: `pickup` and `drop` are two different premises, and
+  // a single key over both would make an erasure request for either erase the other.
+  const ends = [
+    { column: "originIdentityKey", natural: task.pickup, fields: { label: task.pickup, lat: task.pickupLat, lon: task.pickupLon } },
+    { column: "destinationIdentityKey", natural: task.drop, fields: { label: task.drop, lat: task.dropLat, lon: task.dropLon } },
+  ];
+
+  const data = {};
+  for (const end of ends) {
+    if (typeof end.natural !== "string" || end.natural.trim() === "") continue;
+    // eslint-disable-next-line no-await-in-loop
+    const stored = await identityStore.put(
+      { prisma },
+      {
+        subjectType: surrogateKeys.SUBJECT_TYPE.TASK,
+        naturalId: end.natural,
+        fields: end.fields,
+        subjectId: task.taskId,
+        secret: keys.secret,
+        encryptionKey: keys.encryptionKey,
+      },
+    );
+    data[end.column] = stored.identityKey;
+  }
+
+  if (Object.keys(data).length > 0) {
+    await prisma.task.update({ where: { id: task.id }, data });
+  }
+
+  return { stops, ends: Object.keys(data).length };
+}
+
+/**
+ * The identifying fields a freshly mapped Stop carries.
+ *
+ * @param {object} stop
+ * @returns {object}
+ */
+function identifyingFieldsOf(stop) {
+  const fields = {};
+  if (stop.label !== null && stop.label !== undefined) fields.label = stop.label;
+  if (Number.isFinite(stop.lat)) fields.lat = stop.lat;
+  if (Number.isFinite(stop.lon)) fields.lon = stop.lon;
+  return fields;
+}
+
+/**
+ * The natural identifier a Stop's surrogate key is derived from.
+ *
+ * The label where there is one, else the coordinate pair — **identical** to
+ * `backfillIdentities.stopNaturalId()`, and identical on purpose: a Stop backfilled
+ * yesterday and a Stop created today must resolve to the same identity record, or one
+ * erasure request would have to be filed twice for one address.
+ *
+ * @param {object} stop
+ * @returns {string|null}
+ */
+function stopNaturalId(stop) {
+  if (typeof stop.label === "string" && stop.label.trim() !== "") return stop.label;
+  if (Number.isFinite(stop.lat) && Number.isFinite(stop.lon)) return `${stop.lat},${stop.lon}`;
+  return null;
 }
 
 /**
@@ -104,6 +245,13 @@ async function admitToRound(prisma, pending, options = {}) {
   for (const stop of work.stops) {
     await prisma.stop.upsert({ where: { id: stop.id }, create: stop, update: {} });
   }
+
+  // PHASE 14 — §23.7's separation, applied at the moment the identifying values are
+  // first written rather than by a migration afterwards. Before this, the only writer of
+  // `Stop.identityKey` was `tools/migrate/backfillIdentities.js`, so every Stop the
+  // running system created had no identity record, no surrogate key, and therefore no
+  // route by which an erasure request could reach it.
+  await sealIdentities(prisma, { task: pending, work, privacyKeys: options.privacyKeys });
 
   const receivedAtMs = typeof options.receivedAtMs === "number" ? options.receivedAtMs : Date.now();
   const config = options.cadenceConfig || {};

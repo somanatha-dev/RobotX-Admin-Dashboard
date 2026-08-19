@@ -19,6 +19,8 @@ const { z } = require("zod");
 const robotStateCache = require("../../cache/robotStateCache");
 // PHASE 5 (§12.5) — graded completion verification.
 const verification = require("../../engine/supervision/verification");
+// PHASE 14 remediation (P14-R14) — §23.5 row 3, the completion trust boundary.
+const trustBoundaries = require("../../engine/security/trustBoundaries");
 // PHASE 12 (§18.2) — the agent failure catalogue. A fault report becomes a *classified*
 // failure with a defined response and escalation, rather than a status change and a log line.
 const agentFailures = require("../../engine/failure/agentFailures");
@@ -47,8 +49,13 @@ const faultSchema = z.object({
  * @param {object} socket
  * @param {{ prisma: object, kv: object, logger: object }} deps
  */
-function registerDtaroHandlers(io, socket, { prisma, kv, logger }) {
+function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
   const log = logger || console;
+
+  // PHASE 14 remediation (P14-R1 / P14-R14) — the pinned configuration snapshot, for
+  // §23.5's completion row. See `robot.handler.js` for why `socket.request.app` is not a
+  // route to it.
+  const configOf = () => appLocals?.config ?? socket?.request?.app?.locals?.config ?? null;
 
   // ─── OBSTACLE_REPORT ────────────────────────────────────────────────────────
   socket.on("OBSTACLE_REPORT", async (payload) => {
@@ -110,7 +117,34 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger }) {
       // `ENGINE_ENABLED` false it does nothing, and with it true a completion claim is
       // graded, its evidence archived, and an insufficient one sends the Task to
       // `VERIFYING` rather than to `COMPLETED`.
-      const verdict = await verifyCompletionClaim({ prisma, log, robotId, taskId, payload });
+      const verdict = await verifyCompletionClaim({ prisma, log, robotId, taskId, payload, config: configOf() });
+
+      // ── PHASE 14 remediation (P14-R14) — §23.5 row 3, composed ──────────────
+      //
+      // The plan's Phase 14 testing requirements name this outcome directly: *"a
+      // completion claim from a kinematically unreachable position is rejected and
+      // **raises a security event**"*. `trustBoundaries.validateCompletion()` implements
+      // it and was unit-tested; until this remediation it had **no production caller**, so
+      // no completion claim the fleet ever made could raise that event.
+      //
+      // §23.5's own argument for why this is a security control and not a data-quality
+      // one: a completion claim from a place the agent could not have reached is not a
+      // failed verification, it is evidence of a compromised or spoofing device.
+      if (verdict && verdict.security && verdict.security.securityEvent) {
+        log.error?.("SECURITY: completion claimed from an unreachable position (§23.5)", {
+          robotId,
+          taskId,
+          reasons: verdict.security.reasons,
+        });
+        io.to("dashboard").emit("SECURITY_EVENT", {
+          kind: "UNREACHABLE_COMPLETION_CLAIM",
+          robotId,
+          taskId,
+          reasons: verdict.security.reasons,
+          timestamp: Date.now(),
+        });
+      }
+
       if (verdict && verdict.outcome === verification.OUTCOME.INSUFFICIENT) {
         // "Insufficient evidence sends the Task to `VERIFYING` with an operator queue —
         // not to `COMPLETED`, and not to `FAILED`. Both of those are lies about the
@@ -290,7 +324,7 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger }) {
  * @param {object} input
  * @returns {Promise<object|null>}
  */
-async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload }) {
+async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, config }) {
   if (process.env.ENGINE_ENABLED !== "true") return null;
 
   try {
@@ -378,7 +412,36 @@ async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload }) 
       });
     }
 
-    return result;
+    // ── PHASE 14 remediation (P14-R14) — §23.5 row 3, decided by §23.5's own module ──
+    //
+    // Phase 5's `verification.verify()` already sets `securityEvent` and this function
+    // already logged and persisted it. What was missing is the *§23.5* decision:
+    // `trustBoundaries.validateCompletion()` combines the graded verification outcome
+    // with an explicit kinematic check of the **claimed** position against the last
+    // accepted fix, and it is the module the trust-boundary table binds. It had no
+    // production caller at all, so §23.5's row 3 was enforced by Phase 5's rule alone and
+    // the row's own module was inert.
+    //
+    // The ceiling comes from `thresholds.maxSpeedMs`, which this function already reads
+    // for the track check, and the tolerance from `security.position_plausibility_tolerance`.
+    // No number is invented here.
+    const lastFix = track.length > 0 ? track[track.length - 1] : null;
+    const claimed =
+      typeof payload?.lat === "number" && typeof payload?.lon === "number" ? { lat: payload.lat, lon: payload.lon } : null;
+
+    const positionCheck =
+      claimed && lastFix
+        ? trustBoundaries.validatePosition({
+            last: { lat: lastFix.lat, lon: lastFix.lon, atMs: new Date(lastFix.at).getTime() },
+            reported: { lat: claimed.lat, lon: claimed.lon, atMs: Date.now() },
+            maxSpeedMps: thresholds.maxSpeedMs,
+            tolerance: configValue(config, "security.position_plausibility_tolerance", undefined),
+          })
+        : null;
+
+    const security = trustBoundaries.validateCompletion({ verification: result, positionCheck });
+
+    return { ...result, security };
   } catch (e) {
     // A defect in verification must not make a completion unreportable. It must,
     // however, be loud: a silent verification failure is indistinguishable from a pass,
@@ -424,6 +487,22 @@ function readVerificationThresholds() {
  * evidence of travel, so dead-reckoned observations are excluded here rather than
  * counted and then discounted.
  */
+/**
+ * Read a configuration value from the process's pinned snapshot — PHASE 14 remediation
+ * (P14-R14). Same shape as `robot.handler.js` and `telemetry.handler.js`, so all three
+ * agent handlers resolve a registered parameter the same way.
+ *
+ * @param {object} config
+ * @param {string} name
+ * @param {*} fallback
+ * @returns {*}
+ */
+function configValue(config, name, fallback) {
+  const values = config?.values;
+  const value = values instanceof Map ? values.get(name) : values?.[name];
+  return value === undefined || value === null ? fallback : value;
+}
+
 async function readAcceptedTrack(prisma, agentRowId, since) {
   const observations = await prisma.observation.findMany({
     where: { agentId: agentRowId, kind: "position", observedAt: { gte: since }, deadReckoned: false },

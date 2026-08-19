@@ -64,6 +64,10 @@ const TABLES = Object.freeze([
   // by the mission's region where none survives.
   "shard",
   "shardMembership",
+  // PHASE 13 REMEDIATION — §19.2's durable rebalance intent, with the eight CHECK
+  // constraints and the partial unique index `20260819090000_shard_rebalance_intent`
+  // writes, evaluated at apply time like every other phase's.
+  "shardRebalance",
   "mission",
   "workQueue",
 ]);
@@ -84,6 +88,7 @@ const TABLE_OF_SQL_NAME = Object.freeze({
   Stop: "stop",
   Shard: "shard",
   ShardMembership: "shardMembership",
+  ShardRebalance: "shardRebalance",
   Mission: "mission",
   WorkQueue: "workQueue",
 });
@@ -356,40 +361,94 @@ function createCommitmentStore(seed) {
   const BINDING_BOUNDS = ["ROUND_WALL_CLOCK", "SERIAL_COMMIT", "NEITHER_EVALUATED"];
   const MEMBERSHIP_REASONS = ["COMMISSIONING", "REBALANCE_SPLIT", "REBALANCE_MERGE", "REDISTRICTING", "OPERATOR"];
 
+  // PHASE 13 REMEDIATION — these eight calls passed **three** arguments to a two-argument
+  // `checkViolation(constraint, value)`, so every modelled Phase 13 constraint violation
+  // reported its *table* as the constraint name and the constraint name as the offending
+  // value. No test failed, because each assertion matched on a substring that appeared
+  // either way — which is exactly why a model that can misname a constraint is worth as
+  // little as the tests it exists to distrust. Corrected to the real signature.
   function assertShardConstraints(row) {
     if (row.state !== undefined && !SHARD_STATES.includes(String(row.state))) {
-      throw checkViolation("Shard", "Shard_state_known", row.state);
+      throw checkViolation("Shard_state_known", row.state);
     }
     if (row.bindingBound !== undefined && row.bindingBound !== null && !BINDING_BOUNDS.includes(String(row.bindingBound))) {
-      throw checkViolation("Shard", "Shard_binding_bound_known", row.bindingBound);
+      throw checkViolation("Shard_binding_bound_known", row.bindingBound);
     }
     if (typeof row.agentCount === "number" && row.agentCount < 0) {
-      throw checkViolation("Shard", "Shard_agent_count_non_negative", row.agentCount);
+      throw checkViolation("Shard_agent_count_non_negative", row.agentCount);
     }
     const draining = String(row.state) === "DRAINING";
     const timed = row.drainingSince !== null && row.drainingSince !== undefined;
     if (row.state !== undefined && draining !== timed) {
-      throw checkViolation("Shard", "Shard_draining_is_timed", row.state);
+      throw checkViolation("Shard_draining_is_timed", row.state);
+    }
+  }
+
+  /* ── The rebalance intent's backstops, as its migration writes them ───────── */
+
+  const REBALANCE_STATES = ["PENDING", "EXECUTING", "COMPLETED", "CANCELLED"];
+  const REBALANCE_OPEN = ["PENDING", "EXECUTING"];
+  const REBALANCE_TERMINAL = ["COMPLETED", "CANCELLED"];
+  const REBALANCE_REASONS = ["REBALANCE_SPLIT", "REBALANCE_MERGE", "REDISTRICTING", "OPERATOR"];
+  const RESTORE_STATES = ["ACTIVE", "REBALANCING"];
+
+  function assertRebalanceConstraints(row, view) {
+    if (!REBALANCE_STATES.includes(String(row.state))) {
+      throw checkViolation("ShardRebalance_state_known", row.state);
+    }
+    if (String(row.sourceShardId) === String(row.targetShardId)) {
+      throw checkViolation("ShardRebalance_moves_between_two_shards", row.sourceShardId);
+    }
+    if (!REBALANCE_REASONS.includes(String(row.reason))) {
+      throw checkViolation("ShardRebalance_reason_known", row.reason);
+    }
+    if (!RESTORE_STATES.includes(String(row.restoreState))) {
+      throw checkViolation("ShardRebalance_restore_state_admits_work", row.restoreState);
+    }
+    if (!Number.isInteger(row.plannedMoves) || row.plannedMoves <= 0) {
+      throw checkViolation("ShardRebalance_plan_is_not_empty", row.plannedMoves);
+    }
+    const completed = row.completedMoves === undefined ? 0 : row.completedMoves;
+    if (!Number.isInteger(completed) || completed < 0 || completed > row.plannedMoves) {
+      throw checkViolation("ShardRebalance_completed_within_plan", `${completed}/${row.plannedMoves}`);
+    }
+    const terminal = REBALANCE_TERMINAL.includes(String(row.state));
+    const closed = row.closedAt !== null && row.closedAt !== undefined;
+    if (terminal !== closed) {
+      throw checkViolation("ShardRebalance_terminal_is_timed", row.state);
+    }
+    // The partial unique index: at most one open intent per source shard.
+    if (REBALANCE_OPEN.includes(String(row.state))) {
+      for (const other of view.shardRebalance.values()) {
+        if (other.id === row.id) continue;
+        if (!REBALANCE_OPEN.includes(String(other.state))) continue;
+        if (String(other.sourceShardId) === String(row.sourceShardId)) {
+          stats.uniqueViolations += 1;
+          const error = new Error('duplicate key value violates unique constraint "ShardRebalance_one_open_per_source"');
+          error.code = "23505";
+          throw error;
+        }
+      }
     }
   }
 
   function assertMembershipConstraints(row, view) {
     if (!MEMBERSHIP_REASONS.includes(String(row.reason))) {
-      throw checkViolation("ShardMembership", "ShardMembership_reason_known", row.reason);
+      throw checkViolation("ShardMembership_reason_known", row.reason);
     }
     const before = BigInt(row.authorityEpochBefore ?? 0);
     const after = BigInt(row.authorityEpochAfter ?? 0);
     if (before < 0n || after < 0n) {
-      throw checkViolation("ShardMembership", "ShardMembership_epochs_non_negative", `${before}/${after}`);
+      throw checkViolation("ShardMembership_epochs_non_negative", `${before}/${after}`);
     }
     const from = row.fromShardId === undefined ? null : row.fromShardId;
     if (from !== null && after <= before) {
       // §19.2 — a migration that did not advance the epoch would leave every mission
       // authority the agent holds valid under the *old* shard's coordinator.
-      throw checkViolation("ShardMembership", "ShardMembership_migration_advances_epoch", `${before}->${after}`);
+      throw checkViolation("ShardMembership_migration_advances_epoch", `${before}->${after}`);
     }
     if (from !== null && from === row.shardId) {
-      throw checkViolation("ShardMembership", "ShardMembership_move_changes_shard", from);
+      throw checkViolation("ShardMembership_move_changes_shard", from);
     }
     // The partial unique index: §3.5's "exactly one shard at a time".
     if ((row.supersededAt ?? null) === null) {
@@ -463,6 +522,11 @@ function createCommitmentStore(seed) {
     for (const [, row] of overlay.shardMembership) {
       if (row === null) continue;
       assertMembershipConstraints(row, view);
+    }
+
+    for (const [, row] of overlay.shardRebalance) {
+      if (row === null) continue;
+      assertRebalanceConstraints(row, view);
     }
 
     for (const table of TABLES) {

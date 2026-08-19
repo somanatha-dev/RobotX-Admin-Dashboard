@@ -433,13 +433,23 @@ function validateCustody(input) {
 function persistentImplausibility(input) {
   const source = input || {};
   const rejections = Number.isFinite(source.rejections) ? Number(source.rejections) : 0;
-  const threshold = Number.isFinite(source.threshold) ? Number(source.threshold) : Infinity;
+  // PHASE 14 remediation (P14-R2) — an unresolved threshold is reported, not hidden.
+  //
+  // `Infinity` is retained as the value, because with no threshold there is no definition
+  // of "persistent" and quarantining on the first refused report would be a different and
+  // worse rule. What is *not* retained is the silence: an unconfigured threshold means
+  // §23.5's closing control — "persistent implausibility triggers quarantine and a
+  // security event" — is switched off, and before this the only symptom was that it never
+  // fired. `thresholdConfigured` is what lets the caller say so out loud.
+  const configured = Number.isFinite(source.threshold);
+  const threshold = configured ? Number(source.threshold) : Infinity;
 
-  if (rejections < threshold) return { quarantine: false, securityEvent: false, reason: null };
+  if (rejections < threshold) return { quarantine: false, securityEvent: false, reason: null, thresholdConfigured: configured };
 
   return {
     quarantine: true,
     securityEvent: true,
+    thresholdConfigured: configured,
     reason:
       `agent ${String(source.agentId)} has had ${rejections} report(s) refused by the §23.5 trust boundaries, at or ` +
       "beyond security.implausible_report_quarantine_threshold. A compromised agent's most valuable capability is to " +

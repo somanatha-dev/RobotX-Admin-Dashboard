@@ -47,6 +47,18 @@
  */
 
 const { canonicalJson } = require("../determinism/ordering");
+// PHASE 14 remediation (P14-R12) — §23.7's schema rule, as a runtime guard, applied where
+// the rule is stated to bind. `surrogateKeys.js`'s own header says the guard "is applied
+// where the rule is stated to bind: the decision record and the input snapshot"; until
+// this remediation it was applied at neither, and the two build gates between them do not
+// cover the case. `checkIdentityIsolation` is a **static scan of four module sources** for
+// identifying field *names*, so it catches `candidate.stop.address` written literally and
+// nothing that arrives at runtime; the erasure gate fails only on a field whose erasure
+// **changes a replayed cost**, and was demonstrated during this remediation to pass a
+// corpus carrying a street address in a Tier A section no cost reads. A record that
+// acquired an identifying value from a `perLeg` context, a `legMeta` field, or a pinned
+// snapshot value was therefore written to the database unchecked by anything.
+const surrogateKeys = require("../privacy/surrogateKeys");
 const tierA = require("./tierA");
 const tierB = require("./tierB");
 const sampling = require("./sampling");
@@ -144,9 +156,62 @@ function retentionFor(input) {
 }
 
 /**
+ * §23.7 — the surrogate keys the Legs of one round referenced, read from the store.
+ *
+ * ── Why the writer resolves these rather than the caller supplying them ─────
+ * §23.7 binds the *decision-record and snapshot schemas*, and this module is the single
+ * writer of all three tables. A caller-supplied list would mean the coordinator and the
+ * shadow runner each had their own idea of which subjects a decision pointed at, and
+ * "an erasure request can find every decision that pointed at a subject" — the reason
+ * `DecisionRecordA.surrogateKeys` exists at all — would then be true of whichever caller
+ * remembered to populate it. One reader, one shape, one place to check.
+ *
+ * ── What is stored, and what is deliberately not ────────────────────────────
+ * Opaque tokens and nothing else. The key is a keyed digest of the address
+ * (`privacy/surrogateKeys.js`); it is not reversible, it is stable across rounds, and it
+ * is **unchanged by erasure** — a tombstoned identity keeps its `surrogateKey`. That last
+ * property is what makes this safe for §24.3: adding the column changes no replayed cost
+ * and erasing the subject it names changes these bytes not at all.
+ *
+ * A Stop whose `identityKey` is null contributes nothing rather than a null entry. Null
+ * is the state of every row written before the identity path existed, and a record
+ * carrying `[null, null]` would say "this decision pointed at two unknown subjects" when
+ * the true statement is "this decision's subjects predate the identity store".
+ *
+ * @param {object} deps `{ prisma }`
+ * @param {string[]} legIds `Leg.id` values — the id the round and the work queue carry
+ * @returns {Promise<{ byLeg: Map<string, string[]>, all: string[] }>}
+ */
+async function surrogateKeysFor(deps, legIds) {
+  const ids = [...new Set((legIds || []).map((id) => String(id)))].sort();
+  const byLeg = new Map(ids.map((id) => [id, []]));
+  if (ids.length === 0 || !deps || !deps.prisma || !deps.prisma.stop) return { byLeg, all: [] };
+
+  const rows = await deps.prisma.stop.findMany({
+    where: { legId: { in: ids }, identityKey: { not: null } },
+    select: { legId: true, identityKey: true },
+  });
+
+  const all = new Set();
+  for (const row of rows) {
+    const key = String(row.identityKey);
+    const bucket = byLeg.get(String(row.legId));
+    if (bucket) bucket.push(key);
+    all.add(key);
+  }
+
+  // Sorted and de-duplicated on both axes. The column is compared and diffed by tools
+  // that must not see two orderings of the same fact (§24.3's canonical-ordering rule
+  // applied to a column that is otherwise just an array).
+  for (const [legId, keys] of byLeg) byLeg.set(legId, [...new Set(keys)].sort());
+
+  return { byLeg, all: [...all].sort() };
+}
+
+/**
  * Turn a pinned round snapshot into the `InputSnapshot` row shape.
  *
- * @param {object} input `{ snapshot, roundId, shardId, decisionTimeMs, retainUntil }`
+ * @param {object} input `{ snapshot, roundId, shardId, decisionTimeMs, retainUntil, surrogateKeys }`
  * @returns {object}
  */
 function snapshotRow(input) {
@@ -169,6 +234,10 @@ function snapshotRow(input) {
     killSwitchState: pins.killSwitchState ?? null,
     pins,
     resolvedValues: snapshot.resolvedValues ?? pins.resolvedValues ?? null,
+    // §23.7 — "replay consumes the pinned input snapshot (§21.2) — which contains
+    // addresses. After this phase it does not": the snapshot carries the round's
+    // surrogate keys, never a value one of them stands for.
+    surrogateKeys: Array.isArray(source.surrogateKeys) ? source.surrogateKeys : null,
     retainUntil: source.retainUntil ?? null,
   };
 }
@@ -447,6 +516,13 @@ async function writeRound(deps, input) {
     snapshotRetentionDays: config.snapshotRetentionDays,
   });
 
+  /* ── 0. §23.7's surrogate keys, resolved once for the whole round ─────────── */
+  //
+  // Before the snapshot, because the snapshot is the first row written and §23.7 names it
+  // first: "replay consumes the pinned input snapshot — which contains addresses". One
+  // read for the round rather than one per Leg, so the cost is O(1) in Leg count.
+  const identity = await surrogateKeysFor(deps, (round.decisions || []).map((decision) => decision.legId));
+
   /* ── 1. The pinned inputs, before any record that depends on them ────────── */
   const snapshotData = snapshotRow({
     snapshot: context.snapshot,
@@ -454,7 +530,10 @@ async function writeRound(deps, input) {
     shardId: context.shardId ?? round.shardId,
     decisionTimeMs: round.decisionTimeMs,
     retainUntil: retention.snapshotUntil,
+    surrogateKeys: identity.all,
   });
+
+  surrogateKeys.assertNonIdentifying(snapshotData, "an InputSnapshot row");
 
   const storedSnapshot = await deps.prisma.inputSnapshot.upsert({
     where: { snapshotId: snapshotData.snapshotId },
@@ -515,7 +594,16 @@ async function writeRound(deps, input) {
         : null,
     });
 
+    // §23.7 — the keys this decision's inputs referenced. Passed through `toRow`'s
+    // options rather than into `tierA.build()`, deliberately: the built record is what
+    // `digest()` and §24.3's reconstruction compare, and a new section inside it would
+    // change every golden digest in the corpus for a column that is not an input to
+    // anything. The column is about *reachability from an erasure request*, not about
+    // the decision's content.
+    const legSurrogateKeys = identity.byLeg.get(String(decision.legId)) || [];
+
     const row = tierA.toRow(record, {
+      surrogateKeys: legSurrogateKeys.length > 0 ? legSurrogateKeys : null,
       inputSnapshotId: storedSnapshot ? storedSnapshot.id : null,
       fullRetentionUntil: retention.tierAUntil,
       sizeBytes: sized.bytes,
@@ -529,18 +617,27 @@ async function writeRound(deps, input) {
       shadowLabel,
     });
 
+    surrogateKeys.assertNonIdentifying(row, `DecisionRecordA ${record.identity.decisionId}`);
+
     // eslint-disable-next-line no-await-in-loop
     await deps.prisma.decisionRecordA.create({ data: row });
 
     if (selection.record !== null) {
-      // eslint-disable-next-line no-await-in-loop
-      await deps.prisma.decisionRecordB.create({
-        data: tierB.toRow(selection.record, {
-          writtenBecause: selection.verdict.writtenBecause,
-          exemptionReason: selection.verdict.reason,
-          retainUntil: retention.tierBUntil,
-        }),
+      const tierBRow = tierB.toRow(selection.record, {
+        writtenBecause: selection.verdict.writtenBecause,
+        exemptionReason: selection.verdict.reason,
+        retainUntil: retention.tierBUntil,
+        // The same keys as Tier A's. Tier B is the record §24.3 compares byte for byte,
+        // so this rides beside `contentHash` and is not covered by it — adding it to the
+        // hashed sections would make the gate compare a column that erasure is
+        // *supposed* to leave untouched.
+        surrogateKeys: legSurrogateKeys.length > 0 ? legSurrogateKeys : null,
       });
+
+      surrogateKeys.assertNonIdentifying(tierBRow, `DecisionRecordB ${record.identity.decisionId}`);
+
+      // eslint-disable-next-line no-await-in-loop
+      await deps.prisma.decisionRecordB.create({ data: tierBRow });
     }
 
     written.push({
@@ -608,6 +705,7 @@ module.exports = {
   decisionIdFor,
   shadowDecisionIdFor,
   retentionFor,
+  surrogateKeysFor,
   snapshotRow,
   partitionFor,
   truncationGapOf,

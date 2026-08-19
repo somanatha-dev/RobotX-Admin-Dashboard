@@ -25,6 +25,8 @@ const path = require("path");
 const taskService = require("../../src/services/task.service");
 const intake = require("../../src/engine/intake/intake");
 const fixture = require("./helpers/roundFixture");
+// PHASE 14 remediation (P14-R7) — §23.7's key shape, read from the module that defines it.
+const surrogateKeys = require("../../src/engine/privacy/surrogateKeys");
 
 const BACKEND_ROOT = path.join(__dirname, "..", "..");
 const RECEIVED_AT_MS = 1_800_000_000_000;
@@ -44,12 +46,22 @@ function legacyTaskRow(taskId) {
   };
 }
 
-/** The memory store, extended with the three tables the legacy→domain bridge writes. */
+/**
+ * The memory store, extended with the tables the legacy→domain bridge writes.
+ *
+ * PHASE 14 remediation (P14-R7): `identityRecord`, `stop.update` and `task.update` were
+ * added when `admitToRound` became the production producer of `Stop.identityKey` and of
+ * the two `Task` identity columns (§23.7). The double gained the tables the production
+ * path now uses; no assertion below was relaxed, and the sealing is asserted directly in
+ * its own test.
+ */
 function bridgeStore() {
   const prisma = fixture.memoryPrisma();
   const missions = [];
   const legs = [];
   const stops = [];
+  const tasks = [];
+  const identities = [];
 
   const upsertInto = (rows) => async ({ where, create }) => {
     const existing = rows.find((row) => row.id === where.id);
@@ -58,10 +70,44 @@ function bridgeStore() {
     return { ...create };
   };
 
+  const updateIn = (rows, key) => async ({ where, data }) => {
+    const existing = rows.find((row) => row[key] === where[key]);
+    if (!existing) {
+      // Prisma throws on an update that matches nothing; the double does too, so a
+      // production path that updated a row it never created fails here rather than
+      // silently succeeding.
+      throw new Error(`no row with ${key}=${String(where[key])}`);
+    }
+    Object.assign(existing, data);
+    return { ...existing };
+  };
+
   prisma.mission = { upsert: upsertInto(missions) };
   prisma.leg = { upsert: upsertInto(legs) };
-  prisma.stop = { upsert: upsertInto(stops) };
-  prisma.__bridge = { missions, legs, stops };
+  prisma.stop = { upsert: upsertInto(stops), update: updateIn(stops, "id") };
+  prisma.task = {
+    // `sealIdentities` updates the Task row it was handed; the fixture's legacy Task is
+    // not otherwise in the store, so it is materialised on first use.
+    update: async ({ where, data }) => {
+      let existing = tasks.find((row) => row.id === where.id);
+      if (!existing) {
+        existing = { id: where.id };
+        tasks.push(existing);
+      }
+      Object.assign(existing, data);
+      return { ...existing };
+    },
+  };
+  prisma.identityRecord = {
+    findUnique: async ({ where }) => identities.find((row) => row.surrogateKey === where.surrogateKey) || null,
+    create: async ({ data }) => {
+      identities.push({ ...data });
+      return { ...data };
+    },
+    update: updateIn(identities, "surrogateKey"),
+  };
+
+  prisma.__bridge = { missions, legs, stops, tasks, identities };
   return prisma;
 }
 
@@ -79,6 +125,92 @@ describe("the legacy Task → domain work bridge (§2.4)", () => {
     expect(prisma.__bridge.legs[0].purpose).toBe("PRIMARY");
     expect(prisma.__bridge.stops).toHaveLength(2);
     expect(prisma.__bridge.stops.map((stop) => stop.stopType)).toEqual(["PICKUP", "DROP"]);
+  });
+
+  // ── PHASE 14 remediation (P14-R7) — §23.7's producer, at the point of creation ──
+  //
+  // Before this remediation `Stop.identityKey`, `Task.originIdentityKey` and
+  // `Task.destinationIdentityKey` had exactly one writer in the whole repository, and it
+  // was the offline backfill tool. Every Stop the running system created therefore had no
+  // identity record, no surrogate key, and no route by which an erasure request could
+  // reach it — the negative half of §23.7 held (nothing identifying reached a decision
+  // record) and the positive half did not exist in production at all.
+  test("every Stop and both Task ends are sealed into the identity store with a stable surrogate key (§23.7)", async () => {
+    const prisma = bridgeStore();
+    await taskService.admitToRound(prisma, legacyTaskRow("TSK-ID-1"), {
+      receivedAtMs: RECEIVED_AT_MS,
+      cadenceConfig: fixture.cadenceConfig(),
+      feasibleSupply: 3,
+    });
+
+    // Two Stops and two Task ends, four identity records — the pickup and the drop are
+    // different premises and are keyed separately, so one erasure cannot take the other.
+    expect(prisma.__bridge.identities).toHaveLength(4);
+    for (const record of prisma.__bridge.identities) {
+      expect(surrogateKeys.isSurrogateKey(record.surrogateKey)).toBe(true);
+      // Sealed, never stored in the clear.
+      expect(record.ciphertext).toBeTruthy();
+      // The address is in the ciphertext and nowhere else on the row.
+      expect(JSON.stringify(record)).not.toContain("Building A");
+      expect(JSON.stringify(record)).not.toContain("Building B");
+    }
+
+    for (const stop of prisma.__bridge.stops) {
+      expect(surrogateKeys.isSurrogateKey(stop.identityKey)).toBe(true);
+      expect(surrogateKeys.subjectTypeOf(stop.identityKey)).toBe("STOP");
+      // The one derived quantity §3.4's request path can honestly produce: a pure
+      // function of the coordinate. The other five are products of the round.
+      expect(typeof stop.fineCell).toBe("string");
+    }
+
+    const task = prisma.__bridge.tasks[0];
+    expect(surrogateKeys.subjectTypeOf(task.originIdentityKey)).toBe("TASK");
+    expect(surrogateKeys.subjectTypeOf(task.destinationIdentityKey)).toBe("TASK");
+    expect(task.originIdentityKey).not.toBe(task.destinationIdentityKey);
+  });
+
+  test("the surrogate key is stable: the same address submitted twice mints one identity record (§23.7)", async () => {
+    const prisma = bridgeStore();
+    await taskService.admitToRound(prisma, legacyTaskRow("TSK-ID-2"), {
+      receivedAtMs: RECEIVED_AT_MS,
+      cadenceConfig: fixture.cadenceConfig(),
+      feasibleSupply: 3,
+    });
+    const firstKeys = prisma.__bridge.stops.map((stop) => stop.identityKey);
+
+    // A different Task at the same two addresses. Stability is what makes an erasure
+    // request for an address reach every decision that pointed at it, rather than
+    // requiring the requester to enumerate Stops.
+    await taskService.admitToRound(prisma, legacyTaskRow("TSK-ID-3"), {
+      receivedAtMs: RECEIVED_AT_MS,
+      cadenceConfig: fixture.cadenceConfig(),
+      feasibleSupply: 3,
+    });
+
+    expect(prisma.__bridge.identities).toHaveLength(4);
+    expect(prisma.__bridge.stops.slice(2).map((stop) => stop.identityKey)).toEqual(firstKeys);
+  });
+
+  // Fail closed. A skip would produce exactly the state §23.7 exists to prevent — an
+  // address in `Stop.label` with no identity record, no key and no erasure route — and it
+  // would do so silently, at the one moment the address is in hand.
+  test("a missing PRIVACY_SURROGATE_SECRET refuses the submission rather than writing an address with no identity record", async () => {
+    const prisma = bridgeStore();
+    const secret = process.env.PRIVACY_SURROGATE_SECRET;
+    delete process.env.PRIVACY_SURROGATE_SECRET;
+    try {
+      await expect(
+        taskService.admitToRound(prisma, legacyTaskRow("TSK-ID-4"), {
+          receivedAtMs: RECEIVED_AT_MS,
+          cadenceConfig: fixture.cadenceConfig(),
+          feasibleSupply: 3,
+        }),
+      ).rejects.toThrow(/PRIVACY_SURROGATE_SECRET is unset/);
+    } finally {
+      process.env.PRIVACY_SURROGATE_SECRET = secret;
+    }
+
+    expect(prisma.__bridge.identities).toHaveLength(0);
   });
 
   test("the materialised ids are deterministic, so a retry converges rather than duplicating", async () => {
@@ -171,7 +303,10 @@ describe("the cutover gate — the case the legacy branch used to absorb", () =>
   test("with the shard live, assignTask returns the §3.4 contract and detaches nothing", async () => {
     process.env.ENGINE_ENABLED = "true";
     const prisma = bridgeStore();
-    prisma.task = { create: async ({ data }) => legacyTaskRow(data.taskId) };
+    // `create` is added beside the store's own `update` rather than replacing the
+    // table: `sealIdentities` writes the two §23.7 identity columns back to the Task
+    // row it was handed (P14-R7).
+    prisma.task = { ...prisma.task, create: async ({ data }) => legacyTaskRow(data.taskId) };
 
     const created = await taskService.assignTask(
       prisma,
@@ -226,7 +361,10 @@ describe("the cutover gate — the case the legacy branch used to absorb", () =>
   test("the refusal states the consequence, not just the state", async () => {
     process.env.ENGINE_ENABLED = "true";
     const prisma = bridgeStore();
-    prisma.task = { create: async ({ data }) => legacyTaskRow(data.taskId) };
+    // `create` is added beside the store's own `update` rather than replacing the
+    // table: `sealIdentities` writes the two §23.7 identity columns back to the Task
+    // row it was handed (P14-R7).
+    prisma.task = { ...prisma.task, create: async ({ data }) => legacyTaskRow(data.taskId) };
 
     const error = await taskService
       .assignTask(
@@ -244,7 +382,10 @@ describe("the cutover gate — the case the legacy branch used to absorb", () =>
   test("a caller-nominated robotId is reported as ignored, not silently dropped", async () => {
     process.env.ENGINE_ENABLED = "true";
     const prisma = bridgeStore();
-    prisma.task = { create: async ({ data }) => legacyTaskRow(data.taskId) };
+    // `create` is added beside the store's own `update` rather than replacing the
+    // table: `sealIdentities` writes the two §23.7 identity columns back to the Task
+    // row it was handed (P14-R7).
+    prisma.task = { ...prisma.task, create: async ({ data }) => legacyTaskRow(data.taskId) };
 
     const created = await taskService.assignTask(
       prisma,

@@ -24,9 +24,12 @@ const jwt = require("jsonwebtoken");
 
 const mockPrismaClient = {
   user: { findUnique: jest.fn() },
-  shard: { findMany: jest.fn(), findUnique: jest.fn(), update: jest.fn(), count: jest.fn() },
+  shard: { findMany: jest.fn(), findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn(), count: jest.fn() },
   shardLeadership: { findUnique: jest.fn() },
   shardMembership: { findMany: jest.fn(), count: jest.fn() },
+  // PHASE 13 REMEDIATION — §19.2's durable intent. The endpoint writes it and the shard
+  // state in one transaction, so the double models `$transaction` as well.
+  shardRebalance: { findFirst: jest.fn(), create: jest.fn(), updateMany: jest.fn() },
   commitment: { count: jest.fn() },
   invariantStatus: { findMany: jest.fn(), groupBy: jest.fn() },
   degradedModeEvent: { findMany: jest.fn() },
@@ -34,6 +37,10 @@ const mockPrismaClient = {
   task: { groupBy: jest.fn() },
   $queryRaw: jest.fn(),
   $metrics: { json: jest.fn() },
+  // The transaction is the double's own client: every assertion below is about *what* was
+  // written, and a double that ran the callback against a second object would let the two
+  // halves of an atomic write be checked against different state.
+  $transaction: (fn) => (typeof fn === "function" ? fn(mockPrismaClient) : Promise.all(fn)),
 };
 
 jest.mock("../../src/db/prisma", () => ({
@@ -76,7 +83,51 @@ function shardRow(overrides) {
   };
 }
 
+/**
+ * A fresh rate-limit bucket per request.
+ *
+ * `createRateLimiter` keys on client IP + method + path and the rebalance route allows ten
+ * per minute — deliberately, because a rebalance is a STRUCTURAL change. Tests that share
+ * one bucket would start reporting 429 as the suite grew, which is a suite that fails for a
+ * reason having nothing to do with the behaviour under test. The limiter itself is
+ * unchanged and is asserted on its own below.
+ */
+let callerOctet = 0;
+const fromANewCaller = () => {
+  callerOctet += 1;
+  return ["X-Forwarded-For", `10.0.0.${callerOctet}`];
+};
+
+/** A durable intent shaped as `shardModel.openRebalance()` writes one. */
+function rebalanceRow(overrides) {
+  const moves = (overrides && overrides.moves) || [{ order: 0, agentId: "agent-1", fromShardId: "shard-north", targetShardId: "shard-south", reason: "REBALANCE_MERGE", liveCommitments: 0, allowCustodyTransfer: false }];
+  return {
+    id: "rb-1",
+    sourceShardId: "shard-north",
+    targetShardId: "shard-south",
+    state: "PENDING",
+    reason: "REBALANCE_MERGE",
+    restoreState: "ACTIVE",
+    plan: { moves, surplus: moves.length, note: "" },
+    plannedMoves: moves.length,
+    completedMoves: 0,
+    blocked: null,
+    requestedBy: ADMIN.id,
+    requestedAt: new Date(NOW),
+    startedAt: null,
+    lastMoveAt: null,
+    closedAt: null,
+    closedReason: null,
+    detail: null,
+    ...(overrides || {}),
+  };
+}
+
 beforeEach(() => {
+  // §23.3 — the endpoint refuses to record an intent this deployment cannot execute, so
+  // every rebalance test needs the key the supervisor will sign `SHARD_MIGRATE` with. The
+  // refusal itself is asserted in its own test, which unsets it.
+  process.env.COMMAND_SIGNING_KEY = "a-signing-key-long-enough-for-§23.3-to-accept-it";
   // `/health` reads its client from `app.locals`, which is where `server.js` puts it, and
   // the API routes read theirs from `getPrisma()`. Both are the same double here.
   app.locals.prisma = mockPrismaClient;
@@ -95,6 +146,10 @@ beforeEach(() => {
   });
   mockPrismaClient.shardMembership.count.mockResolvedValue(5000);
   mockPrismaClient.shardMembership.findMany.mockResolvedValue([]);
+  mockPrismaClient.shardRebalance.findFirst.mockResolvedValue(null);
+  mockPrismaClient.shardRebalance.create.mockImplementation(async ({ data }) => ({ id: "rb-1", ...data }));
+  mockPrismaClient.shardRebalance.updateMany.mockResolvedValue({ count: 1 });
+  mockPrismaClient.shard.updateMany.mockResolvedValue({ count: 1 });
   mockPrismaClient.commitment.count.mockResolvedValue(0);
   mockPrismaClient.invariantStatus.findMany.mockResolvedValue([]);
   mockPrismaClient.invariantStatus.groupBy.mockResolvedValue([]);
@@ -278,6 +333,212 @@ describe("POST /api/shards/:id/rebalance", () => {
       .send({ targetShardId: "shard-south" })
       .expect(202);
     expect(response.body.plan.moves.map((move) => move.agentId)).toEqual(["agent-2", "agent-1"]);
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PHASE 13 REMEDIATION — P13-R4: the intent is durable, and it terminates
+
+   The endpoint used to move a shard to DRAINING and return the plan in a response
+   body that was its only copy. Nothing executed it, `shardModel.setState`'s only
+   caller was this endpoint and it only ever set DRAINING or REBALANCING, and
+   `intake.js` had already stopped routing Legs to the shard. Every test below is
+   about a durable state a shard can no longer be left in.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe("POST /api/shards/:id/rebalance — the durable intent", () => {
+  beforeEach(() => {
+    mockPrismaClient.shard.findUnique.mockImplementation(async ({ where }) =>
+      where.shardId === "shard-south" ? shardRow({ id: "s-2", shardId: "shard-south", regionId: "region-south", agentCount: 0 }) : shardRow(),
+    );
+    mockPrismaClient.shardMembership.findMany.mockResolvedValue([
+      { agentId: "agent-1", shardId: "shard-north" },
+      { agentId: "agent-2", shardId: "shard-north" },
+    ]);
+  });
+
+  test("**the plan is persisted**, in the same transaction as the state change", async () => {
+    const response = await request(app)
+      .post("/api/shards/shard-north/rebalance")
+      .set(...fromANewCaller())
+      .set("Cookie", [`token=${token()}`])
+      .send({ targetShardId: "shard-south" })
+      .expect(202);
+
+    expect(mockPrismaClient.shardRebalance.create).toHaveBeenCalledTimes(1);
+    const written = mockPrismaClient.shardRebalance.create.mock.calls[0][0].data;
+    expect(written).toMatchObject({
+      sourceShardId: "shard-north",
+      targetShardId: "shard-south",
+      state: "PENDING",
+      plannedMoves: 2,
+      completedMoves: 0,
+      // The route back, recorded at creation rather than guessed at closure.
+      restoreState: "ACTIVE",
+      requestedBy: ADMIN.id,
+    });
+    // Byte-for-byte the plan the operator was shown.
+    expect(written.plan.moves.map((move) => move.agentId)).toEqual(response.body.plan.moves.map((move) => move.agentId));
+    expect(response.body.rebalance).toMatchObject({ state: "PENDING", plannedMoves: 2, restoreState: "ACTIVE" });
+  });
+
+  test("a plan with no move changes nothing — the shard is not taken out of service for an empty plan", async () => {
+    mockPrismaClient.shardMembership.findMany.mockResolvedValue([]);
+
+    const response = await request(app)
+      .post("/api/shards/shard-north/rebalance")
+      .set(...fromANewCaller())
+      .set("Cookie", [`token=${token()}`])
+      .send({ targetShardId: "shard-south" })
+      .expect(422);
+
+    expect(response.body.refusal).toBe("THE_PLAN_CONTAINS_NO_MOVE");
+    expect(response.body.state).toBe("ACTIVE");
+    expect(mockPrismaClient.shardRebalance.create).not.toHaveBeenCalled();
+    expect(mockPrismaClient.shard.update).not.toHaveBeenCalled();
+  });
+
+  test("a second rebalance is refused while one is open — two plans over one membership set is a bulk reassignment", async () => {
+    mockPrismaClient.shardRebalance.findFirst.mockResolvedValue(rebalanceRow());
+
+    const response = await request(app)
+      .post("/api/shards/shard-north/rebalance")
+      .set(...fromANewCaller())
+      .set("Cookie", [`token=${token()}`])
+      .send({ targetShardId: "shard-south" })
+      .expect(422);
+
+    expect(response.body.refusal).toBe("A_REBALANCE_IS_ALREADY_OPEN_FOR_THIS_SHARD");
+    expect(response.body.open).toMatchObject({ id: "rb-1", state: "PENDING" });
+    expect(mockPrismaClient.shardRebalance.create).not.toHaveBeenCalled();
+  });
+
+  test("a request that loses the index race is refused, not turned into a 500", async () => {
+    // Both requests pass the pre-read in the same instant; the partial unique index decides.
+    // Live check Y6 exercises the genuine race; this pins the branch that turns the loser's
+    // constraint violation into an answer the caller can act on.
+    const conflict = Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+    mockPrismaClient.shardRebalance.create.mockRejectedValueOnce(conflict);
+    mockPrismaClient.shardRebalance.findFirst
+      .mockResolvedValueOnce(null) // the pre-read: nothing open yet
+      .mockResolvedValueOnce(null) // the in-transaction re-read: still nothing
+      .mockResolvedValue(rebalanceRow()); // after the violation: the winner
+
+    const response = await request(app)
+      .post("/api/shards/shard-north/rebalance")
+      .set(...fromANewCaller())
+      .set("Cookie", [`token=${token()}`])
+      .send({ targetShardId: "shard-south" })
+      .expect(422);
+
+    expect(response.body.refusal).toBe("A_REBALANCE_IS_ALREADY_OPEN_FOR_THIS_SHARD");
+    expect(response.body.open).toMatchObject({ id: "rb-1" });
+  });
+
+  test("without a signing key no intent is recorded — an unexecutable plan is not written down", async () => {
+    delete process.env.COMMAND_SIGNING_KEY;
+
+    const response = await request(app)
+      .post("/api/shards/shard-north/rebalance")
+      .set(...fromANewCaller())
+      .set("Cookie", [`token=${token()}`])
+      .send({ targetShardId: "shard-south" })
+      .expect(422);
+
+    expect(response.body.message).toMatch(/COMMAND_SIGNING_KEY/);
+    expect(mockPrismaClient.shardRebalance.create).not.toHaveBeenCalled();
+    expect(mockPrismaClient.shard.update).not.toHaveBeenCalled();
+  });
+
+  test("**the route back**: cancelling restores the shard and closes the intent", async () => {
+    mockPrismaClient.shardRebalance.findFirst.mockResolvedValue(rebalanceRow({ state: "EXECUTING", completedMoves: 1 }));
+
+    const response = await request(app)
+      .post("/api/shards/shard-north/rebalance")
+      .set(...fromANewCaller())
+      .set("Cookie", [`token=${token()}`])
+      .send({ cancel: true, reason: "the split was premature" })
+      .expect(200);
+
+    expect(response.body).toMatchObject({ cancelled: true, shardRestoredTo: "ACTIVE", completedMoves: 1 });
+
+    // The shard is restored **before** the intent is closed: the other order leaves a crash
+    // window in which no intent is open and the shard is still draining.
+    const restore = mockPrismaClient.shard.updateMany.mock.calls[0][0];
+    expect(restore).toEqual({
+      where: { shardId: "shard-north", state: { in: ["DRAINING", "REBALANCING"] } },
+      data: { state: "ACTIVE", drainingSince: null },
+    });
+    const close = mockPrismaClient.shardRebalance.updateMany.mock.calls[0][0];
+    expect(close.where).toEqual({ id: "rb-1", state: { in: ["PENDING", "EXECUTING"] } });
+    expect(close.data.state).toBe("CANCELLED");
+    expect(close.data.closedAt).toBeInstanceOf(Date);
+  });
+
+  test("cancelling when nothing is open is a refusal that says what the state actually is", async () => {
+    mockPrismaClient.shard.findUnique.mockResolvedValue(shardRow({ state: "DRAINING", drainingSince: new Date(NOW) }));
+
+    const response = await request(app)
+      .post("/api/shards/shard-north/rebalance")
+      .set(...fromANewCaller())
+      .set("Cookie", [`token=${token()}`])
+      .send({ cancel: true })
+      .expect(422);
+
+    expect(response.body.refusal).toBe("NO_OPEN_REBALANCE_FOR_THIS_SHARD");
+    expect(response.body.state).toBe("DRAINING");
+    expect(mockPrismaClient.shard.updateMany).not.toHaveBeenCalled();
+  });
+
+  test("cancellation is elevated, like the rebalance it withdraws", async () => {
+    mockPrismaClient.user.findUnique.mockResolvedValue({ ...ADMIN, role: "VIEWER" });
+    await request(app)
+      .post("/api/shards/shard-north/rebalance")
+      .set(...fromANewCaller())
+      .set("Cookie", [`token=${token()}`])
+      .send({ cancel: true })
+      .expect(403);
+  });
+
+  test("§2.5's custody consent is carried onto every move rather than re-derived by the executor", async () => {
+    const response = await request(app)
+      .post("/api/shards/shard-north/rebalance")
+      .set(...fromANewCaller())
+      .set("Cookie", [`token=${token()}`])
+      .send({ targetShardId: "shard-south", allowCustodyTransfer: true })
+      .expect(202);
+
+    expect(response.body.plan.moves.every((move) => move.allowCustodyTransfer === true)).toBe(true);
+    // And absent unless asked for.
+    const plain = await request(app)
+      .post("/api/shards/shard-north/rebalance")
+      .set(...fromANewCaller())
+      .set("Cookie", [`token=${token()}`])
+      .send({ targetShardId: "shard-south" })
+      .expect(202);
+    expect(plain.body.plan.moves.every((move) => move.allowCustodyTransfer === false)).toBe(true);
+  });
+
+  test("GET /api/shards reports the open intent, so a DRAINING shard says why", async () => {
+    mockPrismaClient.shard.findMany.mockResolvedValue([shardRow({ state: "DRAINING", drainingSince: new Date(NOW) })]);
+    mockPrismaClient.shardRebalance.findFirst.mockResolvedValue(rebalanceRow({ state: "EXECUTING", completedMoves: 1 }));
+
+    const response = await request(app).get("/api/shards").set(...fromANewCaller()).set("Cookie", [`token=${token()}`]).expect(200);
+
+    expect(response.body.shards[0]).toMatchObject({ state: "DRAINING", admitsNewWork: false });
+    expect(response.body.shards[0].rebalance).toMatchObject({
+      id: "rb-1",
+      state: "EXECUTING",
+      targetShardId: "shard-south",
+      plannedMoves: 1,
+      completedMoves: 1,
+      restoreState: "ACTIVE",
+    });
+  });
+
+  test("a shard with no open intent reports none rather than omitting the field", async () => {
+    const response = await request(app).get("/api/shards").set(...fromANewCaller()).set("Cookie", [`token=${token()}`]).expect(200);
+    expect(response.body.shards[0].rebalance).toBeNull();
   });
 });
 

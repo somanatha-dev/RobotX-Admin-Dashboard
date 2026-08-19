@@ -148,6 +148,35 @@ const REFUSAL = Object.freeze({
 });
 
 /**
+ * Is this actor's role among the elevated roles the policy admits? — PHASE 14
+ * remediation (P14-R3).
+ *
+ * ── The bug this replaces, stated plainly ───────────────────────────────────
+ * Both authorisation functions previously wrote `elevated.length > 0 &&
+ * !elevated.includes(role)`, so an **empty** list skipped the role check entirely and
+ * every authenticated caller passed it. `security.elevated_roles` is a registered `set`
+ * with an open range, so `[]` is a publishable value — and publishing it, which reads
+ * like the most restrictive possible change and is the obvious thing an offboarding
+ * process would do, silently opened all four of §23.4's highest-privilege action classes
+ * to every role.
+ *
+ * The semantics now match the two places in this codebase that already had them right:
+ * `outOfScope()` below, whose own header says "an empty *array* means the opposite and is
+ * honoured as such, because 'this operator may act in no region' is a state an
+ * offboarding process should be able to express", and `auth_middleware.requireElevatedRole()`,
+ * whose `roles.includes(...)` has always refused everyone on an empty list. A **present**
+ * list is authoritative, empty or not; only an **absent** one means unscoped.
+ *
+ * @param {unknown} elevatedRoles the policy's list, or absent
+ * @param {unknown} actorRole
+ * @returns {boolean}
+ */
+function roleAdmitted(elevatedRoles, actorRole) {
+  if (!Array.isArray(elevatedRoles)) return true;
+  return elevatedRoles.includes(actorRole);
+}
+
+/**
  * May a predicate of this class be waived at all?
  *
  * @param {string} constraintClass one of `CONSTRAINT_CLASS`
@@ -210,8 +239,7 @@ function authoriseWaiver(request, policy, subject) {
     return { granted: false, refusal: REFUSAL.NO_REASON, detail: "every override records a reason (§23.6)", waivedPredicate: null };
   }
 
-  const elevated = Array.isArray(rules.elevatedRoles) ? rules.elevatedRoles : [];
-  if (elevated.length > 0 && !elevated.includes(source.actorRole)) {
+  if (!roleAdmitted(rules.elevatedRoles, source.actorRole)) {
     return {
       granted: false,
       refusal: REFUSAL.ROLE_NOT_ELEVATED,
@@ -315,12 +343,14 @@ function authoriseAction(request, policy, subject) {
     return { granted: false, refusal: REFUSAL.NO_REASON, detail: `${definition.id} requires a recorded reason (§23.4)`, actionClass: definition };
   }
 
-  const elevated = Array.isArray(rules.elevatedRoles) ? rules.elevatedRoles : [];
-  if (definition.elevated && elevated.length > 0 && !elevated.includes(source.actorRole)) {
+  if (definition.elevated && !roleAdmitted(rules.elevatedRoles, source.actorRole)) {
+    const elevated = Array.isArray(rules.elevatedRoles) ? rules.elevatedRoles : [];
     return {
       granted: false,
       refusal: REFUSAL.ROLE_NOT_ELEVATED,
-      detail: `${definition.id} requires an elevated role; "${String(source.actorRole)}" is not one of ${elevated.join(", ")} (§23.4)`,
+      detail:
+        `${definition.id} requires an elevated role; "${String(source.actorRole)}" is not one of ` +
+        `${elevated.length > 0 ? elevated.join(", ") : "(the elevated-role list is empty: no role is authorised)"} (§23.4)`,
       actionClass: definition,
     };
   }
@@ -559,6 +589,7 @@ module.exports = {
   ACTION_CLASSES,
   REFUSAL,
   mayWaive,
+  roleAdmitted,
   authoriseWaiver,
   authoriseAction,
   outOfScope,

@@ -3405,11 +3405,98 @@ model Shard {
 
   memberships ShardMembership[]
 
+  /// PHASE 13 REMEDIATION — the durable rebalance intents this shard is the source or
+  /// the target of. **Back-relations only: neither adds a column to `Shard`**, which is
+  /// what keeps the Phase 13 migration's `CREATE TABLE "Shard"` byte-identical to
+  /// `prisma migrate diff --from-empty` and its applied checksum untouched.
+  rebalancesOut ShardRebalance[] @relation("ShardRebalanceSource")
+  rebalancesIn  ShardRebalance[] @relation("ShardRebalanceTarget")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([state])
   @@index([bindingBound])
+}
+
+/// §19.2 — the **durable rebalance intent**: a control-plane operation the shard
+/// supervisor executes one agent at a time.
+///
+/// > Shard rebalancing (splitting a hot shard, merging quiet ones) is an explicit,
+/// > **transactional control-plane operation** that migrates agents one at a time,
+/// > advancing each migrated agent's `authority_epoch` […] never a bulk reassignment.
+///
+/// The plan's Phase 13 rows split that sentence across two components: the REST row makes
+/// `POST /api/shards/:id/rebalance` the "control plane, elevated role", and the worker row
+/// makes `shardSupervisor.worker.js` responsible for "membership migration one agent at a
+/// time". A control plane and an executor in different processes need a durable place to
+/// meet, and this table is it.
+///
+/// Without it the endpoint moved the source shard to `DRAINING`/`REBALANCING` and returned
+/// a plan into an HTTP response body — the only copy of it that ever existed. Nothing could
+/// execute the plan, nothing restored the shard, and `intake.js` had already stopped routing
+/// work to it. `PHASE_13_REMEDIATION_AND_CLOSURE.md` records that as P13-R4.
+///
+/// ── Why the plan is stored but progress is not counted from it ───────────────
+/// `completedMoves` is a **statistic**, never the control variable. What remains to be done
+/// is derived every tick from the truth — which agents are still current members of the
+/// source shard — so a process that dies between a committed migration and its bookkeeping
+/// resumes correctly, and a move can never be performed twice.
+model ShardRebalance {
+  id String @id @default(uuid())
+
+  /// The shard giving agents away. Scoped by the supervisor: a shard's coordinator reads
+  /// only the intents whose source is its own shard, which is what keeps one shard's
+  /// leader from executing another shard's rebalance (§19.3's single writer).
+  sourceShardId String
+  sourceShard   Shard  @relation("ShardRebalanceSource", fields: [sourceShardId], references: [shardId], onDelete: Restrict)
+
+  /// The shard receiving them. §19.2 has no operation that removes an agent from a shard
+  /// without placing it in another: §3.5 requires every Agent to belong to exactly one.
+  targetShardId String
+  targetShard   Shard  @relation("ShardRebalanceTarget", fields: [targetShardId], references: [shardId], onDelete: Restrict)
+
+  /// PENDING · EXECUTING · COMPLETED · CANCELLED. CHECK-constrained, and a hand-written
+  /// partial unique index admits at most one PENDING/EXECUTING intent per source shard.
+  state String @default("PENDING")
+
+  /// A `ShardMembership` reason, minus COMMISSIONING: a rebalance is never a placement.
+  reason String
+
+  /// The state the source shard returns to when this intent terminalises. Recorded at
+  /// creation rather than assumed, so completion restores what was there instead of
+  /// guessing — and so no terminal disposition of this row can leave a shard in
+  /// `DRAINING` with nothing draining it.
+  restoreState String
+
+  /// The ordered list of single migrations `membership.planRebalance()` produced, exactly
+  /// as the operator was shown it. Durable because §19.2's ordering is a decision — idle
+  /// agents first — and re-deriving it each tick would let it drift under the operator.
+  plan Json
+
+  plannedMoves   Int
+  completedMoves Int @default(0)
+
+  /// Agents this intent will not move, with the reason. §2.5 makes migrating an agent
+  /// that holds goods an accountable transfer rather than an implicit one, so a refusal
+  /// on that ground is recorded and the move is retired from the intent — which is what
+  /// lets the intent terminate instead of retrying a refusal forever.
+  blocked Json?
+
+  requestedBy String
+  requestedAt DateTime
+  startedAt   DateTime?
+  lastMoveAt  DateTime?
+  closedAt    DateTime?
+  closedReason String?
+
+  detail Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sourceShardId, state])
+  @@index([state])
 }
 
 /// §3.5 / §19.2 — the transactional record of which shard owns an Agent.

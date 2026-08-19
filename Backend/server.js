@@ -9,7 +9,7 @@ require("./src/observability/eventLoopMonitor").start();
 const app = require("./src/app");
 const logger = require("./src/config/logger");
 const { isOriginAllowed, tlsPosture } = require("./src/config/cors");
-const { connectPrismaWithRetry, disconnectPrisma } = require("./src/db/prisma");
+const { connectPrismaWithRetry, disconnectPrisma, runSerializable, selectForUpdate } = require("./src/db/prisma");
 const { initKv } = require("./src/cache/kv");
 const initSocketServer = require("./src/sockets/socket.server");
 const { createVirtualRobotSimulator } = require("./src/simulation/SimulationEngine");
@@ -20,6 +20,18 @@ const configService = require("./src/engine/config/service");
 // PHASE 13 — §19.3's single writer.
 const election = require("./src/engine/shard/election");
 const shardSupervisor = require("./src/workers/shardSupervisor.worker");
+// §19.5's "full reconciliation before resuming rounds" is §12.4's sweep, injected into the
+// supervisor's failover pass rather than re-implemented there. `failover.run()` refuses to
+// run without it, and `election.promote()` refuses to grant commit permission without a
+// completed result — so this import is what makes a leader able to run a round at all.
+//
+// The **engine module** `supervision/reconciler`, deliberately — never the worker that
+// schedules it. Phase 0's scaffold guard forbids this file from naming the outbox, timer or
+// reconciler worker modules at all, and it is right to: those three are `LEADER_ONLY`, and
+// one wired into the bootstrap would be an engine write path reachable with the master
+// switch off. What §19.5 needs here is the sweep function, not the loop that drives it.
+const reconciler = require("./src/engine/supervision/reconciler");
+const clock = require("./src/engine/commitment/clock");
 // PHASE 14 — §23.2's periodic revocation check and §23.7's identity retention sweep.
 const certificateRotation = require("./src/workers/certificateRotation.worker");
 const auditStream = require("./src/engine/observability/auditStream");
@@ -281,7 +293,10 @@ async function start() {
   // start rather than silently inventing one.
   app.locals.config = await configService.bootstrap({ prisma, kv, logger });
 
-  initSocketServer(io, { prisma, kv, logger });
+  // `app.locals` by reference, not `app.locals.config` by value: the agent handlers read
+  // the snapshot at call time, so a republished configuration reaches an already-connected
+  // socket (P14-R1).
+  initSocketServer(io, { prisma, kv, logger, appLocals: app.locals });
 
   // Ensure the admin user exists (idempotent — safe to run on every start).
   try {
@@ -365,14 +380,154 @@ async function start() {
       });
       election.assertConsensusStore(store);
 
+      // ── The supervisor's dependency contract, satisfied in full ────────────
+      //
+      // The supervisor's `start()` documents seven dependencies. Supplying only some of
+      // them does not degrade the supervisor — it kills it, silently, because every tick
+      // throws inside `runOnce()` and `start()`'s `.catch` deliberately swallows the
+      // throw so one lost renewal cannot take the process down. The session variable is
+      // then never reassigned, so the loop re-enters as a follower forever:
+      //
+      //   · without `leaseDurationSeconds`, `tryAcquire` throws a RangeError from
+      //     `clock.deadlineFrom` and **no leader is ever elected at all**;
+      //   · without `reconcile`, `failover.run()` throws by design (§19.5) and
+      //     `election.promote()` is never reached, so `mayCommit` stays false and the
+      //     shard never resumes rounds;
+      //   · without `runSerializable`/`selectForUpdate`, `membership.migrate()` cannot
+      //     take the agent row under the lock the commit path takes, so no migration
+      //     can execute.
+      //
+      // Each of those is a single missing key, and each disables a Phase 13 completion
+      // criterion outright. They are listed here rather than left to a reader to
+      // reconstruct because the failure mode is a supervisor that logs a tick error and
+      // otherwise looks alive.
+      const parameterValue = (name) => {
+        const values = app.locals.config && app.locals.config.values;
+        return values && typeof values.get === "function" ? values.get(name) : undefined;
+      };
+      const finite = (name) => {
+        const value = parameterValue(name);
+        return Number.isFinite(value) ? value : undefined;
+      };
+
       shardCoordinator = shardSupervisor.start(
-        { prisma, kv, store, onError: (e) => logger.error("Shard supervisor tick failed", { message: e?.message }) },
+        {
+          prisma,
+          kv,
+          store,
+          runSerializable,
+          selectForUpdate,
+          // §19.5's reconciliation, bound to the same sweep `reconciler.worker.js` drives.
+          // One implementation of a requeue, one set of §4.5 timer obligations attached to
+          // it — which is the reason `failover.js` takes this injected rather than
+          // importing it.
+          //
+          // ── The sweep's own configuration, which is not optional ─────────
+          // `failover.run()` passes this callback `{ ...reconcileConfig, shardId }`, and
+          // nothing supplied a `reconcileConfig`. The sweep then ran with three of its four
+          // inputs undefined, and undefined is not neutral here:
+          //
+          //   · `assignmentDeadlineSeconds` reaches `timers.deadlineFrom()` inside the
+          //     orphan requeue, which **throws** on a non-positive duration — so §19.5's
+          //     reconciliation died on the first Leg it had to reconstruct, which is the
+          //     one case a failover exists for. Same swallow, same follower loop, same
+          //     invisible failure as P13-R1 and P13-R2;
+          //   · the same value is `scanWaitingTasks`'s SLA, and `age <= undefined` is
+          //     false, so **every** WAITING Task with no queue entry was repaired and
+          //     escalated on the first sweep — §12.4's repair rate is an alertable SLI, and
+          //     that is a false alert on every deployment;
+          //   · `unresponsiveStrikes` decides whether an undelivered outbox row escalates.
+          //
+          // Each is a registered parameter that resolves. `energyDeviationTolerance` is
+          // supplied for completeness; its scan skips anyway, because no energy model is
+          // injected here and it says so rather than guessing.
+          reconcile: (sweepConfig) =>
+            reconciler.sweep(
+              {
+                prisma,
+                runInTransaction: (fn) => runSerializable(prisma, fn),
+                readStoreTime: () => clock.readStoreTime(prisma),
+              },
+              {
+                assignmentDeadlineSeconds: finite("sla.assignment_deadline"),
+                unresponsiveStrikes: finite("health.unresponsive_strikes"),
+                energyDeviationTolerance: finite("energy.deviation_tolerance"),
+                ...sweepConfig,
+              },
+            ),
+          onError: (e) => logger.error("Shard supervisor tick failed", { message: e?.message }),
+        },
         {
           shardId: process.env.SHARD_ID || "default",
           // The candidate identity must be unique per process and stable across a tick.
           // Host plus pid is both, and it is what a `holder` column is read for during an
           // incident.
           candidateId: `${process.env.HOSTNAME || host}:${process.pid}`,
+          // §19.5's margin, from the register rather than from a literal here. Validator A4
+          // checks these four are mutually satisfiable at publish; this is where the
+          // publish-time check becomes a runtime behaviour. Units are the register's:
+          // `shard.lease_duration` is seconds, the other three are milliseconds.
+          leaseDurationSeconds: finite("shard.lease_duration"),
+          intervalMs: finite("shard.renewal_interval"),
+          maxClockSkewMillis: finite("time.max_clock_skew"),
+          storeRoundTripMillis: finite("shard.store_round_trip_budget"),
+          // §19.2's pacing, for the migration pass.
+          minIntervalMs: finite("shard.migration_min_interval"),
+          // §3.5's two sizing bounds. Without these the `sizingPass` evaluated neither and
+          // wrote `NEITHER_EVALUATED` to `Shard.bindingBound` on every tick — so the phase's
+          // completion criterion "both sizing bounds monitored with the binding one
+          // reported" was unmet on every deployment, and `GET /api/shards` reported the
+          // leader's verdict as unevaluated beside a live arithmetic that was not.
+          //
+          // Bound 2 (serial commit) is arithmetic over these four registered parameters and
+          // the observed membership count, so it evaluates from here. Bound 1 (round
+          // wall-clock) is a **measurement**, and no producer for it exists yet — the
+          // supervisor is given no `measurement`, and `sizing.js` reports an unmeasured
+          // bound as unevaluated rather than as satisfied. That gap is recorded as H6 and
+          // is the round loop's to close, not this file's: fabricating a number here would
+          // turn "we have not measured this" into a confident wrong answer.
+          config: {
+            missionRatePerAgentHour: finite("shard.mission_rate_per_agent_hour"),
+            txnPerMissionLifecycle: finite("shard.txn_per_mission_lifecycle"),
+            commitTxnServiceTimeMs: finite("shard.commit_txn_service_time"),
+            maxSerialUtilisation: finite("commit.max_serial_utilisation"),
+            roundWallClockBudgetMs: finite("perf.round_wall_clock_p99"),
+          },
+          // §11.1 / §23.3 — what the migration pass needs to enqueue a `SHARD_MIGRATE`.
+          // `membership.migrate()` signs the command and stamps a `not_valid_after` inside
+          // the handoff transaction; `commandSigning.sign` refuses an absent key and
+          // `clock.deadlineFrom` refuses an absent TTL, both by throwing, so neither had a
+          // producer and the first executed move would have thrown into the tick swallow.
+          //
+          // The key is an operator-declared deployment secret, read the same way
+          // `SHARD_CONSENSUS_REPLICATION` is: the code will not invent one. Absent, the
+          // migration pass reports `NO_COMMAND_CREDENTIALS` and
+          // `POST /api/shards/:id/rebalance` refuses to record an intent at all, so no
+          // shard is taken out of service for a plan that cannot be executed.
+          commandTtlSeconds: finite("dispatch.offer_ttl"),
+          signingKey: process.env.COMMAND_SIGNING_KEY,
+          // The plan's Phase 13 Socket.IO row names `SHARD_LEADERSHIP_CHANGED` and
+          // `SHARD_MIGRATED`. The worker builds them and returns them — it takes no
+          // Socket.IO dependency, matching every engine worker since Phase 4 — so the room
+          // is chosen here. Without this, both events had a producer and no wire, which is
+          // the same omission Phase 15 recorded for the invariant worker's two events.
+          //
+          // `SHARD_MIGRATE` is deliberately NOT here: it is an agent-scope command and
+          // reaches its agent through the outbox and the drain worker (§11.1), never
+          // through a broadcast.
+          onTick: (tick) => {
+            if (!io) return;
+            for (const message of shardSupervisor.socketMessages(tick)) {
+              try {
+                io.to("dashboard").emit(message.event, message.payload);
+              } catch (error) {
+                // An emit that fails costs visibility, never correctness — the durable
+                // `ShardLeadership` and `ShardMembership` rows are the authority, and
+                // `GET /api/shards` and `/health` read them. It must not take the tick down.
+                logger.warn("Shard supervisor socket emit failed", { event: message.event, message: error?.message });
+              }
+            }
+          },
         },
       );
       logger.info("Shard coordinator standing for election", { shardId: process.env.SHARD_ID || "default" });
@@ -385,11 +540,40 @@ async function start() {
         {
           prisma,
           audit: (tx, event) => auditStream.append({ prisma: tx }, event),
-          sessions: async () => [],
+          // PHASE 14 remediation (P14-R11) — the live bindings this process holds.
+          //
+          // This was `async () => []`, so the worker's revocation pass examined nothing
+          // and §23.2's "periodically during long sessions" rested entirely on the
+          // per-socket re-check in `robot.handler.js`'s heartbeat. That covers an agent
+          // that is *sending heartbeats*; it does not cover one that has gone quiet with
+          // the socket still open, which is the case a periodic sweep exists for.
+          //
+          // Only this process's sockets, deliberately: the sweep terminates by closing a
+          // socket, and a socket owned by another process is one this process cannot
+          // close. Each process sweeping its own is what makes the coverage complete
+          // without a cross-process command.
+          sessions: async ({ limit } = {}) => {
+            const live = [];
+            try {
+              for (const socket of io.sockets.sockets.values()) {
+                const binding = socket.data && socket.data.certificateBinding;
+                if (binding) live.push(binding);
+                if (Number.isFinite(limit) && live.length >= limit) break;
+              }
+            } catch { /* an adapter that cannot enumerate yields nothing, never a wrong answer */ }
+            return live;
+          },
           onTerminate: (sessions) => {
             for (const session of sessions) {
               logger.warn("Agent session terminated by the periodic revocation check (§23.2)", session);
               try { io.in(`robot:${session.agentId}`).disconnectSockets(true); } catch { /* best effort */ }
+            }
+          },
+          // §23.6 — "neither punitive by default". The finding is logged with its own
+          // interpretation and nothing is done to the operator or the constraint (P14-R6).
+          onOverrideRateFinding: (findings) => {
+            for (const finding of findings) {
+              logger.warn("Override rate threshold crossed (§23.6 design signal)", finding);
             }
           },
           onError: (e) => logger.error("Certificate rotation tick failed", { message: e?.message }),
@@ -397,6 +581,9 @@ async function start() {
         {
           recheckIntervalSeconds: app.locals.config?.values?.get?.("security.certificate_revocation_recheck_interval"),
           rotationLeadTimeSeconds: app.locals.config?.values?.get?.("security.certificate_rotation_lead_time"),
+          overrideRateWindowSeconds: app.locals.config?.values?.get?.("security.override_rate_window"),
+          overrideRateThresholdPerOperator: app.locals.config?.values?.get?.("security.override_rate_threshold_per_operator"),
+          overrideRateThresholdPerPredicate: app.locals.config?.values?.get?.("security.override_rate_threshold_per_predicate"),
         },
       );
     } catch (e) {

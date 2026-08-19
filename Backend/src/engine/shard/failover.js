@@ -123,6 +123,23 @@ const DEFAULT_MAX_PASSES = 8;
  * reconciled nothing because it could not attribute anything would be a failover that
  * reported success having done nothing.
  *
+ * ── The map is the **ownership** map, not the routing map ───────────────────
+ * `shardModel.regionShardMap()` answers "where does a *new* Leg go" and therefore excludes
+ * shards that admit no work. This function asks a different question — "which shard owns
+ * the work already here" — and using the routing map for it was wrong in two directions,
+ * both of which a working rebalance makes reachable, because a rebalance's whole job is to
+ * put a shard into DRAINING:
+ *
+ *   - the DRAINING shard's own leader attributed **none** of its region's Legs to itself,
+ *     so §19.5's reconciliation ran over an empty set for the shard most likely to be
+ *     holding half-written state; and
+ *   - with every published shard DRAINING the routing map was empty, which read as "no map
+ *     is published" — the single-shard branch — and every leader would then reconcile the
+ *     whole fleet. That is a second writer (§19.3) originating inside this phase.
+ *
+ * `readRegionOwnershipMap` is empty only when no shard has been published at all, which is
+ * the one condition the single-shard branch is actually about.
+ *
  * @param {object} deps `{ prisma }`
  * @param {object} input `{ shardId, shardByRegionId? }`
  * @returns {Promise<{ scoped: boolean, legIds: Set<string>|null, note: string }>}
@@ -131,7 +148,7 @@ async function legsInShard(deps, input) {
   const settings = input || {};
   const shardId = String(settings.shardId);
 
-  const map = settings.shardByRegionId || (await shardModel.readRegionShardMap(deps));
+  const map = settings.shardByRegionId || (await shardModel.readRegionOwnershipMap(deps));
   const published = Boolean(map) && Object.keys(map).length > 0;
 
   if (!published) {
@@ -217,6 +234,13 @@ async function inventory(deps, input) {
 
   // Outbox rows: dispatch obligations written in the authorising transaction (§11.1) that
   // the previous leader's drain worker may not have delivered.
+  //
+  // **Fleet-wide, and labelled as such.** `Outbox` carries an `agentId` and no `shardId`,
+  // so scoping this to the shard would mean an `IN` list of every member agent — five
+  // thousand of them at §3.5's upper bound — on the one code path that runs while a shard
+  // has no leader. The number is still worth having, and reporting it as the shard's when
+  // it is the fleet's is the kind of quiet wrong answer an incident is decided on, so it
+  // says which it is instead.
   const outboxOutstanding = await deps.prisma.outbox.count({
     where: { state: { in: ["PENDING", "CLAIMED", "DELIVERED"] } },
   });
@@ -227,23 +251,38 @@ async function inventory(deps, input) {
   // Timers: durable by construction (§4.5), so supervision is re-established by reading
   // them rather than by re-registering them. The overdue count is what tells a new leader
   // whether the outage outlived its own supervision.
-  const timersPending = await deps.prisma.timer.count({ where: { timerState: "PENDING" } });
+  //
+  // Scoped by `Timer.shardId`, which §12.4's own repairs stamp — so unlike the outbox this
+  // one *can* be a statement about this shard, and is. In the single-shard deployment
+  // (no published map) the scope is the fleet and both are the same set.
+  const timerScope = scope.scoped ? { shardId: String(settings.shardId) } : {};
+  const timersPending = await deps.prisma.timer.count({ where: { ...timerScope, timerState: "PENDING" } });
   const timersOverdue = await deps.prisma.timer.count({
-    where: { timerState: "PENDING", dueAt: { lte: settings.storeTime } },
+    where: { ...timerScope, timerState: "PENDING", dueAt: { lte: settings.storeTime } },
   });
 
   return Object.freeze({
     shardId: String(settings.shardId),
     scope: { scoped: scope.scoped, legCount: scope.scoped ? scope.legIds.size : null, note: scope.note },
-    [DURABLE_CATEGORY.HARD_COMMITMENTS]: { active: hardCommitments },
-    [DURABLE_CATEGORY.LEASES]: { lapsed: lapsedLeases },
-    [DURABLE_CATEGORY.CUSTODY]: { holding: custodyHeld },
-    [DURABLE_CATEGORY.OUTBOX]: { outstanding: outboxOutstanding, staleClaims: outboxStaleClaims },
-    [DURABLE_CATEGORY.TIMERS]: { pending: timersPending, overdue: timersOverdue },
+    [DURABLE_CATEGORY.HARD_COMMITMENTS]: { active: hardCommitments, scope: scope.scoped ? "SHARD" : "FLEET" },
+    [DURABLE_CATEGORY.LEASES]: { lapsed: lapsedLeases, scope: scope.scoped ? "SHARD" : "FLEET" },
+    [DURABLE_CATEGORY.CUSTODY]: { holding: custodyHeld, scope: scope.scoped ? "SHARD" : "FLEET" },
+    [DURABLE_CATEGORY.OUTBOX]: {
+      outstanding: outboxOutstanding,
+      staleClaims: outboxStaleClaims,
+      // Always the fleet, in every deployment. `Outbox` has no `shardId` column.
+      scope: "FLEET",
+      note:
+        "fleet-wide: Outbox carries an agentId and no shardId, and an IN list of every member agent is not a query " +
+        "for the path that runs while a shard has no leader. Reported as the fleet's rather than presented as this " +
+        "shard's.",
+    },
+    [DURABLE_CATEGORY.TIMERS]: { pending: timersPending, overdue: timersOverdue, scope: scope.scoped ? "SHARD" : "FLEET" },
     note:
       "an inventory, not a repair list. Every category here is repaired by its own owner — §12.4's reconciler, " +
       "§11.1's drain worker, §4.5's timer worker — and a second implementation in the failover path would be the " +
-      "one nobody maintained.",
+      "one nobody maintained. Each category states whether its count is this shard's or the fleet's: a number " +
+      "reported as the shard's when it is the fleet's is a quiet wrong answer an incident gets decided on.",
   });
 }
 
@@ -412,16 +451,37 @@ async function run(deps, input) {
  * reads it and knows it need not reconcile again, and a coordinator whose reconciliation
  * did not complete finds it null and does not resume.
  *
+ * ── Why this is an `updateMany` and not an `update` ─────────────────────────
+ * A `Shard` row is *published configuration* — it carries a foreign key to a `Region`, and
+ * §3.5's region→shard map is a thing an operator publishes rather than a thing a coordinator
+ * creates. The **single-shard deployment therefore has no `Shard` row at all**, which this
+ * module already treats as a legal state everywhere else: `legsInShard()` says so in as many
+ * words ("no region→shard map is published, so this is the single-shard deployment and every
+ * Leg belongs to this shard").
+ *
+ * `update()` raises P2025 when it matches nothing. In the single-shard deployment that threw
+ * out of `failoverPass()` **after** the reconciliation had already run, and because the
+ * supervisor's interval callback swallows a failed tick (correctly — one lost renewal must
+ * not take the process down), the session was never promoted and the loop re-entered as a
+ * follower forever, re-running the full §12.4 sweep on every tick. The failure mode was a
+ * coordinator that reconciled continuously and never resumed a round.
+ *
+ * `updateMany` matches nothing and writes nothing, which is the right answer: there is no row
+ * to record the failover on, and inventing one would fabricate a region→shard mapping no
+ * operator published. The outcome is reported rather than hidden, so a caller can tell "the
+ * failover was recorded" from "there was nowhere to record it".
+ *
  * @param {object} deps `{ prisma }`
  * @param {object} input `{ shardId, result, at }`
- * @returns {Promise<object>} the updated shard row
+ * @returns {Promise<{ persisted: boolean, shardId: string, note: string|null }>}
  */
 async function persist(deps, input) {
   const settings = input || {};
   const result = settings.result || {};
+  const shardId = String(settings.shardId);
 
-  return deps.prisma.shard.update({
-    where: { shardId: String(settings.shardId) },
+  const outcome = await deps.prisma.shard.updateMany({
+    where: { shardId },
     data: {
       lastLeadershipChangeAt: settings.at,
       lastFailoverAt: settings.at,
@@ -432,6 +492,17 @@ async function persist(deps, input) {
           : null,
       roundsResumableAt: result.complete === true ? settings.at : null,
     },
+  });
+
+  const persisted = Number(outcome.count || 0) > 0;
+  return Object.freeze({
+    persisted,
+    shardId,
+    note: persisted
+      ? null
+      : `no Shard row for "${shardId}" — the single-shard deployment (§3.5). The reconciliation ran and its result ` +
+        "stands; there is simply no published shard row to record it on, and creating one would invent a " +
+        "region→shard mapping no operator published.",
   });
 }
 

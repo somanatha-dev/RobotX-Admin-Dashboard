@@ -374,9 +374,16 @@ function postFailoverWorld(options) {
       { id: "wq-3", legId: "leg-defect-orphan", shardId: "shard-north", state: "SOLVED", priority: 200, version: 0 },
       { id: "wq-4", legId: "leg-south", shardId: "shard-south", state: "CLAIMED", priority: 200, version: 0 },
     ],
+    // PHASE 13 REMEDIATION — `shardId` is now carried, and a **third timer in the other
+    // shard** is seeded deliberately. `failover.inventory()` scopes its timer counts by
+    // `Timer.shardId`; before that it counted the fleet's while reporting the shard's, and
+    // a fixture with only one shard's timers in it could not tell the two apart. This is
+    // the negative control: `shard-north`'s inventory must still read 2 pending / 1
+    // overdue with `t-3` present.
     timer: [
-      { id: "t-1", timerKey: "LEG:leg-planned-committed:PLANNED:1:hardening", entityType: "LEG", entityId: "leg-planned-committed", timerState: "PENDING", dueAt: new Date(nowMs + 10000) },
-      { id: "t-2", timerKey: "LEG:leg-defect-orphan:EN_ROUTE_PICKUP:5:progress", entityType: "LEG", entityId: "leg-defect-orphan", timerState: "PENDING", dueAt: new Date(nowMs - 10000) },
+      { id: "t-1", timerKey: "LEG:leg-planned-committed:PLANNED:1:hardening", entityType: "LEG", entityId: "leg-planned-committed", timerState: "PENDING", dueAt: new Date(nowMs + 10000), shardId: "shard-north" },
+      { id: "t-2", timerKey: "LEG:leg-defect-orphan:EN_ROUTE_PICKUP:5:progress", entityType: "LEG", entityId: "leg-defect-orphan", timerState: "PENDING", dueAt: new Date(nowMs - 10000), shardId: "shard-north" },
+      { id: "t-3", timerKey: "LEG:leg-south:PLANNED:1:hardening", entityType: "LEG", entityId: "leg-south", timerState: "PENDING", dueAt: new Date(nowMs - 20000), shardId: "shard-south" },
     ],
     outbox: [
       { id: "ob-1", idempotencyKey: "k1", agentId: "agent-n", commandClass: "MISSION", command: "OFFER", state: "CLAIMED", claimExpiresAt: new Date(nowMs - 1000), sequence: 1 },

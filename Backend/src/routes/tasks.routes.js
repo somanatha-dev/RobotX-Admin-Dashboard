@@ -38,10 +38,21 @@ const manualAssignmentGate = requireActionClass(override.ACTION_CLASS.MANUAL_ASS
   subjectFrom: (req) => ({ subjectType: "TASK", subjectId: req.body?.taskId ? String(req.body.taskId) : null }),
 });
 
+// PHASE 14 remediation (P14-R4) — the gate fires on `waivePredicate` **alone**.
+//
+// It previously also required the body to name an agent (`robotId` || `agentId`), so a
+// request that asked to waive a predicate without naming one skipped the action-class gate
+// entirely — no elevated-role check, no recorded reason, no audit row — and reached
+// `tasks.controller`'s waiver decision, which at the time was evaluated against
+// `{ elevatedRoles: [] }` and therefore granted a class P or C waiver to any authenticated
+// caller (P14-R3).
+//
+// The `names` half was never doing any work the comment above claims for it: an *ordinary*
+// assignment carries no `waivePredicate` and is still untouched, which is the whole of the
+// backward-compatibility argument. What the second condition added was a way to ask for a
+// waiver without being gated for one.
 function gateManualAssignment(req, res, next) {
-  const waives = req.body?.waivePredicate;
-  const names = req.body?.robotId || req.body?.agentId;
-  if (!waives || !names) return next();
+  if (!req.body?.waivePredicate) return next();
   return manualAssignmentGate(req, res, next);
 }
 

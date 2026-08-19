@@ -648,6 +648,12 @@ function toRow(record, extra) {
     overrides: record.overrides,
     predictions: record.predictions,
 
+    // PHASE 14 — §23.7. Carried on the row and **not** inside `record`, so `digest()`
+    // and §24.3's reconstruction see exactly the bytes they saw before this column
+    // existed. It holds opaque surrogate keys and nothing else; `decisionRecord.js` is
+    // the only thing that supplies it.
+    surrogateKeys: Array.isArray(more.surrogateKeys) ? more.surrogateKeys : null,
+
     inputSnapshotId: more.inputSnapshotId ?? null,
     fullRetentionUntil: more.fullRetentionUntil ?? null,
     sizeBytes: Number.isFinite(more.sizeBytes) ? more.sizeBytes : Buffer.byteLength(serialise(record), "utf8"),

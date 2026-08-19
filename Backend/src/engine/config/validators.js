@@ -61,10 +61,13 @@ const election = require("../shard/election");
 const regionBoundary = require("../spatial/regionBoundary");
 const { RESOLUTION } = require("../spatial/cells");
 
-/** @structural unit conversion: seconds in an hour, from the §3.5 inequality's own statement */
-const SECONDS_PER_HOUR = 3600;
-/** @structural unit conversion: milliseconds in a second */
-const MS_PER_SECOND = 1000;
+// `SECONDS_PER_HOUR` and `MS_PER_SECOND` were declared here until Phase 13's refactor moved
+// the §3.5 arithmetic into `shard/sizing.js`, which owns the only copies now. They were left
+// behind unreferenced; `PHASE_13_INDEPENDENT_VERIFICATION.md` Finding 2 records it. Removed
+// rather than kept, because a unit conversion sitting beside a validator that no longer does
+// the arithmetic is an invitation to do it here a second time — and two copies of a sizing
+// bound is two places to update when k_txn is re-measured, the one that is not updated being
+// the one that admits the oversubscribed shard.
 
 const SEVERITY = Object.freeze({
   BLOCKING: "BLOCKING",

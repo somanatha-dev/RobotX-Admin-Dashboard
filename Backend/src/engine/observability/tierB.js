@@ -294,6 +294,10 @@ function toRow(record, extra) {
     feasibility: record.feasibility,
     costs: record.costs,
     columnDetail: record.columnDetail,
+    // PHASE 14 — §23.7. Outside `contentHash` by construction: the hash covers the four
+    // §21.2 sections, and this column is about which subjects an erasure request would
+    // have to reach, not about what the decision computed.
+    surrogateKeys: Array.isArray(more.surrogateKeys) ? more.surrogateKeys : null,
     contentHash: record.contentHash,
     sizeBytes: Buffer.byteLength(serialiseSections(record), "utf8"),
     retainUntil: more.retainUntil ?? null,

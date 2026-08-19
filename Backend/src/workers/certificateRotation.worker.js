@@ -44,6 +44,8 @@
 
 const sessionBinding = require("../engine/security/sessionBinding");
 const erasure = require("../engine/privacy/erasure");
+// PHASE 14 remediation (P14-R6) — §23.6's override-rate design signal.
+const override = require("../engine/security/override");
 
 /**
  * How often the worker ticks. Deliberately **not** the revocation interval itself: the
@@ -163,7 +165,70 @@ async function sweepIdentityRetention(deps, input) {
 }
 
 /**
- * One tick: all three passes.
+ * §23.6 — override rates per operator and per predicate, evaluated as a **design signal**.
+ *
+ * ── Why this pass exists — PHASE 14 remediation (P14-R6) ────────────────────
+ * §23.6's fifth row is "Override rates are monitored per operator and per predicate", and
+ * the plan's Phase 14 checklist repeats it as its own item. `security/override.js` has
+ * always had `rates()` and `breaches()`, correctly shaped and unit-tested — and until this
+ * remediation **nothing in the repository called either of them.** The three registered
+ * parameters they read (`security.override_rate_window` and the two thresholds) had no
+ * consumer, so the monitoring half of the rule was a pure function nobody ran.
+ *
+ * It lives here because this worker is already Phase 14's periodic security-and-privacy
+ * pass — §23.2's revocation sweep and §23.7's retention sweep — and because a rate over a
+ * window is a periodic evaluation by nature. It has the tick, the store, and the
+ * registered parameters in hand; a fourth place with all three would be a fourth place to
+ * keep in step.
+ *
+ * ── Why the finding is *reported* and nothing is done to the operator ───────
+ * > A high rate is a signal that a constraint is miscalibrated or that an operator needs
+ * > support — both actionable, neither punitive by default.
+ *
+ * The pass therefore returns findings and lets the caller surface them. It takes no action
+ * against an actor, it does not restrict anyone's authority, and it writes nothing back:
+ * a monitor that quietly narrowed a role would be exactly the punitive default §23.6
+ * refuses.
+ *
+ * @param {object} deps `{ prisma }`
+ * @param {object} input `{ now, windowSeconds, perOperator, perPredicate, take }`
+ * @returns {Promise<{ measured: object, breaches: object, windowFrom: Date|null }>}
+ */
+async function sweepOverrideRates(deps, input) {
+  const source = input || {};
+  const now = source.now instanceof Date ? source.now : new Date();
+
+  if (!deps || !deps.prisma || !deps.prisma.overrideAudit) {
+    return { measured: override.rates([]), breaches: { ok: true, findings: [] }, windowFrom: null };
+  }
+
+  /** @structural milliseconds per second */
+  const MS_PER_SECOND = 1000;
+  // An unset window means "no window", and the honest evaluation of a rate with no window
+  // is none at all — not "all of history", which would make the count grow without bound
+  // and cross any threshold eventually.
+  if (!Number.isFinite(source.windowSeconds) || Number(source.windowSeconds) <= 0) {
+    return { measured: override.rates([]), breaches: { ok: true, findings: [] }, windowFrom: null };
+  }
+  const windowFrom = new Date(now.getTime() - Number(source.windowSeconds) * MS_PER_SECOND);
+
+  const events = await deps.prisma.overrideAudit.findMany({
+    where: { recordedAt: { gte: windowFrom, lte: now } },
+    select: { actorId: true, actionClass: true, predicateId: true, granted: true },
+    /** @structural a page size, not a threshold */
+    take: Number.isFinite(source.take) ? source.take : 5000,
+  });
+
+  const measured = override.rates(events);
+  return {
+    measured,
+    breaches: override.breaches(measured, { perOperator: source.perOperator, perPredicate: source.perPredicate }),
+    windowFrom,
+  };
+}
+
+/**
+ * One tick: all four passes.
  *
  * @param {object} deps
  * @param {object} [context]
@@ -180,6 +245,12 @@ async function tick(deps, context) {
   });
   const rotations = await sweepRotations(deps, { now, leadTimeSeconds: settings.rotationLeadTimeSeconds, take: settings.rotationBatch });
   const retention = await sweepIdentityRetention(deps, { now, take: settings.retentionBatch });
+  const overrides = await sweepOverrideRates(deps, {
+    now,
+    windowSeconds: settings.overrideRateWindowSeconds,
+    perOperator: settings.overrideRateThresholdPerOperator,
+    perPredicate: settings.overrideRateThresholdPerPredicate,
+  });
 
   return {
     at: now,
@@ -188,6 +259,8 @@ async function tick(deps, context) {
     examined: revocations.examined,
     rotationsDue: rotations.due.length,
     identityRecordsErased: retention.erased ?? 0,
+    overrideRates: overrides.measured,
+    overrideRateFindings: overrides.breaches.findings,
   };
 }
 
@@ -206,6 +279,10 @@ function start(deps, context) {
     tick(deps, settings)
       .then((result) => {
         if (result.terminate.length > 0 && typeof deps.onTerminate === "function") deps.onTerminate(result.terminate);
+        // §23.6's design signal, surfaced rather than acted on (P14-R6).
+        if (result.overrideRateFindings.length > 0 && typeof deps.onOverrideRateFinding === "function") {
+          deps.onOverrideRateFinding(result.overrideRateFindings);
+        }
       })
       .catch((error) => {
         // A failed sweep delays a revocation by one tick; it never grants one. The next
@@ -230,6 +307,7 @@ module.exports = {
   sweepRevocations,
   sweepRotations,
   sweepIdentityRetention,
+  sweepOverrideRates,
   tick,
   start,
 };
