@@ -73,6 +73,21 @@ const SHARD_HAS_NO_DECISION_PATH =
   "nothing drains that queue. The legacy dispatcher was removed from the build at Phase 15, so " +
   "this state is a stop, not a fallback — see docs/runbooks/rollback.md.";
 
+/**
+ * What it means to have asked the per-shard question without naming a shard's region.
+ *
+ * PHASE 15 remediation (P15-R5). Kept apart from `SHARD_HAS_NO_DECISION_PATH` because the
+ * two are different incidents: one says *this shard is not staged yet*, and the other says
+ * *the caller did not say which shard it meant, so no staging decision applies to it*. An
+ * operator reading the first looks at the staging order; an operator reading the second
+ * looks at the caller.
+ */
+const REGION_UNRESOLVED =
+  "no operating region was named, so the per-shard cutover question has no subject and is refused. " +
+  "`cutover.engine_enabled` resolves at region scope (§22.2's alias for a shard, §3.5); answering a " +
+  "caller that named no region from a *global* binding would substitute 'is the whole deployment cut " +
+  "over' for 'is this shard cut over', which is the substitution per-shard staging exists to prevent.";
+
 /** How a shard's decision path is described, for logs, health, and the audit. */
 const DECISION_PATH = Object.freeze({
   /** The engine owns this shard: rounds run, commitments are written, commands are emitted. */
@@ -105,17 +120,38 @@ function processEnabled(env) {
  * nobody authorised, and the failure mode of a wrong `false` is a shard that assigns
  * nothing and says so loudly.
  *
+ * ── A caller that names no region gets `false`, not the global binding ──────
+ * PHASE 15 remediation (P15-R5). This function used to build its context as
+ * `if (regionId) context.region = regionId`, so a caller with no region resolved
+ * `cutover.engine_enabled` at **global** scope — and the register admits a global binding
+ * (`scopes: ["global", "region"]`). A deployment holding a global `true` therefore
+ * answered *"is the whole deployment cut over"* to a caller that asked *"is **this shard**
+ * cut over"*, which is precisely the substitution the per-shard staging exists to prevent.
+ *
+ * It was reachable and it was permissive. `services/task.service.js` takes the region from
+ * the **request body**, so the way for a caller to be admitted onto a shard the staging
+ * order had not reached was to omit `regionId` — and that module's own docstring claimed
+ * the opposite: *"a caller that passes neither gets `false`, which is the right answer for
+ * a caller that cannot say which shard it means."*
+ *
+ * This is the same defect `agentGate.SHARD_REGION_UNRESOLVED` closes for an agent session
+ * (D-13), one module along, and it is closed here rather than at each caller for the reason
+ * D-13 gives: a missing region does not make the answer `false`, it makes the question a
+ * different one — so the *question* is refused, at the single place that owns it.
+ *
+ * A global binding is still readable by anything that legitimately asks a deployment-wide
+ * question; `processEnabled()` is that question, and it is a different function.
+ *
  * @param {object|null} snapshot a Config Service snapshot
  * @param {{ regionId?: string|null, shardId?: string|null }} shard
  * @returns {boolean}
  */
 function configEnabled(snapshot, shard) {
   if (!snapshot || typeof snapshot.resolve !== "function") return false;
-  const context = {};
-  const regionId = shard && (shard.regionId || null);
-  if (regionId) context.region = regionId;
+  const regionId = shard && shard.regionId ? String(shard.regionId).trim() : "";
+  if (regionId === "") return false;
   try {
-    return snapshot.resolve(PARAMETER, context) === true;
+    return snapshot.resolve(PARAMETER, { region: regionId }) === true;
   } catch {
     return false;
   }
@@ -160,6 +196,10 @@ function describe(input) {
       "this process does not participate in the engine (ENGINE_ENABLED is not true), so it starts " +
       "no coordinator, drains no outbox, and runs no round. It still serves the request path. " +
       "The legacy dispatcher was removed from the build at Phase 15 and is not a fallback.";
+  } else if (!shard.regionId) {
+    // PHASE 15 remediation (P15-R5) — named separately from "not staged", because the
+    // caller is the thing to look at rather than the staging order.
+    consequence = REGION_UNRESOLVED;
   } else {
     consequence = SHARD_HAS_NO_DECISION_PATH;
   }
@@ -178,6 +218,7 @@ function describe(input) {
 module.exports = {
   PARAMETER,
   SHARD_HAS_NO_DECISION_PATH,
+  REGION_UNRESOLVED,
   DECISION_PATH,
   processEnabled,
   configEnabled,

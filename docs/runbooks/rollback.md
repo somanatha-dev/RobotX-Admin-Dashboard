@@ -96,8 +96,25 @@ guardrail regresses. It:
    copy would survive a restart with something nobody can audit);
 2. assesses the observation window;
 3. on `ROLL_BACK`, calls `stage.authoriseRollback({ automatic: true })`, publishes the
-   reverted binding, and appends the audit event;
+   reverted binding **and pins it**, and appends the audit event;
 4. logs at `error` with the shard, the breached guardrails and the observed values.
+
+**How the publish is permitted, and how far it goes.** It runs through
+`engine/cutover/rollbackPublisher.js` as an `automated: true` publish. That is legal for
+exactly one reason, and it is recorded in the register rather than in this runbook:
+`cutover.engine_enabled` is classified **STRUCTURAL rather than SAFETY on purpose**, because
+§22.3 forbids an automated process from changing a Safety-class parameter and §22.4 item 4's
+automatic rollback must be able to set this one `false`. The publisher refuses anything that is
+not a disable of that parameter at region scope, and carries every other binding, kill switch,
+regime, spatial declaration and shard definition of the version in force forward unchanged — a
+per-shard control must not make a fleet-wide change.
+
+**Propagation is not instant.** Processes adopt the pinned version on the configuration pull,
+at `cutover.guardrail_check_interval`. Confirm with `GET /api/health/cutover` that the shard
+reads `NONE` before you treat the harm as stopped. *Before the Phase 15 current-tree
+remediation this step published nothing at all: the controller reported a rollback, wrote the
+audit event, and left the shard live — and, because a rollback event makes
+`store.declarationFor` return null, it was never assessed against its guardrails again.*
 
 **It can only ever disable.** `guardrails.assertOneDirectional()` throws on anything else,
 because §22.3 forbids an automated process from making the change that raises risk. If you
@@ -165,6 +182,53 @@ Step 4 is the one that will be skipped and it is the one that matters. §22.5's 
 about kill switches applies exactly: *"An untested kill switch is not a control; it is a
 second, less well understood code path that will be invoked for the first time during an
 incident."*
+
+> ### ✅ RESOLVED — step 1 is performable (ADR-34)
+>
+> **This was an open finding until 2026-08-22, and the shape of the problem is worth keeping.**
+> Step 1 takes a staging shard live, which goes through `stage.authoriseEnable()`. That
+> function refuses while **any** blocking §24 gate is not GREEN, and `rollback_rehearsed` is a
+> blocking gate. So the rehearsal required a cutover and the cutover required the rehearsal.
+> There was no escape in the code, deliberately: `cutover/gates.js` states there is no
+> `WAIVED` status because *"a gate that could be waived would be a route around the predicates
+> those classes protect"*, and `authoriseEnable`’s only override skips the **staging order**,
+> never a gate.
+>
+> [`ADR-34`](../adr/ADR-34-cutover-rehearsal-purpose.md) resolves it **without weakening any
+> gate**. The diagnosis was that one function was answering one question for two different
+> acts: a production cutover, and a rehearsal whose whole purpose is to *produce* the evidence
+> the gate is about. An `ENABLE` now names its purpose:
+>
+> - `PURPOSE.PRODUCTION` — the default, and unchanged in every respect.
+> - `PURPOSE.REHEARSAL` — permitted only against a declared non-production environment
+>   (`environment: { id, production: false }`), and it excludes **exactly one** gate:
+>   `rollback_rehearsed`. Everything else — the other twenty-three gates, the §1.8 rule 3 ship
+>   state, two-person approval, the guardrail pre-declaration, the staging order — still
+>   applies.
+>
+> **The forgery this section used to warn about is now refused by the code rather than by this
+> paragraph.** Making the rehearsal performable would have been a hole rather than a fix if
+> its evidence had stayed uncheckable, so `evidence.admit()` now requires the record to carry
+> the rehearsal itself. Two signatures are still necessary and are no longer sufficient.
+
+#### The rehearsal record
+
+A record that discharges `rollback_rehearsed` carries, alongside the two distinct signatures:
+
+| Field | Meaning | Refusal if absent |
+|---|---|---|
+| `rehearsal.environment` | `{ id, production: false }` — named, and declaring itself non-production | `REHEARSAL_NOT_IN_A_REHEARSAL_ENVIRONMENT` |
+| `rehearsal.configVersion` | The published configuration version exercised (§22.1 rule 4) | `REHEARSAL_CONFIGURATION_UNIDENTIFIED` |
+| `rehearsal.steps` | Each of the six steps above, named individually and `true` | `REHEARSAL_INCOMPLETE` (naming the missing steps) |
+| `rehearsal.automaticRollbackFired` | The **controller** fired on a real guardrail breach | `REHEARSAL_NOT_AUTOMATIC` |
+
+A step that is omitted is treated exactly as a step reported `false`. The record ages like
+every other piece of release evidence, so a rehearsal cannot be performed once and cited
+indefinitely — it is evidence about the system being shipped, or it is not evidence.
+
+`automaticRollbackFired` is checked separately from its own checkbox for the reason step 2
+gives: a rehearsal that called the rollback function directly has exercised the one path that
+was never in doubt.
 
 ---
 

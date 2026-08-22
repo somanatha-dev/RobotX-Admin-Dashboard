@@ -13,6 +13,9 @@
 const escalation = require("../../src/engine/dispatch/escalation");
 const outbox = require("../../src/engine/dispatch/outbox");
 const worker = require("../../src/workers/outbox.worker");
+// PHASE 15 remediation (X2b) — the handler `QUEUED`'s deadline must name, read from §4.3's
+// own table rather than restated here.
+const legMachine = require("../../src/engine/lifecycle/legMachine");
 
 const fixtures = require("./helpers/dispatchFixture");
 
@@ -497,12 +500,28 @@ describe("the outbox drain worker", () => {
      looks for outstanding work.
      ───────────────────────────────────────────────────────────────────────── */
 
-  function withdrawalSettings() {
+  function withdrawalSettings(overrides) {
     return {
       ...settings,
       maxDeliveryDelaySeconds: 30,
       nackCooloffSeconds: 60,
       signingKey: fixtures.TEST_SIGNING_KEY,
+      // PHASE 15 remediation (X2b). Step 2 requeues the Leg into `QUEUED`, and §4.5
+      // requires that state's deadline to be registered **in the same transaction**
+      // (invariant I4). `sla.assignment_deadline` is `QUEUED`'s own parameter, resolved by
+      // the production composer from the published register.
+      //
+      // Before this landed, the two tests below asserted the withdrawal's fence, command,
+      // release and Leg state and said nothing about supervision — so they passed over a
+      // requeued Leg that no deadline governed. §17.4's ladder is invoked at
+      // `sla.assignment_deadline`; with no timer it was never invoked, and the Leg waited
+      // with nothing noticing. Phase 5 reproduced exactly this against a live database as
+      // finding X2b, and its sharpest form is that Phase 5's *own* timer-driven withdrawal
+      // registered the deadline while this one did not: one outcome, two production paths,
+      // different supervision.
+      assignmentDeadlineSeconds: 600,
+      shardId: "default",
+      ...(overrides || {}),
     };
   }
 
@@ -513,7 +532,7 @@ describe("the outbox drain worker", () => {
     };
   }
 
-  async function offerThenTimeOut(store, record) {
+  async function offerThenTimeOut(store, record, settingsOverrides) {
     // The Leg must be where a delivered offer leaves it (§11.2), because the withdrawal
     // is a conditional write on that state; and the agent's counter must be where the
     // commit that allocated the offer's fence left it, or the withdrawal would draw a
@@ -525,7 +544,7 @@ describe("the outbox drain worker", () => {
     store.advanceClock(OFFER_TTL_SECONDS + 1);
     return worker.drainOnce(
       withdrawingDeps(store, async () => ({ delivered: true }), record),
-      withdrawalSettings(),
+      withdrawalSettings(settingsOverrides),
       "w1",
     );
   }
@@ -554,6 +573,43 @@ describe("the outbox drain worker", () => {
     const offerRow = store.rows("outbox").find((r) => r.command === "OFFER");
     expect(offerRow.state).toBe(outbox.OUTBOX_STATE.FAILED);
     expect(offerRow.lastError).toBe(escalation.WITHDRAWN_MARK);
+
+    // ── PHASE 15 remediation (X2b) — and the requeued Leg is SUPERVISED ─────
+    //
+    // The half this test used to be silent about. "Re-plan the Leg excluding it" leaves the
+    // Leg in a non-terminal state, and §4.5 gives every non-terminal state a deadline
+    // registered in the transaction that entered it (I4). Asserted on the same key Phase
+    // 5's own withdrawal handler writes, so the two production paths to `QUEUED` are
+    // indistinguishable afterwards — which is the whole of finding X2b.
+    const legRow = store.rows("leg").find((l) => l.id === fixtures.LEG_ROW_ID);
+    const pendingTimers = store
+      .rows("timer")
+      .filter((t) => t.entityId === fixtures.LEG_ROW_ID && t.timerState === "PENDING");
+    expect(pendingTimers).toHaveLength(1);
+    expect(pendingTimers[0].state).toBe("QUEUED");
+    expect(pendingTimers[0].handler).toBe(legMachine.deadlineFor("QUEUED").onExpiry);
+    // Keyed on the version the withdrawal's own conditional write produced, or the very
+    // next fire would discard it as stale.
+    expect(String(pendingTimers[0].entityVersion)).toBe(String(legRow.version));
+  });
+
+  test("a withdrawal whose requeue deadline does not resolve ROLLS BACK rather than leaving the Leg unsupervised", async () => {
+    // Fail closed, and the direction matters: committing the withdrawal while failing to
+    // arm the requeued Leg's deadline produces exactly the unsupervised state §4.5 exists
+    // to prevent — and produces it from inside the mechanism built to prevent it. The offer
+    // stays outstanding and the next pass tries again, which is what every other
+    // non-completion in this worker does.
+    const store = buildStore();
+    const summary = await offerThenTimeOut(store, undefined, { assignmentDeadlineSeconds: undefined });
+
+    expect(summary.withdrawn).toBe(0);
+    // Nothing committed: no fence advance, no WITHDRAW, no release, no state change.
+    expect(store.rows("agent")[0].fenceCounter).toBe(42n);
+    expect(store.rows("outbox").filter((r) => r.command === "WITHDRAW")).toHaveLength(0);
+    expect(store.rows("commitment")[0].releasedAt).toBeNull();
+    expect(store.rows("leg").find((l) => l.id === fixtures.LEG_ROW_ID).state).toBe("OFFERED");
+    // And no half-written supervision either.
+    expect(store.rows("timer").filter((t) => t.timerState === "PENDING")).toHaveLength(0);
   });
 
   test("the SLI reflects the unanswered offer while it is outstanding and stops counting it once withdrawn", async () => {

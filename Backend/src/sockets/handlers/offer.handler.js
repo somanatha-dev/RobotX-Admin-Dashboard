@@ -43,9 +43,18 @@ const responseSchema = z
   })
   .passthrough();
 
-function engineEnabled() {
-  return process.env.ENGINE_ENABLED === "true";
-}
+// PHASE 15 remediation (D-6) — both halves of the cutover switch, from the one module that
+// owns the question. This handler releases a commitment, moves a Leg and renews a lease:
+// running it on a shard the staging order has not reached would be the engine acting as the
+// decision path for a shard nobody authorised it for.
+const agentGate = require("../../engine/cutover/agentGate");
+// PHASE 15 remediation (X2a) — §4.5's deadline for the state each disposition enters.
+// `offers.js` writes the Leg conditionally on its version and does not run §4.4's table, so
+// before this every accepted, rejected and deferred offer left the Leg in a non-terminal
+// state with no pending timer — invariant I4's violation, on the path the cutover makes
+// live. See `cutover/legEntryDeadline.js` for why this arms the deadline rather than
+// routing the write through `transitions.apply`.
+const legEntryDeadline = require("../../engine/cutover/legEntryDeadline");
 
 /**
  * Resolve the Agent row backing a robot socket.
@@ -64,9 +73,14 @@ async function resolveAgent(prisma, robotId) {
   return prisma.agent.findUnique({ where: { agentId: robotId } });
 }
 
-function registerOfferHandlers(io, socket, { prisma, kv, logger, config } = {}) {
+function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLocals } = {}) {
   const log = logger || console;
   const settings = config || {};
+
+  // The pinned configuration snapshot, read at call time (P14-R1). `config` above is this
+  // handler's own dispatch settings and is a different object; the shard half of the
+  // cutover switch resolves against the published snapshot, which only `appLocals` carries.
+  const configOf = () => appLocals?.config ?? null;
 
   /**
    * The shared preamble: authenticate, resolve, match the response against the offer
@@ -78,9 +92,18 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config } = {}) 
    */
   async function handle(event, payload, apply) {
     try {
-      if (!engineEnabled()) return;
       if (!allow(socket, event, RESPONSE_RATE)) return;
-      if (!socket.data?.isAuthed) return;
+
+      // Both halves plus the session, in one call. `assess()` refuses an unauthenticated
+      // socket by name, so the separate `isAuthed` check it replaced is not lost.
+      //
+      // Read once and held for the whole disposition: the same published version decides
+      // that this shard may act and supplies the deadline the entered state is armed with,
+      // which is §22.1 rule 4's "a process observes exactly one version" applied to one
+      // agent response rather than to a round.
+      const snapshot = configOf();
+      const gate = agentGate.assess({ socket, snapshot, nowMs: Date.now() });
+      if (!gate.allowed) return;
 
       const parsed = responseSchema.safeParse(payload || {});
       if (!parsed.success) {
@@ -107,7 +130,39 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config } = {}) 
         const leg = await tx.leg.findUnique({ where: { id: matched.commitment.legId } });
         if (!leg) return { outcome: offers.OUTCOME.IGNORED, reason: "LEG_NOT_FOUND" };
 
-        return apply(tx, { agent, commitment: matched.commitment, leg, storeTime, data: parsed.data });
+        const applied = await apply(tx, {
+          agent,
+          commitment: matched.commitment,
+          leg,
+          storeTime,
+          data: parsed.data,
+        });
+
+        // ── PHASE 15 remediation (X2a) — §4.5's deadline for the entered state ──
+        //
+        // In this transaction, on the applied path only. An `IGNORED` or `REFUSED`
+        // disposition wrote no Leg state, so there is no entry to supervise and cancelling
+        // the `OFFERED` deadline for one would remove supervision from a Leg that is still
+        // legitimately offered.
+        //
+        // The consequence of its absence, for the record: an `ACCEPTED` Leg with no
+        // `execute.start_grace` deadline is an agent that accepted and then went silent
+        // and is never probed and never reassigned. All three dispositions are armed, not
+        // just the accept, because §4.5's obligation is about the *state*, not about which
+        // event produced it — and supervising two of three is how the next divergence
+        // starts.
+        if (applied.outcome === offers.OUTCOME.APPLIED && applied.legState) {
+          await legEntryDeadline.superviseEntry(tx, {
+            leg,
+            state: applied.legState,
+            storeTime,
+            deadlineSeconds: legEntryDeadline.deadlineSecondsFrom(snapshot && snapshot.values, applied.legState),
+            event,
+            shardId: gate.shardId,
+          });
+        }
+
+        return applied;
       });
 
       if (result.outcome === offers.OUTCOME.APPLIED) {

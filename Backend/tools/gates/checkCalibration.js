@@ -99,9 +99,35 @@ const FINDING = Object.freeze({
  */
 function hasSubstantiation(entry) {
   if (entry.derivation && String(entry.derivation).trim()) return true;
-  // The register's own convention: `section` cites the specification text that fixes the
-  // value and `requiredBy` names the module that consumes it. Together they are a
-  // traceable derivation; either alone is a cross-reference.
+
+  /**
+   * ── PHASE 15 REMEDIATION — the fallback is not available to a Safety-class entry ──
+   *
+   * `section` cites the specification text near the value and `requiredBy` names the module
+   * that consumes it. The original reading was that together they are "a traceable
+   * derivation". They are not, and the register itself is the proof: **both fields are
+   * carried by essentially every row**, because they are the register's universal
+   * cross-reference convention rather than a claim about where a number came from.
+   *
+   * That made this check inert for exactly the rows it exists to protect. Flipping all 39
+   * non-derived Safety-class entries from `PROVISIONAL`/`UNCALIBRATED` to `DERIVED` — one
+   * word each, no other change — left **eleven of them reported clean by this gate**, among
+   * them `security.position_plausibility_tolerance` (the kinematic ceiling on position
+   * reports), `ops.emergency_services_hazard_threshold`, and `ops.external_escalation_contacts`.
+   * A launch gate that a one-word edit can satisfy is a launch gate in name.
+   *
+   * §22.4 defines the status as "`DERIVED` (**from a stated accounting or measured
+   * source**)". A cross-reference is neither. So for a Safety-class entry the `derivation`
+   * field is required outright: the row must *state* where the number came from, in the row.
+   * The thirteen Safety-class entries that legitimately hold this status today already do —
+   * the nine Tier 2 kill switches cite §1.8 rule 3, which fixes their value directly, and
+   * `agent.dedup_retention` records a measured span.
+   *
+   * The fallback remains available to non-Safety entries, where §22.4's launch gate is
+   * stated per tier and a weaker record is a quality signal rather than a blocker.
+   */
+  if (entry.changeClass === SAFETY_CLASS) return false;
+
   return Boolean(entry.section && String(entry.section).trim() && entry.requiredBy && String(entry.requiredBy).trim());
 }
 

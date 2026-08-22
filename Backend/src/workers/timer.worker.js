@@ -22,15 +22,22 @@
  *
  * ── The handlers are injected ──────────────────────────────────────────────
  * A handler decides what to attempt when a deadline passes — reassign, escalate, page,
- * re-plan — and several of those belong to phases that have not landed. The worker
- * therefore takes a handler map and **refuses to fire a timer whose handler is not
- * registered**, rather than resolving it silently. A deadline that passed with nobody to
- * act on it is the exact defect §12.1 opens by naming, and swallowing it here would
+ * re-plan. The worker takes a handler map and **refuses to fire a timer whose handler is
+ * not registered**, rather than resolving it silently. A deadline that passed with nobody
+ * to act on it is the exact defect §12.1 opens by naming, and swallowing it here would
  * rebuild that defect inside the mechanism designed to remove it.
  *
- * ── Built, tested, and not started ─────────────────────────────────────────
- * `ENGINE_ENABLED` is false and Phase 15 owns moving engine workers "from shadow to
- * production scheduling". Nothing in `server.js` calls `start()`.
+ * Their producer is `engine/supervision/expiryActions.js`, which derives its keys from
+ * §4.2's and §4.3's own deadline tables. Until Phase 5's remediation there was no
+ * producer at all and no handler could have been written against this contract anyway —
+ * see `fireOne`, whose three defects are recorded there rather than here because they
+ * were defects of *this* function.
+ *
+ * ── Started on leadership ──────────────────────────────────────────────────
+ * `workers/leaderWorkers.js` composes and starts it when the shard supervisor reports a
+ * promoted lease (§19.3's single writer), and stops it on demotion. Nothing in
+ * `server.js` calls `start()` directly, and Phase 0's scaffold guard asserts it does not:
+ * a standby that fired timers would be a second writer.
  *
  * Tier 0 by path. Invariants I2, I4, I12.
  */
@@ -53,6 +60,9 @@ const FIRE_BATCH = 64;
  * property Phase 4 established for `src/engine/dispatch/`.
  */
 const LAG_KEY = "engine:timerlag";
+
+/** @structural milliseconds per second — a unit conversion, not a threshold */
+const MILLIS_PER_SECOND = 1000;
 
 /**
  * @param {object|null|undefined} cache
@@ -89,7 +99,75 @@ async function readEntity(prisma, timer) {
 }
 
 /**
- * Fire one timer.
+ * How long to re-arm a deadline the fire did not discharge.
+ *
+ * The default is **the interval this timer was originally armed for**, which `register`
+ * records on the row: literally the state's own deadline as it was resolved at the moment
+ * the state was entered, including the two `projected` deadlines whose value is a mission
+ * ETA rather than a register entry. Reading it from the row rather than re-resolving
+ * configuration is what lets a projected deadline re-arm at all without this worker
+ * acquiring a copy of the plan.
+ *
+ * @param {object} timer
+ * @param {object} deps
+ * @param {object|null} result the handler's return
+ * @returns {number} seconds, at least one
+ */
+function rearmSecondsFor(timer, deps, result) {
+  if (result && Number.isFinite(result.rearmInSeconds) && result.rearmInSeconds > 0) {
+    return result.rearmInSeconds;
+  }
+  if (typeof deps.rearmSecondsFor === "function") {
+    const supplied = deps.rearmSecondsFor(timer);
+    if (Number.isFinite(supplied) && supplied > 0) return supplied;
+  }
+  const armed = timers.armedSecondsOf(timer);
+  return Number.isFinite(armed) && armed > 0 ? armed : 1;
+}
+
+/**
+ * Fire one timer — claim, act, and resolve or re-arm, **in one transaction**.
+ *
+ * PHASE 5 REMEDIATION. The previous shape of this function was
+ * `handler({ timer, entity, storeTime, config })` followed by `resolve` on the base
+ * client, and three things were wrong with it. Each is a §4.5 property rather than a
+ * refinement, and the first is why the seventeen declared expiry actions could not have
+ * been implemented even by someone who tried:
+ *
+ * 1. **The handler received no transaction client, so it could not perform a transition.**
+ *    §4.5 says a timer *attempts* a transition and §4.1 rule 2 makes every transition a
+ *    conditional write; `lifecycle/transitions.apply` takes a `tx` as its first argument
+ *    and `supervision/timers.register` refuses anything that is not one. A handler holding
+ *    only `{ timer, entity, storeTime, config }` had no way to write anything at all. The
+ *    handler contract described a supervisor that could only observe.
+ *
+ * 2. **The effect and the resolution were in different transactions.** A crash between
+ *    them leaves either a deadline acted on and not resolved, or — worse — one resolved
+ *    with its action rolled back, which is a deadline discharged by nobody. §4.1 rule 5
+ *    states this for a fence and the command it authorises; a deadline and the action it
+ *    authorises are the same shape.
+ *
+ * 3. **Two workers both ran the handler.** `resolve` is conditional on `PENDING`, so only
+ *    one *recorded* the fire — after both had already acted. §4.5's at-least-once firing
+ *    makes that sound for a handler whose effect is a conditional write, and unsound for
+ *    one whose effect is a page: there is no version to make the second responder call a
+ *    no-op.
+ *
+ * `timers.claim` is now the transaction's first statement. It locks the row and asserts
+ * both facts the fire rests on — still `PENDING`, still due at *this* pass's store time —
+ * so a second worker's claim finds no row and does no work, and everything after it
+ * commits or rolls back as one.
+ *
+ * ── The resolution is structural, not the handler's word ───────────────────
+ * After the handler, the entity is re-read and its version compared. If it moved, the
+ * transition happened and `apply` registered the target state's timer, so this one is
+ * `FIRED`. If it did **not** move, the entity is still sitting in the state whose deadline
+ * this was — the handler refused, or its action was an alert that never transitions — and
+ * resolving would leave a non-terminal state with no pending timer, which invariant I4
+ * forbids and which nothing downstream would ever notice. So it is re-armed.
+ *
+ * Deciding that from the version rather than from the handler's return value is the point:
+ * a handler cannot discharge a deadline by claiming to have acted on it.
  *
  * @param {object} deps
  * @param {object} config
@@ -120,24 +198,88 @@ async function fireOne(deps, config, timer, storeTime) {
     return { disposition: "HANDLER_NOT_REGISTERED", outcome: timer.handler };
   }
 
-  let outcome;
+  const record = typeof deps.record === "function" ? deps.record : () => {};
+
   try {
-    // The handler *attempts* a transition. Its own conditional write decides whether it
-    // wins against a concurrent reconciler repair (§12.4).
-    const result = await handler({ timer, entity, storeTime, config });
-    outcome = result && result.outcome ? result.outcome : "ATTEMPTED";
+    return await deps.runInTransaction(async (tx) => {
+      const owned = await timers.claim(tx, { id: timer.id, storeTime });
+      if (!owned) {
+        // Another worker holds this fire, or it was re-armed past this pass's clock
+        // between the selection and here. Neither is an error and neither is a fire.
+        return { disposition: "NOT_CLAIMED", outcome: "CLAIMED_BY_ANOTHER_PASS" };
+      }
+
+      // Re-read under the claim. The select-to-claim window is small and it is real: the
+      // entity can transition inside it, and acting on the row read before the lock would
+      // apply a deadline computed for a state the entity has left — the very thing
+      // `assessFire` exists to prevent, one step earlier than it was checked.
+      const held = await readEntity(tx, timer);
+      const recheck = timers.assessFire(timer, held);
+      if (recheck.disposition !== timers.FIRE_DISPOSITION.APPLY) {
+        await timers.resolve(tx, {
+          id: timer.id,
+          timerState: timers.TIMER_STATE.DISCARDED,
+          storeTime,
+          outcome: recheck.reason,
+          owned: true,
+        });
+        return { disposition: recheck.disposition, outcome: recheck.reason };
+      }
+
+      const result = await handler({ tx, prisma: deps.prisma, timer, entity: held, storeTime, config, record });
+      const outcome = result && result.outcome ? String(result.outcome) : "ATTEMPTED";
+
+      const after = await readEntity(tx, timer);
+      const moved = !after || timers.versionOf(timer.entityType, after) !== BigInt(timer.entityVersion);
+      const stillSupervised =
+        Boolean(after) && timers.requiresTimer(timer.entityType, timer.state) && !moved;
+
+      if (stillSupervised) {
+        const seconds = rearmSecondsFor(timer, deps, result);
+        await timers.reschedule(tx, {
+          id: timer.id,
+          dueAt: timers.deadlineFrom(storeTime, seconds),
+          outcome,
+        });
+        return {
+          disposition: "REARMED",
+          outcome,
+          rearmedInSeconds: seconds,
+          handlerDisposition: result ? result.disposition : null,
+        };
+      }
+
+      // `owned` — this transaction holds the row's lock from `claim`, and the transition
+      // the handler just applied has already cancelled every pending timer for the entity,
+      // this one included. Without it the fire is recorded as a cancellation.
+      await timers.resolve(tx, { id: timer.id, timerState: timers.TIMER_STATE.FIRED, storeTime, outcome, owned: true });
+      return {
+        disposition: timers.FIRE_DISPOSITION.APPLY,
+        outcome,
+        handlerDisposition: result ? result.disposition : null,
+      };
+    });
   } catch (error) {
-    outcome = `HANDLER_THREW:${error && error.message ? error.message : "unknown"}`;
+    // The whole fire rolled back, claim included, so the row is untouched and still due.
+    // Left as it is, a deterministic handler defect would re-fire it on every pass for
+    // ever; re-armed here, outside the failed transaction, it retries on the state's own
+    // cadence and `attempts` and `lastOutcome` carry the failure durably.
+    const outcome = `HANDLER_THREW:${error && error.message ? error.message : "unknown"}`;
+    record("timer.handler_threw", {
+      timerId: timer.id,
+      handler: timer.handler,
+      entityType: timer.entityType,
+      entityId: timer.entityId,
+      state: timer.state,
+      message: error && error.message,
+    });
+    await timers.reschedule(deps.prisma, {
+      id: timer.id,
+      dueAt: timers.deadlineFrom(storeTime, rearmSecondsFor(timer, deps, null)),
+      outcome,
+    });
+    return { disposition: "HANDLER_THREW", outcome };
   }
-
-  await timers.resolve(deps.prisma, {
-    id: timer.id,
-    timerState: timers.TIMER_STATE.FIRED,
-    storeTime,
-    outcome,
-  });
-
-  return { disposition: timers.FIRE_DISPOSITION.APPLY, outcome };
 }
 
 /**
@@ -161,12 +303,32 @@ async function fireDue(deps, config) {
 
   const dueTimers = await timers.due(deps.prisma, { storeTime, limit: FIRE_BATCH });
 
-  const summary = { due: dueTimers.length, fired: 0, discarded: 0, unhandled: 0 };
+  const summary = { due: dueTimers.length, fired: 0, discarded: 0, unhandled: 0, rearmed: 0, threw: 0, unclaimed: 0 };
 
   for (const timer of dueTimers) {
     const result = await fireOne(deps, settings, timer, storeTime);
     if (result.disposition === timers.FIRE_DISPOSITION.APPLY) summary.fired += 1;
-    else if (result.disposition === "HANDLER_NOT_REGISTERED") {
+    else if (result.disposition === "REARMED") {
+      // Counted separately from `fired` on purpose. A pass that re-arms everything it
+      // touches is a supervisor whose attempts are all being refused — a healthy-looking
+      // tick over a fleet nothing is progressing — and one number that covered both
+      // would hide exactly that.
+      summary.rearmed += 1;
+      record("timer.rearmed", {
+        timerId: timer.id,
+        handler: timer.handler,
+        entityType: timer.entityType,
+        entityId: timer.entityId,
+        state: timer.state,
+        outcome: result.outcome,
+        attempts: timer.attempts + 1,
+        rearmedInSeconds: result.rearmedInSeconds,
+      });
+    } else if (result.disposition === "HANDLER_THREW") {
+      summary.threw += 1;
+    } else if (result.disposition === "NOT_CLAIMED") {
+      summary.unclaimed += 1;
+    } else if (result.disposition === "HANDLER_NOT_REGISTERED") {
       summary.unhandled += 1;
       record("timer.handler_not_registered", {
         timerId: timer.id,
@@ -223,6 +385,14 @@ function requireDeps(deps) {
         "remove it.",
     );
   }
+  if (typeof deps.runInTransaction !== "function") {
+    throw new TypeError(
+      "the timer worker needs a transaction seam. A handler *attempts* a transition (§4.5) and every transition is " +
+        "a conditional write (§4.1 rule 2), so a handler with no transaction client can observe and never act — " +
+        "and the claim, the action, and the resolution must commit or roll back together, or a deadline is " +
+        "discharged by nobody (§4.1 rule 5).",
+    );
+  }
 }
 
 /**
@@ -273,6 +443,7 @@ module.exports = {
   FIRE_BATCH,
   LAG_KEY,
   readEntity,
+  rearmSecondsFor,
   fireOne,
   fireDue,
   start,

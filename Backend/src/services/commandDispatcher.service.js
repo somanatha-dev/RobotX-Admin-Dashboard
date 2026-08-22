@@ -226,9 +226,42 @@ async function deliverOutboxCommand(io, agentSocketId, envelope, options = {}) {
   // determined, and two determinations of "may we command" is one too many.
   //
   // Absent `activeModes`, nothing is suspended. That is the correct default for the legacy
-  // path — which has no modes and is unchanged until the Phase 15 cutover — and it is safe
-  // for the engine path because the drain worker always supplies it.
-  const suspension = modeRegister.commandsSuspended(options.activeModes || []);
+  // path — which has no modes and is unchanged until the Phase 15 cutover.
+  //
+  // ── PHASE 15 remediation (P15-R3): the accessor may be asynchronous ────────
+  //
+  // The sentence that used to end the paragraph above read "and it is safe for the engine
+  // path **because the drain worker always supplies it**". It did not. The mode set's only
+  // producer is `degraded/transitions.activeModes()`, which is a **query** and therefore
+  // asynchronous, while this option was read synchronously — so the composition root could
+  // not supply the real producer even in principle and bound `() => []` instead. A shard in
+  // §18.5 Custodial Operation went on emitting commands, which is the one thing that
+  // section forbids, while `GET /api/health` correctly reported `commandsSuspended: true`
+  // from the same register. The report and the behaviour disagreed.
+  //
+  // Awaiting the accessor is the whole change. `await` on a non-promise is the identity, so
+  // every existing caller — including the legacy ones that pass no options at all — behaves
+  // byte-for-byte as before. The decision itself stays here, at the single exit every
+  // §10.3.1 command passes through, rather than being duplicated into the worker: "two
+  // determinations of 'may we command' is one too many".
+  //
+  // An accessor that *throws* refuses the delivery rather than escaping. A store blip is
+  // exactly the condition §18.5 is about, so "we could not find out whether commands are
+  // suspended" must never resolve to "they are not" — and letting the throw escape would
+  // abort the whole drain pass rather than one row. The row stays PENDING and the next pass
+  // asks again, which is what every other non-delivery here does.
+  let declaredModes;
+  try {
+    declaredModes =
+      typeof options.activeModes === "function" ? await options.activeModes() : options.activeModes;
+  } catch (e) {
+    return {
+      delivered: false,
+      detail: `DEGRADED_MODE_UNREADABLE:${e?.message || "unknown"}`,
+      socketId: null,
+    };
+  }
+  const suspension = modeRegister.commandsSuspended(declaredModes || []);
   if (suspension.suspended) {
     // Not an error and not a discard: the outbox row stays PENDING and is delivered when
     // the mode exits. §18.4 — infrastructure failure never fails customer work; the queue
@@ -289,11 +322,15 @@ function outboxDeliveryArm(io, options = {}) {
   // `options.activeModes` may be a value or a function. A function is what the drain worker
   // passes, because the shard's mode set can change between two rows of one drain pass and a
   // value captured at bind time would let a command out after Custodial Operation opened.
+  //
+  // PHASE 15 remediation (P15-R3) — the accessor is **forwarded, not invoked here**. It used
+  // to be called on this line and its *result* passed down, which made an asynchronous
+  // producer unusable in the worst possible way: `deliverOutboxCommand` would have received
+  // a Promise, `Array.isArray(promise)` is false, and the mode set would have read as empty
+  // — a fail-open that looks exactly like a correctly wired call. Forwarding keeps the read
+  // at the moment of delivery, which is what the paragraph above already asked for.
   return (agentSocketId, envelope) =>
-    deliverOutboxCommand(io, agentSocketId, envelope, {
-      activeModes:
-        typeof options.activeModes === "function" ? options.activeModes() : options.activeModes || [],
-    });
+    deliverOutboxCommand(io, agentSocketId, envelope, { activeModes: options.activeModes });
 }
 
 module.exports = {

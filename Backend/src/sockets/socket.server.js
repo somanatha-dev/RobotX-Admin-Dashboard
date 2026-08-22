@@ -10,6 +10,11 @@ const { seedDefaultZones } = require("../services/zoneManager.service");
 const { getManyRobotStates } = require("../services/robotRegistry.service");
 const { verifyUserToken } = require("../middlewares/auth_middleware");
 const robotStateCache = require("../cache/robotStateCache");
+// PHASE 15 remediation (D-6) — the process half of the cutover switch, read through the
+// module that owns it rather than as a raw environment comparison. Which loop owns §12.4
+// row 9 is a genuinely *process*-level question (a process either runs the reconciler or it
+// does not), so this is the one former raw read that stays on `processEnabled()` alone.
+const cutoverEnabled = require("../engine/cutover/enabled");
 const {
     OFFLINE_CUTOFF_MS,
     OFFLINE_SWEEP_INTERVAL_MS,
@@ -176,7 +181,7 @@ function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig, appLoc
     // reconciler (§12.4 row 9); with it off, it is the legacy sweep above. Never both:
     // a divergence repaired twice, by two loops with different notions of "stale", is
     // the disagreement §12.1's control-loop model exists to remove.
-    if (process.env.ENGINE_ENABLED !== "true") {
+    if (!cutoverEnabled.processEnabled()) {
         startOfflineDetector(prisma, kv, { logger });
     } else if (logger && typeof logger.info === "function") {
         logger.info("offline sweep stood down — the reconciler owns §12.4 row 9 while the engine is enabled");
@@ -264,7 +269,7 @@ function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig, appLoc
         registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals });
 
         // Command ACK tracking
-        registerCommandHandlers(io, socket, { prisma, kv, logger });
+        registerCommandHandlers(io, socket, { prisma, kv, logger, appLocals });
 
         // DTARO: obstacle reports, task completion, fault reporting
         registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals });
@@ -279,7 +284,7 @@ function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig, appLoc
         // The two durations it needs are resolved through the Config Service by the
         // caller that turns the engine on (Phase 15); until then they are undefined and
         // the handler never reaches the code that would use them.
-        registerOfferHandlers(io, socket, { prisma, kv, logger, config: engineDispatchConfig });
+        registerOfferHandlers(io, socket, { prisma, kv, logger, config: engineDispatchConfig, appLocals });
 
         // ADMIN CREATES TASK (via socket — legacy path)
         //
@@ -319,7 +324,21 @@ function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig, appLoc
                     io,
                     // The same conjunction every other caller asks: the process flag AND
                     // this shard's published `cutover.engine_enabled` binding.
-                    config: io?.app?.locals?.config || null,
+                    //
+                    // PHASE 15 remediation (P15-R4). This read was `io?.app?.locals?.config`,
+                    // and **`io.app` does not exist** — a Socket.IO server has no `app`
+                    // property and nothing under `src/` or `server.js` ever assigns one. So
+                    // the snapshot passed here was always `null`, `configEnabled()` answered
+                    // `false` for it, and every socket `assign_task` was refused
+                    // `ENGINE_NOT_LIVE` on every shard — including a correctly staged one,
+                    // for ever. It failed *closed*, which is why no test and no gate caught
+                    // it: the path simply never worked.
+                    //
+                    // `appLocals` is the express app's `locals`, threaded into this file as a
+                    // parameter by Phase 14's P14-R1 for exactly this reason — handlers used
+                    // to reach for it through the request object and got it wrong. This call
+                    // site was the one P14-R1 did not convert.
+                    config: appLocals?.config ?? null,
                     regionId: toStringOrNull(task?.regionId),
                 });
                 if (created?.intake) {

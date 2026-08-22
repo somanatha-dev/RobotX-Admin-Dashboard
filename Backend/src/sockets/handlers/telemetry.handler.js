@@ -11,6 +11,9 @@ const progress = require("../../engine/supervision/progress");
 // PHASE 14 (§23.5) — agent reports are untrusted input, validated before use.
 const attestation = require("../../engine/security/attestation");
 const trustBoundaries = require("../../engine/security/trustBoundaries");
+// PHASE 15 remediation (D-6) — the cutover switch is a conjunction; this handler now reads
+// both halves through the module that owns the question.
+const agentGate = require("../../engine/cutover/agentGate");
 
 // §23.5 — "Persistent implausibility triggers quarantine and a security event."
 //
@@ -161,7 +164,10 @@ function configValue(config, name, fallback) {
  * spoof, and refusing on it would take the whole legacy fleet offline. That is §7.3's
  * three-valued discipline applied one layer out.
  *
- * @param {object} input `{ robotId, existing, reported, charging, config }`
+ * @param {object} input `{ robotId, existing, reported, charging, config, socket }`
+ *   `socket` carries the session's resolved shard identity; `enforced` is a per-shard fact
+ *   after the D-6 remediation, so a caller that supplies none gets `enforced: false` — the
+ *   same fail-closed direction every other reader of the switch takes.
  * @returns {{ refused: boolean, enforced: boolean, reasons: string[], measured: object,
  *             quarantineThreshold: number|undefined }}
  */
@@ -218,10 +224,12 @@ function assessAgentReport(input) {
 
   return {
     refused,
-    // Enforced only when the engine is on. Off, the verdict is computed and logged so the
-    // refusal rate is observable before it is load-bearing (§21.6's shadow discipline
-    // applied to a security control).
-    enforced: engineEnabled(),
+    // Enforced only where the engine is the decision path **for this agent's shard**. Off,
+    // the verdict is computed and logged so the refusal rate is observable before it is
+    // load-bearing (§21.6's shadow discipline applied to a security control). D-6: the
+    // shard half is asked here too, so a staged rollout does not begin enforcing on shards
+    // it has not reached.
+    enforced: engineEnabled(source.socket, config),
     reasons,
     measured,
     quarantineThreshold: configValue(config, "security.implausible_report_quarantine_threshold", undefined),
@@ -495,6 +503,9 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
         reported: { lat, lon, battery, atMs: nowMs },
         charging: statusRaw === "CHARGING",
         config: configOf(),
+        // D-6: `enforced` is resolved per shard, so the assessment needs the session whose
+        // shard identity was bound at AUTH.
+        socket,
       });
 
       if (trustVerdict.refused) {
@@ -546,7 +557,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
             currentTier: healthTierOf(cur),
           });
 
-          if (health.applied || !engineEnabled()) {
+          if (health.applied || !engineEnabled(socket, configOf())) {
             if (!health.applied) {
               log.warn("Self-reported health would expand eligibility — recorded, not applied when enforced (§23.5)", {
                 robotId,
@@ -884,7 +895,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
       //
       // Inert while `ENGINE_ENABLED` is false, and cheap when it is: `assessAll` is pure
       // and allocates one small object per tick.
-      feedProgressSupervision({ robotId, log, io, state: fullState, nowMs });
+      feedProgressSupervision({ robotId, log, io, state: fullState, nowMs, socket, snapshot: configOf() });
     } catch (e) {
       log.error("TELEMETRY handler failed", e);
     }
@@ -920,8 +931,25 @@ const lastKnownPosition = new Map();
 /** @structural the movement below which a position report is not route progress, in metres */
 const PROGRESS_EPSILON_M = 1;
 
-function engineEnabled() {
-  return process.env.ENGINE_ENABLED === "true";
+/**
+ * PHASE 15 remediation (D-6) — both halves of the cutover switch.
+ *
+ * This handler's two uses are *read*-side: whether §23.5's trust-boundary verdict is
+ * **enforced** rather than merely logged, and whether a self-reported health expansion is
+ * refused. Neither writes an engine row, which is why they were the lower-severity half of
+ * the finding — but "enforced" is a per-shard fact for the same reason everything else in
+ * the cutover is: a shard the staging order has not reached is not one whose agents should
+ * find a new refusal appearing on their telemetry.
+ *
+ * The socket is required, so a caller that cannot name a session gets `false` — the same
+ * disposition `enabled.forShard()` gives a caller that cannot name a shard.
+ *
+ * @param {object} socket
+ * @param {object|null} snapshot
+ * @returns {boolean}
+ */
+function engineEnabled(socket, snapshot) {
+  return agentGate.mayAct({ socket, snapshot, nowMs: Date.now() });
 }
 
 /**
@@ -933,8 +961,10 @@ function engineEnabled() {
  * @param {number} input.nowMs
  * @returns {object|null} the assessment, or null when the engine is off
  */
-function feedProgressSupervision({ robotId, log, io, state, nowMs }) {
-  if (!engineEnabled()) return null;
+function feedProgressSupervision({ robotId, log, io, state, nowMs, socket, snapshot }) {
+  // D-6: both halves. Progress supervision feeds §12.3 for the shard that owns this agent,
+  // and a shard the staging order has not reached has no supervisor to feed.
+  if (!engineEnabled(socket, snapshot)) return null;
 
   try {
     const previous = lastKnownPosition.get(robotId);

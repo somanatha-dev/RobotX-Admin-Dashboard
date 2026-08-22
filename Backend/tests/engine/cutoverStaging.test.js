@@ -19,12 +19,113 @@ const killSwitches = require("../../src/engine/config/killSwitches");
 
 const NOW = 1_800_000_000_000;
 
-/** Every blocking gate green — the only evidence set that lets an enable through. */
-function allGreen() {
+/**
+ * Every blocking gate green — the only evidence set that lets an enable through.
+ *
+ * ── PHASE 15 REMEDIATION — this fixture used to be the whole attack ────────
+ * It read, in full:
+ *
+ *     evidence[gate.id] = { pass: true, detail: "test fixture", source: "cutoverStaging.test.js" };
+ *
+ * and it worked, because `gates.evaluate()` read `record.pass === true` and asked nothing
+ * else. The same six lines typed by an operator authorised a real cutover: twenty-three
+ * blocking gates closed by twenty-three hand-written booleans, no run behind any of them.
+ * The fixture was not wrong about the module; the module was wrong.
+ *
+ * It now builds records `cutover/evidence.js` will actually admit — a run record with a
+ * matching command and a zero exit for each `BUILD`/`SUITE` gate, an observation window for
+ * each `PRODUCTION` gate, two distinct signatures for each `ORGANISATIONAL` one. That makes
+ * this helper considerably more annoying to write, which is the point: the cost of
+ * constructing admissible evidence is the cost the mechanism is supposed to impose.
+ */
+/** The tree the run records below claim to have run against. */
+const DIGEST = "f1e2d3c4".repeat(8);
+
+function admissibleEvidenceFor(gate, options) {
+  const at = (options && options.producedAtMs) || NOW - 60_000;
+  const base = { gateId: gate.id, producedAtMs: at, producer: "cutoverStaging.test.js" };
+
+  if (gate.evidence === gates.EVIDENCE.BUILD || gate.evidence === gates.EVIDENCE.SUITE) {
+    return {
+      ...base,
+      run: { command: gate.command, exitCode: 0, startedAtMs: at - 1000, finishedAtMs: at },
+      build: { sourceDigest: DIGEST },
+    };
+  }
+
+  if (gate.evidence === gates.EVIDENCE.PRODUCTION) {
+    // Long enough to satisfy the longest declared window (`shadow_agreement`, 14 days).
+    return {
+      ...base,
+      pass: true,
+      owner: "SRE",
+      observation: {
+        windowStartedAtMs: at - 21 * 24 * 3600 * 1000,
+        windowEndedAtMs: at,
+        source: "staging fleet",
+      },
+    };
+  }
+
+  const record = {
+    ...base,
+    pass: true,
+    owner: "Safety",
+    approval: { recordedBy: "operator-a", approvedBy: "operator-b" },
+  };
+  // D-7 / ADR-34 — a rehearsal-flagged gate is discharged by the rehearsal itself, so
+  // `allGreen()` must build one. Strictly more work than the two signatures it used to
+  // supply, which is the same direction the D-3 remediation took this helper: evidence a
+  // test can type in one line is evidence the contract is not asking enough of.
+  if (gate.rehearsal === true) {
+    record.rehearsal = {
+      environment: { id: "staging-eu-west", production: false },
+      configVersion: "v2026.08.22-3",
+      shardId: "staging-1",
+      rehearsedAtMs: at - 2 * 3600 * 1000,
+      automaticRollbackFired: true,
+      steps: {
+        cutover: true,
+        automatic_rollback: true,
+        no_decision_path_confirmed: true,
+        artefact_rollback: true,
+        recutover: true,
+        recorded: true,
+      },
+    };
+  }
+  if (gate.runnable === true) {
+    record.corroboratingRun = {
+      command: gate.command,
+      exitCode: 0,
+      startedAtMs: at - 1000,
+      finishedAtMs: at,
+      build: { sourceDigest: DIGEST },
+    };
+  }
+  return record;
+}
+
+function allGreen(options) {
   return gates.RELEASE_GATES.reduce((evidence, gate) => {
-    evidence[gate.id] = { pass: true, detail: "test fixture", source: "cutoverStaging.test.js" };
+    evidence[gate.id] = admissibleEvidenceFor(gate, options);
     return evidence;
   }, {});
+}
+
+/**
+ * The context `authoriseEnable` needs to age and bind evidence. The duration bounds are the
+ * registered ones; without them `evidence.js` refuses the two windowed gates rather than
+ * treating an unbounded window as satisfied.
+ */
+function evidenceContext() {
+  return {
+    evidenceMaxAgeMs: 24 * 3600 * 1000,
+    // Mandatory: `evidence.admit()` refuses a run record when no tree is named to judge it
+    // against, because judging one without knowing which tree is no check at all.
+    sourceDigest: DIGEST,
+    minObservationMs: { shadow_agreement: 14 * 24 * 3600 * 1000, soak: 72 * 3600 * 1000 },
+  };
 }
 
 function declarationFor(shardId, atMs) {
@@ -59,6 +160,7 @@ function enableRequest(overrides) {
     approvedBy: "operator-b",
     reason: "staged cutover, step 1",
     requestedAtMs: NOW,
+    ...evidenceContext(),
     ...(overrides || {}),
   };
 }

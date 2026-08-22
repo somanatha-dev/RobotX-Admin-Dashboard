@@ -133,8 +133,61 @@ describe("it is a LAUNCH gate, not a build gate — and the difference is enforc
     const scripts = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "package.json"), "utf8")).scripts;
     expect(scripts.gates).not.toMatch(/gate:calibration/);
     expect(scripts["gate:calibration"]).toBe("node tools/gates/checkCalibration.js");
+
     // It IS part of the release-gate run, which is the set the cutover needs evidence from.
-    expect(scripts["release:gates"]).toMatch(/gate:calibration/);
+    //
+    // ── PHASE 15 REMEDIATION — asserted as a property, not as a substring ──
+    // This used to read `expect(scripts["release:gates"]).toMatch(/gate:calibration/)`, and
+    // a substring match on a shell conjunction is a weak proxy for "the release run covers
+    // this gate": it passes when the command is present and says nothing about whether its
+    // result is ever *judged*. It also could not survive `release:gates` becoming a single
+    // aggregator, which is what the remediation made it — the old conjunction exited 0 with
+    // six blocking gates never evaluated.
+    //
+    // The property is now checked where it lives: `calibration_safety_derived` is a blocking
+    // row in the gate table, the release verdict reports every blocking row, and the
+    // evidence collector runs this gate's declared command.
+    const gates = require("../../src/engine/cutover/gates");
+    const collectEvidence = require("../../tools/release/collectEvidence");
+
+    const row = gates.GATE_BY_ID.calibration_safety_derived;
+    expect(row.blocking).toBe(true);
+    expect(row.command).toBe("npm run gate:calibration");
+    expect(scripts["release:gates"]).toMatch(/tools\/release\/verdict\.js/);
+
+    // The collector runs it. `runner` is injected so this asserts the wiring without paying
+    // for a real gate run.
+    const ran = [];
+    collectEvidence.collect({
+      only: "build",
+      runner: (command) => {
+        ran.push(command);
+        return { command, exitCode: 0, startedAtMs: 1, finishedAtMs: 2, tail: "" };
+      },
+    });
+    expect(ran).toContain("npm run gate:calibration");
+  });
+
+  test("a build cannot close it — the attestation needs two people AND the check to pass", () => {
+    // §22.4's gate is ORGANISATIONAL: only the calibration owner can say a value was derived.
+    // `collectEvidence` therefore files this gate's run as *corroboration*, never as evidence,
+    // and `evidence.js` refuses a record that carries a run for an organisational gate.
+    const gates = require("../../src/engine/cutover/gates");
+    const collectEvidence = require("../../tools/release/collectEvidence");
+
+    const collected = collectEvidence.collect({
+      only: "build",
+      runner: (command) => ({ command, exitCode: 0, startedAtMs: 1, finishedAtMs: 2, tail: "" }),
+    });
+    expect(collected.evidence.calibration_safety_derived).toBeUndefined();
+    expect(collected.corroboration.calibration_safety_derived).toBeDefined();
+
+    // And the corroboration alone discharges nothing.
+    const evaluation = gates.evaluate(
+      { calibration_safety_derived: collected.corroboration.calibration_safety_derived },
+      { nowMs: 3 },
+    );
+    expect(evaluation.results.find((r) => r.id === "calibration_safety_derived").status).toBe(gates.STATUS.RED);
   });
 
   test("it blocks the thing it is a gate on: no shard can be enabled while it is red", () => {

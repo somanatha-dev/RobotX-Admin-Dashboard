@@ -1,5 +1,26 @@
 # Phase 5 — Remediation, Re-verification and Closure
 
+> ### ⚠ PARTIALLY SUPERSEDED — read `PHASE_5_ADVERSARIAL_REMEDIATION_AND_CLOSURE.md` (2026-08-22) with this
+>
+> That document is the successor. This report is left unedited apart from this notice,
+> because a report quietly rewritten to look right is the failure mode the exercise is about.
+>
+> **It corrects this document on one point, and that point is §13 item 1:**
+>
+> | This report says | Now |
+> |---|---|
+> | *"`EVENT.LEASE_EXPIRY` still has no production caller — **DEFERRED TO PHASE 15, by design**. `transitions.apply` is not yet reached by a fired timer: the handler map that connects the two is Phase 15's bootstrap"* | **The deferral was wrong.** It conflated *constructing* a handler map (Phase 15's composition work) with *the handlers existing at all* (§4.2's and §4.3's "On expiry" columns — Phase 5-owned tables in Phase 5-owned modules). Phase 15's audit found the second and returned it as **D-9**. Seventeen expiry actions were declared and **none had an implementation anywhere under `src/`**. |
+>
+> The successor implements all seventeen, finds **eight further Phase 5-owned defects** in the
+> timer store and the timer worker — five of them only visible against a live database — and
+> discharges the composition-root gate's `timer` violation at its root.
+>
+> **Everything else in this document stands.** Findings 1–5 remain fixed, the 105 live checks
+> remain valid (the harness now reports 106, with four assertions corrected where they
+> described the defective behaviour), and the verdict **PHASE 5 CLOSED** is re-affirmed on
+> stronger evidence — 208 live checks, 11/11 mutations caught.
+
+
 **Date:** 2026-08-17 · **Branch:** `feature/dashboard` · **Working tree at closure:** `63f5c58` + uncommitted
 **Role:** Principal distributed-systems / reliability / safety / independent verification engineer
 **Authority order:** `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` (FROZEN) → `IMPLEMENTATION_EXECUTION_PLAN.md` → the repository → `PHASE_5_INDEPENDENT_VERIFICATION.md` → `PHASE_5_IMPLEMENTATION_REPORT.md`

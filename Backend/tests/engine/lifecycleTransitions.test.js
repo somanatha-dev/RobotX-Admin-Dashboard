@@ -285,6 +285,11 @@ describe("applying a transition", () => {
     expect(registered).toHaveLength(1);
     // Keyed on the Leg's **new** version, which is what the entity's own version now is.
     expect(registered[0]).toMatchObject({ state: S.ACCEPTED, entityVersion: 1n, handler: "PROBE_THEN_REASSIGN" });
+    // PHASE 5 REGRESSION — the interval is recorded on the row, not left to be inferred
+    // from `dueAt − createdAt`. The re-arm reads it, and for §4.3's two *projected*
+    // deadlines it is the only durable record of what the plan projected.
+    expect(registered[0].payload.armedSeconds).toBe(60);
+    expect(timers.armedSecondsOf(registered[0])).toBe(60);
   });
 
   test("exiting a state cancels its timer atomically with the exit (I4)", async () => {

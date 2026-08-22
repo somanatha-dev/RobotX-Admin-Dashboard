@@ -2276,6 +2276,7 @@
       "calibrationStatus": "DERIVED",
       "section": "§23.4",
       "requiredBy": "middlewares/auth_middleware.requireActionClass and security/override.authoriseAction",
+      "derivation": "Stated accounting, not measurement: §23.4 fixes which actions are highest-privilege, and this set is the deployment's role model for them. The value is exactly the ELEVATED_ROLES constant that config.routes.js and shards.routes.js already carried before the register existed; registering it consolidated three copies into one list rather than choosing a new number. Re-derivation is required whenever the deployment's role model changes, and is a Safety-class change under §22.3.",
       "description": "The roles §23.4's highest-privilege actions require. DERIVED rather than PROVISIONAL: it is not a measurement awaiting data but a statement of the deployment's role model, and the value is exactly the ELEVATED_ROLES constant config.routes.js and shards.routes.js already carried — registered here so the three surfaces read one list instead of three copies. Safety-class because widening it is how a quarantine override or a Safety-class config publish becomes available to a role that was never meant to hold it."
     },
     {
@@ -2298,6 +2299,7 @@
       "calibrationStatus": "DERIVED",
       "section": "§23.4, §23.6",
       "requiredBy": "security/override.authoriseAction — 'and where configured a second approver'",
+      "derivation": "Stated source: §23.4 says 'where configured a second approver' and §23.6's table says 'High-risk overrides require a second approver | Configurable per action class', so the specification fixes that this set is configuration and fixes its floor. The two members are the action classes §23.6 names as high-risk. It is a floor rather than a value: authoriseAction() takes the union of this set with each action class's own default and never the configured set alone, so the derivation cannot be undone by configuration — a set able to remove a second-approver requirement would put the strongest control in §23 behind an ordinary config change.",
       "description": "The §23.4 action classes that require a second approver in this deployment. §23.4 says 'where configured a second approver' and §23.6 says 'High-risk overrides require a second approver | Configurable per action class', so the set is configuration. It may only ever ADD to each action class's own default: authoriseAction() takes the union, never the configured set alone, because a configuration able to remove a second-approver requirement would put the strongest control in §23 behind an ordinary config change."
     },
     {

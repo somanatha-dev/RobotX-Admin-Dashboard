@@ -13,7 +13,7 @@ const { connectPrismaWithRetry, disconnectPrisma, runSerializable, selectForUpda
 const { initKv } = require("./src/cache/kv");
 const initSocketServer = require("./src/sockets/socket.server");
 const { createVirtualRobotSimulator } = require("./src/simulation/SimulationEngine");
-const { dispatchTaskAssign } = require("./src/services/commandDispatcher.service");
+const { dispatchTaskAssign, outboxDeliveryArm: dispatchOutboxCommand } = require("./src/services/commandDispatcher.service");
 const { safeJsonParse } = require("./src/utils/json");
 const { ensureAdminUser } = require("./src/services/adminBootstrap.service");
 const configService = require("./src/engine/config/service");
@@ -42,6 +42,15 @@ const auditStream = require("./src/engine/observability/auditStream");
 // collaborator it is missing named. The registry, not this file, is the answer to "which
 // workers run"; `startScheduledWorkers` below is only the wiring.
 const workerRegistry = require("./src/workers/registry");
+// PHASE 15 remediation (D-5) — the shard supervisor's promotion hook. The registry marks
+// four workers `LEADER_ONLY` ("started and stopped by the shard supervisor rather than at
+// boot"), and until this remediation nothing started them: this file said they belonged to
+// the leadership lifecycle and `shardSupervisor.worker.js` had no such hook. `leaderWorkers`
+// is that hook. It starts the two whose dependency contracts a production producer can
+// satisfy and **refuses the other two by name**, because a coordinator composed against a
+// fabricated router or a timer worker composed against an empty handler map would run,
+// report success, and decide nothing.
+const leaderWorkers = require("./src/workers/leaderWorkers");
 const invariantWorker = require("./src/workers/invariant.worker");
 const tierBWorker = require("./src/workers/tierB.worker");
 const rejectionAggregationWorker = require("./src/workers/rejectionAggregation.worker");
@@ -50,6 +59,14 @@ const counterfactualWorker = require("./src/workers/counterfactual.worker");
 const cutoverWorker = require("./src/workers/cutover.worker");
 const cutoverStore = require("./src/engine/cutover/store");
 const cutoverEnabled = require("./src/engine/cutover/enabled");
+// PHASE 15 remediation — the two halves of the cutover switch that had no production
+// producer: the pull that lets a published binding reach a running process (P15-R2), and
+// the publish that makes §22.4 item 4's automatic rollback take effect (P15-R1).
+const configPropagation = require("./src/engine/cutover/configPropagation");
+const rollbackPublisher = require("./src/engine/cutover/rollbackPublisher");
+// PHASE 15 remediation (P15-R3) — the shard's open degraded modes, which decide whether
+// §18.5 permits a command to be delivered at all.
+const degradedTransitions = require("./src/engine/degraded/transitions");
 const sli = require("./src/engine/observability/sli");
 const sampling = require("./src/engine/observability/sampling");
 const rejectionTelemetry = require("./src/engine/feasibility/rejectionTelemetry");
@@ -73,6 +90,13 @@ const rejectionTelemetry = require("./src/engine/feasibility/rejectionTelemetry"
 function startScheduledWorkers(context) {
   const { prisma, kv, config, logger: log, io } = context;
   const values = config && config.values;
+  /**
+   * The configuration version in force **now**, for the readers that must not be pinned to
+   * boot (P15-R2). Worker *cadences* below are deliberately still resolved once, from
+   * `values`: an interval is a property of the timer this call creates, and changing one
+   * means restarting the worker rather than reading a different number on the next tick.
+   */
+  const snapshotOf = () => (typeof context.snapshotOf === "function" ? context.snapshotOf() : config);
   const seconds = (name) => {
     const value = values && typeof values.get === "function" ? values.get(name) : undefined;
     return Number.isFinite(value) ? value : undefined;
@@ -180,11 +204,31 @@ function startScheduledWorkers(context) {
   // stream (`cutover/store.js`) rather than holding its own copy, publishes a reverted
   // binding on regression, and may only ever disable — `guardrails.assertOneDirectional`
   // throws on anything else.
+  // PHASE 15 remediation (P15-R1) — the publisher that makes an automatic rollback a
+  // rollback. See `engine/cutover/rollbackPublisher.js` for the whole argument, including
+  // why an automated publish of *this* parameter is the one §22.3 permits.
+  const rollback = rollbackPublisher.create({
+    versionInForce: async () => {
+      const latest = await prisma.configVersion.findFirst({
+        orderBy: { version: "desc" },
+        select: { payload: true },
+      });
+      return (latest && latest.payload) || null;
+    },
+    publish: (request) => configService.publish(prisma, request),
+    pin: (version, publishedBy) => configService.pinVersion(prisma, kv, version, publishedBy),
+    record: (event, detail) => log.warn(`cutover.${event}`, detail),
+  });
+
   started(
     "cutover",
     cutoverWorker.start(
       {
-        liveShards: () => cutoverStore.liveShards({ prisma }, { snapshot: config }),
+        // PHASE 15 remediation (P15-R2) — the snapshot at call time, not at boot. A
+        // controller reading the version this process started on would go on assessing a
+        // shard that had since been rolled back, and would stop assessing one that had
+        // since been staged.
+        liveShards: () => cutoverStore.liveShards({ prisma }, { snapshot: snapshotOf() }),
         declarationFor: (shardId) => cutoverStore.declarationFor({ prisma }, shardId),
         observationsFor: (shardId, declaration) => {
           const endedAtMs = Date.now();
@@ -194,15 +238,49 @@ function startScheduledWorkers(context) {
           });
         },
         publish: async (action) => {
-          // Deliberately not a config publish from inside the controller: publishing is
-          // an approved, versioned operation (§22.1 rule 4) and the automatic path may
-          // only *disable*. The binding is recorded and the shard's live check fails
-          // closed on the next pass; the runbook's step 6 is what makes it permanent.
+          // ── PHASE 15 remediation (P15-R1) ────────────────────────────────
+          //
+          // This callback used to log and return. The comment justifying that read:
+          // "Deliberately not a config publish from inside the controller: publishing is an
+          // approved, versioned operation (§22.1 rule 4) and the automatic path may only
+          // *disable*. The binding is recorded and the shard's live check fails closed on
+          // the next pass; the runbook's step 6 is what makes it permanent."
+          //
+          // Both of its factual claims were false. The binding was recorded **only** in the
+          // audit event's payload, which nothing reads for that purpose; and the shard's
+          // live check resolves `cutover.engine_enabled` from the published snapshot, which
+          // was untouched — so the shard stayed live. Worse, `cutover/store.declarationFor`
+          // returns null once the latest cutover event is a rollback, so the *next* pass
+          // reported the shard as "live with no pre-declared guardrails" and never assessed
+          // it again. A breaching shard was left running and permanently unguarded by the
+          // control that exists to stop it.
+          //
+          // And its premise was false too: `cutover.engine_enabled` is classified STRUCTURAL
+          // rather than SAFETY, and the register entry says in its own words that this is
+          // "on purpose … the automatic rollback of §22.4 item 4 must be able to set this
+          // false". The publish is what the change class was chosen for.
           log.error("AUTOMATIC ROLLBACK — a staged shard regressed against its pre-declared SLI guardrails", {
             shardId: action.shardId,
             regionId: action.regionId,
             reason: action.reason,
             consequence: action.consequence,
+          });
+
+          const outcome = await rollback.publishRollback(action);
+          if (!outcome.published) {
+            // Raised, not logged: `cutover.worker` states the rule — "the whole value of an
+            // automatic rollback is that its record and its effect agree" — and it declines
+            // to write the audit event when `publish` throws. A rollback that could not be
+            // published must not be recorded as one that happened.
+            throw new Error(
+              `automatic rollback for ${action.shardId} could not be published ` +
+                `[${outcome.refusal.code}]: ${outcome.refusal.message}`,
+            );
+          }
+          log.error("AUTOMATIC ROLLBACK PUBLISHED — this shard now has no decision path", {
+            shardId: action.shardId,
+            regionId: action.regionId,
+            configVersion: outcome.version,
           });
         },
         audit: (event) => auditStream.append({ prisma }, event),
@@ -284,6 +362,9 @@ async function start() {
   app.locals.prisma = prisma;
   app.locals.io = io;
 
+  /** PHASE 15 remediation (P15-R2) — the configuration pull loop; stopped on shutdown. */
+  let configPropagator = null;
+
   // Load the pinned configuration version (§22.1 rule 4). Config is DB-authoritative
   // and cache-read (§3.3): the pointer and the materialised set are mirrored in
   // Redis, but a cache miss costs a query and never a wrong answer.
@@ -293,9 +374,53 @@ async function start() {
   // start rather than silently inventing one.
   app.locals.config = await configService.bootstrap({ prisma, kv, logger });
 
+  // ── PHASE 15 remediation (P15-R2) — the pull half of pull-with-pin ────────
+  //
+  // The comment that used to stand here read: "`app.locals` by reference, not
+  // `app.locals.config` by value: the agent handlers read the snapshot at call time, so a
+  // republished configuration reaches an already-connected socket (P14-R1)."
+  //
+  // The first half was true and the second was not. P14-R1 built the plumbing that lets a
+  // republished configuration reach a connected socket; **nothing ever republished into
+  // it.** The line above was the only assignment to `app.locals.config` in the process, and
+  // `configService.loadPinnedSnapshot()` — the pull side of §22.1 rule 4 — had no caller
+  // outside two read-only endpoints. Even `POST /api/config/versions`, which publishes *and
+  // pins*, left its own process reading the version it booted on.
+  //
+  // For Phase 15 that is not a general staleness bug, it is the deliverable failing: the
+  // per-shard cutover switch **is** a published binding, so "staged by shard, with
+  // rollback" meant "staged at boot, permanently" — a shard could not be taken live, could
+  // not be rolled back, and §22.4 item 4's automatic rollback could not take effect at all.
+  //
+  // A pull on a cadence rather than a push, because §22.1 rule 4 says so in as many words:
+  // propagation is "pull-with-pin, never a push that could land mid-round".
+  configPropagator = configPropagation.start(
+    {
+      load: () => configService.loadPinnedSnapshot({ prisma, kv }),
+      apply: (snapshot) => {
+        app.locals.config = snapshot;
+      },
+      record: (event, detail) => logger.info(`config.${event}`, detail),
+      onError: (error) =>
+        // Not `warn`: a process that has stopped tracking configuration still answers
+        // requests, still gates agents, and is now doing it against a version somebody may
+        // have deliberately superseded. That is a state an operator must not learn about
+        // from a metric.
+        logger.error("Configuration propagation pass failed — this process is still on its previous version", {
+          message: error?.message,
+          version: configPropagator ? configPropagator.version() : null,
+        }),
+    },
+    {
+      currentVersion: app.locals.config ? app.locals.config.version : null,
+      checkIntervalSeconds: app.locals.config?.values?.get?.("cutover.guardrail_check_interval"),
+    },
+  );
+
   // `app.locals` by reference, not `app.locals.config` by value: the agent handlers read
   // the snapshot at call time, so a republished configuration reaches an already-connected
-  // socket (P14-R1).
+  // socket (P14-R1) — which, with the propagator above, is now true rather than merely
+  // possible.
   initSocketServer(io, { prisma, kv, logger, appLocals: app.locals });
 
   // Ensure the admin user exists (idempotent — safe to run on every start).
@@ -370,6 +495,7 @@ async function start() {
   logger.info("Agent transport security posture (§23.2)", posture);
 
   let shardCoordinator = null;
+  let leaderLifecycle = null;
   let certificateWorker = null;
   let engineWorkers = { handles: [], running: [] };
   const engineEnabled = cutoverEnabled.processEnabled();
@@ -409,6 +535,105 @@ async function start() {
         const value = parameterValue(name);
         return Number.isFinite(value) ? value : undefined;
       };
+
+      // ── PHASE 15 remediation (D-5) — the LEADER_ONLY lifecycle ───────────
+      //
+      // Built before the supervisor so that the very first tick that reports `mayRunRound`
+      // can promote it. Its `apply()` is idempotent, so the repeated true-ticks of a stable
+      // leadership start nothing twice — §19.3 admits one writer per shard and a second
+      // interval on the same table would be exactly that second writer.
+      const shardId = process.env.SHARD_ID || "default";
+
+      // PHASE 15 remediation (P15-R6) — the shard's operating region.
+      //
+      // `expiryActions.pageOperations` resolves §18.6's contact set by region
+      // (`externalEscalation.resolveContactSet({ contacts, regionId, … })`), and the timer
+      // worker was composed without one. `regionId` was therefore `null` on every fire, so
+      // the lookup could never match a configured region and every obstructing-stranding
+      // escalation would have recorded `NO_CONTACT_CONFIGURED` — silently, and *including
+      // after* B8 supplies `ops.external_escalation_contacts`, which is the part that makes
+      // it worth fixing now rather than filing behind the calibration blocker.
+      //
+      // ── Which "region id", and why it is not the one the cutover binding uses ──
+      //
+      // Found by attacking this fix against a live database, which is the part of the
+      // protocol that earned its keep. **`Shard.regionId` is a foreign key to `Region.id`** —
+      // a uuid — while `Region.regionId` is the operator-facing identifier. The two are
+      // different strings and a fixture that used one value for both could not tell.
+      //
+      // The rest of the cutover machinery resolves `cutover.engine_enabled` at
+      // `Shard.regionId`, and that is correct and self-consistent there: those bindings are
+      // written by `stage.authoriseEnable` from the same column, so the key is
+      // machine-generated at both ends.
+      //
+      // §18.6's contact set is the opposite case. `ops.external_escalation_contacts` is a map
+      // an **operator authors**, keyed by the region they know — "the responsible
+      // infrastructure operator per region — rail, tram, highways, or site security". Handing
+      // `externalEscalation.resolveContactSet` a uuid would match nothing and record
+      // `NO_CONTACT_CONFIGURED` for every obstructing stranding, silently, and would go on
+      // doing so *after* B8 supplies the contacts. So the region is resolved through `Region`
+      // to its business identifier.
+      //
+      // Absent, it stays null and the behaviour is what it was — a gap visible in the
+      // escalation row rather than a value invented here.
+      let regionId = null;
+      try {
+        const shardRow = await prisma.shard.findUnique({
+          where: { shardId },
+          select: { region: { select: { regionId: true } } },
+        });
+        regionId = (shardRow && shardRow.region && shardRow.region.regionId) || null;
+      } catch (e) {
+        logger.warn("Could not resolve this shard's operating region for the LEADER_ONLY workers", {
+          shardId,
+          message: e?.message,
+        });
+      }
+      if (!regionId) {
+        logger.error(
+          "This shard has no resolvable operating region. §18.6's external escalation chain will record " +
+            "NO_CONTACT_CONFIGURED for every obstructing stranding, because a contact set is keyed by region.",
+          { shardId },
+        );
+      }
+
+      leaderLifecycle = leaderWorkers.create({
+        prisma,
+        kv,
+        io,
+        // PHASE 15 remediation (P15-R2) — an accessor, not the boot snapshot's map.
+        //
+        // `create()` is called once at start-up and the composers read this on every
+        // promotion. Capturing `app.locals.config.values` here bound every LEADER_ONLY
+        // worker's configuration to the version this process happened to boot on, for the
+        // life of the process — so a republished deadline, batch size or budget would be
+        // adopted by the request path and ignored by the workers, which is worse than
+        // either answer alone. Read through a function, a promotion composes against the
+        // version in force at the moment leadership is acquired.
+        values: () => app.locals.config && app.locals.config.values,
+        shardId,
+        regionId,
+        instanceId: `${process.env.HOSTNAME || host}:${process.pid}`,
+        runInTransaction: (fn) => runSerializable(prisma, fn),
+        // §11.3's transport arm, bound to this process's `io`. The worker never reaches for
+        // a socket itself; `activeModes` is passed as a function because a shard's mode set
+        // can change between two rows of one drain pass.
+        //
+        // PHASE 15 remediation (P15-R3). This was `activeModes: () => []` — a constant empty
+        // set — so `modeRegister.commandsSuspended([])` answered "nothing is suspended" for
+        // every delivery and §18.5's Custodial Operation, whose whole content is *"with the
+        // store unavailable no fence can be allocated, so **no command can be authorised**"*,
+        // was unenforced on the one path every §10.3.1 command takes. `GET /api/health` read
+        // the real `DegradedModeEvent` rows and reported `commandsSuspended: true` at the
+        // same moment. The producer existed; the composition root did not use it.
+        deliver: dispatchOutboxCommand(io, {
+          activeModes: () => degradedTransitions.activeModes({ prisma }, shardId),
+        }),
+        signingKey: process.env.COMMAND_SIGNING_KEY,
+        record: (event, detail) => logger.info(`engine.${event}`, detail),
+        onError: (e, workerId) => logger.error("LEADER_ONLY worker failed to stop", { worker: workerId, message: e?.message }),
+        logger,
+      });
 
       shardCoordinator = shardSupervisor.start(
         {
@@ -516,7 +741,72 @@ async function start() {
           // reaches its agent through the outbox and the drain worker (§11.1), never
           // through a broadcast.
           onTick: (tick) => {
+            // ── PHASE 15 remediation (D-5) — the promotion hook ────────────────
+            //
+            // The registry's `LEADER_ONLY` row says these workers are "started and stopped
+            // by the shard supervisor rather than at boot". This line is where that becomes
+            // true. `mayRunRound` is the supervisor's own single answer to "does this
+            // process hold a promoted lease" — computed in `runOnce()` after the failover
+            // pass, which is exactly where §19.5 permits rounds to resume — so it is read
+            // rather than reconstructed, and this file cannot disagree with the supervisor
+            // about who leads.
+            //
+            // Both directions matter. A demotion stops them, because a worker whose interval
+            // outlived a lost lease is precisely the second writer §19.3 forbids, and the
+            // fence at the store would not stop its next tick from *trying*.
+            if (leaderLifecycle) {
+              try {
+                leaderLifecycle.apply(tick);
+              } catch (error) {
+                logger.error("LEADER_ONLY lifecycle failed to apply a leadership transition", {
+                  message: error?.message,
+                });
+              }
+            }
+
             if (!io) return;
+
+            // ── PHASE 15 remediation (D-6) — a migration invalidates the session ──
+            //
+            // The agent-facing cutover check resolves the agent's shard **once, at AUTH**
+            // and caches it on the socket (`engine/cutover/agentGate.js`), because
+            // resolving it per event would put two indexed queries on the telemetry hot
+            // path. That cache is correct for exactly as long as the agent's shard does not
+            // change, and §19.2's migration is the one thing that changes it.
+            //
+            // Disconnecting is not a heavy-handed way to invalidate a cache — it is what
+            // the migration already requires. `membership.migrate()` advances the agent's
+            // `authority_epoch`, which voids every mission authority it holds (§10.3.1), and
+            // §11.5's deduplication handshake — the mechanism by which an agent adopts a new
+            // epoch and fence floor — rides on `AUTH_SUCCESS`. An agent that stayed
+            // connected across a migration would be holding a superseded authority and a
+            // stale shard binding at the same time. It reconnects, re-AUTHs, and
+            // `agentGate` resolves the shard it is now actually in.
+            //
+            // Cross-process by construction: the Socket.IO Redis adapter fans this out, so
+            // the migrated agent is reached wherever its socket lives — the same pattern
+            // the §23.2 revocation sweep uses below. `agentGate`'s freshness bound is the
+            // backstop for a session this does not reach.
+            for (const outcome of (tick.migration && tick.migration.outcomes) || []) {
+              if (!outcome.ok || !outcome.agentId) continue;
+              try {
+                io.in(`robot:${outcome.agentId}`).disconnectSockets(true);
+                logger.info("Agent session invalidated by shard migration (§19.2) — it will re-AUTH into its new shard", {
+                  agentId: outcome.agentId,
+                  fromShardId: outcome.fromShardId,
+                  toShardId: outcome.toShardId,
+                });
+              } catch (error) {
+                // Best effort. The durable `ShardMembership` row is the authority and
+                // `agentGate`'s freshness bound refuses the stale binding within one
+                // window either way; failing here must not take the supervisor's tick down.
+                logger.warn("Could not invalidate a migrated agent's session", {
+                  agentId: outcome.agentId,
+                  message: error?.message,
+                });
+              }
+            }
+
             for (const message of shardSupervisor.socketMessages(tick)) {
               try {
                 io.to("dashboard").emit(message.event, message.payload);
@@ -596,7 +886,16 @@ async function start() {
     // PHASE 15 — the rest of the registry's `SCHEDULED` set. Started after the supervisor
     // and inside the same gate: a process that is not participating in the engine has
     // nothing for an invariant checker to check or a reservoir to drain.
-    engineWorkers = startScheduledWorkers({ prisma, kv, config: app.locals.config, logger, io });
+    engineWorkers = startScheduledWorkers({
+      prisma,
+      kv,
+      config: app.locals.config,
+      // PHASE 15 remediation (P15-R2) — the current version, for the readers that must
+      // track a republish rather than the one this process booted on.
+      snapshotOf: () => app.locals.config,
+      logger,
+      io,
+    });
   } else {
     logger.info(
       "Engine workers not started: ENGINE_ENABLED is not true for this process. " +
@@ -611,6 +910,15 @@ async function start() {
       logger.warn(`Shutdown received (${signal}) — draining connections…`);
       try { virtualSimulator?.stop?.(); } catch { /* ignore */ }
       try { certificateWorker?.stop?.(); } catch { /* ignore */ }
+      // PHASE 15 remediation (D-5) — stop the LEADER_ONLY workers before the leadership
+      // release below. Releasing first would advance the fence while a drain pass was still
+      // in flight in this process; stopping first means the standby that takes the shard
+      // inherits no in-flight writer of ours.
+      try { leaderLifecycle?.stop?.(); } catch { /* ignore */ }
+      // PHASE 15 remediation (P15-R2) — the configuration pull loop. Stopped with the rest;
+      // an interval that outlived the process's shutdown would go on swapping a snapshot
+      // nothing reads.
+      try { configPropagator?.stop?.(); } catch { /* ignore */ }
       for (const handle of engineWorkers.handles) {
         try { handle.stop(); } catch { /* ignore */ }
       }

@@ -41,6 +41,18 @@ describe("the timer worker", () => {
       readStoreTime: async () => store.now(),
       handlers: handlers || {},
       record: record || (() => {}),
+      // PHASE 5 REMEDIATION — the fire is one transaction: claim, act, resolve or re-arm.
+      // Before it, the handler received no transaction client at all and could therefore
+      // not perform the transition §4.5 says it attempts.
+      runInTransaction: (fn) => store.client.$transaction(fn),
+    };
+  }
+
+  /** A handler that moves the entity's own version, as a real transition does. */
+  function transitioningHandler(store) {
+    return async ({ tx, entity }) => {
+      await tx.leg.updateMany({ where: { id: entity.id, version: entity.version }, data: { version: entity.version + 1 } });
+      return { outcome: "ATTEMPTED" };
     };
   }
 
@@ -73,22 +85,154 @@ describe("the timer worker", () => {
     );
   });
 
-  test("a due timer fires its handler and is resolved", async () => {
+  test("a due timer whose handler moves the entity is resolved FIRED", async () => {
     const store = buildStore();
     await registerDueTimer(store);
 
     const fired = [];
     const summary = await timerWorker.fireDue(
-      deps(store, { HARDEN_OR_REPLAN: async (context) => {
-        fired.push(context.timer.state);
-        return { outcome: "ATTEMPTED" };
-      } }),
+      deps(store, {
+        HARDEN_OR_REPLAN: async (context) => {
+          fired.push(context.timer.state);
+          // The handler is handed a transaction client, which is what makes it able to
+          // attempt anything at all (§4.5, §4.1 rule 2).
+          expect(typeof context.tx).toBe("object");
+          return transitioningHandler(store)(context);
+        },
+      }),
       { maxTimerLagSeconds: 10 },
     );
 
-    expect(summary).toMatchObject({ due: 1, fired: 1, discarded: 0, unhandled: 0 });
+    expect(summary).toMatchObject({ due: 1, fired: 1, discarded: 0, unhandled: 0, rearmed: 0 });
     expect(fired).toEqual(["PLANNED"]);
     expect(store.rows("timer")[0]).toMatchObject({ timerState: timers.TIMER_STATE.FIRED, attempts: 1 });
+  });
+
+  test("PHASE 5 REGRESSION — a fire that transitioned is recorded as FIRED, not as the cancellation it caused", async () => {
+    // `transitions.apply` cancels **every** pending timer for the entity when the state
+    // exits — including the one that is at that moment firing. The fire's own resolution is
+    // conditional on PENDING, so it matched nothing, and a deadline that was acted on ended
+    // up recorded as `CANCELLED` with `firedAt` null and `lastOutcome` reading
+    // `EXITED_PLANNED`. The deadline was discharged either way; what was lost is the only
+    // evidence distinguishing a timer that supervised something from one tidied away.
+    const store = buildStore();
+    await registerDueTimer(store);
+
+    const summary = await timerWorker.fireDue(
+      deps(store, {
+        HARDEN_OR_REPLAN: async ({ tx, entity, storeTime }) => {
+          await tx.leg.updateMany({
+            where: { id: entity.id, version: entity.version },
+            data: { state: "QUEUED", version: entity.version + 1 },
+          });
+          // Exactly what `apply` does next, and the whole of the race.
+          await timers.cancelFor(tx, {
+            entityType: "LEG",
+            entityId: entity.id,
+            storeTime,
+            reason: `EXITED_${entity.state}`,
+          });
+          return { outcome: "PLANNED→QUEUED" };
+        },
+      }),
+      { maxTimerLagSeconds: 10 },
+    );
+
+    expect(summary.fired).toBe(1);
+    const timer = store.rows("timer")[0];
+    expect(timer.timerState).toBe(timers.TIMER_STATE.FIRED);
+    expect(timer.lastOutcome).toBe("PLANNED→QUEUED");
+    expect(timer.firedAt).toBeTruthy();
+  });
+
+  test("PHASE 5 REGRESSION — a handler whose attempt was refused re-arms the deadline instead of discharging it", async () => {
+    // The defect this pins: `fireOne` resolved the timer FIRED whatever the handler did.
+    // §4.5 is explicit that a handler *attempts* a transition and never forces one, so a
+    // refusal is a normal outcome — and the entity is then still sitting in the state
+    // whose deadline this was, with no pending timer. That is invariant I4's violation,
+    // produced by the supervisor, silently and for ever.
+    const store = buildStore();
+    await registerDueTimer(store);
+
+    const events = [];
+    const summary = await timerWorker.fireDue(
+      deps(store, { HARDEN_OR_REPLAN: async () => ({ outcome: "REFUSED:COMMIT_GUARDS_FAILED_INDETERMINATE" }) }, (event, detail) =>
+        events.push({ event, detail }),
+      ),
+      { maxTimerLagSeconds: 10 },
+    );
+
+    expect(summary).toMatchObject({ due: 1, fired: 0, rearmed: 1 });
+
+    const timer = store.rows("timer")[0];
+    expect(timer.timerState).toBe(timers.TIMER_STATE.PENDING);
+    expect(timer.attempts).toBe(1);
+    expect(timer.lastOutcome).toBe("REFUSED:COMMIT_GUARDS_FAILED_INDETERMINATE");
+    // Re-armed forward, so it does not hot-loop on every pass...
+    expect(new Date(timer.dueAt).getTime()).toBeGreaterThan(store.now().getTime());
+    // ...and the entity it supervises is still supervised, which is the whole point.
+    expect(events.some((entry) => entry.event === "timer.rearmed")).toBe(true);
+  });
+
+  test("PHASE 5 REGRESSION — the re-arm is decided from the entity's version, not from what the handler claims", async () => {
+    // A handler cannot discharge a deadline by reporting that it acted. The worker
+    // re-reads the version and compares; only a version that moved resolves the timer.
+    const store = buildStore();
+    await registerDueTimer(store);
+
+    const summary = await timerWorker.fireDue(
+      deps(store, { HARDEN_OR_REPLAN: async () => ({ outcome: "TRANSITIONED", disposition: "TRANSITIONED", rearmInSeconds: 30 }) }),
+      { maxTimerLagSeconds: 10 },
+    );
+
+    expect(summary.fired).toBe(0);
+    expect(summary.rearmed).toBe(1);
+    expect(store.rows("timer")[0].timerState).toBe(timers.TIMER_STATE.PENDING);
+  });
+
+  test("PHASE 5 REGRESSION — a handler's effect and the timer's resolution commit together", async () => {
+    // The old shape ran the handler on the base client and resolved afterwards, so a
+    // failure between the two left a deadline acted on and unresolved, or resolved with
+    // its action lost. Here the handler writes and then throws: both must vanish.
+    const store = buildStore();
+    await registerDueTimer(store);
+    const before = (await store.client.leg.findUnique({ where: { id: fixtures.LEG_ROW_ID } })).version;
+
+    await timerWorker.fireDue(
+      deps(store, {
+        HARDEN_OR_REPLAN: async ({ tx, entity }) => {
+          await tx.leg.updateMany({ where: { id: entity.id, version: entity.version }, data: { version: entity.version + 1 } });
+          throw new Error("crash after the mutation");
+        },
+      }),
+      { maxTimerLagSeconds: 10 },
+    );
+
+    const after = (await store.client.leg.findUnique({ where: { id: fixtures.LEG_ROW_ID } })).version;
+    expect(after).toBe(before);
+    // And the deadline is still owned: re-armed, never resolved on a rolled-back action.
+    expect(store.rows("timer")[0].timerState).toBe(timers.TIMER_STATE.PENDING);
+    expect(store.rows("timer")[0].lastOutcome).toMatch(/HANDLER_THREW:crash after the mutation/);
+  });
+
+  test("PHASE 5 REGRESSION — a second pass cannot claim a timer the first has re-armed past its clock", async () => {
+    const store = buildStore();
+    await registerDueTimer(store);
+
+    let runs = 0;
+    const handlers = { HARDEN_OR_REPLAN: async () => {
+      runs += 1;
+      return { outcome: "REFUSED:X", rearmInSeconds: 600 };
+    } };
+
+    await timerWorker.fireDue(deps(store, handlers), { maxTimerLagSeconds: 10 });
+    const second = await timerWorker.fireDue(deps(store, handlers), { maxTimerLagSeconds: 10 });
+
+    // The re-armed timer stays PENDING, so `timerState` alone would let the next pass
+    // fire it again. `claim` re-checks `dueAt` against this pass's store clock, which is
+    // what makes a re-armed timer safe rather than a doubly-fired one.
+    expect(runs).toBe(1);
+    expect(second.due).toBe(0);
   });
 
   test("a timer whose entity version moved on is discarded, and its handler never runs", async () => {
@@ -128,18 +272,26 @@ describe("the timer worker", () => {
     expect(events.some((entry) => entry.event === "timer.handler_not_registered")).toBe(true);
   });
 
-  test("a handler that throws still resolves its timer, with the cause recorded", async () => {
+  test("a handler that throws re-arms its timer rather than resolving it, with the cause recorded", async () => {
+    // Changed by Phase 5's remediation, and the change is the correction: resolving a
+    // timer whose handler threw discharges a deadline nobody acted on — §12.1's defect
+    // inside the mechanism built to remove it. The whole fire rolls back and the deadline
+    // is re-armed on the state's own cadence, so a deterministic handler defect retries
+    // visibly instead of either hot-looping or vanishing.
     const store = buildStore();
     await registerDueTimer(store);
 
-    await timerWorker.fireDue(
+    const summary = await timerWorker.fireDue(
       deps(store, { HARDEN_OR_REPLAN: async () => {
         throw new Error("store unavailable");
       } }),
       { maxTimerLagSeconds: 10 },
     );
 
+    expect(summary.threw).toBe(1);
     expect(store.rows("timer")[0].lastOutcome).toMatch(/HANDLER_THREW:store unavailable/);
+    expect(store.rows("timer")[0].timerState).toBe(timers.TIMER_STATE.PENDING);
+    expect(store.rows("timer")[0].attempts).toBe(1);
   });
 
   test("lag beyond supervise.max_timer_lag emits the degraded directive", async () => {
@@ -163,7 +315,7 @@ describe("the timer worker", () => {
 
     const summary = await timerWorker.fireDue(
       {
-        ...deps(store, { HARDEN_OR_REPLAN: async () => ({}) }),
+        ...deps(store, { HARDEN_OR_REPLAN: transitioningHandler(store) }),
         advisoryCache: {
           set: async () => {
             throw new Error("redis down");
@@ -174,6 +326,16 @@ describe("the timer worker", () => {
     );
 
     expect(summary.fired).toBe(1);
+  });
+
+  test("it refuses to run without a transaction seam — a handler with no transaction can observe and never act", async () => {
+    const store = buildStore();
+    await expect(
+      timerWorker.fireDue(
+        { prisma: store.client, readStoreTime: async () => store.now(), handlers: {} },
+        {},
+      ),
+    ).rejects.toThrow(/transaction seam/);
   });
 });
 
@@ -201,40 +363,69 @@ describe("§24.5 chaos — killing the timer worker mid-sweep misses no transiti
 
     // The kill: the handler throws a non-Error the worker does not catch — a process
     // death, modelled as the pass never completing for the second timer.
+    const advance = async ({ tx, entity }) => {
+      await tx.leg.updateMany({ where: { id: entity.id, version: entity.version }, data: { version: entity.version + 1 } });
+      return { outcome: "ATTEMPTED" };
+    };
+
+    // The kill, modelled faithfully: at the moment the second timer's handler runs, the
+    // process stops existing. Nothing it would have done afterwards happens — not the
+    // handler's writes, not the timer's resolution, and **not the re-arm the ordinary
+    // failure path would have written**, because a dead process writes nothing. So the
+    // store becomes unreachable to it and every subsequent write throws, which takes the
+    // pass itself down. Modelling the death as a handler that merely throws would exercise
+    // the *error* path rather than the *death* path, and those differ precisely here.
+    let dead = false;
+    const dyingClient = {
+      ...store.client,
+      timer: {
+        ...store.client.timer,
+        updateMany: async (args) => {
+          if (dead) throw new Error("SIGKILL: the process is gone");
+          return store.client.timer.updateMany(args);
+        },
+      },
+    };
+
     let handled = 0;
     const killed = timerWorker.fireDue(
       {
-        prisma: store.client,
+        prisma: dyingClient,
         readStoreTime: async () => store.now(),
+        runInTransaction: (fn) => store.client.$transaction(fn),
         handlers: {
-          HARDEN_OR_REPLAN: async () => {
+          HARDEN_OR_REPLAN: async (context) => {
             handled += 1;
             if (handled === 2) {
+              dead = true;
               const death = new Error("SIGKILL");
               death.fatal = true;
               throw death;
             }
-            return { outcome: "ATTEMPTED" };
+            return advance(context);
           },
         },
       },
       { maxTimerLagSeconds: 3600 },
     );
 
-    await killed;
+    await expect(killed).rejects.toThrow(/SIGKILL/);
 
-    // Restart. Every timer that was not resolved is still PENDING and still due, because
-    // resolution is conditional on PENDING and happens *after* the handler — so a worker
-    // that dies before resolving leaves work for its successor rather than losing it.
+    // Restart. The timer the killed handler was working on is still PENDING and still
+    // due. Phase 5's remediation made that *stronger* rather than merely preserving it:
+    // the claim, the handler's writes, and the resolution are now one transaction, so the
+    // death rolls back everything the dying handler had done as well as leaving the
+    // deadline owned. The successor inherits work, not a half-applied transition.
     const stillPending = store.rows("timer").filter((timer) => timer.timerState === timers.TIMER_STATE.PENDING);
-    const resolvedOrPending = store.rows("timer").length;
-    expect(resolvedOrPending).toBe(2);
+    expect(store.rows("timer").length).toBe(2);
+    expect(stillPending.length).toBe(1);
 
     const secondPass = await timerWorker.fireDue(
       {
         prisma: store.client,
         readStoreTime: async () => store.now(),
-        handlers: { HARDEN_OR_REPLAN: async () => ({ outcome: "ATTEMPTED" }) },
+        runInTransaction: (fn) => store.client.$transaction(fn),
+        handlers: { HARDEN_OR_REPLAN: advance },
       },
       { maxTimerLagSeconds: 3600 },
     );
@@ -658,8 +849,21 @@ describe("the Phase 5 schema", () => {
 describe("what Phase 5 absorbs", () => {
   test("the standalone offline sweep stands down when the engine is on", () => {
     const source = fs.readFileSync(path.join(BACKEND_ROOT, "src", "sockets", "socket.server.js"), "utf8");
-    expect(source).toMatch(/ENGINE_ENABLED !== "true"[\s\S]*startOfflineDetector/);
+    // PHASE 15 remediation (D-6) — the predicate is unchanged; only its spelling is. This
+    // used to be a raw `process.env.ENGINE_ENABLED !== "true"` comparison, and the D-6
+    // conversion routed every reader of the switch through the module that owns it.
+    // `processEnabled()` *is* that comparison (`enabled.js:processEnabled`), so the Phase 5
+    // property this test asserts — the standalone sweep stands down exactly when the engine
+    // is on for this process — holds identically.
+    //
+    // Which loop owns §12.4 row 9 is a genuinely process-level question, so this is the one
+    // former raw read that correctly stays on the process half alone rather than taking the
+    // per-shard conjunction.
+    expect(source).toMatch(/!cutoverEnabled\.processEnabled\(\)[\s\S]*startOfflineDetector/);
     expect(source).toMatch(/reconciler owns §12\.4 row 9/);
+    // Stronger than the assertion this replaced: the raw read is now *absent*, not merely
+    // present in the expected shape.
+    expect(source).not.toMatch(/process\.env\.ENGINE_ENABLED/);
   });
 
   // PHASE 15 — the absorption completes. Phase 5 recorded that `taskRecovery.service.js`

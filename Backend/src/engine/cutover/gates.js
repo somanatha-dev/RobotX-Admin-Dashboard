@@ -56,6 +56,8 @@
  * close an `ORGANISATIONAL` gate would be that failure implemented.
  */
 
+const evidenceContract = require("./evidence");
+
 /** @structural gate evaluation outcomes; see the header for why there is no fourth */
 const STATUS = Object.freeze({
   GREEN: "GREEN",
@@ -128,6 +130,14 @@ const RELEASE_GATES = Object.freeze([
     section: "§22.4",
     evidence: EVIDENCE.ORGANISATIONAL,
     command: "npm run gate:calibration",
+    /**
+     * The attestation is necessary and not sufficient. §22.4's gate is organisational —
+     * only the calibration owner can say a value was derived — but the register is
+     * machine-checkable, and an owner attesting `DERIVED` while `gate:calibration` exits 1
+     * is an attestation contradicted by the artefact it is about. `evidence.js` therefore
+     * requires a corroborating run of this command alongside the two signatures.
+     */
+    runnable: true,
     blocking: true,
     statement:
       "Every Safety-class parameter is DERIVED. No Tier 0 parameter may be PROVISIONAL or UNCALIBRATED at launch.",
@@ -139,6 +149,30 @@ const RELEASE_GATES = Object.freeze([
     command: "npm run gate:legacy",
     blocking: true,
     statement: "The legacy decision path is removed from the build, not merely bypassed.",
+  },
+  {
+    /**
+     * The other half of the row above, and the one nobody had written.
+     *
+     * `legacy_removed_from_build` asserts the old decision path is gone. It says nothing
+     * about whether the new one runs, and during the Phase 15 remediation it did not: all
+     * four `LEADER_ONLY` workers — `coordinator` (the Tier 0 round loop), `outbox`,
+     * `reconciler` and `timer` — were required by nothing outside tests. A cutover with this
+     * table fully green would have taken a shard live onto a decision path that never
+     * executes: the legacy path removed, the engine path unwired, and 6 772 passing tests
+     * over both facts because every test builds the worker's dependencies by hand.
+     *
+     * "Removed, not merely bypassed" and "wired, not merely written" are the same
+     * requirement pointed in opposite directions, so they sit next to each other.
+     */
+    id: "engine_decision_path_wired",
+    section: "execution plan, Phase 15",
+    evidence: EVIDENCE.BUILD,
+    command: "npm run gate:composition",
+    blocking: true,
+    statement:
+      "Every worker the registry declares production-scheduled is reachable from the composition root — the " +
+      "engine's decision path is wired, not merely written.",
   },
   {
     id: "lower_bound_admissibility",
@@ -263,6 +297,8 @@ const RELEASE_GATES = Object.freeze([
     section: "§24.7",
     evidence: EVIDENCE.ORGANISATIONAL,
     command: "node tools/safetyCase/assemble.js",
+    /** Assembly is mechanical; that it was reviewed is not. Both are required — see above. */
+    runnable: true,
     blocking: true,
     statement: "The safety case is assembled from queries over decision records, with every hazard carrying its evidence.",
   },
@@ -272,6 +308,22 @@ const RELEASE_GATES = Object.freeze([
     evidence: EVIDENCE.ORGANISATIONAL,
     command: "docs/runbooks/rollback.md, rehearsal record",
     blocking: true,
+    /**
+     * D-7 / ADR-34 — discharged by a **rehearsal record**, not by two signatures.
+     *
+     * This gate is the one the cutover circularity turned on: rehearsing the rollback
+     * requires taking a shard live, and taking a shard live requires this gate. ADR-34
+     * resolves it by admitting a `REHEARSAL` purpose in `stage.js` that excludes exactly
+     * this gate, against a declared non-production environment.
+     *
+     * That exclusion is only safe because of this flag. Making the rehearsal *performable*
+     * without making its evidence *checkable* would have moved the forgery one step along
+     * rather than removing it — so `evidence.admit()` requires the record to carry the
+     * environment, the configuration version and every step of the runbook's §5, including
+     * the one §22.5 predicts will be skipped. The two signatures are still required; they
+     * are no longer sufficient.
+     */
+    rehearsal: true,
     statement: "The rollback has been rehearsed end to end and the rehearsal is recorded with a date and an operator.",
   },
 ]);
@@ -295,6 +347,19 @@ const BUILD_CLOSABLE = Object.freeze(
  * is a gate nobody can argue with, which is the same as no gate.
  */
 function assertGates() {
+  // The admission rules live in `evidence.js` and are written against a mirror of this
+  // enum, because that module cannot require this one without a cycle. Pin the two
+  // together here: a kind added on one side and not the other would be a gate whose
+  // evidence nobody adjudicates, which reads as `RED` rather than as the mistake it is.
+  const ours = Object.keys(EVIDENCE).sort().join(",");
+  const theirs = Object.keys(evidenceContract.KINDS).sort().join(",");
+  if (ours !== theirs) {
+    throw new Error(
+      `release-gate evidence kinds have drifted from the admission rules: table has [${ours}], ` +
+        `evidence.js adjudicates [${theirs}]`,
+    );
+  }
+
   const seen = new Set();
   for (const gate of RELEASE_GATES) {
     if (seen.has(gate.id)) throw new Error(`release gate declared twice: ${gate.id}`);
@@ -317,22 +382,37 @@ assertGates();
 /**
  * Evaluate the gate table against supplied evidence.
  *
- * Evidence is `{ [gateId]: { pass: boolean, detail?: string, observedAt?: string,
- * source?: string } }`. An id with no entry is `NOT_EVALUATED`; an unknown id is
- * reported as an error rather than ignored, because evidence filed against a gate that
- * does not exist is evidence that was never counted.
+ * Evidence is `{ [gateId]: record }`, where a record is what `cutover/evidence.js` will
+ * admit for that gate's kind — a **run record** for `BUILD`/`SUITE`, an observation window
+ * for `PRODUCTION`, a recorded-and-approved act for `ORGANISATIONAL`. An id with no entry
+ * is `NOT_EVALUATED`; an unknown id is reported as an error rather than ignored, because
+ * evidence filed against a gate that does not exist is evidence that was never counted.
+ *
+ * ── `pass` is adjudicated, not read ─────────────────────────────────────────
+ * This function used to return `GREEN` for `record.pass === true` and ask nothing else,
+ * which made the entire table equal to whatever object the caller held. It now routes every
+ * record through `evidence.admit()`, so a record that is not admissible is `RED` and carries
+ * the reason. `RED` rather than a fourth status is deliberate: the header's definition —
+ * "evidence was supplied and it does not satisfy the gate" — already covers a record nobody
+ * can rely on, and `NOT_EVALUATED` stays reserved for "nobody ran it".
  *
  * @param {object} [evidence]
+ * @param {{ nowMs?: number, maxAgeMs?: number, sourceDigest?: string }} [context]
  * @returns {{ ok: boolean, results: object[], unknownEvidence: string[], counts: object }}
  */
-function evaluate(evidence) {
+function evaluate(evidence, context) {
   const supplied = evidence && typeof evidence === "object" ? evidence : {};
   const unknownEvidence = Object.keys(supplied).filter((id) => !GATE_BY_ID[id]);
+  const at = context || {};
 
   const results = RELEASE_GATES.map((gate) => {
     const record = supplied[gate.id];
     let status = STATUS.NOT_EVALUATED;
-    if (record && typeof record === "object") status = record.pass === true ? STATUS.GREEN : STATUS.RED;
+    let verdict = null;
+    if (record !== undefined && record !== null) {
+      verdict = evidenceContract.admit(gate, record, at);
+      status = verdict.admissible && verdict.pass === true ? STATUS.GREEN : STATUS.RED;
+    }
     return {
       id: gate.id,
       section: gate.section,
@@ -341,7 +421,9 @@ function evaluate(evidence) {
       blocking: gate.blocking,
       statement: gate.statement,
       status,
-      detail: (record && record.detail) || null,
+      admissible: verdict ? verdict.admissible : null,
+      inadmissibleCode: verdict && !verdict.admissible ? verdict.code : null,
+      detail: (verdict && verdict.detail) || (record && record.detail) || null,
       observedAt: (record && record.observedAt) || null,
       source: (record && record.source) || null,
     };
@@ -369,8 +451,8 @@ function evaluate(evidence) {
  * @param {object} [evidence]
  * @returns {object[]}
  */
-function blockers(evidence) {
-  return evaluate(evidence).results.filter((result) => result.blocking && result.status !== STATUS.GREEN);
+function blockers(evidence, context) {
+  return evaluate(evidence, context).results.filter((result) => result.blocking && result.status !== STATUS.GREEN);
 }
 
 /**

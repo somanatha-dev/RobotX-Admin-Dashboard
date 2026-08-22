@@ -223,6 +223,7 @@ async function spawnRecoveryLeg(tx, input) {
     state: legMachine.LEG_STATE.ABORTING,
     entity: { ...leg, version: leg.version + 1 },
     dueAt: timers.deadlineFrom(source.storeTime, source.abortBudgetSeconds),
+    armedSeconds: source.abortBudgetSeconds,
     handler: legMachine.deadlineFor(legMachine.LEG_STATE.ABORTING).onExpiry,
     payload: { cause: "CANCELLATION_WITH_CUSTODY_HELD" },
     shardId: source.shardId,

@@ -13,6 +13,10 @@
 
 const { toStringOrNull } = require("../../utils/parse");
 const { allow } = require("../rateLimit");
+// PHASE 15 remediation (D-6) — both halves of the cutover switch, from the module that
+// owns the question. Grading a completion claim writes a durable evidence row and can
+// divert a Task to VERIFYING, so it is a per-shard decision like every other engine path.
+const agentGate = require("../../engine/cutover/agentGate");
 const { processObstacleReport } = require("../../services/alertDissemination.service");
 const { updateHealthStatus, updateAssignedTask } = require("../../services/robotRegistry.service");
 const { z } = require("zod");
@@ -117,7 +121,7 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       // `ENGINE_ENABLED` false it does nothing, and with it true a completion claim is
       // graded, its evidence archived, and an insufficient one sends the Task to
       // `VERIFYING` rather than to `COMPLETED`.
-      const verdict = await verifyCompletionClaim({ prisma, log, robotId, taskId, payload, config: configOf() });
+      const verdict = await verifyCompletionClaim({ prisma, log, robotId, taskId, payload, config: configOf(), socket });
 
       // ── PHASE 14 remediation (P14-R14) — §23.5 row 3, composed ──────────────
       //
@@ -324,8 +328,10 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
  * @param {object} input
  * @returns {Promise<object|null>}
  */
-async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, config }) {
-  if (process.env.ENGINE_ENABLED !== "true") return null;
+async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, config, socket }) {
+  // D-6: the process half alone used to gate this. During a staged rollout that graded
+  // claims on every shard, including ones the staging order had not reached.
+  if (!agentGate.mayAct({ socket, snapshot: config, nowMs: Date.now() })) return null;
 
   try {
     const agent = await prisma.agent.findUnique({ where: { agentId: robotId } });

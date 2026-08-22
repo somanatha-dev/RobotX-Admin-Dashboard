@@ -62,6 +62,17 @@ const EVENT = Object.freeze({
   AGENT_ACK: "AGENT_ACK",
   AGENT_NACK: "AGENT_NACK",
   OFFER_TTL_EXPIRY: "OFFER_TTL_EXPIRY",
+  /**
+   * §4.3-sourced. `PLANNED`'s deadline is `commit.hardening_deadline` and its On-expiry
+   * column reads *"harden or re-plan"*. §4.4 supplies the harden half (`HARDENING_DUE`)
+   * and no event at all for the re-plan half. See `SECTION_4_3_SOURCED`.
+   */
+  HARDENING_DEADLINE_ELAPSED: "HARDENING_DEADLINE_ELAPSED",
+  /**
+   * §4.3-sourced. `ABORTING`'s On-expiry column reads *"force to the applicable
+   * `STRANDED_*` state"*, and §4.4 gives `ABORTING` no outgoing row at all.
+   */
+  ABORT_BUDGET_EXPIRY: "ABORT_BUDGET_EXPIRY",
   DEPARTURE_DETECTED: "DEPARTURE_DETECTED",
   START_GRACE_EXPIRY: "START_GRACE_EXPIRY",
   ARRIVAL_VERIFIED: "ARRIVAL_VERIFIED",
@@ -119,6 +130,40 @@ const GUARD = Object.freeze({
   CORROBORATED_POSITION: "CORROBORATED_POSITION",
   CUSTODY_ACCOUNTED_FOR: "CUSTODY_ACCOUNTED_FOR",
 });
+
+/**
+ * PHASE 5 REMEDIATION — the marker on a row that §4.3 mandates and §4.4 does not contain.
+ *
+ * §4.4 is titled *"Complete transition table"*, and for the transitions §4.4 itself
+ * enumerates it is complete. It is not complete over **§4.3's "On expiry" column**, which
+ * is the other half of the same frozen specification and which names, for three states, a
+ * consequence §4.4 provides no row to perform:
+ *
+ * | §4.3 state | §4.3 "On expiry" | What §4.4 contains |
+ * |---|---|---|
+ * | `PLANNED` | "harden **or re-plan**" | the harden half only (`hardening due → OFFERED`) |
+ * | `EN_ROUTE_DROP` | "progress probe" | no ETA-breach row (`EN_ROUTE_PICKUP` has one) |
+ * | `ABORTING` | "force to the applicable `STRANDED_*` state" | **no outgoing row at all** |
+ *
+ * This is a disagreement inside the frozen specification, not a licence to design. The
+ * execution plan's own precedence rule — *"where this plan and the specification appear
+ * to disagree, the specification wins"* — does not adjudicate a specification that
+ * disagrees with itself, so the rule applied here is narrower and stated once:
+ *
+ * > A row may carry this marker only where **§4.3 states the consequence in its own
+ * > words**, and the row must perform *that* consequence and nothing more. Where §4.3 is
+ * > silent, no row is added.
+ *
+ * Under that rule the three rows above are additions; `REASSIGNING`'s *"escalate"* and
+ * the two `OPERATOR_ALERT` states are **not**, because §4.3 names an action there and no
+ * target state, and `supervision/expiryActions.js` handles them without moving the Leg.
+ *
+ * Marked rather than blended in, so `sectionFourThreeSourcedRows()` can enumerate them,
+ * the suite can pin the count, and a reviewer comparing this table against §4.4 finds the
+ * difference named instead of discovering it.
+ * @structural the provenance marker for §4.3-sourced rows
+ */
+const SECTION_4_3_SOURCED = "§4.3";
 
 const S = legMachine.LEG_STATE;
 
@@ -274,6 +319,29 @@ const TRANSITIONS = Object.freeze([
     effects: ["REPROJECT", "MAY_SET_TASK_AT_RISK"],
   },
   {
+    // §4.3-sourced — the re-plan half of `PLANNED`'s *"harden or re-plan"*.
+    //
+    // §4.4 has `PLANNED | hardening due | OFFERED`, which is the harden half, and two
+    // rows back to `QUEUED` whose events assert a *cause* the expiry does not know:
+    // `agent becomes infeasible` and `coordinator failover`. Routing an elapsed
+    // hardening deadline through either would file it under a cause nobody observed,
+    // and "the agent became infeasible" is a reliability signal attributed to an agent.
+    // The transition and its side effects are §4.4's `agent becomes infeasible` row
+    // exactly — discard the SOFT reservation, record the cause — and only the event
+    // name differs, which is the point: the recorded cause is the true one.
+    //
+    // No commitment exists to release: §2.6 and §4.4's third scope note say a Leg
+    // between `QUEUED`, `DEFERRED` and `PLANNED` has no commitment and no fence,
+    // because nothing has been said to any agent. So this is `PLANNING_ONLY`.
+    from: S.PLANNED,
+    event: EVENT.HARDENING_DEADLINE_ELAPSED,
+    to: S.QUEUED,
+    scope: WRITE_SCOPE.PLANNING_ONLY,
+    guards: [],
+    effects: ["DISCARD_SOFT_RESERVATION", "RECORD_CAUSE"],
+    source: SECTION_4_3_SOURCED,
+  },
+  {
     from: S.EN_ROUTE_PICKUP,
     event: EVENT.BLOCKING_FAULT,
     to: S.ABORTING,
@@ -322,6 +390,24 @@ const TRANSITIONS = Object.freeze([
     effects: ["RECOVERY_LEG_REQUIRED", "EXTERNAL_ESCALATION_IF_OBSTRUCTING"],
   },
   {
+    // §4.3-sourced — `EN_ROUTE_DROP`'s On-expiry column reads *"progress probe"*, the
+    // same as `EN_ROUTE_PICKUP`'s, over the same deadline (*"projected ETA × tolerance"*).
+    // §4.4 gives `EN_ROUTE_PICKUP` an `ETA breach` self-row and gives `EN_ROUTE_DROP`
+    // only its `arrival verified` and `blocking fault` rows.
+    //
+    // Without this row the second half of every mission is the half §4.5 cannot
+    // supervise: the timer fires, `find` returns nothing, and the deadline is
+    // undischargeable — the state a Leg carrying goods is in for the longest.
+    // §12.3's ETA-drift row is stated over missions, not over one leg half.
+    from: S.EN_ROUTE_DROP,
+    event: EVENT.ETA_BREACH,
+    to: S.EN_ROUTE_DROP,
+    scope: WRITE_SCOPE.LEG_ONLY,
+    guards: [],
+    effects: ["REPROJECT", "MAY_SET_TASK_AT_RISK"],
+    source: SECTION_4_3_SOURCED,
+  },
+  {
     from: S.AT_DROP,
     event: EVENT.CUSTODY_RELEASED,
     to: S.RELEASED,
@@ -361,6 +447,38 @@ const TRANSITIONS = Object.freeze([
     scope: WRITE_SCOPE.COMMITMENT,
     guards: [],
     effects: ["CUSTODY_AWARE_RECOVERY_ASSESSMENT"],
+  },
+  {
+    // §4.3-sourced — `ABORTING`'s On-expiry column reads *"force to the applicable
+    // `STRANDED_*` state"*, over `recover.abort_budget`. §4.4 gives `ABORTING` **no
+    // outgoing row whatsoever**; the only rows that reach it from there are the two
+    // wildcards, and neither is an abort-budget expiry.
+    //
+    // The target is `legMachine.strandingStateFor`, the same derivation the blocking-fault
+    // row uses, so the `CLEAR` / `RESTRICTIVE` / `BLOCKING_CRITICAL` / `INDETERMINATE`
+    // classification and its `DENY`-semantics default are stated once (I22).
+    //
+    // **Unguarded, deliberately, and this is the one place that reading is uncomfortable.**
+    // §4.3 says *force*, and every other §4.3 stranding path is custody-conditioned. But
+    // `ABORTING` is reached both with custody and without — §4.4's `pickup impossible` row
+    // enters it from `AT_PICKUP`, and §4.6 step 3 enters it on a cancellation with custody
+    // `HELD` — and the state means *"recovery in progress"* in both cases. A recovery that
+    // has exhausted its budget has, by definition, not recovered the agent, whether or not
+    // it is carrying anything; the difference is what the operator finds when they arrive,
+    // which the custody manifest on the page carries. Adding a custody guard here would
+    // leave a custody-`NONE` `ABORTING` Leg with a deadline it can never discharge, which
+    // is the defect this row exists to remove.
+    //
+    // `COMMITMENT` scope: the incumbent still holds one — `ABORTING` is entered from
+    // states that have a HARD commitment — and stranding is where §4.7's physical-recovery
+    // outcome lands, which §4.4 scopes to the commitment on its own stranding row.
+    from: S.ABORTING,
+    event: EVENT.ABORT_BUDGET_EXPIRY,
+    to: (context) => legMachine.strandingStateFor(context && context.obstructionClass).state,
+    scope: WRITE_SCOPE.COMMITMENT,
+    guards: [],
+    effects: ["PAGE_OPERATIONS", "EXTERNAL_ESCALATION_IF_OBSTRUCTING"],
+    source: SECTION_4_3_SOURCED,
   },
   {
     from: S.STRANDED_SAFE,
@@ -763,6 +881,10 @@ async function apply(tx, input) {
       state: target,
       entity: { ...leg, version: nextVersion },
       dueAt: timers.deadlineFrom(source.storeTime, source.deadlineSeconds),
+      // Recorded on the row, because the re-arm needs it and `dueAt − createdAt` cannot
+      // supply it for a row registered with a `dueAt` already in the past. For §4.3's two
+      // *projected* deadlines it is the only durable record of what the plan projected.
+      armedSeconds: source.deadlineSeconds,
       handler: legMachine.deadlineFor(target).onExpiry,
       payload: { from: leg.state, event: source.event },
       shardId: source.shardId,
@@ -810,10 +932,62 @@ function statesWithoutExit() {
     .sort();
 }
 
+/**
+ * The rows this table adds beyond §4.4's own enumeration, with the §4.3 wording that
+ * mandates each.
+ *
+ * Returned rather than asserted, for the reason `statesWithoutDeadline` gives: the suite
+ * states the expected set, so a fourth row added later fails loudly rather than joining a
+ * list nobody counts.
+ *
+ * @returns {Array<{ from: string, event: string, source: string }>}
+ */
+function sectionFourThreeSourcedRows() {
+  return TRANSITIONS.filter((row) => row.source === SECTION_4_3_SOURCED).map((row) => ({
+    from: typeof row.from === "function" ? "ANY_NON_TERMINAL" : String(row.from),
+    event: row.event,
+    source: row.source,
+  }));
+}
+
+/**
+ * §4.5's completeness claim, read the other way round: which §4.3 expiry actions name a
+ * consequence that this table cannot perform?
+ *
+ * A Leg state whose deadline exists but whose only outgoing rows are the two wildcards
+ * (`CANCEL_REQUEST`, `LEASE_EXPIRY`) has an expiry action with nowhere to go — the timer
+ * fires, `find` returns the wildcard or nothing, and the deadline is undischargeable.
+ * That was true of `ABORTING` and of `EN_ROUTE_DROP` before this remediation, and it is
+ * the machine-checkable form of the gap.
+ *
+ * `REASSIGNING` is the one state that remains, and it is **correct** that it does: §4.3
+ * names an action for it — *"escalate"* — and no target state, and §4.7's own answer to
+ * where an exhausted chain goes is `SUSPENDED`, which is the *Task's* state and not one
+ * §4.3 gives the Leg. `lifecycle/reassignment.js` reached that conclusion first and
+ * `supervision/expiryActions.js` follows it: the Leg is escalated in place.
+ *
+ * Listing it is what distinguishes "acts without transitioning" from "cannot act at all",
+ * which is the distinction `ABORTING` failed before this remediation.
+ *
+ * @returns {string[]}
+ */
+function statesWhoseExpiryHasNoDedicatedRow() {
+  const wildcardOnly = [];
+  for (const state of Object.values(legMachine.LEG_STATE)) {
+    if (!legMachine.requiresTimer(state)) continue;
+    const dedicated = TRANSITIONS.some((row) => row.from !== ANY_NON_TERMINAL && matchesSource(row.from, state));
+    if (!dedicated) wildcardOnly.push(state);
+  }
+  return wildcardOnly.sort();
+}
+
 module.exports = {
   EVENT,
   WRITE_SCOPE,
   GUARD,
+  SECTION_4_3_SOURCED,
+  sectionFourThreeSourcedRows,
+  statesWhoseExpiryHasNoDedicatedRow,
   GUARD_EVALUATORS,
   TRANSITIONS,
   ANY_NON_TERMINAL,

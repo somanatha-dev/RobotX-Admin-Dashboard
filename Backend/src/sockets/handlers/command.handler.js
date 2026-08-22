@@ -4,6 +4,9 @@ const { z } = require("zod");
 
 const clockModule = require("../../engine/commitment/clock");
 const outbox = require("../../engine/dispatch/outbox");
+// PHASE 15 remediation (D-6) — both halves of the cutover switch, from the one module that
+// owns the question. Settling an outbox row is an engine write.
+const agentGate = require("../../engine/cutover/agentGate");
 
 // PHASE 4 — §11.1 item 2: "Dispatcher workers claim outbox rows, deliver, and mark
 // them delivered." The mark that closes the loop is the agent's acknowledgement, and
@@ -67,8 +70,12 @@ async function acknowledgeOutboxRow(prisma, robotId, data) {
   return { acked: count === 1, reason: count === 1 ? null : "ROW_MOVED" };
 }
 
-function registerCommandHandlers(io, socket, { prisma, kv, logger }) {
+function registerCommandHandlers(io, socket, { prisma, kv, logger, appLocals }) {
   const log = logger || console;
+
+  // The pinned configuration snapshot, read at call time so a republished version reaches
+  // an already-connected socket (P14-R1). Threaded from `socket.server.js`.
+  const configOf = () => appLocals?.config ?? null;
 
   const ackSchema = z.object({ commandId: z.string().min(1) }).passthrough();
 
@@ -76,10 +83,16 @@ function registerCommandHandlers(io, socket, { prisma, kv, logger }) {
     try {
       if (!allow(socket, "COMMAND_ACK", { limit: 20, windowMs: 60_000, minIntervalMs: 100 })) return;
 
-      // The engine half, when the payload names an outbox row. Gated on the master
-      // switch for the same reason the offer handler is: no engine write path is
-      // reachable before the Phase 15 cutover.
-      if (process.env.ENGINE_ENABLED === "true" && socket.data?.isAuthed) {
+      // The engine half, when the payload names an outbox row.
+      //
+      // PHASE 15 remediation (D-6) — gated on **both** halves of the cutover switch. This
+      // read used to be `process.env.ENGINE_ENABLED === "true" && socket.data?.isAuthed`,
+      // which is the process half plus the session and no shard at all: during a staged
+      // rollout it settled outbox rows for every shard, including ones the staging order
+      // had not reached. `agentGate.assess()` folds the session check in, so the
+      // conjunction is one call rather than a partial one reassembled here.
+      const gate = agentGate.assess({ socket, snapshot: configOf(), nowMs: Date.now() });
+      if (gate.allowed) {
         const engineAck = outboxAckSchema.safeParse(payload || {});
         if (engineAck.success) {
           const robotId = toStringOrNull(socket.data.robotId);

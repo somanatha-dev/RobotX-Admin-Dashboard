@@ -271,6 +271,7 @@ The hazard this phase itself creates. Tier 0 is indivisible, so the cutover swit
 | NOT_EVALUATED | erasure_reconstruction_equivalence | BUILD | §23.7, §24.3 |
 | NOT_EVALUATED | calibration_safety_derived | ORGANISATIONAL | §22.4 |
 | NOT_EVALUATED | legacy_removed_from_build | BUILD | execution plan, Phase 15 |
+| NOT_EVALUATED | engine_decision_path_wired | BUILD | execution plan, Phase 15 |
 | NOT_EVALUATED | lower_bound_admissibility | SUITE | §6.4, §24.1 |
 | NOT_EVALUATED | model_check_capacity_1_2_3 | SUITE | §24.2 |
 | NOT_EVALUATED | determinism_replay | SUITE | §24.3 |
@@ -288,5 +289,5 @@ The hazard this phase itself creates. Tier 0 is indivisible, so the cutover swit
 | NOT_EVALUATED | safety_case_assembled | ORGANISATIONAL | §24.7 |
 | NOT_EVALUATED | rollback_rehearsed | ORGANISATIONAL | execution plan, Phase 15 |
 
-**0 green, 0 red, 23 not evaluated.** `NOT_EVALUATED` blocks the cutover exactly as `RED` does; the two are distinct so that "we ran it and it failed" and "nobody ran it" cannot be confused during an incident review.
+**0 green, 0 red, 24 not evaluated.** `NOT_EVALUATED` blocks the cutover exactly as `RED` does; the two are distinct so that "we ran it and it failed" and "nobody ran it" cannot be confused during an incident review.
 

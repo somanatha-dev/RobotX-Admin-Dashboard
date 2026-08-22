@@ -48,6 +48,13 @@ const clock = require("../engine/commitment/clock");
 const escalation = require("../engine/dispatch/escalation");
 const offers = require("../engine/dispatch/offers");
 const outbox = require("../engine/dispatch/outbox");
+// PHASE 15 remediation (X2b) — §4.5's deadline for the state step 2 puts the Leg into.
+// `offers.withdrawExpiredOffer` writes the Leg itself and does not run §4.4's table, so the
+// requeued Leg's deadline has to be registered by whoever called it. Phase 5's
+// `expiryActions.withdrawExcludeReplan` does exactly this for the timer-driven path; this
+// worker reaches the same function from the delivery side and did not, so one outcome had
+// two production paths with different supervision semantics.
+const legEntryDeadline = require("../engine/cutover/legEntryDeadline");
 
 /**
  * How many rows one pass claims. Bounded so a backlog is drained in bounded passes
@@ -309,6 +316,26 @@ async function performWithdrawal(deps, settings, row, storeTime) {
       maxDeliveryDelaySeconds: settings.maxDeliveryDelaySeconds,
       nackCooloffSeconds: settings.nackCooloffSeconds,
       signingKey: settings.signingKey,
+    });
+
+    // ── PHASE 15 remediation (X2b) — the requeued Leg's §4.5 deadline ────────
+    //
+    // In this transaction, because that is what §4.5 requires and what makes the
+    // withdrawal and the deadline one write. Before this, step 2 committed a Leg into
+    // `QUEUED` with no pending timer: `sla.assignment_deadline` never expired for it, so
+    // §17.4's ladder was never invoked and the Leg waited without anything noticing —
+    // invariant I4's violation, produced by the ladder's own first rung.
+    //
+    // The payload matches `expiryActions.withdrawExcludeReplan`'s so that a Leg requeued by
+    // the delivery ladder and one requeued by the offer timer are indistinguishable
+    // afterwards. They are the same event and they were reached by two paths.
+    await legEntryDeadline.superviseEntry(tx, {
+      leg,
+      state: offers.LEG_STATE.QUEUED,
+      storeTime,
+      deadlineSeconds: settings.assignmentDeadlineSeconds,
+      event: "OFFER_TTL_EXPIRY",
+      shardId: settings.shardId,
     });
 
     // Terminal, and terminal as `FAILED` rather than `EXPIRED`: this obligation did not

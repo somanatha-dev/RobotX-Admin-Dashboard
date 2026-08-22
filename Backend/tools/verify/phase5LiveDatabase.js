@@ -526,11 +526,27 @@ async function group2() {
    GROUP 3 — §4.5 the discard rule and the timer worker
    ═══════════════════════════════════════════════════════════════════════════ */
 
+/**
+ * A handler that does what a real one does: attempt a transition through the transaction
+ * client it is handed.
+ *
+ * PHASE 5 REMEDIATION. It used to record the call and return `{ outcome: "ATTEMPTED" }`
+ * without writing anything, and the assertions below expected the timer to resolve `FIRED`
+ * afterwards. Both halves were wrong, and together they described the defect rather than
+ * the requirement: a handler that moves nothing has not discharged its deadline, and
+ * resolving the timer leaves the entity non-terminal with no pending timer — invariant I4's
+ * violation. The worker now decides from the entity's own version, so a handler that means
+ * to discharge a deadline has to actually move something.
+ */
 function handlerMap(calls) {
   return {
-    WITHDRAW_EXCLUDE_REPLAN: async ({ timer }) => {
+    WITHDRAW_EXCLUDE_REPLAN: async ({ tx, timer, entity }) => {
       calls.push(timer.id);
-      return { outcome: "ATTEMPTED" };
+      await tx.leg.updateMany({
+        where: { id: entity.id, version: entity.version },
+        data: { state: "QUEUED", version: entity.version + 1 },
+      });
+      return { outcome: "OFFERED→QUEUED" };
     },
   };
 }
@@ -541,6 +557,9 @@ function workerDeps(handlers, record) {
     readStoreTime,
     handlers,
     record: record || (() => {}),
+    // §4.5's fire is one transaction — claim, act, resolve or re-arm — so the seam is part
+    // of the worker's dependency contract and its absence is refused by name.
+    runInTransaction: (fn) => prisma.$transaction(fn, { timeout: TX_TIMEOUT_MS, maxWait: TX_TIMEOUT_MS }),
   };
 }
 
@@ -631,9 +650,13 @@ async function group3() {
   await timerWorker.fireDue(workerDeps(crashingHandlers), { maxTimerLagSeconds: MAX_TIMER_LAG_SECONDS });
   const afterCrash = await prisma.timer.findUnique({ where: { id: crashTimer.id } });
   check(
-    "a handler that throws is recorded as its outcome rather than crashing the pass",
-    afterCrash.timerState === "FIRED" && /HANDLER_THREW/.test(afterCrash.lastOutcome || ""),
-    `outcome ${afterCrash.lastOutcome}`,
+    "a handler that throws rolls its whole fire back and re-arms the deadline, with the cause recorded",
+    // Changed by Phase 5's remediation, and the change is the correction. Resolving a timer
+    // whose handler threw discharges a deadline nobody acted on. The fire is now one
+    // transaction, so the throw rolls back the claim and any partial write with it, and the
+    // deadline is re-armed on the state's own cadence rather than lost.
+    afterCrash.timerState === "PENDING" && /HANDLER_THREW/.test(afterCrash.lastOutcome || "") && afterCrash.attempts === 1,
+    `state ${afterCrash.timerState}, attempts ${afterCrash.attempts}, outcome ${afterCrash.lastOutcome}`,
   );
 
   // A timer left PENDING by a killed worker survives the restart and is fired afterwards.
@@ -694,9 +717,18 @@ async function group3() {
     `${raceRows.length} timers, ${unresolved.length} left pending (worker A fired ${passA.fired}, worker B fired ${passB.fired})`,
   );
   check(
-    "and no timer is resolved twice — the conditional resolve is what decides the winner",
+    "and no timer is resolved twice — the claim is what decides the winner",
     overResolved.length === 0,
     `${overResolved.length} timers with attempts > 1`,
+  );
+  check(
+    "and no handler ran twice for one timer — the claim precedes the action, so the loser does no work",
+    // Stronger than the resolution check above and the property that actually matters:
+    // before this remediation both workers ran the handler and only the *resolution* was
+    // conditional, which is sound for a handler whose effect is a conditional write and
+    // unsound for one whose effect is a page.
+    new Set([...workerACalls, ...workerBCalls]).size === workerACalls.length + workerBCalls.length,
+    `worker A ran ${workerACalls.length}, worker B ran ${workerBCalls.length}, distinct ${new Set([...workerACalls, ...workerBCalls]).size}`,
   );
 
   // §4.5's lag SLI, measured rather than asserted.
@@ -1846,12 +1878,17 @@ async function group10() {
     prisma,
     readStoreTime,
     handlers: {
-      WITHDRAW_EXCLUDE_REPLAN: async ({ timer, entity }) => {
+      WITHDRAW_EXCLUDE_REPLAN: async ({ tx, timer, entity }) => {
         recovered.push({ timerId: timer.id, legId: entity.id });
+        await tx.leg.updateMany({
+          where: { id: entity.id, version: entity.version },
+          data: { state: "QUEUED", version: entity.version + 1 },
+        });
         return { outcome: "RECOVERY_ATTEMPTED" };
       },
     },
     record: () => {},
+    runInTransaction: (fn) => prisma.$transaction(fn, { timeout: TX_TIMEOUT_MS, maxWait: TX_TIMEOUT_MS }),
   };
   const pass = await timerWorker.fireDue(freshWorker, { maxTimerLagSeconds: MAX_TIMER_LAG_SECONDS });
   check(

@@ -265,8 +265,51 @@ async function register(tx, input) {
     handler: source.handler,
   });
 
+  const payload = source.payload === undefined || source.payload === null ? {} : source.payload;
+  // The interval this deadline was armed for, recorded rather than inferred. The re-arm
+  // needs it, and `dueAt − createdAt` — the obvious inference — is wrong for any row a
+  // caller registered with a `dueAt` that was already past, which a reconciler repair and
+  // every test harness both do. It matters most for §4.3's two **projected** deadlines
+  // (`EN_ROUTE_PICKUP`, `EN_ROUTE_DROP`), whose value is a mission ETA the register cannot
+  // supply: this is the only durable record of what the plan projected.
+  const withArmed =
+    Number.isFinite(source.armedSeconds) && source.armedSeconds > 0
+      ? { ...payload, armedSeconds: source.armedSeconds }
+      : payload;
+
   const existing = await tx.timer.findUnique({ where: { timerKey: key } });
-  if (existing) return existing;
+  if (existing) {
+    if (existing.timerState === TIMER_STATE.PENDING) return existing;
+
+    // PHASE 5 REMEDIATION. Returning the existing row unconditionally was wrong for a
+    // **resolved** one, and wrong in the one direction that matters: the caller asked for
+    // this state to be supervised, was handed a `FIRED`, `CANCELLED` or `DISCARDED` row,
+    // and got no pending timer at all. The entity is then non-terminal and unsupervised —
+    // invariant I4's violation, produced by the function whose job is to prevent it.
+    //
+    // It is reachable, and not only in theory. `transitions.apply` cancels every pending
+    // timer for the entity on exit, *including the one currently firing*; a reconciler
+    // repairing an unsupervised state finds the same key at the same version; and any
+    // handler that acts without moving the entity leaves a resolved row on a live state.
+    // Reproduced against live PostgreSQL: re-registering after a fire returned the fired
+    // row and `findUnsupervised` went on reporting the Leg.
+    //
+    // So a resolved row at a live key is **re-armed**, not returned. One row still exists
+    // — the key is unique and that is the idempotency this function promises — and it is
+    // pending again, with `attempts` preserved so the history of the deadline survives.
+    return tx.timer.update({
+      where: { id: existing.id },
+      data: {
+        timerState: TIMER_STATE.PENDING,
+        dueAt: source.dueAt,
+        payload: withArmed,
+        firedAt: null,
+        resolvedAt: null,
+        lastOutcome: `REARMED_FROM_${existing.timerState}`,
+        shardId: source.shardId === undefined ? existing.shardId : source.shardId,
+      },
+    });
+  }
 
   return tx.timer.create({
     data: {
@@ -277,11 +320,28 @@ async function register(tx, input) {
       entityVersion,
       dueAt: source.dueAt,
       handler: source.handler,
-      payload: source.payload === undefined ? null : source.payload,
+      payload: withArmed,
       timerState: TIMER_STATE.PENDING,
       shardId: source.shardId === undefined ? null : source.shardId,
     },
   });
+}
+
+/**
+ * The interval a timer was armed for, in seconds.
+ *
+ * Prefers what `register` recorded; falls back to `dueAt − createdAt`, which is right for
+ * every row registered with a future deadline and is all that older rows carry.
+ *
+ * @param {object} timer
+ * @returns {number|undefined}
+ */
+function armedSecondsOf(timer) {
+  const recorded = timer && timer.payload && timer.payload.armedSeconds;
+  if (Number.isFinite(recorded) && recorded > 0) return recorded;
+  if (!timer || !timer.dueAt || !timer.createdAt) return undefined;
+  const derived = (new Date(timer.dueAt).getTime() - new Date(timer.createdAt).getTime()) / MILLIS_PER_SECOND;
+  return Number.isFinite(derived) && derived > 0 ? derived : undefined;
 }
 
 /**
@@ -396,12 +456,124 @@ async function resolve(client, input) {
     throw new RangeError("resolving a timer moves it out of PENDING; PENDING is not a resolution");
   }
   const result = await client.timer.updateMany({
-    where: { id: source.id, timerState: TIMER_STATE.PENDING },
+    // `owned: true` drops the `PENDING` condition, and only the firing transaction may
+    // pass it. It holds the row's lock from `claim`, so there is no race for the
+    // condition to decide — and there is a real writer to overrule: `transitions.apply`
+    // cancels **every** pending timer for the entity when the state exits, which includes
+    // the timer that is at that moment firing. Conditionally resolving after that finds
+    // the row `CANCELLED`, matches nothing, and leaves a fired deadline recorded as a
+    // cancelled one: `firedAt` null, `lastOutcome` reading `EXITED_DEFERRED` rather than
+    // what the handler did. The deadline is discharged either way; what is lost is the
+    // evidence that it was *acted on*, which is the only thing distinguishing a timer
+    // that supervised something from one that was tidied away.
+    where: source.owned === true ? { id: source.id } : { id: source.id, timerState: TIMER_STATE.PENDING },
     data: {
       timerState: source.timerState,
       firedAt: source.timerState === TIMER_STATE.FIRED ? source.storeTime : undefined,
       resolvedAt: source.storeTime,
       attempts: { increment: 1 },
+      lastOutcome: source.outcome === undefined ? null : source.outcome,
+    },
+  });
+  return result.count;
+}
+
+/**
+ * Take exclusive ownership of a due timer, inside the caller's transaction.
+ *
+ * PHASE 5 REMEDIATION. Firing used to be: run the handler, then `resolve`. Two things
+ * were wrong with that order and both are §4.5 properties rather than tidiness.
+ *
+ * 1. **The handler's effect and the timer's resolution were in different transactions**
+ *    — or, for a handler that took no transaction at all, in none. A crash between them
+ *    leaves a deadline that was acted on and never resolved (it fires again, and the
+ *    action repeats) or one resolved without its action (the §12.1 defect: a deadline
+ *    nobody owns, discharged). `resolve` alone could not fix that, because the effect
+ *    was not in its transaction.
+ * 2. **Two workers both ran the handler.** `resolve`'s conditional write made only one
+ *    of them *record* the fire; both had already acted. §4.5 admits at-least-once
+ *    firing and requires idempotent handlers, so that was not unsound — but it is
+ *    unsound for the handlers whose action is a *page*, where "idempotent" means one
+ *    responder call rather than two, and there is no version to make the second a no-op.
+ *
+ * `claim` is the first statement of the firing transaction. It locks the row and
+ * asserts, in one conditional write, both facts the fire depends on: the timer is still
+ * `PENDING`, and it is still due at this pass's store time. The second half is what makes
+ * a *rescheduled* timer safe — a re-armed timer stays `PENDING`, so `timerState` alone
+ * would let a concurrent worker fire it a second time, while `dueAt` has moved past this
+ * pass's clock and the re-check refuses.
+ *
+ * The whole fire — claim, handler effect, resolution — then commits or rolls back
+ * together, which is the same rule §4.1 rule 5 states for a fence and the command it
+ * authorises, applied to a deadline and the action it authorises.
+ *
+ * @param {object} tx a transaction client
+ * @param {object} input
+ * @param {string} input.id
+ * @param {Date} input.storeTime
+ * @returns {Promise<boolean>} true when this transaction owns the fire
+ */
+async function claim(tx, input) {
+  requireTransaction(tx, "claiming a due timer");
+  const source = input || {};
+  const result = await tx.timer.updateMany({
+    where: { id: source.id, timerState: TIMER_STATE.PENDING, dueAt: { lte: source.storeTime } },
+    // The write is the lock. `attempts` is deliberately **not** incremented here: it
+    // counts fires that reached a resolution or a re-arm, and `resolve` and `reschedule`
+    // each own their own increment. A claim that later rolls back must leave no trace,
+    // and a counter incremented by a rolled-back transaction would be exactly that.
+    data: { lastOutcome: FIRING },
+  });
+  return result.count === 1;
+}
+
+/**
+ * §4.5 / invariant I4 — re-arm a deadline the fire did not discharge.
+ *
+ * PHASE 5 REMEDIATION. A handler *attempts* a transition, and §4.5 is explicit that it
+ * never forces one: *"A timer never forces a state change; it attempts one."* An attempt
+ * can therefore be refused — a guard whose evidence nobody supplied, a collaborator that
+ * does not exist yet — and several §4.3 expiry actions (`OPERATOR_ALERT`,
+ * `PAGE_OPERATIONS`) are not transitions at all and never move the entity by design.
+ *
+ * In every one of those cases the entity is still sitting in the state whose deadline
+ * this was. Resolving the timer would leave a **non-terminal state with no pending
+ * timer**, which is precisely what invariant I4 forbids and what this store exists to
+ * make impossible — the failure would be silent, permanent, and produced by the
+ * supervisor itself.
+ *
+ * So the deadline is re-armed rather than discharged: the row stays `PENDING`, `dueAt`
+ * moves forward, `attempts` records how many times this deadline has now passed, and
+ * `lastOutcome` records what the attempt did. Nothing about the §4.5 key changes, so the
+ * discard rule still governs: the moment the entity's own version moves, this timer
+ * becomes stale and is discarded on its next fire like any other.
+ *
+ * **Re-arming through `register` would not work, and the reason is worth stating**:
+ * `register` is idempotent on the key and returns the existing row, so re-registering
+ * `(entity, id, state, version, handler)` after a fire returns the row that just fired
+ * — in whatever state it is now — and creates no pending timer at all. The re-arm has to
+ * move the existing row, which is what this does.
+ *
+ * @param {object} client base or transaction client
+ * @param {object} input
+ * @param {string} input.id
+ * @param {Date} input.dueAt the next instant this deadline passes
+ * @param {string} [input.outcome] what the attempt that did not discharge it did
+ * @returns {Promise<number>} 1 when this caller owned the re-arm
+ */
+async function reschedule(client, input) {
+  const source = input || {};
+  if (!(source.dueAt instanceof Date) || Number.isNaN(source.dueAt.getTime())) {
+    throw new TypeError("re-arming a deadline names the absolute instant it next passes (§10.6)");
+  }
+  const result = await client.timer.updateMany({
+    where: { id: source.id, timerState: TIMER_STATE.PENDING },
+    data: {
+      dueAt: source.dueAt,
+      attempts: { increment: 1 },
+      // `firedAt` is deliberately untouched. It marks the fire that *discharged* a
+      // deadline, and this deadline was not discharged; `attempts` and `lastOutcome`
+      // are what record that it passed and what happened.
       lastOutcome: source.outcome === undefined ? null : source.outcome,
     },
   });
@@ -538,6 +710,16 @@ function requireTransaction(tx, action) {
   }
 }
 
+/**
+ * The marker `claim` writes while a fire is in flight. It is never observed by a reader
+ * outside the firing transaction — the row is locked for the whole of it — and it is
+ * overwritten by the resolution or the re-arm before that transaction commits. Its
+ * value matters only if a fire's transaction commits without either, which is a defect
+ * `fireOne` makes unrepresentable and which this name would make legible if it ever did.
+ * @structural the in-flight marker
+ */
+const FIRING = "FIRING";
+
 /** @structural milliseconds per second — a unit conversion, not a threshold */
 const MILLIS_PER_SECOND = 1000;
 
@@ -548,17 +730,21 @@ module.exports = {
   ENTITY_TYPE,
   TIMER_STATE,
   FIRE_DISPOSITION,
+  FIRING,
   VERSION_SOURCE,
   FORBIDDEN_VERSION_SOURCES,
   timerKey,
   versionOf,
   requiresTimer,
   deadlineFor,
+  armedSecondsOf,
   register,
   cancelFor,
   due,
   assessFire,
+  claim,
   resolve,
+  reschedule,
   readLag,
   assessLag,
   findUnsupervised,

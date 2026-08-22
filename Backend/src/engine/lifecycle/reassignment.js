@@ -282,6 +282,7 @@ async function reassign(tx, input) {
     state: legMachine.LEG_STATE.REASSIGNING,
     entity: { ...leg, version: leg.version + 1 },
     dueAt: timers.deadlineFrom(storeTime, source.reassignBudgetSeconds),
+    armedSeconds: source.reassignBudgetSeconds,
     handler: legMachine.deadlineFor(legMachine.LEG_STATE.REASSIGNING).onExpiry,
     payload: { trigger: source.trigger, supersededCommitment: commitment.commitmentId },
     shardId: source.shardId,

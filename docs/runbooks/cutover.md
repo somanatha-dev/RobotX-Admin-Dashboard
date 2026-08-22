@@ -43,9 +43,56 @@ means a shard you disable is a shard that stops serving until you re-enable it o
 | 8 | Every Tier 2 kill switch **thrown** (§1.8 rule 3's ship state) | `GET /api/config/resolve` | Eng |
 
 `cutover/stage.authoriseEnable()` checks 2, 3, 8 and the guardrail declaration
-mechanically, and **refuses** rather than warning. It cannot check 4, 5, 6 or 7 — those are
-evidence a human files against the gate table — which is precisely why they are listed
-here with named owners.
+mechanically, and **refuses** rather than warning.
+
+> ### ⚠ Prerequisite 3 is also a *deployment* prerequisite, not only a gate
+>
+> Measured on the current tree, against a real database: **the parameter register's own
+> defaults are not a publishable configuration.** `config/service.publish()` refuses them:
+>
+> ```
+> V9  combined degraded energy conservatism 2.0125 exceeds energy.max_combined_conservatism 1.6
+>     (nominal 1.4375 × route.degraded_reserve_factor = 1.4)
+> ```
+>
+> `route.degraded_reserve_factor` is **Safety-class**, **PROVISIONAL**, and one of the 39
+> findings prerequisite 3 is about. So a deployment that has not discharged B8 cannot publish
+> its *first* configuration version at all — which means it cannot stage any shard, because
+> staging a shard **is** publishing a binding (§3.3).
+>
+> A publish that binds the parameter explicitly will validate, and it engages §22.3's
+> two-person rule because the parameter is Safety-class. **That is not a way around
+> prerequisite 3.** A bound value is a value somebody chose; §22.4 still requires it to be
+> `DERIVED`, and `gate:calibration` will still exit 1. Do not read a successful publish as a
+> discharged calibration gate.
+
+Items 4, 5, 6 and 7 are evidence a human files against the gate table, which is why they are
+listed here with named owners. What the code can and cannot do about them changed in the
+Phase 15 remediation, and the distinction is worth being precise about, because the previous
+wording — *"it cannot check 4, 5, 6 or 7"* — was true of the **content** and read as though
+it were true of the **record**:
+
+- It cannot check whether the shadow report's conclusions are sound, whether the fidelity
+  study measured the right thing, or whether the rehearsal was performed attentively. Those
+  are why the owners are named.
+- It **does** now check the record. `cutover/evidence.js` refuses a record with no
+  provenance, one produced against a different source tree, one that is stale, one whose
+  `pass` contradicts the exit code of the command it claims to report, one attested by a
+  single person, and — for items 4 and 5 — one whose observation window is shorter than
+  `cutover.shadow_agreement_window` or `release.soak_duration` require. Item 6 additionally
+  requires a corroborating run of `npm run safety:case` that exited 0, because an
+  attestation cannot outrank the check it is an attestation about.
+
+Before that change, `gates.evaluate()` read `record.pass === true` and asked nothing else,
+and nothing in the repository produced a record at all. A hand-written `{ pass: true }` for
+each of the twenty-three gates authorised a cutover. Evidence is now produced by
+`npm run release:evidence` — which runs the gates and records their exit codes — and judged
+by `npm run release:gates`, whose exit code **is** the release decision.
+
+> **`GET /api/health/cutover` is advisory.** It evaluates the same table but without the
+> source-digest binding and age bound that a request handler cannot supply, so it can only
+> ever be more permissive than the authorisation. Its response says so
+> (`releaseGates.authoritative: false`). The decision is `authoriseEnable()`'s.
 
 > **Item 3 is the one that is currently red.** 39 Safety-class parameters are `PROVISIONAL`
 > or `UNCALIBRATED`. This is execution-plan blocking pre-work item **B8**, not a code
@@ -136,6 +183,24 @@ Publish `authorisation.action.binding` through the Config Service — a normal, 
 approved publish. Then append `stage.auditEventFor(authorisation.action)` to the audit
 stream. The pre-declaration travels in that event's payload, which is how
 `cutover/store.js` reads it back and how anyone can later verify the ordering.
+
+**Publish *and pin*.** A published version that is not pinned is not the version in force;
+`POST /api/config/versions` pins by default and `{"pin": false}` turns that off.
+
+**Then wait for propagation, and check.** A running process adopts a newly pinned version on
+`engine/cutover/configPropagation.js`'s pull, at `cutover.guardrail_check_interval` — not
+instantly, and not at the moment you publish. Confirm the shard is actually live before
+starting the observation window:
+
+```
+GET /api/health/cutover     → the per-shard posture, resolved from the version this process holds
+```
+
+If the posture still reads `NONE` after two intervals, the process has not adopted the version:
+look for `config.version_adopted` in its log, and for the `error` this file's propagator logs
+when a pull fails. **Do not start the §3.4 window against an unconfirmed posture** — until the
+Phase 15 current-tree remediation there was no pull at all, and a published binding reached no
+running process until it was restarted.
 
 ### 3.4 Hold for the observation window
 

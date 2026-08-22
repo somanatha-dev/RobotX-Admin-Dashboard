@@ -185,7 +185,22 @@ const WORKERS = Object.freeze([
       "needs a constructed solve path (round, expandCandidates, pricedCandidateFor, budgetsFor, deferPriceFor). " +
       "The runner and its comparison are complete and tested through runOnce; what is missing is the composition " +
       "root that builds those five collaborators outside a test fixture. A stub would produce a worker that runs, " +
-      "reports success, and compares nothing.",
+      "reports success, and compares nothing. " +
+      // PHASE 15 remediation (D-4) — the blocker restated, because the sentence above was
+      // accurate and incomplete, and the difference decides who can clear it. "What is
+      // missing is the composition root" reads as work this repository can do. It is not:
+      // the shadow worker runs the *same* solve path the coordinator does, and that path
+      // bottoms out — through plan/insertion.js → planBuilder.hopsForSequence →
+      // routing/cellPairCache.hopsFor — in an injected `route` function. **No routing engine
+      // is selected.** That is execution-plan item B1, whose Step 5 is blocked on D1 (no
+      // authoritative operating region), D3 (no fleet speed model) and D8 (no extract
+      // vintage). `workers/leaderWorkers.js` records the identical blocker against the
+      // coordinator, and it is the same blocker rather than a similar one.
+      "The blocker is the SAME as the coordinator's and is EXTERNAL: those five collaborators bottom out in an " +
+      "injected `route` function, and B1 has selected no routing engine (blocked on D1/D3/D8 — Operations, " +
+      "Product and Commercial decisions). `npm run routing:readiness` reports BLOCKED and refuses to fabricate " +
+      "one. Consequence: the `shadow_agreement` release gate cannot begin accumulating evidence at all — the " +
+      "system is not merely short of the fourteen-day window, it cannot start the clock.",
   },
   {
     id: "index_maintainer",

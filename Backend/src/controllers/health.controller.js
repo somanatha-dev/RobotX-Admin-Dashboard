@@ -292,7 +292,17 @@ const cutover = asyncHandler(async (req, res) => {
   // Evidence is not manufactured here. Nothing in this process files release-gate
   // evidence, so the table renders as NOT_EVALUATED unless a caller supplies it — which is
   // the honest state and is what refuses a cutover in `stage.authoriseEnable`.
-  const gateResult = cutoverGates.evaluate(req.app?.locals?.releaseEvidence || {});
+  //
+  // ── This view is advisory, and says so ────────────────────────────────────
+  // `docs/runbooks/cutover.md` prerequisite 2 points an operator here, so the one thing
+  // this endpoint must never do is disagree with the authorisation it is standing in for.
+  // It evaluates **without** the binding context `stage.authoriseEnable()` supplies — no
+  // source digest, no age bound — because a request handler holds neither. Omitting them
+  // can only make this view *more* permissive than the real decision, never less, so the
+  // response carries `authoritative: false` and names what was not checked. An operator
+  // reading green here and refused at the cutover must be able to see why without guessing.
+  const releaseEvidence = req.app?.locals?.releaseEvidence || {};
+  const gateResult = cutoverGates.evaluate(releaseEvidence);
 
   return res.json({
     section: "execution plan, Phase 15",
@@ -303,8 +313,15 @@ const cutover = asyncHandler(async (req, res) => {
     total: shards.length,
     stagingPlan: cutoverStage.plan(shards),
     releaseGates: {
+      /**
+       * False by construction. The authoritative evaluation is the one
+       * `stage.authoriseEnable()` performs at the moment of the cutover, with the source
+       * digest and age bound this handler cannot supply.
+       */
+      authoritative: false,
+      notCheckedHere: ["sourceDigest binding", "evidence age bound"],
       counts: gateResult.counts,
-      blocking: cutoverGates.blockers(req.app?.locals?.releaseEvidence || {}).map((gate) => ({
+      blocking: cutoverGates.blockers(releaseEvidence).map((gate) => ({
         id: gate.id,
         status: gate.status,
         section: gate.section,

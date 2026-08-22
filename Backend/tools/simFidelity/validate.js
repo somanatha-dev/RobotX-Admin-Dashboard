@@ -353,5 +353,20 @@ if (require.main === module) {
       );
     }
   }
-  process.exitCode = result.ok ? 0 : 1;
+  /**
+   * The exit code is `mayDischargeTierZero`, not `ok`.
+   *
+   * `ok` asks only "did any model I measured come back optimistically biased?", and with no
+   * study at all the answer is no — so this process exited **0** while all seven models,
+   * five of them safety-relevant, reported `NOT_MEASURED`. The text above said so plainly
+   * and the exit code contradicted it, which means every automated caller — a CI lane, the
+   * release chain, a pre-cutover script — read "the fidelity gate passed".
+   *
+   * §24.4 is the standard being applied, and it is one-sided in both directions: an
+   * unmeasured safety-relevant model may not discharge a Tier 0 obligation any more than a
+   * biased one may. `mayDischargeTierZero` is the field that already encodes exactly that,
+   * and the comment at its definition anticipated this caller. It is now the caller it
+   * anticipated.
+   */
+  process.exitCode = result.mayDischargeTierZero ? 0 : 1;
 }

@@ -273,10 +273,54 @@ describe("the engine module tree", () => {
   // of which engine B1 selects. It ships no capability — it issues no query, holds no
   // adapter, and implements no part of §5.2's degradation ladder. Phase 8's `client.js`
   // remains absent and remains Phase 8's.
+  //
+  // `cutover/evidence.js` is Phase 15's for the same reason `cutover/gates.js` is: it is
+  // half of one mechanism. `gates.js` says which gates exist; `evidence.js` says what
+  // discharges one. Splitting them was the remediation — the table was shipped without the
+  // rule, so `evaluate()` read `record.pass === true` and a hand-typed object closed all
+  // twenty-three gates. It ships no capability: it issues no query and decides nothing
+  // except whether a record may be believed.
+  //
+  // `cutover/agentGate.js` is Phase 15's on the same argument, one layer out. `enabled.js`
+  // says the switch has two halves; `agentGate.js` is where an *agent session* is held to
+  // both of them. It was the D-6 remediation: `enabled.js` shipped with one converted call
+  // site and every socket handler still reading the process half alone, so during a staged
+  // rollout the agent-facing write paths were live on shards the staging order had
+  // deliberately not reached. It ships no capability — it resolves a durable membership row
+  // and decides nothing except whether a session may act as the engine.
+  // `cutover/configPropagation.js`, `cutover/rollbackPublisher.js` and
+  // `cutover/legEntryDeadline.js` are the current-tree re-audit's three additions, and each
+  // is here on the same argument as `agentGate.js`: it is the missing production half of a
+  // Phase 15 mechanism, and it ships no capability.
+  //
+  //   `configPropagation.js` — §22.1 rule 4's propagation is pull-with-pin, and *nothing
+  //     pulled*. `app.locals.config` was assigned once at boot and by nothing else, so a
+  //     published `cutover.engine_enabled` binding never reached a running process: the
+  //     per-shard cutover could not be actuated, in either direction, without a restart. It
+  //     issues no query of its own — `load` and `apply` are injected — and decides nothing
+  //     except whether the version it read differs from the one in hand.
+  //
+  //   `rollbackPublisher.js` — §22.4 item 4's automatic rollback published nothing, so a
+  //     breaching shard stayed live and, because `store.declarationFor` then returns null,
+  //     was never assessed again. It ships no capability: it restates the version in force
+  //     with one region's binding set to false, and refuses anything that is not that.
+  //
+  //   `legEntryDeadline.js` — §4.5 registers a state's deadline in the transaction that
+  //     enters it (I4). Four production paths in `dispatch/offers.js` enter a Leg state
+  //     without running §4.4's table and registered none; Phase 5 reproduced two of them
+  //     live (X2a, X2b) and routed them here, because one of the two became reachable only
+  //     when Phase 15 wired the outbox worker into the composition root. It ships no
+  //     capability — the deadline parameter comes from `legMachine`, the duration from the
+  //     register, and the write from `supervision/timers`.
   const PHASE_15_OWNED = [
+    "cutover/agentGate.js",
+    "cutover/configPropagation.js",
     "cutover/enabled.js",
+    "cutover/evidence.js",
     "cutover/gates.js",
     "cutover/guardrails.js",
+    "cutover/legEntryDeadline.js",
+    "cutover/rollbackPublisher.js",
     "cutover/stage.js",
     "cutover/store.js",
     "routing/inProcessCache.js",

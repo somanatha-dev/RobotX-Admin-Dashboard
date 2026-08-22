@@ -724,7 +724,16 @@ describe("P14-R15 — a self-report may restrict an agent, never expand it", () 
     const source = sourceOf("src", "sockets", "handlers", "telemetry.handler.js");
     // The refusal takes effect only when the engine is live, which is the identical
     // disposition the position and energy rows carry — not a new staging rule.
-    expect(source).toMatch(/if \(health\.applied \|\| !engineEnabled\(\)\)/);
+    //
+    // PHASE 15 remediation (D-6) — "live" is now resolved per **shard** rather than per
+    // process, so `engineEnabled()` takes the session and the published snapshot. The P14
+    // staging property is unchanged and strictly narrower: a self-report that would expand
+    // eligibility is still refused exactly when the engine is the decision path, and that
+    // is now the two-half conjunction §22.4 stages rather than the deployment-wide flag.
+    expect(source).toMatch(/if \(health\.applied \|\| !engineEnabled\(socket, configOf\(\)\)\)/);
+    // The staging is read through the module that owns the switch, not re-derived here.
+    expect(source).toMatch(/agentGate\.mayAct\(/);
+    expect(source).not.toMatch(/process\.env\.ENGINE_ENABLED/);
   });
 });
 

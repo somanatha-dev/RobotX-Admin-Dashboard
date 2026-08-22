@@ -421,3 +421,243 @@ describe("§4.5 — timer-store lag", () => {
     }
   });
 });
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PHASE 5 REMEDIATION — the re-arm, the claim, and the recorded interval
+
+   Every test in this block pins a defect found by driving the shipped modules
+   against live PostgreSQL, not by reading them. Each is written so that removing
+   the fix makes it fail.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe("§4.5 / I4 — a deadline the fire did not discharge is re-armed, not resolved", () => {
+  const legRow = { id: fixtures.LEG_ROW_ID, version: 0, state: "AT_PICKUP" };
+
+  async function armed(store, overrides) {
+    return store.client.$transaction((tx) =>
+      timers.register(tx, {
+        entityType: "LEG",
+        entityId: legRow.id,
+        state: "AT_PICKUP",
+        entity: legRow,
+        dueAt: new Date(STORE_NOW.getTime() + 600_000),
+        armedSeconds: 600,
+        handler: "OPERATOR_ALERT",
+        ...(overrides || {}),
+      }),
+    );
+  }
+
+  test("REGRESSION — re-registering a RESOLVED key re-arms it instead of handing back a resolved row", async () => {
+    // The defect: `register` returned the existing row for any `timerState`. A caller
+    // asking for a live state to be supervised was handed a FIRED, CANCELLED or DISCARDED
+    // row and got no pending timer at all — the entity then non-terminal and unsupervised,
+    // which is invariant I4's violation produced by the function meant to prevent it.
+    //
+    // Reproduced live: after a fire, `findUnsupervised` went on reporting the Leg however
+    // many times a repair tried to re-arm it.
+    const store = fixtures.storeFor(fixtures.seed());
+    const first = await armed(store);
+    await timers.resolve(store.client, {
+      id: first.id,
+      timerState: timers.TIMER_STATE.FIRED,
+      storeTime: store.now(),
+      outcome: "OPERATOR_ALERTED",
+    });
+    expect(store.rows("timer")[0].timerState).toBe(timers.TIMER_STATE.FIRED);
+
+    const again = await armed(store, { dueAt: new Date(STORE_NOW.getTime() + 900_000) });
+
+    expect(again.id).toBe(first.id); // still one row: the key is unique and stays so
+    expect(store.rows("timer")).toHaveLength(1);
+    expect(again.timerState).toBe(timers.TIMER_STATE.PENDING);
+    expect(again.lastOutcome).toBe("REARMED_FROM_FIRED");
+    expect(again.firedAt).toBeNull();
+  });
+
+  test("a PENDING row is returned unchanged — the idempotency `register` has always promised", async () => {
+    const store = fixtures.storeFor(fixtures.seed());
+    const first = await armed(store);
+    const again = await armed(store, { dueAt: new Date(STORE_NOW.getTime() + 999_000) });
+    expect(again.id).toBe(first.id);
+    expect(store.rows("timer")).toHaveLength(1);
+    // Unchanged: a retried transition must not push a pending deadline further out.
+    expect(new Date(again.dueAt).getTime()).toBe(new Date(first.dueAt).getTime());
+  });
+
+  test("REGRESSION — the armed interval is recorded, not inferred from dueAt minus createdAt", async () => {
+    // The inference is wrong for every row registered with a `dueAt` already in the past —
+    // a reconciler repair, and every harness — and it cannot express §4.3's two *projected*
+    // deadlines at all, whose value is a mission ETA rather than a register entry.
+    const store = fixtures.storeFor(fixtures.seed());
+    const row = await armed(store, { dueAt: new Date(STORE_NOW.getTime() - 5_000), armedSeconds: 600 });
+    expect(row.payload.armedSeconds).toBe(600);
+    expect(timers.armedSecondsOf(row)).toBe(600);
+
+    // And with nothing recorded it still falls back, for rows written before this landed.
+    expect(timers.armedSecondsOf({ dueAt: new Date(1_600_000), createdAt: new Date(1_000_000) })).toBe(600);
+    // A past `dueAt` and no record yields no answer, rather than a negative one.
+    expect(timers.armedSecondsOf({ dueAt: new Date(1_000_000), createdAt: new Date(1_600_000) })).toBeUndefined();
+  });
+
+  test("reschedule moves the deadline forward, counts the attempt, and keeps it PENDING", async () => {
+    const store = fixtures.storeFor(fixtures.seed());
+    const row = await armed(store, { dueAt: new Date(STORE_NOW.getTime() - 1_000) });
+
+    const moved = await timers.reschedule(store.client, {
+      id: row.id,
+      dueAt: new Date(STORE_NOW.getTime() + 600_000),
+      outcome: "REFUSED:LADDER_NOT_IMPLEMENTED",
+    });
+
+    expect(moved).toBe(1);
+    const after = store.rows("timer")[0];
+    expect(after.timerState).toBe(timers.TIMER_STATE.PENDING);
+    expect(after.attempts).toBe(1);
+    expect(after.lastOutcome).toBe("REFUSED:LADDER_NOT_IMPLEMENTED");
+    // `firedAt` marks a fire that *discharged* a deadline. This one was not discharged.
+    // `?? null` because the store model leaves an unset column undefined where PostgreSQL
+    // holds NULL; the live harness asserts the column itself.
+    expect(after.firedAt ?? null).toBeNull();
+  });
+
+  test("reschedule refuses a deadline that is not an absolute instant (§10.6)", async () => {
+    const store = fixtures.storeFor(fixtures.seed());
+    const row = await armed(store);
+    for (const bad of [undefined, null, "soon", new Date(NaN), 600]) {
+      // eslint-disable-next-line no-await-in-loop
+      await expect(timers.reschedule(store.client, { id: row.id, dueAt: bad })).rejects.toThrow(/absolute instant/);
+    }
+  });
+
+  test("reschedule will not revive a resolved timer", async () => {
+    const store = fixtures.storeFor(fixtures.seed());
+    const row = await armed(store);
+    await timers.resolve(store.client, {
+      id: row.id,
+      timerState: timers.TIMER_STATE.DISCARDED,
+      storeTime: store.now(),
+      outcome: "ENTITY_VERSION_MOVED_ON",
+    });
+    const moved = await timers.reschedule(store.client, { id: row.id, dueAt: new Date(STORE_NOW.getTime() + 10_000) });
+    expect(moved).toBe(0);
+    expect(store.rows("timer")[0].timerState).toBe(timers.TIMER_STATE.DISCARDED);
+  });
+});
+
+describe("§4.5 — claim is what makes a fire exclusive", () => {
+  const legRow = { id: fixtures.LEG_ROW_ID, version: 0, state: "AT_PICKUP" };
+
+  async function due(store, dueAt) {
+    return store.client.$transaction((tx) =>
+      timers.register(tx, {
+        entityType: "LEG",
+        entityId: legRow.id,
+        state: "AT_PICKUP",
+        entity: legRow,
+        dueAt,
+        armedSeconds: 600,
+        handler: "OPERATOR_ALERT",
+      }),
+    );
+  }
+
+  test("a due PENDING timer is claimed, and a resolved one is not", async () => {
+    const store = fixtures.storeFor(fixtures.seed());
+    const row = await due(store, new Date(STORE_NOW.getTime() - 1_000));
+
+    const first = await store.client.$transaction((tx) => timers.claim(tx, { id: row.id, storeTime: store.now() }));
+    expect(first).toBe(true);
+
+    await timers.resolve(store.client, {
+      id: row.id,
+      timerState: timers.TIMER_STATE.FIRED,
+      storeTime: store.now(),
+      outcome: "X",
+    });
+    const second = await store.client.$transaction((tx) => timers.claim(tx, { id: row.id, storeTime: store.now() }));
+    expect(second).toBe(false);
+  });
+
+  test("REGRESSION — a timer re-armed past this pass's clock cannot be claimed by it", async () => {
+    // The defect this forecloses: a re-armed timer stays PENDING, so a claim that checked
+    // only `timerState` would fire it again in the very next pass — and for a paging action
+    // there is no version to make the second call a no-op. Two responder pages, one incident.
+    const store = fixtures.storeFor(fixtures.seed());
+    const row = await due(store, new Date(STORE_NOW.getTime() - 1_000));
+    await timers.reschedule(store.client, {
+      id: row.id,
+      dueAt: new Date(STORE_NOW.getTime() + 600_000),
+      outcome: "PAGED",
+    });
+
+    const claimed = await store.client.$transaction((tx) => timers.claim(tx, { id: row.id, storeTime: store.now() }));
+    expect(claimed).toBe(false);
+    expect(store.rows("timer")[0].timerState).toBe(timers.TIMER_STATE.PENDING);
+  });
+
+  test("claiming refuses to happen outside a transaction", async () => {
+    const store = fixtures.storeFor(fixtures.seed());
+    const row = await due(store, new Date(STORE_NOW.getTime() - 1_000));
+    await expect(timers.claim(store.client, { id: row.id, storeTime: store.now() })).rejects.toThrow(
+      /transaction that enters or exits/,
+    );
+  });
+
+  test("REGRESSION — a claimed fire records itself even after the transition cancelled it", async () => {
+    // `transitions.apply` cancels **every** pending timer for the entity on state exit,
+    // including the one that is at that moment firing. A resolution conditional on PENDING
+    // then matches nothing, and a deadline that was acted on is recorded as one that was
+    // tidied away: `firedAt` null, `lastOutcome` reading EXITED_… rather than the action.
+    const store = fixtures.storeFor(fixtures.seed());
+    const row = await due(store, new Date(STORE_NOW.getTime() - 1_000));
+
+    await store.client.$transaction(async (tx) => {
+      await timers.claim(tx, { id: row.id, storeTime: store.now() });
+      await timers.cancelFor(tx, {
+        entityType: "LEG",
+        entityId: legRow.id,
+        storeTime: store.now(),
+        reason: "EXITED_AT_PICKUP",
+      });
+      await timers.resolve(tx, {
+        id: row.id,
+        timerState: timers.TIMER_STATE.FIRED,
+        storeTime: store.now(),
+        outcome: "OPERATOR_ALERTED",
+        owned: true,
+      });
+    });
+
+    const after = store.rows("timer")[0];
+    expect(after.timerState).toBe(timers.TIMER_STATE.FIRED);
+    expect(after.lastOutcome).toBe("OPERATOR_ALERTED");
+    expect(after.firedAt).not.toBeNull();
+  });
+
+  test("without owned, the same sequence loses the fire to the cancellation", async () => {
+    // The other half of the pair: this is what the code did before, and it is why `owned`
+    // exists. Asserted rather than described, so the distinction cannot quietly collapse.
+    const store = fixtures.storeFor(fixtures.seed());
+    const row = await due(store, new Date(STORE_NOW.getTime() - 1_000));
+
+    await store.client.$transaction(async (tx) => {
+      await timers.claim(tx, { id: row.id, storeTime: store.now() });
+      await timers.cancelFor(tx, {
+        entityType: "LEG",
+        entityId: legRow.id,
+        storeTime: store.now(),
+        reason: "EXITED_AT_PICKUP",
+      });
+      const count = await timers.resolve(tx, {
+        id: row.id,
+        timerState: timers.TIMER_STATE.FIRED,
+        storeTime: store.now(),
+        outcome: "OPERATOR_ALERTED",
+      });
+      expect(count).toBe(0);
+    });
+
+    expect(store.rows("timer")[0].timerState).toBe(timers.TIMER_STATE.CANCELLED);
+  });
+});

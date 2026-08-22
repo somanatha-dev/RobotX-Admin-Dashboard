@@ -195,6 +195,7 @@ async function scanOrphanLegs(deps, config, storeTime) {
           state: legMachine.LEG_STATE.QUEUED,
           entity: { ...leg, version: leg.version + 1 },
           dueAt: timers.deadlineFrom(storeTime, config.assignmentDeadlineSeconds),
+          armedSeconds: config.assignmentDeadlineSeconds,
           handler: legMachine.deadlineFor(legMachine.LEG_STATE.QUEUED).onExpiry,
           payload: { repairedFrom: leg.state, orphanKind: kind },
           shardId: config.shardId,

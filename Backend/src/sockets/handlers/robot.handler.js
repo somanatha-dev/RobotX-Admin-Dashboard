@@ -12,6 +12,10 @@ const { markOnline, markOffline, getRobotState, setRobotState } = require("../..
 const { assignRobotToZone } = require("../../services/zoneManager.service");
 const { DB_FLUSH_INTERVAL_MS } = require("../../config/liveness.constants");
 const robotStateCache = require("../../cache/robotStateCache");
+// PHASE 15 remediation (D-6) — the cutover switch is a conjunction, and this handler now
+// reads both halves through the one module that owns the question. See agentGate.js for
+// why the shard identity is resolved at AUTH rather than per event.
+const agentGate = require("../../engine/cutover/agentGate");
 
 // Per-robot throttle for the HEARTBEAT path's Postgres write, mirroring the
 // same gate in telemetry.handler.js. Per-process and in-memory (same pattern
@@ -267,8 +271,38 @@ function rejectCapabilityClaims(payload, robotId, log) {
   return claims;
 }
 
-async function runDedupHandshake(prisma, robotId, reportedDedupState, log) {
-  if (process.env.ENGINE_ENABLED !== "true") return null;
+/**
+ * §11.5's deduplication handshake.
+ *
+ * PHASE 15 remediation (D-6) — this is an engine **write** path: it suppresses outbox rows
+ * and advances the agent's `authority_epoch`. It therefore reads both halves of the cutover
+ * switch, not just the process half. Before this change it ran for every shard whenever the
+ * deployment-wide `ENGINE_ENABLED` was true — including shards the staging order had
+ * deliberately not reached, whose agents would have had an authority epoch advanced by an
+ * engine that was not the decision path for them.
+ *
+ * The verdict is passed in rather than computed here, because the caller has already
+ * resolved and bound the shard identity as part of AUTH and a second resolution would be a
+ * second answer.
+ *
+ * @param {object} prisma
+ * @param {string} robotId
+ * @param {*} reportedDedupState
+ * @param {object} log
+ * @param {{ allowed: boolean, refusal: string|null, shardId: string|null }} gate
+ * @returns {Promise<object|null>}
+ */
+async function runDedupHandshake(prisma, robotId, reportedDedupState, log, gate) {
+  if (!gate || gate.allowed !== true) {
+    if (reportedDedupState !== undefined && reportedDedupState !== null) {
+      log.info?.("AUTH dedup handshake skipped — the engine is not the decision path for this agent's shard", {
+        robotId,
+        shardId: gate ? gate.shardId : null,
+        refusal: gate ? gate.refusal : "NO_VERDICT",
+      });
+    }
+    return null;
+  }
   if (reportedDedupState === undefined || reportedDedupState === null) return null;
 
   const parsed = dedupHandshake.parseReport(reportedDedupState);
@@ -543,6 +577,31 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       socket.data.robotId = robotId;
       socket.data.isAuthed = true;
 
+      // PHASE 15 remediation (D-6) — resolve this agent's authoritative shard identity
+      // **once**, here, and cache it on the socket.
+      //
+      // Every engine-facing decision this session goes on to make asks "is the engine the
+      // decision path for *this shard*", and §22.4 stages that answer per shard. Resolving
+      // it per event would put two indexed queries on the telemetry hot path; resolving it
+      // never — which is what the code did before — made the staged rollout mean nothing on
+      // the agent-facing side. AUTH is the right place: it is once per session, it already
+      // performs several durable reads, and a migration invalidates the session anyway
+      // (§19.2 advances the authority epoch, so the agent must re-AUTH to adopt it).
+      //
+      // A failure to resolve is **not** fatal to the connection: an agent that has never
+      // been placed in a shard (§3.5's commissioned-but-unplaced state) still authenticates,
+      // still sends telemetry, and is still refused every engine write path — which is the
+      // correct disposition for an agent no shard owns.
+      try {
+        agentGate.bind(socket, await agentGate.resolveIdentity(prisma, robotId, Date.now()));
+      } catch (e) {
+        agentGate.bind(socket, null);
+        log.warn?.("shard identity could not be resolved at AUTH — engine paths refused for this session (§3.5)", {
+          robotId,
+          message: e?.message,
+        });
+      }
+
       // Bind socket -> robot mapping for best-effort cleanup.
       await kv.set(`socket:${socket.id}`, robotId, { ex: 3600 });
 
@@ -566,7 +625,13 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       // has landed could begin acting on state the server is about to invalidate. The
       // handshake result rides on AUTH_SUCCESS so the agent adopts the new epoch and
       // fence floor in the same message that admits it.
-      const dedupOutcome = await runDedupHandshake(prisma, robotId, auth.dedupState, log);
+      const dedupOutcome = await runDedupHandshake(
+        prisma,
+        robotId,
+        auth.dedupState,
+        log,
+        agentGate.assess({ socket, snapshot: configOf(), nowMs: Date.now() }),
+      );
 
       // PHASE 14 — the session's own description travels with the admission. An agent
       // must be able to tell which scheme authenticated it: a device that believes it is
@@ -678,6 +743,26 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       }
 
       await prisma.robot.update({ where: { robotId }, data: { lastSeenAt: new Date(nowMs) } });
+
+      // PHASE 15 remediation (D-6) — refresh the cached shard identity on the same
+      // throttle as the durable liveness mirror.
+      //
+      // The *primary* mechanism that keeps this binding honest is invalidation: a migration
+      // advances the agent's authority epoch and the composition root disconnects the
+      // session, so the identity is re-resolved on reconnect. This is the backstop for a
+      // session that outlives its invalidation, and it rides the throttle that already
+      // exists rather than adding a cadence of its own — one extra indexed read per agent
+      // per `legacy.liveness.db_flush_interval_ms`, against a freshness bound of twice that
+      // (`agentGate.DEFAULT_MAX_AGE_MS`), so one missed refresh does not sever a healthy
+      // session while two do.
+      try {
+        agentGate.bind(socket, await agentGate.resolveIdentity(prisma, robotId, Date.now()));
+      } catch {
+        // Leave the previous binding in place: it carries its own `resolvedAtMs` and
+        // `assess()` refuses it once it passes the freshness bound. Dropping it here would
+        // convert a transient store blip into an immediate engine outage for this agent,
+        // and re-resolving it is exactly what the next beat does.
+      }
     } catch {
       // ignore
     }
