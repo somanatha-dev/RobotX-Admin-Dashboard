@@ -65,18 +65,24 @@ export function useMapController(mapRef, { overlayRef, canvasRef } = {}) {
   }, [overlayRef, canvasRef]);
 
   const flyTo = useCallback(
-    ({ lon, lat, zoom, pitch, bearing }) => {
+    ({ lon, lat, zoom, pitch, bearing, duration }) => {
       const map = mapRef?.current;
       if (!map) return;
 
       const doFly = () => {
         gsapPulseOverlay();
+        // An explicit `duration` bounds the flight. Mapbox ignores `speed` when
+        // a duration is given, so it is dropped rather than passed and
+        // silently overridden; `curve` still shapes the arc.
+        const hasDuration = typeof duration === 'number' && Number.isFinite(duration);
         map.flyTo({
           center: [lon, lat],
           zoom,
           ...(typeof pitch === 'number' ? { pitch } : {}),
           ...(typeof bearing === 'number' ? { bearing } : {}),
-          ...DEFAULT_FLY,
+          ...(hasDuration
+            ? { curve: DEFAULT_FLY.curve, easing: DEFAULT_FLY.easing, duration }
+            : DEFAULT_FLY),
         });
       };
 

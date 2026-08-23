@@ -1,48 +1,48 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import gsap from 'gsap';
 
 import { MAP_STYLE } from '@/config/mapConfig.js';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select.jsx';
 import { Button } from '@/components/ui/button.jsx';
-
-const CAMPUS_STYLE = 'mapbox://styles/mapbox/standard';
 
 import { MapProvider } from './mapControl/MapProvider.jsx';
 import { useMapContext } from './mapControl/mapContext.js';
 import { useMapController } from './mapControl/hooks/useMapController.js';
 import { useLocationFilters } from './mapControl/hooks/useLocationFilters.js';
 import { useRobotStream } from './mapControl/hooks/useRobotStream.js';
+import { useEnvironmentLayer } from './environment/useEnvironmentLayer.js';
+import {
+  CAMERA_PRESETS,
+  MAX_PITCH,
+  TRACKING_MIN_ZOOM,
+  cameraPresetFor,
+  flightDurationForZoomDelta,
+  isTightTrackingLevel,
+} from './environment/environmentConfig.js';
+import { ROBOT_REPRESENTATION } from './operational/robotVisual.js';
 import { useAppState } from '@/context/appContext.js';
+
+// ── The new layers this milestone adds ───────────────────────────────────────
+import { useMapTheme } from './theme/useMapTheme.js';
+import { resolveCampusDefinition, EMPTY_CAMPUS_DEFINITION } from './campus/campusRegistry.js';
+import { useCampusLayer } from './campus/useCampusLayer.js';
+import { buildCampusSearchIndex, SEARCH_RESULT_TYPE } from './campus/campusSearch.js';
+import { labelAnchorFor } from './campus/campusLayers.js';
+import { CAMPUS_CAMERA_MODE, campusCameraFor, createCameraSequencer } from './camera/cameraModes.js';
+
+import { MapFiltersBar } from './mapControl/ui/MapFiltersBar.jsx';
+import { SelectedRobotPanel } from './mapControl/ui/SelectedRobotPanel.jsx';
+import { MapUnavailableFallback } from './mapControl/ui/MapUnavailableFallback.jsx';
+import { MapLegend } from './mapControl/ui/MapLegend.jsx';
+import { MapThemeControl } from './mapControl/ui/MapThemeControl.jsx';
+import { CampusSearch } from './mapControl/ui/CampusSearch.jsx';
+import { CampusFeatureCard } from './mapControl/ui/CampusFeatureCard.jsx';
+import { CampusDataNotice } from './mapControl/ui/CampusDataNotice.jsx';
+import './mapControl/ui/campusUi.css';
 
 // WORLD VIEW (strict)
 const WORLD_CENTER = [20, 0];
-const WORLD_ZOOM = 1.5;
-
-const ZOOM_LEVELS = {
-  COUNTRY: 4.7,
-  STATE: 6.7,
-  CITY: 9.6,
-  AREA: 13.2,
-  CAMPUS: 17.2,
-};
-
-// Below this zoom, a fixed-pixel marker/route line represents so much ground
-// distance that even an exactly-correct GPS coordinate reads as "floating
-// off the road" — see mapboxMarkers.js / useRobotStream.js zoom-scaling
-// notes. Live delivery-tracking apps never expose that scale during
-// tracking, so once a location/campus is focused (robots become visible) we
-// clamp how far the user can scroll out. World overview (no filter) is
-// reached only programmatically via flyTo, so it's exempt.
-const TRACKING_MIN_ZOOM = 11;
 
 // Module-level (not component state) so it survives MapControl unmounting —
 // navigating to another route tears down the whole Mapbox instance (see the
@@ -54,141 +54,31 @@ const TRACKING_MIN_ZOOM = 11;
 let persistedMapCamera = null; // { lon, lat, zoom, pitch, bearing }
 let mapHasBeenOpenedBefore = false;
 
-function toSelectableValue(id) {
-  return id ? String(id) : '__none__';
-}
-
-function fromSelectableValue(v) {
-  if (!v || v === '__none__') return null;
-  return String(v);
-}
-
 function hasCenter(loc) {
   return typeof loc?.lat === 'number' && typeof loc?.lon === 'number';
 }
 
-function MapFiltersBar({
-  countries,
-  states,
-  cities,
-  areas,
-  campuses,
-  countryId,
-  stateId,
-  cityId,
-  areaId,
-  campusId,
-  setCountryId,
-  setStateId,
-  setCityId,
-  setAreaId,
-  setCampusId,
-  loading,
-  resetAll,
-}) {
-  return (
-    <div className="map-filters-bar" aria-label="Map location filters">
-      <div className="map-filters-bar__group">
-        <Select value={toSelectableValue(countryId)} onValueChange={(v) => setCountryId(fromSelectableValue(v))}>
-          <SelectTrigger className="map-filter-trigger">
-            <SelectValue placeholder={loading.countries ? 'Loading…' : 'Country'} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__none__">World</SelectItem>
-            {countries.map((c) => (
-              <SelectItem key={c.id} value={String(c.id)}>
-                {c.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select
-          value={toSelectableValue(stateId)}
-          onValueChange={(v) => setStateId(fromSelectableValue(v))}
-          disabled={!countryId || loading.states}
-        >
-          <SelectTrigger className="map-filter-trigger">
-            <SelectValue placeholder={loading.states ? 'Loading…' : 'State'} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__none__">None</SelectItem>
-            {states.map((s) => (
-              <SelectItem key={s.id} value={String(s.id)}>
-                {s.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select
-          value={toSelectableValue(cityId)}
-          onValueChange={(v) => setCityId(fromSelectableValue(v))}
-          disabled={!stateId || loading.cities}
-        >
-          <SelectTrigger className="map-filter-trigger">
-            <SelectValue placeholder={loading.cities ? 'Loading…' : 'City'} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__none__">None</SelectItem>
-            {cities.map((ci) => (
-              <SelectItem key={ci.id} value={String(ci.id)}>
-                {ci.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select
-          value={toSelectableValue(areaId)}
-          onValueChange={(v) => setAreaId(fromSelectableValue(v))}
-          disabled={!cityId || loading.areas}
-        >
-          <SelectTrigger className="map-filter-trigger">
-            <SelectValue placeholder={loading.areas ? 'Loading…' : 'Area'} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__none__">None</SelectItem>
-            {areas.map((a) => (
-              <SelectItem key={a.id} value={String(a.id)}>
-                {a.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select value={toSelectableValue(campusId)} onValueChange={(v) => setCampusId(fromSelectableValue(v))}>
-          <SelectTrigger className="map-filter-trigger">
-            <SelectValue placeholder={loading.campuses ? 'Loading…' : 'Campus'} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__none__">None</SelectItem>
-            {Array.isArray(campuses) &&
-              campuses.map((c) => (
-                <SelectItem key={c.id} value={String(c.id)}>
-                  {c.name}
-                </SelectItem>
-              ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <Button type="button" variant="ghost" size="sm" onClick={resetAll} className="map-filters-bar__reset">
-        Reset
-      </Button>
-    </div>
-  );
-}
-
 function MapControlInner({ filtersHost }) {
-  const { mapContainerRef, mapRef, markersRef } = useMapContext();
+  const {
+    mapContainerRef,
+    mapRef,
+    markersRef,
+    selectedRobotId,
+    followSelected,
+    selectRobot,
+    setSelectedRobotId,
+    setHoveredRobotId,
+    setFollowSelected,
+    clearSelection,
+  } = useMapContext();
   const { robots: globalRobots, taskPathCacheRef } = useAppState();
 
   const overlayRef = useRef(null);
   const canvasRef = useRef(null);
-  const styleModeRef = useRef('default');
-  const styleTransitionIdRef = useRef(0);
   const latestCameraRef = useRef(null);
+
+  // Non-null when the 3D map could not be stood up. Drives the fallback view.
+  const [mapFailure, setMapFailure] = useState(null);
 
   // Captured once, at this component instance's first render — true if the
   // map was already opened earlier in this session (i.e. this is a
@@ -212,28 +102,62 @@ function MapControlInner({ filtersHost }) {
     // no world-view flash, no replayed flyTo animation.
     const startCam = persistedMapCamera;
 
-    const map = new mapboxgl.Map({
-      container: mapContainerRef.current,
-      style: MAP_STYLE,
-      center: startCam ? [startCam.lon, startCam.lat] : WORLD_CENTER,
-      zoom: startCam ? startCam.zoom : WORLD_ZOOM,
-      pitch: startCam ? startCam.pitch : 0,
-      bearing: startCam ? startCam.bearing : 0,
-      maxPitch: 0,          // hard lock — no tilt ever
-      attributionControl: false,
-    });
+    let map;
+    try {
+      map = new mapboxgl.Map({
+        container: mapContainerRef.current,
+        style: MAP_STYLE,
+        center: startCam ? [startCam.lon, startCam.lat] : WORLD_CENTER,
+        zoom: startCam ? startCam.zoom : CAMERA_PRESETS.WORLD.zoom,
+        pitch: startCam ? startCam.pitch : CAMERA_PRESETS.WORLD.pitch,
+        bearing: startCam ? startCam.bearing : CAMERA_PRESETS.WORLD.bearing,
+        // The environment is 3D now: the camera may tilt and rotate. It is
+        // capped below vertical because at grazing angles the horizon
+        // dominates the viewport and the operational overlay — which is the
+        // point of the screen — is squeezed into a strip.
+        maxPitch: MAX_PITCH,
+        antialias: true,
+        attributionControl: false,
+      });
+    } catch (err) {
+      // No WebGL, no GPU, blocked context. Robots must still be visible (§23),
+      // so the failure has to reach React state to swap in the fallback view.
+      // This effect's whole job is standing up an external system; a
+      // constructor that throws is that system reporting, not a cascading
+      // render — and it happens at most once per mount.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setMapFailure(err?.message || 'WebGL is unavailable in this browser.');
+      return;
+    }
 
     mapHasBeenOpenedBefore = true;
 
-    // Disable all rotation/tilt gestures so the map stays flat 2D
-    map.dragRotate.disable();
-    try { map.touchZoomRotate.disableRotation(); } catch { /* ignore */ }
-
-    // Show compass (for bearing reset) but not pitch control since we lock pitch=0
-    map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-left');
+    // Orbit / pan / zoom / tilt all belong to the map's own control surface.
+    // `visualizePitch` gives the compass a tilt readout, and a click on it
+    // resets bearing and pitch — that is the camera "reset" affordance.
+    map.addControl(new mapboxgl.NavigationControl({ showCompass: true, visualizePitch: true }), 'top-left');
+    // Vendor attribution is a licence condition of the basemap data, and this
+    // map now leans on that data explicitly as city context (§6). Compact so
+    // it does not compete with the operational overlay.
+    map.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
 
     mapRef.current = map;
-    const markers = markersRef.current;
+
+    // A lost GPU context after a successful init is the other half of §23.
+    const onContextLost = () => setMapFailure('The graphics context was lost. Reload to restore the 3D map.');
+    let canvasEl = null;
+    try {
+      canvasEl = map.getCanvas();
+      canvasEl?.addEventListener('webglcontextlost', onContextLost);
+    } catch {
+      // ignore
+    }
+
+    // Clicking empty map space clears the robot selection. Marker handlers call
+    // stopPropagation, so this only fires for genuinely empty space. The campus
+    // layer's own click handler runs alongside and owns feature selection.
+    const onMapClick = () => setSelectedRobotId(null);
+    map.on('click', onMapClick);
 
     // Remember wherever the user leaves the camera, so the next time this
     // page mounts (even after a full teardown from route navigation) it can
@@ -277,26 +201,26 @@ function MapControlInner({ filtersHost }) {
       resizeObserver.observe(mapContainerRef.current);
     }
 
+    const markers = markersRef.current;
+
     return () => {
       window.removeEventListener('resize', onResize);
       resizeObserver?.disconnect();
       try {
+        canvasEl?.removeEventListener('webglcontextlost', onContextLost);
+      } catch {
+        // ignore
+      }
+      try {
         map.off('moveend', onMoveEnd);
+        map.off('click', onMapClick);
       } catch {
         // ignore
       }
 
-      try {
-        markers.forEach((m) => {
-          try {
-            m?.marker?.remove?.();
-          } catch {
-            // ignore
-          }
-        });
-      } catch {
-        // ignore
-      }
+      // Robot visuals are owned by their renderer, which disposes them on its
+      // own unmount (see useRobotStream). Clearing the store here just drops
+      // this map instance's references to them.
       try {
         markers.clear();
       } catch {
@@ -310,9 +234,25 @@ function MapControlInner({ filtersHost }) {
       }
       mapRef.current = null;
     };
-  }, [token, mapContainerRef, mapRef, markersRef]);
+  }, [token, mapContainerRef, mapRef, markersRef, setSelectedRobotId]);
 
   const { isMapLoaded, flyTo } = useMapController(mapRef, { overlayRef, canvasRef });
+
+  // ── ENVIRONMENT LAYER ──────────────────────────────────────────────────────
+  // Terrain, 3D buildings, sky and lighting. Installed once per style load and
+  // deliberately independent of robots, telemetry and selection — a robot
+  // moving cannot re-run this (§21).
+  const { environmentReady, terrainActive, buildings3dActive, isStandardStyle } = useEnvironmentLayer(mapRef, {
+    isMapLoaded,
+  });
+
+  // ── THEME LAYER ────────────────────────────────────────────────────────────
+  // Day / Evening / Night, interpolated in place. Never calls `setStyle`, so a
+  // theme change cannot reset robots, routes, selection, camera or terrain.
+  const { themeId, setThemeId, theme, themeRef, subscribeToTheme, isTransitioning } = useMapTheme(mapRef, {
+    isMapLoaded,
+    isStandardStyle,
+  });
 
   const {
     countries,
@@ -339,7 +279,128 @@ function MapControlInner({ filtersHost }) {
     resetAll,
   } = useLocationFilters();
 
-  // Focus rules — always flat top-down (pitch=0, bearing=0) for clean road visibility
+  // ── CAMPUS LAYER ───────────────────────────────────────────────────────────
+  //
+  // The definition is derived from the Campus record the filter bar already
+  // loaded, merged with whatever geometry the registry holds for that campus
+  // code. For RNSIT that is an OpenStreetMap extract, classified by
+  // `campus/osm/osmCampusImport.js` — real geometry, explicitly NOT_VERIFIED.
+  // Nothing is invented to fill what OSM does not map; the notice component
+  // states the provenance and the remaining gaps on the map instead.
+  const campusDefinition = useMemo(
+    () => (selectedCampus ? resolveCampusDefinition(selectedCampus) : EMPTY_CAMPUS_DEFINITION),
+    [selectedCampus]
+  );
+
+  const campusActive = Boolean(selectedCampus);
+
+  // The second data source, summarised for the on-map notice. Derived, not
+  // fetched — the registry already reconciled the two datasets at import time.
+  const supplementalSummary = useMemo(() => {
+    const s = campusDefinition.supplemental;
+    if (!s) return null;
+    const count = (verdict) => (s.containment || []).filter((c) => c.containment === verdict).length;
+    return {
+      importedFeatureCount: s.importedFeatureCount,
+      possibleDuplicates: s.possibleDuplicates,
+      outsideCount: count('OUTSIDE'),
+      uncertainCount: count('UNCERTAIN'),
+    };
+  }, [campusDefinition]);
+
+  const [selectedFeature, setSelectedFeature] = useState(null);
+  const [cameraMode, setCameraMode] = useState(CAMPUS_CAMERA_MODE.OVERVIEW);
+
+  const { campusFeatureCount, vendorClipActive } = useCampusLayer(mapRef, {
+    isMapLoaded,
+    environmentReady,
+    definition: campusDefinition,
+    active: campusActive,
+    subscribeToTheme,
+    selectedFeatureId: selectedFeature && !selectedFeature.isVendor ? selectedFeature.id : null,
+    onSelectFeature: setSelectedFeature,
+  });
+
+  // ── Campus context labels ──────────────────────────────────────────────────
+  //
+  // Point-of-interest labels used to be switched ON at campus focus, because
+  // they were the ONLY source of "which building is this" — the repository held
+  // no campus building names at all.
+  //
+  // It holds them now. So for a campus with its own geometry they are switched
+  // back OFF: the campus layer draws the same names from the same underlying
+  // OSM data, in our label hierarchy, collision-managed and zoom-banded, and
+  // leaving the vendor's copy on would print several of them twice (§13). A
+  // campus WITHOUT geometry keeps the old behaviour, because for it the vendor
+  // labels are still the only identification available (§33).
+  const campusHasGeometry = campusDefinition.hasCampusGeometry;
+  useEffect(() => {
+    const map = mapRef?.current;
+    if (!map || !isMapLoaded || !environmentReady) return;
+    try {
+      map.setConfigProperty?.('basemap', 'showPointOfInterestLabels', campusActive && !campusHasGeometry);
+    } catch {
+      // A style without this knob keeps whatever it had.
+    }
+  }, [mapRef, isMapLoaded, environmentReady, campusActive, campusHasGeometry]);
+
+  // ── Two-stage focus camera ─────────────────────────────────────────────────
+  //
+  // Stage 1 travels FLAT to the target. Stage 2 tilts once it has arrived.
+  //
+  // This is not a flourish — it is the fix for a real failure. A single pitched
+  // flyTo across ~15 zoom levels (world → campus) with terrain enabled resolves
+  // ground elevation continuously along a long arc, and reliably ended with the
+  // camera pointing at atmosphere: a uniform sky-coloured viewport, no tiles and
+  // no robots, until some later camera command (the Recenter button) recomputed
+  // it. Travelling flat removes the elevation/pitch interaction from the long
+  // move entirely, and the short tilt afterwards happens over a stationary
+  // point where it cannot go wrong. It also looks better — a descent, then a
+  // reveal.
+  //
+  // Convergence (§51) is the sequencer's job: every command takes a token, and
+  // a deferred stage may only act while its token is still the newest issued.
+  // Switching India → Karnataka → Bengaluru → RNSIT in under a second leaves
+  // exactly one live flight, aimed at RNSIT.
+  const sequencerRef = useRef(null);
+  if (sequencerRef.current === null) sequencerRef.current = createCameraSequencer();
+
+  const focusCamera = useCallback(
+    (cam, targetPitch) => {
+      const map = mapRef?.current;
+      if (!map) return;
+
+      const token = sequencerRef.current.begin();
+
+      let fromZoom = cam.zoom;
+      try {
+        fromZoom = map.getZoom();
+      } catch {
+        // ignore
+      }
+
+      flyTo({ ...cam, pitch: 0, duration: flightDurationForZoomDelta(cam.zoom - fromZoom) });
+
+      if (!targetPitch) return;
+
+      const onArrive = () => {
+        if (!sequencerRef.current.isCurrent(token)) return;
+        try {
+          map.easeTo({ pitch: targetPitch, bearing: cam.bearing ?? 0, duration: 900, essential: true });
+        } catch {
+          // ignore
+        }
+      };
+      try {
+        map.once('moveend', onArrive);
+      } catch {
+        // ignore
+      }
+    },
+    [flyTo, mapRef]
+  );
+
+  // Focus rules — camera framing per hierarchy level, from environmentConfig.
   //
   // Persisted filters (country+state+city+area, restored from localStorage by
   // useLocationFilters) are all set as ids on the very first render, but each
@@ -366,17 +427,12 @@ function MapControlInner({ filtersHost }) {
     if (countryId && !selectedCountry && loading.countries) return undefined;
 
     if (selectedCampus) {
-      return {
-        type: 'CAMPUS',
-        loc: { lat: selectedCampus.centerLat, lon: selectedCampus.centerLon },
-        pitch: 0,
-        bearing: 0,
-      };
+      return { type: 'CAMPUS', loc: { lat: selectedCampus.centerLat, lon: selectedCampus.centerLon } };
     }
-    if (selectedArea) return { type: 'AREA', loc: selectedArea, pitch: 0, bearing: 0 };
-    if (selectedCity) return { type: 'CITY', loc: selectedCity, pitch: 0, bearing: 0 };
-    if (selectedState) return { type: 'STATE', loc: selectedState, pitch: 0, bearing: 0 };
-    if (selectedCountry) return { type: 'COUNTRY', loc: selectedCountry, pitch: 0, bearing: 0 };
+    if (selectedArea) return { type: 'AREA', loc: selectedArea };
+    if (selectedCity) return { type: 'CITY', loc: selectedCity };
+    if (selectedState) return { type: 'STATE', loc: selectedState };
+    if (selectedCountry) return { type: 'COUNTRY', loc: selectedCountry };
     return null;
   }, [
     campusId,
@@ -396,14 +452,30 @@ function MapControlInner({ filtersHost }) {
     loading.countries,
   ]);
 
+  // Leaving a campus must not leave a campus building selected behind it (§40,
+  // §53). The campus layer's reveal ramp handles the geometry and the labels;
+  // this handles the selection state that outlives them.
+  //
+  // Adjusted during render rather than in an effect: React's documented pattern
+  // for "reset state when a prop changes". Doing it in an effect would render
+  // one frame with the previous campus's building still selected, and that
+  // frame is exactly the stale highlight §53 says must never be visible.
+  const [campusIdAtSelection, setCampusIdAtSelection] = useState(campusId);
+  if (campusIdAtSelection !== campusId) {
+    setCampusIdAtSelection(campusId);
+    setSelectedFeature(null);
+    setCameraMode(CAMPUS_CAMERA_MODE.OVERVIEW);
+  }
+
   useEffect(() => {
     if (!isMapLoaded) return;
+    // Terrain has to be installed BEFORE the first flight, not during it: a
+    // camera animation started while `setTerrain` is still pending computes its
+    // path against a flat world and then has the ground moved underneath it.
+    if (!environmentReady) return;
     // Still waiting on a deeper hierarchy level's list to load (see the
     // focusTarget comment above) — don't touch the camera yet.
     if (focusTarget === undefined) return;
-
-    const wantStyleMode = campusId ? 'campus' : 'default';
-    const isStyleAboutToSwitch = styleModeRef.current !== wantStyleMode;
 
     // Returning visit: this first run just means "the map finished loading
     // again" — it's already sitting at the restored camera (see the
@@ -414,12 +486,17 @@ function MapControlInner({ filtersHost }) {
     skipNextFlyToRef.current = false;
 
     // No filters selected: world view — lift the zoom clamp so the
-    // programmatic flyTo(WORLD_ZOOM) below isn't fighting its own limit.
+    // programmatic flyTo below isn't fighting its own limit.
     if (!focusTarget) {
-      try { mapRef.current?.setMinZoom(0); } catch { /* ignore */ }
-      const cam = { lon: WORLD_CENTER[0], lat: WORLD_CENTER[1], zoom: WORLD_ZOOM, pitch: 0, bearing: 0 };
+      try {
+        mapRef.current?.setMinZoom(0);
+      } catch {
+        // ignore
+      }
+      const preset = CAMERA_PRESETS.WORLD;
+      const cam = { lon: WORLD_CENTER[0], lat: WORLD_CENTER[1], ...preset };
       latestCameraRef.current = cam;
-      if (!isStyleAboutToSwitch && !skipAnimation) flyTo(cam);
+      if (!skipAnimation) focusCamera(cam, 0);
       return;
     }
 
@@ -433,143 +510,59 @@ function MapControlInner({ filtersHost }) {
     // e.g. a state flew the camera to zoom 11 on an arbitrary point instead
     // of 6.7 — a huge batch of never-cached tiles at that zoom, hence the
     // multi-second blank glitch before anything rendered.
-    const isTightTrackingView = type === 'AREA' || type === 'CAMPUS';
     try {
-      mapRef.current?.setMinZoom(isTightTrackingView ? TRACKING_MIN_ZOOM : 0);
+      mapRef.current?.setMinZoom(isTightTrackingLevel(type) ? TRACKING_MIN_ZOOM : 0);
     } catch {
       // ignore
     }
 
-    const cam = {
-      lon: loc.lon,
-      lat: loc.lat,
-      zoom: ZOOM_LEVELS[type] || WORLD_ZOOM,
-      pitch: typeof focusTarget?.pitch === 'number' ? focusTarget.pitch : 0,
-      bearing: typeof focusTarget?.bearing === 'number' ? focusTarget.bearing : 0,
-    };
+    // At CAMPUS the framing comes from the campus camera modes, which are
+    // tuned for reading an operational site rather than for covering a
+    // geographic extent (§27).
+    const preset = type === 'CAMPUS' ? campusCameraFor(CAMPUS_CAMERA_MODE.OVERVIEW) : cameraPresetFor(type);
+    const cam = { lon: loc.lon, lat: loc.lat, zoom: preset.zoom, pitch: preset.pitch, bearing: preset.bearing };
 
     latestCameraRef.current = cam;
-    if (!isStyleAboutToSwitch && !skipAnimation) flyTo(cam);
-  }, [isMapLoaded, focusTarget, flyTo, campusId, mapRef]);
+    // Flat there, then tilt — see focusCamera.
+    if (!skipAnimation) focusCamera(cam, preset.pitch);
+  }, [isMapLoaded, environmentReady, focusTarget, focusCamera, mapRef]);
 
-  // Always use the flat road style — 3D campus tilt makes markers misalign with roads.
-  // This effect is kept but immediately returns when no style change is needed.
-  useEffect(() => {
-    const map = mapRef?.current;
-    if (!map) return;
+  // ── Camera modes (§28) ─────────────────────────────────────────────────────
+  //
+  // A mode change while already at the campus is a short ease, not a flight —
+  // the camera is already there, only the framing changes. It goes through the
+  // same sequencer, so a mode change mid-arrival cannot fight the arrival.
+  const applyCameraMode = useCallback(
+    (mode) => {
+      const map = mapRef?.current;
+      setCameraMode(mode);
+      if (!map || !campusActive) return;
+      if (mode === CAMPUS_CAMERA_MODE.FOLLOW) return; // the follow camera owns the centre
 
-    // Always 'default' — never switch to tilted 3D campus style
-    const wantMode = 'default';
-    if (styleModeRef.current === wantMode) return;
-    styleModeRef.current = wantMode;
-
-    const nextStyle = MAP_STYLE;
-
-    const overlayEl = overlayRef.current;
-    const canvasEl = canvasRef.current;
-
-    const transitionId = Date.now();
-    styleTransitionIdRef.current = transitionId;
-
-    const setInteractive = (isInteractive) => {
-      if (!canvasEl) return;
-      canvasEl.style.pointerEvents = isInteractive ? '' : 'none';
-    };
-
-    const fadeOut = () => {
+      const preset = campusCameraFor(mode);
+      const center = campusDefinition.center;
+      sequencerRef.current.begin();
       try {
-        if (canvasEl) gsap.killTweensOf(canvasEl);
-        if (overlayEl) gsap.killTweensOf(overlayEl);
-      } catch {
-        // ignore
-      }
-
-      return new Promise((resolve) => {
-        if (overlayEl) {
-          gsap.to(overlayEl, { opacity: 0.18, duration: 0.16, ease: 'power2.out' });
-        }
-        if (!canvasEl) {
-          resolve();
-          return;
-        }
-        gsap.to(canvasEl, {
-          opacity: 0.12,
-          duration: 0.16,
-          ease: 'power2.out',
-          onComplete: resolve,
+        map.easeTo({
+          ...(center ? { center: [center.lon, center.lat] } : {}),
+          zoom: preset.zoom,
+          pitch: preset.pitch,
+          bearing: preset.bearing,
+          duration: 900,
+          essential: true,
         });
-      });
-    };
-
-    const fadeIn = () => {
-      if (overlayEl) {
-        gsap.to(overlayEl, { opacity: 0, duration: 0.22, ease: 'power2.out' });
-      }
-      if (canvasEl) {
-        gsap.to(canvasEl, { opacity: 1, duration: 0.22, ease: 'power2.out' });
-      }
-    };
-
-    const applyCampusConfig = () => {
-      try {
-        map.setConfigProperty?.('basemap', 'lightPreset', 'day');
       } catch {
         // ignore
       }
-      try {
-        map.setConfigProperty?.('basemap', 'show3dObjects', true);
-      } catch {
-        // ignore
-      }
-    };
+    },
+    [mapRef, campusActive, campusDefinition]
+  );
 
-    const onStyleLoad = () => {
-      if (styleTransitionIdRef.current !== transitionId) return;
-
-      if (wantMode === 'campus') applyCampusConfig();
-
-      try {
-        map.resize?.();
-      } catch {
-        // ignore
-      }
-
-      const cam = latestCameraRef.current;
-      if (cam) flyTo(cam);
-
-      fadeIn();
-      setInteractive(true);
-      styleTransitionIdRef.current = 0;
-    };
-
-    setInteractive(false);
-
-    fadeOut()
-      .then(() => {
-        if (styleTransitionIdRef.current !== transitionId) return;
-        try {
-          map.once('style.load', onStyleLoad);
-          map.setStyle(nextStyle);
-        } catch {
-          // ignore
-          setInteractive(true);
-          fadeIn();
-        }
-      })
-      .catch(() => {
-        setInteractive(true);
-        fadeIn();
-      });
-
-    return () => {
-      if (styleTransitionIdRef.current === transitionId) styleTransitionIdRef.current = 0;
-      try {
-        map.off?.('style.load', onStyleLoad);
-      } catch {
-        // ignore
-      }
-    };
-  }, [campusId, mapRef, flyTo]);
+  // "Follow" is a camera mode and `followSelected` is the operational-layer
+  // flag that implements it. One direction only, so they cannot oscillate.
+  useEffect(() => {
+    setFollowSelected(cameraMode === CAMPUS_CAMERA_MODE.FOLLOW && Boolean(selectedRobotId));
+  }, [cameraMode, selectedRobotId, setFollowSelected]);
 
   // Robots: show all global robots on the map whenever any location is selected.
   // The location/campus filter drives the map viewport (flyTo); the global
@@ -585,7 +578,11 @@ function MapControlInner({ filtersHost }) {
   // nothing for this cache to hold until a round has decided. The full contract,
   // including which legacy events are retired after the retention window, is in
   // `src/lib/socket.js`.
-  const { recenter } = useRobotStream({
+  //
+  // `representation` is what a future 3D robot milestone flips. Everything else
+  // passed here — state, selection, camera-follow, theme — is
+  // representation-agnostic.
+  const { robots, robotCount, recenter } = useRobotStream({
     robots: globalRobots,
     taskPathCacheRef,
     countryId,
@@ -595,7 +592,83 @@ function MapControlInner({ filtersHost }) {
     campusId,
     mapRef,
     markersRef,
+    representation: ROBOT_REPRESENTATION.TWO_D,
+    selectedRobotId,
+    followSelected,
+    onSelectRobot: selectRobot,
+    onHoverRobot: setHoveredRobotId,
+    themeRef,
+    subscribeToTheme,
   });
+
+  const selectedRobot = useMemo(
+    () => (selectedRobotId ? robots.find((r) => String(r?.robotId) === selectedRobotId) || null : null),
+    [robots, selectedRobotId]
+  );
+
+  const toggleFollow = useCallback(() => {
+    setCameraMode((prev) =>
+      prev === CAMPUS_CAMERA_MODE.FOLLOW ? CAMPUS_CAMERA_MODE.OVERVIEW : CAMPUS_CAMERA_MODE.FOLLOW
+    );
+  }, []);
+
+  // A robot that leaves the visible set must not leave a stale selection behind.
+  useEffect(() => {
+    if (!selectedRobotId) return;
+    if (robots.some((r) => String(r?.robotId) === selectedRobotId)) return;
+    clearSelection();
+  }, [robots, selectedRobotId, clearSelection]);
+
+  // ── Search (§34) ───────────────────────────────────────────────────────────
+  const searchIndex = useMemo(
+    () => buildCampusSearchIndex({ definition: campusDefinition, robots }),
+    [campusDefinition, robots]
+  );
+
+  const focusLngLat = useCallback(
+    (lon, lat, zoom) => {
+      const map = mapRef?.current;
+      if (!map) return;
+      sequencerRef.current.begin();
+      try {
+        map.easeTo({ center: [lon, lat], zoom: zoom ?? Math.max(map.getZoom(), 17.6), duration: 1000, essential: true });
+      } catch {
+        // ignore
+      }
+    },
+    [mapRef]
+  );
+
+  const onSearchPick = useCallback(
+    (entry) => {
+      if (!entry) return;
+      if (entry.type === SEARCH_RESULT_TYPE.ROBOT) {
+        setSelectedFeature(null);
+        selectRobot(entry.robotId);
+      } else {
+        setSelectedFeature(entry.feature);
+      }
+      focusLngLat(entry.lon, entry.lat);
+    },
+    [focusLngLat, selectRobot]
+  );
+
+  const focusSelectedFeature = useCallback(() => {
+    const anchor = labelAnchorFor(selectedFeature?.geometry);
+    if (anchor) focusLngLat(anchor[0], anchor[1]);
+  }, [selectedFeature, focusLngLat]);
+
+  // ── Reset (§40) ────────────────────────────────────────────────────────────
+  // Everything a reset must not leave behind, cleared in one place: filters,
+  // building selection, robot selection, camera mode, and any camera command
+  // still waiting to fire.
+  const resetEverything = useCallback(() => {
+    sequencerRef.current.cancel();
+    setSelectedFeature(null);
+    setCameraMode(CAMPUS_CAMERA_MODE.OVERVIEW);
+    clearSelection();
+    resetAll();
+  }, [clearSelection, resetAll]);
 
   const filtersBar = (
     <MapFiltersBar
@@ -615,7 +688,7 @@ function MapControlInner({ filtersHost }) {
       setAreaId={setAreaId}
       setCampusId={setCampusId}
       loading={loading}
-      resetAll={resetAll}
+      resetAll={resetEverything}
     />
   );
 
@@ -630,15 +703,84 @@ function MapControlInner({ filtersHost }) {
   }
 
   return (
-    <div className="w-full h-full relative">
+    // The theme's background sits behind the tiles, so the gap around a
+    // still-loading map matches the world instead of flashing white.
+    <div className="w-full h-full relative" style={{ '--map-bg': theme.atmosphere.background }}>
       {/* overlay used by GSAP pulse */}
       <div ref={overlayRef} className="map-overlay absolute inset-0 pointer-events-none opacity-0 bg-black/10" />
 
-      <div ref={canvasRef} className="absolute inset-0">
+      <div ref={canvasRef} className="absolute inset-0 map-canvas-host">
         <div ref={mapContainerRef} className="w-full h-full" />
       </div>
 
-      {focusTarget && (
+      {mapFailure && <MapUnavailableFallback reason={mapFailure} robots={globalRobots} />}
+
+      {!mapFailure && (
+        <MapThemeControl
+          themeId={themeId}
+          onThemeChange={setThemeId}
+          isTransitioning={isTransitioning}
+          cameraMode={cameraMode}
+          onCameraModeChange={applyCameraMode}
+          showCameraModes={campusActive}
+          followDisabled={!selectedRobotId}
+          onResetCamera={() => {
+            setSelectedFeature(null);
+            applyCameraMode(CAMPUS_CAMERA_MODE.OVERVIEW);
+          }}
+        />
+      )}
+
+      {!mapFailure && campusActive && (
+        <CampusSearch index={searchIndex} onPick={onSearchPick} hasCampusPlaces={campusHasGeometry} />
+      )}
+
+      {!mapFailure && campusActive && (
+        <CampusDataNotice
+          campusName={campusDefinition.name}
+          geometrySource={campusDefinition.geometrySource}
+          hasCampusGeometry={campusHasGeometry}
+          featureCount={campusFeatureCount}
+          missing={campusDefinition.missingGeometry}
+          notes={campusDefinition.notes}
+          rejectedCount={campusDefinition.rejected.length}
+          excludedCount={campusDefinition.dataset?.excluded?.length || 0}
+          vendorClipActive={vendorClipActive}
+          centreWithinBoundary={campusDefinition.centreWithinBoundary}
+          supplemental={supplementalSummary}
+        />
+      )}
+
+      {!mapFailure && selectedFeature && (
+        <CampusFeatureCard
+          feature={selectedFeature}
+          onClose={() => setSelectedFeature(null)}
+          onFocus={focusSelectedFeature}
+        />
+      )}
+
+      {!mapFailure && focusTarget && (
+        <MapLegend
+          theme={theme}
+          terrainActive={terrainActive}
+          buildings3dActive={buildings3dActive}
+          robotCount={robotCount}
+          campusFeatureCount={campusFeatureCount}
+          campusName={campusDefinition.name}
+          geometrySource={campusDefinition.geometrySource}
+        />
+      )}
+
+      {!mapFailure && (
+        <SelectedRobotPanel
+          robot={selectedRobot}
+          followSelected={followSelected}
+          onToggleFollow={toggleFollow}
+          onClear={clearSelection}
+        />
+      )}
+
+      {!mapFailure && focusTarget && (
         <Button
           type="button"
           variant="secondary"

@@ -168,3 +168,198 @@
   z-index: 20;
   width: min(760px, calc(100% - 1.5rem));
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MAP UI LAYER
+
+   Panels and readouts that sit above the 3D environment and the operational
+   overlay. Deliberately their own layer: nothing here is part of the scene,
+   and nothing here would change if robots were rendered in 3D.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.map-selected-panel {
+  position: absolute;
+  /* Clears MapPage's fullscreen toggle, which sits at top-3 right-3 and is
+     2.25rem tall — overlapping it would bury a control behind a panel that
+     appears only sometimes. */
+  top: 3.75rem;
+  right: 0.75rem;
+  z-index: 25;
+  width: 15rem;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  border-radius: var(--radius);
+  background: rgba(9, 14, 27, 0.86);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  color: #e2e8f0;
+}
+
+.map-selected-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.map-selected-panel__id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.map-selected-panel__close {
+  border: 0;
+  background: transparent;
+  color: rgba(226, 232, 240, 0.65);
+  font-size: 1.125rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+
+.map-selected-panel__close:hover {
+  color: #fff;
+}
+
+.map-selected-panel__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 0.75rem;
+  margin: 0;
+}
+
+.map-selected-panel__grid dt {
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.map-selected-panel__grid dd {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.map-legend {
+  position: absolute;
+  bottom: 0.75rem;
+  left: 0.75rem;
+  z-index: 25;
+  padding: 0.625rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3125rem;
+  border-radius: var(--radius);
+  background: rgba(9, 14, 27, 0.82);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  color: #e2e8f0;
+  font-size: 0.6875rem;
+  pointer-events: none;
+}
+
+.map-legend__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.map-legend__swatch {
+  width: 1rem;
+  height: 0.1875rem;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.map-legend__swatch--robot {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 50%;
+  background: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.7);
+}
+
+.map-legend__swatch--todo {
+  background: #38bdf8;
+}
+
+.map-legend__swatch--done {
+  background: rgba(56, 189, 248, 0.3);
+}
+
+.map-legend__meta {
+  margin-top: 0.125rem;
+  padding-top: 0.3125rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+  color: rgba(148, 163, 184, 0.95);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Fallback shown when the 3D map cannot be constructed. Robot visibility must
+   never depend on WebGL succeeding. */
+.map-fallback {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.5rem;
+  overflow: auto;
+  background: #0b1220;
+  color: #e2e8f0;
+}
+
+.map-fallback__title {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.map-fallback__reason {
+  font-size: 0.8125rem;
+  color: rgba(148, 163, 184, 0.95);
+}
+
+.map-fallback__list-title {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.map-fallback__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.map-fallback__item {
+  display: grid;
+  grid-template-columns: 8rem 7rem 4rem minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.5rem 0.625rem;
+  border-radius: var(--radius-md);
+  background: rgba(148, 163, 184, 0.08);
+  font-size: 0.8125rem;
+}
+
+.map-fallback__item-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 700;
+}
+
+.map-fallback__item-pos {
+  font-variant-numeric: tabular-nums;
+  color: rgba(148, 163, 184, 0.95);
+}

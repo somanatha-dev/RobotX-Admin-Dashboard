@@ -1,65 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
-import { animate } from 'framer-motion';
 
 import { socket, DASHBOARD_EVENTS } from '@/lib/socket.js';
-import {
-  createRobotMarkerElement,
-  updateMarkerInfo,
-  injectPulseCSS,
-  applyMarkerZoomScale,
-  markerScaleForZoom,
-} from '@/lib/mapboxMarkers.js';
+import { injectPulseCSS, applyMarkerZoomScale } from '@/lib/mapboxMarkers.js';
 
-function hashStringToInt(str) {
-  let h = 2166136261;
-  for (let i = 0; i < str.length; i += 1) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-function hslToHex(h, s, l) {
-  const _s = s / 100;
-  const _l = l / 100;
-  const c = (1 - Math.abs(2 * _l - 1)) * _s;
-  const hp = (h % 360) / 60;
-  const x = c * (1 - Math.abs((hp % 2) - 1));
-  let r1 = 0;
-  let g1 = 0;
-  let b1 = 0;
-  if (hp >= 0 && hp < 1) [r1, g1, b1] = [c, x, 0];
-  else if (hp >= 1 && hp < 2) [r1, g1, b1] = [x, c, 0];
-  else if (hp >= 2 && hp < 3) [r1, g1, b1] = [0, c, x];
-  else if (hp >= 3 && hp < 4) [r1, g1, b1] = [0, x, c];
-  else if (hp >= 4 && hp < 5) [r1, g1, b1] = [x, 0, c];
-  else [r1, g1, b1] = [c, 0, x];
-  const m = _l - c / 2;
-  const r = Math.round((r1 + m) * 255);
-  const g = Math.round((g1 + m) * 255);
-  const b = Math.round((b1 + m) * 255);
-  const toHex = (n) => n.toString(16).padStart(2, '0');
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
-}
-
-function colorForRobot(robotId) {
-  const id = String(robotId || 'robot');
-  const h = hashStringToInt(id) % 360;
-  return hslToHex(h, 78, 55);
-}
-
-function easeOut(t) {
-  return t * (2 - t);
-}
-
-function getLngLatArray(lngLat) {
-  if (!lngLat) return null;
-  const lng = typeof lngLat.lng === 'number' ? lngLat.lng : null;
-  const lat = typeof lngLat.lat === 'number' ? lngLat.lat : null;
-  if (lng === null || lat === null) return null;
-  return [lng, lat];
-}
+// ── The robot rendering seam ────────────────────────────────────────────────
+//
+// This hook owns the OPERATIONAL OVERLAY: robot visuals, route lines and
+// mission pins. It no longer owns how a robot is DRAWN. Robot state becomes a
+// `RobotVisual` (semantic) carrying a `RobotWorldAnchor` (canonical position),
+// and a renderer resolved by name turns that into pixels.
+//
+//        robot state ──► toRobotVisual ──► renderer.mount / .update
+//                              │
+//                     RobotWorldAnchor  (the one position formula)
+//
+// Introducing 3D robots later is a different `representation` string resolving
+// to a different renderer. Nothing in this file has to change for it: not the
+// socket subscriptions, not the filter logic, not selection, not the routes,
+// not `recenter`, not the follow camera.
+//
+// The `2d` renderer module is imported for its self-registration side effect.
+import '@/features/maps/operational/renderers/robotMarker2dRenderer.js';
+import { createRobotRenderer } from '@/features/maps/operational/robotRendererRegistry.js';
+import { ROBOT_REPRESENTATION, toRobotVisual, colorForRobot } from '@/features/maps/operational/robotVisual.js';
+import { anchorToLngLat } from '@/features/maps/world/robotWorldAnchor.js';
 
 function toLngLat(point) {
   if (!point) return null;
@@ -145,7 +110,13 @@ function fitRouteBounds(map, points, opts = {}) {
 
 function safeRemoveLayerAndSource(map, layerId, sourceId) {
   if (!map) return;
-  // Remove glow/casing sublayers first (added before the main layer, must be removed before source)
+  // Remove glow/casing/flow sublayers first (added around the main layer, and
+  // all of them must be gone before the source can be removed).
+  try {
+    if (layerId && map.getLayer(`${layerId}-flow`)) map.removeLayer(`${layerId}-flow`);
+  } catch {
+    // ignore
+  }
   try {
     if (layerId && map.getLayer(`${layerId}-glow`)) map.removeLayer(`${layerId}-glow`);
   } catch {
@@ -192,7 +163,74 @@ function zoomCasingWidth(dashed) {
     : ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 3.4, 18, 6.2];
 }
 
-function ensureLineLayer({ map, sourceId, layerId, data, color, dashed, opacity }) {
+// ── Directional flow (§13) ───────────────────────────────────────────────────
+//
+// A thin bright dash travelling ALONG the route, over the route's own colour.
+// It is animation that carries information — which way the unit is going —
+// rather than decoration, which is the bar §50 sets. Only "ahead" segments get
+// it; a travelled segment has no direction left to communicate.
+//
+// The dash pattern is stepped rather than interpolated because `line-dasharray`
+// is not an interpolatable paint property. This is the standard Mapbox
+// technique and costs one `setPaintProperty` per visible ahead-route per tick.
+const FLOW_DASH_STEPS = Object.freeze([
+  [0, 4, 3], [0.5, 4, 2.5], [1, 4, 2], [1.5, 4, 1.5], [2, 4, 1], [2.5, 4, 0.5],
+  [3, 4, 0], [0, 0.5, 3, 3.5], [0, 1, 3, 3], [0, 1.5, 3, 2.5], [0, 2, 3, 2],
+  [0, 2.5, 3, 1.5], [0, 3, 3, 1],
+]);
+
+const FLOW_STEP_MS = 70;
+
+/**
+ * Drives the flow dash for every ahead-route currently on the map.
+ *
+ * Runs only while at least one flow layer exists, and stops itself when the
+ * last route is removed — an idle fleet costs nothing. It writes one paint
+ * property per layer per tick and never touches geometry, so it cannot
+ * interact with telemetry, the camera or the campus layer.
+ */
+function createFlowAnimator(getMap, getLayerIds) {
+  let timer = null;
+  let step = 0;
+
+  const tick = () => {
+    const map = getMap();
+    const ids = getLayerIds();
+    if (!map || ids.length === 0) {
+      stop();
+      return;
+    }
+    step = (step + 1) % FLOW_DASH_STEPS.length;
+    const dash = FLOW_DASH_STEPS[step];
+    for (const id of ids) {
+      try {
+        if (map.getLayer(id)) map.setPaintProperty(id, 'line-dasharray', dash);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  function start() {
+    if (timer !== null) return;
+    if (typeof window === 'undefined') return;
+    timer = window.setInterval(tick, FLOW_STEP_MS);
+  }
+
+  function stop() {
+    if (timer === null) return;
+    try {
+      window.clearInterval(timer);
+    } catch {
+      // ignore
+    }
+    timer = null;
+  }
+
+  return { start, stop };
+}
+
+function ensureLineLayer({ map, sourceId, layerId, data, color, dashed, opacity, theme, flow }) {
   if (!map || !data) return;
 
   // Update existing source or create it
@@ -232,10 +270,11 @@ function ensureLineLayer({ map, sourceId, layerId, data, color, dashed, opacity 
     }
   }
 
-  // Casing — thin dark/white halo under the main line so the small, expected
-  // divergence between our full-precision route and the basemap's
-  // zoom-simplified road geometry reads as an intentional "route corridor"
-  // instead of visual misalignment.
+  // Casing — thin halo under the main line so the small, expected divergence
+  // between our full-precision route and the basemap's zoom-simplified road
+  // geometry reads as an intentional "route corridor" instead of visual
+  // misalignment. Theme-coloured, because a dark casing that disappears into a
+  // Day basemap does not separate the route from the road it follows.
   const casingLayerId = `${layerId}-casing`;
   if (!map.getLayer(casingLayerId)) {
     try {
@@ -245,9 +284,9 @@ function ensureLineLayer({ map, sourceId, layerId, data, color, dashed, opacity 
         source: sourceId,
         layout: { 'line-join': 'round', 'line-cap': 'round' },
         paint: {
-          'line-color': '#0b1220',
+          'line-color': theme?.routes?.halo || '#0b1220',
           'line-width': zoomCasingWidth(dashed),
-          'line-opacity': dashed ? 0.35 : 0.55,
+          'line-opacity': (dashed ? 0.35 : 0.55) * ((theme?.routes?.haloOpacity ?? 0.3) / 0.3),
         },
       });
     } catch {
@@ -273,6 +312,66 @@ function ensureLineLayer({ map, sourceId, layerId, data, color, dashed, opacity 
       });
     } catch {
       // ignore
+    }
+  }
+
+  // Flow overlay — only on segments the unit has yet to travel.
+  const flowLayerId = `${layerId}-flow`;
+  if (flow && !map.getLayer(flowLayerId)) {
+    try {
+      map.addLayer({
+        id: flowLayerId,
+        type: 'line',
+        source: sourceId,
+        layout: { 'line-join': 'round', 'line-cap': 'butt' },
+        paint: {
+          'line-color': theme?.routes?.flow || '#ffffff',
+          'line-width': zoomLineWidth(dashed),
+          'line-opacity': theme?.routes?.flowOpacity ?? 0.55,
+          'line-dasharray': FLOW_DASH_STEPS[0],
+        },
+      });
+    } catch {
+      // ignore
+    }
+  } else if (!flow && map.getLayer(flowLayerId)) {
+    try {
+      map.removeLayer(flowLayerId);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/**
+ * Re-colour every route layer currently on the map from a theme.
+ *
+ * Called on each frame of a theme transition. It writes paint properties onto
+ * layers that already exist — no source is touched, no line is rebuilt, and
+ * route progress (which segment is done vs ahead) is geometry, so it cannot be
+ * disturbed by a colour change (§52).
+ */
+function applyThemeToRouteLayers(map, routes, theme) {
+  if (!map || !theme) return;
+  const set = (layerId, prop, value) => {
+    try {
+      if (map.getLayer(layerId)) map.setPaintProperty(layerId, prop, value);
+    } catch {
+      // ignore
+    }
+  };
+
+  for (const entry of routes) {
+    for (const layerId of [
+      entry?.pickupTodoLayerId,
+      entry?.pickupDoneLayerId,
+      entry?.dropTodoLayerId,
+      entry?.dropDoneLayerId,
+    ]) {
+      if (!layerId) continue;
+      set(`${layerId}-casing`, 'line-color', theme.routes.halo);
+      set(`${layerId}-flow`, 'line-color', theme.routes.flow);
+      set(`${layerId}-flow`, 'line-opacity', theme.routes.flowOpacity);
     }
   }
 }
@@ -365,12 +464,77 @@ export function useRobotStream({
   campusId,
   mapRef,
   markersRef,
+  // Operational overlay inputs — all application state, none renderer state.
+  representation = ROBOT_REPRESENTATION.TWO_D,
+  selectedRobotId = null,
+  followSelected = false,
+  onSelectRobot,
+  onHoverRobot,
+  // View state, not operational state: the theme only decides what the route
+  // corridor and its flow are coloured, never where the route goes.
+  themeRef,
+  subscribeToTheme,
 }) {
   const [robots, setRobots] = useState([]);
 
   const activeRobotIdsRef = useRef(new Set());
   const routesRef = useRef(new Map());
   const taskPathsRef = useRef(new Map());
+  const flowAnimatorRef = useRef(null);
+
+  // Read inside imperative callbacks rather than listed as dependencies, so a
+  // selection or follow-toggle never tears down and rebuilds marker plumbing.
+  const selectedRobotIdRef = useRef(selectedRobotId);
+  selectedRobotIdRef.current = selectedRobotId;
+  const followSelectedRef = useRef(followSelected);
+  followSelectedRef.current = followSelected;
+  const onSelectRobotRef = useRef(onSelectRobot);
+  onSelectRobotRef.current = onSelectRobot;
+  const onHoverRobotRef = useRef(onHoverRobot);
+  onHoverRobotRef.current = onHoverRobot;
+
+  // One renderer instance for the whole overlay, resolved by representation
+  // name. `createRobotRenderer` validates the contract at wire-up, so a
+  // renderer missing a method fails here rather than on the first telemetry
+  // tick of a live fleet view.
+  const rendererRef = useRef(null);
+  const rendererRepresentationRef = useRef(null);
+  const getRenderer = useCallback(() => {
+    if (rendererRef.current && rendererRepresentationRef.current === representation) {
+      return rendererRef.current;
+    }
+    // Representation changed (or first use): drop everything the previous
+    // renderer owned before standing the new one up. This is the code path a
+    // future 2d → 3d switch travels; it exists now so it is not written under
+    // pressure later.
+    if (rendererRef.current) {
+      try {
+        rendererRef.current.dispose();
+      } catch {
+        // ignore
+      }
+      markersRef?.current?.clear?.();
+    }
+    rendererRef.current = createRobotRenderer(representation, {
+      getMap: () => mapRef?.current || null,
+      onSelectRobot: (id) => onSelectRobotRef.current?.(id),
+      onHoverRobot: (id) => onHoverRobotRef.current?.(id),
+    });
+    rendererRepresentationRef.current = representation;
+    return rendererRef.current;
+  }, [representation, mapRef, markersRef]);
+
+  useEffect(() => {
+    return () => {
+      try {
+        rendererRef.current?.dispose();
+      } catch {
+        // ignore
+      }
+      rendererRef.current = null;
+      rendererRepresentationRef.current = null;
+    };
+  }, []);
 
   const removeRouteForRobot = useCallback(
     (robotId) => {
@@ -520,10 +684,16 @@ export function useRobotStream({
       safeRemoveLayerAndSource(map, existing?.dropLayerId, existing?.dropSourceId);
 
       // Re-add if style switched (sources/layers removed by map.setStyle).
-      if (pickupTodo) ensureLineLayer({ map, sourceId: pickupTodoSourceId, layerId: pickupTodoLayerId, data: pickupTodo, color, dashed: true, opacity: 0.75 });
-      if (pickupDone) ensureLineLayer({ map, sourceId: pickupDoneSourceId, layerId: pickupDoneLayerId, data: pickupDone, color, dashed: true, opacity: 0.22 });
-      if (dropTodo) ensureLineLayer({ map, sourceId: dropTodoSourceId, layerId: dropTodoLayerId, data: dropTodo, color, dashed: false, opacity: 0.9 });
-      if (dropDone) ensureLineLayer({ map, sourceId: dropDoneSourceId, layerId: dropDoneLayerId, data: dropDone, color, dashed: false, opacity: 0.25 });
+      // `flow` marks the segments still ahead of the unit — the only ones with
+      // a direction left to communicate.
+      const theme = themeRef?.current || null;
+      const todoOpacity = theme?.routes?.todoOpacity ?? 0.95;
+      const doneOpacity = theme?.routes?.doneOpacity ?? 0.3;
+
+      if (pickupTodo) ensureLineLayer({ map, sourceId: pickupTodoSourceId, layerId: pickupTodoLayerId, data: pickupTodo, color, dashed: true, opacity: todoOpacity * 0.8, theme, flow: true });
+      if (pickupDone) ensureLineLayer({ map, sourceId: pickupDoneSourceId, layerId: pickupDoneLayerId, data: pickupDone, color, dashed: true, opacity: doneOpacity * 0.75, theme, flow: false });
+      if (dropTodo) ensureLineLayer({ map, sourceId: dropTodoSourceId, layerId: dropTodoLayerId, data: dropTodo, color, dashed: false, opacity: todoOpacity, theme, flow: true });
+      if (dropDone) ensureLineLayer({ map, sourceId: dropDoneSourceId, layerId: dropDoneLayerId, data: dropDone, color, dashed: false, opacity: doneOpacity, theme, flow: false });
 
       // If any segment is absent, remove its layer/source.
       if (!pickupTodo) safeRemoveLayerAndSource(map, pickupTodoLayerId, pickupTodoSourceId);
@@ -574,6 +744,8 @@ export function useRobotStream({
         }
       }
 
+      flowAnimatorRef.current?.start();
+
       routesRef.current.set(robotId, {
         taskId,
         pickupTodoSourceId,
@@ -588,8 +760,43 @@ export function useRobotStream({
         dropMarker,
       });
     },
-    [mapRef, removeRouteForRobot]
+    [mapRef, removeRouteForRobot, themeRef]
   );
+
+  // ── Route flow animation ───────────────────────────────────────────────────
+  // Owns its own lifecycle: started by the first route drawn, stopped when the
+  // last one is removed or the map unmounts.
+  useEffect(() => {
+    const animator = createFlowAnimator(
+      () => mapRef?.current || null,
+      () => {
+        const ids = [];
+        for (const entry of routesRef.current.values()) {
+          for (const layerId of [entry?.pickupTodoLayerId, entry?.dropTodoLayerId]) {
+            if (layerId) ids.push(`${layerId}-flow`);
+          }
+        }
+        return ids;
+      }
+    );
+    flowAnimatorRef.current = animator;
+    if (routesRef.current.size > 0) animator.start();
+
+    return () => {
+      animator.stop();
+      flowAnimatorRef.current = null;
+    };
+  }, [mapRef]);
+
+  // ── Theme frames → route colours ───────────────────────────────────────────
+  // Route GEOMETRY and route PROGRESS are untouched by this; only the corridor
+  // halo and the flow overlay are re-coloured, on layers that already exist.
+  useEffect(() => {
+    if (typeof subscribeToTheme !== 'function') return;
+    return subscribeToTheme((theme) => {
+      applyThemeToRouteLayers(mapRef?.current, routesRef.current.values(), theme);
+    });
+  }, [subscribeToTheme, mapRef]);
 
   // Cache task routes once.
   // On mount: seed taskPathsRef from AppProvider's persistent cache so routes
@@ -741,173 +948,135 @@ export function useRobotStream({
     };
   }, [mapRef]);
 
-  // Keep every marker's visual size proportionate to the current zoom.
-  // Fixed-pixel markers stay the same SCREEN size at any zoom, so at low
-  // zoom a 26-36px icon can cover hundreds of metres of ground — making an
-  // exactly-correct coordinate look like it's floating far from the road
-  // purely from oversized icon footprint, not a positioning bug. Shrinking
-  // markers as you zoom out (mirrors Uber/Swiggy) keeps them visually
-  // anchored to the road at every zoom level.
+  // ── Camera → overlay reprojection ──────────────────────────────────────────
+  //
+  // Three separate reasons a marker must respond to the camera now that the
+  // environment is 3D:
+  //
+  //   zoom     Fixed-pixel markers stay the same SCREEN size at any zoom, so at
+  //            low zoom a 26×36px icon can cover hundreds of metres of ground,
+  //            making an exactly-correct coordinate look like it is floating off
+  //            the road. Shrinking as you zoom out (mirrors Uber/Swiggy) keeps
+  //            it visually anchored at every zoom level.
+  //   pitch    The ground half of the marker is foreshortened by cos(pitch) so
+  //            it reads as lying on the ground rather than standing on it.
+  //   bearing  A robot's heading is degrees from true NORTH. Once the camera can
+  //            rotate, north is no longer screen-up, so the icon's rotation must
+  //            be re-derived — otherwise every robot on the map points the wrong
+  //            way the instant the operator rotates the view.
+  //
+  // This is reprojection, not reconstruction: it only writes CSS transforms onto
+  // already-mounted elements, and it is driven by camera events, never by
+  // telemetry. Environment geometry is untouched.
   useEffect(() => {
     const map = mapRef?.current;
     if (!map) return;
 
     const applyToAll = () => {
-      const zoom = map.getZoom();
-      for (const entry of markersRef?.current?.values() || []) {
-        applyMarkerZoomScale(entry?.scaleWrap, zoom);
+      let camera;
+      try {
+        camera = { zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing() };
+      } catch {
+        return;
       }
+
+      const renderer = rendererRef.current;
+      if (renderer) {
+        for (const entry of markersRef?.current?.values() || []) {
+          if (entry?.handle) renderer.applyCamera(entry.handle, camera);
+        }
+      }
+
+      // Mission (pickup/drop) pins have no ground half — they are pure
+      // screen-space badges, so zoom scale is all they need.
       for (const entry of routesRef.current.values()) {
-        applyMarkerZoomScale(entry?.pickupMarker?.getElement?.()?._scaleWrap, zoom);
-        applyMarkerZoomScale(entry?.dropMarker?.getElement?.()?._scaleWrap, zoom);
+        applyMarkerZoomScale(entry?.pickupMarker?.getElement?.()?._scaleWrap, camera.zoom);
+        applyMarkerZoomScale(entry?.dropMarker?.getElement?.()?._scaleWrap, camera.zoom);
       }
     };
 
     applyToAll();
 
-    try {
-      map.on('zoom', applyToAll);
-    } catch {
-      // ignore
+    const events = ['zoom', 'pitch', 'rotate'];
+    for (const evt of events) {
+      try {
+        map.on(evt, applyToAll);
+      } catch {
+        // ignore
+      }
     }
 
     return () => {
-      try {
-        map.off('zoom', applyToAll);
-      } catch {
-        // ignore
+      for (const evt of events) {
+        try {
+          map.off(evt, applyToAll);
+        } catch {
+          // ignore
+        }
       }
     };
   }, [mapRef, markersRef]);
 
+  /**
+   * Robot state → the operational overlay, via the rendering seam.
+   *
+   * The whole of this function is representation-agnostic. It builds the
+   * semantic `RobotVisual` (which carries the canonically-transformed world
+   * anchor) and hands it to whichever renderer is registered. There is no 2D
+   * geometry, no DOM, no marker API and no position arithmetic left here —
+   * all of that moved behind the renderer contract, which is what makes a
+   * future 3D robot a renderer swap rather than an edit to this file.
+   */
   const upsertMarker = useCallback(
     (robot) => {
       const map = mapRef?.current;
-      if (!map) return;
-
-      const robotId = String(robot?.robotId || '').trim();
-      if (!robotId) return;
-
-      const lat = typeof robot?.lat === 'number' ? robot.lat : null;
-      const lon = typeof robot?.lon === 'number' ? robot.lon : null;
-      if (lat === null || lon === null) return;
-
-      const key = robotId;
       const store = markersRef?.current;
-      if (!store) return;
+      if (!map || !store) return;
 
-      let entry = store.get(key);
+      // The ONE transform from robot state to world position and semantics.
+      const visual = toRobotVisual(robot, {
+        selectedRobotId: selectedRobotIdRef.current,
+        representation,
+      });
+      // No usable position — deliberately not placed. Never fall back to an
+      // origin coordinate, which would draw a robot in the Gulf of Guinea.
+      if (!visual) return;
 
-      const to = [lon, lat];
-
-      const heading = typeof robot?.heading === 'number' ? robot.heading : null;
+      const renderer = getRenderer();
+      let entry = store.get(visual.id);
 
       if (!entry) {
-        const color = colorForRobot(robotId);
-        const { root, car, label, scaleWrap } = createRobotMarkerElement(color, robotId);
-
-        // NOTE: the appear animation and zoom-scaling both animate `scaleWrap`,
-        // never `root` — `root.style.transform` is owned by Mapbox (it writes
-        // its own translate/anchor transform onto the element passed to
-        // `mapboxgl.Marker`), so animating `root.style.transform` here would
-        // fight Mapbox's positioning and leave the marker mispositioned until
-        // the next map move/zoom re-triggers Mapbox's own update.
-        scaleWrap.style.opacity = '0';
-        scaleWrap.style.transform = 'scale(0.75)';
-        scaleWrap.style.willChange = 'transform, opacity';
-
-        const marker = new mapboxgl.Marker({ element: root, anchor: 'center' }).setLngLat(to).addTo(map);
-        applyMarkerZoomScale(scaleWrap, map.getZoom());
-
-        entry = {
-          marker,
-          root,
-          carEl: car,
-          labelEl: label,
-          scaleWrap,
-          current: to,
-          rafId: null,
-          target: to,
-        };
-
-        store.set(key, entry);
-
-        if (entry.carEl && typeof heading === 'number') {
-          entry.carEl.style.transform = `rotate(${heading}deg)`;
-        }
-
-        upsertRoutes(robot);
-
-        // Framer Motion: marker appearance (fade + pop).
-        // animate() returns AnimationPlaybackControls (not a Promise) in framer-motion v11+,
-        // so we can't call .catch() on it — wrap in try-catch instead.
-        try {
-          animate(
-            scaleWrap,
-            { opacity: [0, 1], transform: ['scale(0.75)', `scale(${markerScaleForZoom(map.getZoom())})`] },
-            { duration: 0.35, ease: 'easeOut' }
-          );
-        } catch {
-          // ignore animation errors (e.g. element removed before animation completes)
-        }
-
-        return;
+        const handle = renderer.mount(visual);
+        if (!handle) return;
+        entry = { representation, handle, visual };
+        store.set(visual.id, entry);
+      } else {
+        renderer.update(entry.handle, visual);
+        // The last visual is retained so the hook can answer "where is this
+        // robot?" from state rather than by reading a coordinate back out of
+        // the renderer — see `recenter` and the follow camera below.
+        entry.visual = visual;
       }
 
-      if (entry.carEl && typeof heading === 'number') {
-        entry.carEl.style.transform = `rotate(${heading}deg)`;
-      }
-
+      // Routes are a separate operational overlay keyed by task, not part of
+      // the robot's representation — a 3D robot would not change any of this.
       upsertRoutes(robot);
 
-      // Smooth movement (interpolated, no jumps)
-      const from = Array.isArray(entry.current) ? entry.current : getLngLatArray(entry.marker?.getLngLat?.());
-      if (!from) {
-        try {
-          entry.marker?.setLngLat?.(to);
-          entry.current = to;
-        } catch {
-          // ignore
+      // Follow-selected camera. It tracks the robot's WORLD TRANSFORM, taken
+      // from the canonical anchor — not a marker element, not a mesh (§18), so
+      // it keeps working verbatim under a 3D renderer.
+      if (followSelectedRef.current && selectedRobotIdRef.current === visual.id) {
+        const lngLat = anchorToLngLat(visual.anchor);
+        if (lngLat) {
+          try {
+            map.easeTo({ center: lngLat, duration: 1200, essential: true });
+          } catch {
+            // ignore
+          }
         }
-        return;
       }
-
-      const start = performance.now();
-      // Match RAF duration to telemetry interval (2 000 ms) minus a small margin
-      // so the marker reaches the new position just before the next tick arrives.
-      const duration = 1800;
-
-      entry.target = to;
-
-      try {
-        if (entry.rafId) cancelAnimationFrame(entry.rafId);
-      } catch {
-        // ignore
-      }
-
-      const step = (now) => {
-        const t = Math.min(1, (now - start) / duration);
-        const e = easeOut(t);
-        const lng = from[0] + (to[0] - from[0]) * e;
-        const lat2 = from[1] + (to[1] - from[1]) * e;
-
-        try {
-          entry.marker?.setLngLat?.([lng, lat2]);
-        } catch {
-          // ignore
-        }
-
-        if (t < 1) {
-          entry.rafId = requestAnimationFrame(step);
-        } else {
-          entry.rafId = null;
-          entry.current = to;
-        }
-      };
-
-      entry.rafId = requestAnimationFrame(step);
     },
-    [mapRef, markersRef, upsertRoutes]
+    [mapRef, markersRef, upsertRoutes, getRenderer, representation]
   );
 
   const syncMarkersToRobots = useCallback(
@@ -924,16 +1093,14 @@ export function useRobotStream({
         upsertMarker(r?.live && typeof r.live === 'object' ? { ...r, ...r.live } : r);
       }
 
-      // Remove stale markers for robots not in current filter.
+      // Remove stale visuals for robots not in the current filter. The renderer
+      // owns teardown of whatever it created (elements, listeners, in-flight
+      // animations) — this loop never touches marker internals.
+      const renderer = rendererRef.current;
       for (const [id, entry] of store.entries()) {
         if (nextIds.has(id)) continue;
         try {
-          if (entry?.rafId) cancelAnimationFrame(entry.rafId);
-        } catch {
-          // ignore
-        }
-        try {
-          entry?.marker?.remove?.();
+          renderer?.destroy(entry?.handle);
         } catch {
           // ignore
         }
@@ -1001,16 +1168,10 @@ export function useRobotStream({
       // Only update markers we are currently tracking (active filter).
       if (!activeRobotIdsRef.current.has(robotId)) return;
 
+      // One call. Battery, status, heading and position all travel on the
+      // RobotVisual now, and the renderer updates them in place — no second
+      // pass into marker internals, and no marker is ever recreated.
       upsertMarker(data);
-
-      // Refresh battery bar and status icon in-place (no marker recreate).
-      const _store = markersRef?.current;
-      if (_store) {
-        const _entry = _store.get(robotId);
-        if (_entry?.root) {
-          updateMarkerInfo(_entry.root, { battery: data.battery, status: data.status });
-        }
-      }
 
       // Keep local list in sync (light update).
       setRobots((prev) => {
@@ -1023,6 +1184,10 @@ export function useRobotStream({
           ...current,
           lat: typeof data?.lat === 'number' ? data.lat : current.lat,
           lon: typeof data?.lon === 'number' ? data.lon : current.lon,
+          // Heading is read back by the UI layer (the selected-robot panel), so
+          // it has to stay live here too — the marker gets it via the anchor,
+          // but this list is what the panel renders from.
+          heading: typeof data?.heading === 'number' ? data.heading : current.heading,
           battery: typeof data?.battery === 'number' ? data.battery : current.battery,
           speed: typeof data?.speed === 'number' ? data.speed : current.speed,
           status: typeof data?.status === 'string' ? data.status : current.status,
@@ -1073,6 +1238,53 @@ export function useRobotStream({
     };
   }, [upsertMarker]);
 
+  // ── Selection → renderer ───────────────────────────────────────────────────
+  //
+  // Selection is application state (MapProvider). This effect is the only thing
+  // that pushes it at pixels, and it does so through the renderer contract, so
+  // the exact same `selectedRobotId` highlights a 3D robot later with no change
+  // to how selection is stored, set or cleared (§19).
+  //
+  // It touches only the two robots whose selected-ness actually changed, so
+  // clicking a robot in a hundred-unit fleet is two DOM writes, not a resync.
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    const store = markersRef?.current;
+    if (!renderer || !store) return;
+
+    for (const [id, entry] of store.entries()) {
+      const isSelected = id === selectedRobotId;
+      if (entry.visual) {
+        if (entry.visual.selected === isSelected) continue;
+        entry.visual = { ...entry.visual, selected: isSelected };
+      }
+      try {
+        renderer.setSelected(entry.handle, isSelected);
+      } catch {
+        // ignore
+      }
+    }
+    // Selection only. Robots mounted *after* a selection change already come up
+    // correct, because `upsertMarker` reads the same id off `selectedRobotIdRef`
+    // when it builds their visual — so depending on the robot list here would
+    // re-walk the fleet on every telemetry tick to do nothing.
+  }, [selectedRobotId, markersRef]);
+
+  // Turning "follow" on should move the camera immediately rather than waiting
+  // for the next telemetry tick. Reads the canonical anchor, never a marker.
+  useEffect(() => {
+    const map = mapRef?.current;
+    if (!map || !followSelected || !selectedRobotId) return;
+    const entry = markersRef?.current?.get(selectedRobotId);
+    const lngLat = anchorToLngLat(entry?.visual?.anchor);
+    if (!lngLat) return;
+    try {
+      map.easeTo({ center: lngLat, duration: 900, essential: true });
+    } catch {
+      // ignore
+    }
+  }, [followSelected, selectedRobotId, mapRef, markersRef]);
+
   const robotCount = useMemo(() => (Array.isArray(robots) ? robots.length : 0), [robots]);
 
   // Manual "snap back" for when the user has panned/zoomed out far enough
@@ -1085,13 +1297,14 @@ export function useRobotStream({
     if (!map) return false;
 
     const points = [];
+    // Robot positions come from the last RobotVisual we sent to the renderer —
+    // i.e. from state, through the canonical world transform. Asking the marker
+    // where it is would make the renderer a second source of truth for a
+    // position state already owns, and would stop working the moment the
+    // representation changed (§16).
     for (const entry of markersRef?.current?.values() || []) {
-      try {
-        const ll = entry?.marker?.getLngLat?.();
-        if (ll) points.push({ lat: ll.lat, lon: ll.lng });
-      } catch {
-        // ignore
-      }
+      const ll = anchorToLngLat(entry?.visual?.anchor);
+      if (ll) points.push({ lat: ll[1], lon: ll[0] });
     }
     for (const entry of routesRef.current.values()) {
       for (const m of [entry?.pickupMarker, entry?.dropMarker]) {
