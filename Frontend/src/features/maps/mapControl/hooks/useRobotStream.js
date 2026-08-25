@@ -25,6 +25,13 @@ import '@/features/maps/operational/renderers/robotMarker2dRenderer.js';
 import { createRobotRenderer } from '@/features/maps/operational/robotRendererRegistry.js';
 import { ROBOT_REPRESENTATION, toRobotVisual, colorForRobot } from '@/features/maps/operational/robotVisual.js';
 import { anchorToLngLat } from '@/features/maps/world/robotWorldAnchor.js';
+import {
+  ROUTE_SEGMENT,
+  advanceRouteState,
+  lineCollection,
+} from '@/features/maps/operational/routeGeometry.js';
+import { summariseRouteFindings, validateRoute } from '@/features/maps/operational/routeValidation.js';
+import { comfortableFollowPitch, createFollowCameraState, stepFollowCamera } from '@/features/maps/camera/followCamera.js';
 
 function toLngLat(point) {
   if (!point) return null;
@@ -40,43 +47,22 @@ function toLngLat(point) {
   return [lon, lat];
 }
 
-function lineGeoJsonFromPoints(points) {
-  const coords = [];
-  for (const p of Array.isArray(points) ? points : []) {
-    const ll = toLngLat(p);
-    if (ll) coords.push(ll);
-  }
-  if (coords.length === 1) coords.push(coords[0]);
-  if (coords.length < 2) return null;
-  return {
-    type: 'FeatureCollection',
-    features: [
-      {
-        type: 'Feature',
-        geometry: { type: 'LineString', coordinates: coords },
-        properties: {},
-      },
-    ],
-  };
-}
-
-function splitPath(points, pathIndex) {
-  const arr = Array.isArray(points) ? points : null;
-  if (!arr || arr.length < 2) return { done: null, todo: null };
-
-  const idx =
-    typeof pathIndex === 'number' && Number.isFinite(pathIndex)
-      ? Math.max(0, Math.min(arr.length - 1, Math.floor(pathIndex)))
-      : 0;
-
-  const donePts = arr.slice(0, idx + 1);
-  const todoPts = arr.slice(idx);
-
-  return {
-    done: lineGeoJsonFromPoints(donePts),
-    todo: lineGeoJsonFromPoints(todoPts),
-  };
-}
+// ── Where the travelled/ahead split comes from (§3D) ────────────────────────
+//
+// It used to come from `task.pathIndex`. That index is real — the simulation
+// and the routing service both hold one — and it is NEVER SENT TO THE BROWSER:
+// `robot:update` carries position, battery, status, speed, heading and nothing
+// else, and `TASK_ASSIGNED` carries the paths with no progress. So the split
+// index arriving here was always 0 for the whole life of every task, which made
+// "route travelled" a permanently zero-length stub and "route ahead" the entire
+// route from assignment to completion. The two-colour route was drawing a
+// distinction it never actually made.
+//
+// It now comes from the robot's own live position, projected onto its route by
+// `operational/routeGeometry.js`. Nothing was asked of the backend, no
+// navigation semantic changed, and no coordinate is edited — the position is
+// already streamed and the route is already held, and where a point falls on a
+// polyline is arithmetic.
 
 /**
  * Fit the camera to a set of {lat,lon} points, with sane defaults for the
@@ -162,6 +148,20 @@ function zoomCasingWidth(dashed) {
     ? ['interpolate', ['linear'], ['zoom'], 10, 1.6, 14, 2.8, 18, 4.2]
     : ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 3.4, 18, 6.2];
 }
+
+/**
+ * A route is drawn ON the world, not lit by it.
+ *
+ * Mapbox Standard is a lit style, and `line-emissive-strength` defaults to 0 —
+ * meaning "multiply this colour by whatever light is falling here". Left at the
+ * default, a route line is dimmed by the night lighting exactly like a road
+ * surface is, which is backwards: the route is operational overlay, the same
+ * category of thing as the robot marker, and a marker is a DOM element that the
+ * scene's lighting never touches at all. Fully self-lit is what makes the route
+ * read identically at every hour, which is precisely what §19 asks for — night
+ * is when an operator most needs the operational layer to separate cleanly.
+ */
+const ROUTE_EMISSIVE = 1;
 
 // ── Directional flow (§13) ───────────────────────────────────────────────────
 //
@@ -263,6 +263,7 @@ function ensureLineLayer({ map, sourceId, layerId, data, color, dashed, opacity,
           'line-width': zoomGlowWidth(dashed),
           'line-opacity': 0.10,
           'line-blur': 3,
+          'line-emissive-strength': ROUTE_EMISSIVE,
         },
       });
     } catch {
@@ -287,6 +288,7 @@ function ensureLineLayer({ map, sourceId, layerId, data, color, dashed, opacity,
           'line-color': theme?.routes?.halo || '#0b1220',
           'line-width': zoomCasingWidth(dashed),
           'line-opacity': (dashed ? 0.35 : 0.55) * ((theme?.routes?.haloOpacity ?? 0.3) / 0.3),
+          'line-emissive-strength': ROUTE_EMISSIVE,
         },
       });
     } catch {
@@ -307,6 +309,7 @@ function ensureLineLayer({ map, sourceId, layerId, data, color, dashed, opacity,
           // dashed = robot→pickup (approaching); solid = pickup→drop (delivery route)
           'line-width': zoomLineWidth(dashed),
           'line-opacity': typeof opacity === 'number' ? opacity : dashed ? 0.85 : 0.95,
+          'line-emissive-strength': ROUTE_EMISSIVE,
           ...(dashed ? { 'line-dasharray': [8, 5] } : {}),
         },
       });
@@ -329,6 +332,7 @@ function ensureLineLayer({ map, sourceId, layerId, data, color, dashed, opacity,
           'line-width': zoomLineWidth(dashed),
           'line-opacity': theme?.routes?.flowOpacity ?? 0.55,
           'line-dasharray': FLOW_DASH_STEPS[0],
+          'line-emissive-strength': ROUTE_EMISSIVE,
         },
       });
     } catch {
@@ -474,6 +478,14 @@ export function useRobotStream({
   // corridor and its flow are coloured, never where the route goes.
   themeRef,
   subscribeToTheme,
+  /**
+   * Campus features, for route VALIDATION only (§3D). Read-only, and used to
+   * produce findings that are reported as text — never to move, snap, hide or
+   * repair a route.
+   */
+  campusFeatures,
+  /** Called with the current route findings whenever they change. */
+  onRouteFindings,
 }) {
   const [robots, setRobots] = useState([]);
 
@@ -481,6 +493,42 @@ export function useRobotStream({
   const routesRef = useRef(new Map());
   const taskPathsRef = useRef(new Map());
   const flowAnimatorRef = useRef(null);
+
+  /**
+   * robotId → the task this unit is currently running.
+   *
+   * ── The defect this ref exists to fix (§3D) ─────────────────────────────
+   * `upsertRoutes` used to read the task off whatever robot payload it was
+   * handed. `TASK_ASSIGNED` supplies one; `robot:update` does not — it carries
+   * `{ robotId, lat, lon, battery, status, speed, isOnline, lastSeenAt,
+   * heading }` and no task at all. So the sequence in live operation was:
+   * a task is assigned, the route is drawn, and the very next telemetry tick
+   * (about two seconds later) arrives with no task, is read as "this robot has
+   * no task", and DELETES the route it just drew. The route was on screen for
+   * roughly one tick per redraw, for the whole of every mission.
+   *
+   * Holding the task here instead makes the absence of a task on a telemetry
+   * payload mean what it actually means — that telemetry does not carry tasks —
+   * rather than "the task ended". A route is now removed only when something
+   * says so: a terminal `TASK_UPDATED`, or the robot leaving the visible set.
+   */
+  const robotTasksRef = useRef(new Map());
+  /** taskId → the progress state machine's carry-over (see `advanceRouteState`). */
+  const routeStateRef = useRef(new Map());
+  /** robotId → the findings last computed for its route. */
+  const routeFindingsRef = useRef(new Map());
+  /** The last findings signature published, so an unchanged set is not re-announced. */
+  const findingsSignatureRef = useRef(null);
+
+  /**
+   * Route progress for the SELECTED unit only (§3N).
+   *
+   * State rather than a ref because the information panel renders it, and only
+   * for the selected unit because that is the only one whose progress is on
+   * screen — putting every robot's progress in React state would re-render the
+   * map chrome once per unit per tick to display nothing.
+   */
+  const [selectedRouteProgress, setSelectedRouteProgress] = useState(null);
 
   // Read inside imperative callbacks rather than listed as dependencies, so a
   // selection or follow-toggle never tears down and rebuilds marker plumbing.
@@ -492,6 +540,10 @@ export function useRobotStream({
   onSelectRobotRef.current = onSelectRobot;
   const onHoverRobotRef = useRef(onHoverRobot);
   onHoverRobotRef.current = onHoverRobot;
+  const campusFeaturesRef = useRef(campusFeatures);
+  campusFeaturesRef.current = campusFeatures;
+  const onRouteFindingsRef = useRef(onRouteFindings);
+  onRouteFindingsRef.current = onRouteFindings;
 
   // One renderer instance for the whole overlay, resolved by representation
   // name. `createRobotRenderer` validates the contract at wire-up, so a
@@ -536,6 +588,103 @@ export function useRobotStream({
     };
   }, []);
 
+  // ── The follow camera's two clocks (§3G) ───────────────────────────────────
+  //
+  //   telemetry  ──► followTargetRef        a value, written ~every 2 000 ms
+  //   rAF        ──► stepFollowCamera()     the camera, moved ~60 times a second
+  //
+  // Separating them is the entire fix. Nothing in the telemetry path issues a
+  // camera command, so nothing can interrupt one.
+  const followTargetRef = useRef(null);
+  const followStateRef = useRef(null);
+  const followRafRef = useRef(null);
+  const followLastFrameRef = useRef(0);
+
+  const stopFollowLoop = useCallback(() => {
+    if (followRafRef.current !== null) {
+      try {
+        cancelAnimationFrame(followRafRef.current);
+      } catch {
+        // ignore
+      }
+      followRafRef.current = null;
+    }
+    followLastFrameRef.current = 0;
+  }, []);
+
+  /**
+   * Start the smoothing loop if it is not already running.
+   *
+   * The loop STOPS ITSELF once the camera is inside the dead band, and this
+   * restarts it when a new target arrives. A parked unit therefore costs no
+   * frame callbacks at all — which is also what stops its GPS jitter from
+   * shivering the camera forever.
+   */
+  const ensureFollowLoop = useCallback(() => {
+    if (followRafRef.current !== null) return;
+    if (typeof requestAnimationFrame !== 'function') return;
+
+    const frame = (timestamp) => {
+      followRafRef.current = null;
+      const map = mapRef?.current;
+      if (!map || !followSelectedRef.current) {
+        followLastFrameRef.current = 0;
+        return;
+      }
+
+      const previous = followLastFrameRef.current;
+      followLastFrameRef.current = timestamp;
+      const dtMs = previous ? timestamp - previous : 16;
+
+      const { state, changed, settled } = stepFollowCamera(followStateRef.current, followTargetRef.current, dtMs, {
+        // North stays screen-up. `cameraModes.js` settled that: an operator
+        // matching the map against the physical site should not have to redo
+        // the rotation in their head, and every robot heading is read against
+        // north. The bearing smoothing exists and is tested, so turning this on
+        // later is a flag rather than new mathematics.
+        followHeading: false,
+      });
+      followStateRef.current = state;
+
+      if (changed && state) {
+        try {
+          // `jumpTo`, not `easeTo`. The smoothing IS the easing — asking Mapbox
+          // to ease toward a point that moves every frame is what produced the
+          // interrupted-tween stutter this loop replaces.
+          map.jumpTo({ center: [state.lng, state.lat] });
+        } catch {
+          // ignore
+        }
+      }
+
+      if (settled) {
+        followLastFrameRef.current = 0;
+        return;
+      }
+      followRafRef.current = requestAnimationFrame(frame);
+    };
+
+    followRafRef.current = requestAnimationFrame(frame);
+  }, [mapRef]);
+
+  // The loop must not outlive the hook: a frame callback holding a removed map
+  // is the classic post-unmount crash.
+  useEffect(() => stopFollowLoop, [stopFollowLoop]);
+
+  /**
+   * Where this robot was last known to be, as `[lng, lat]`.
+   *
+   * Read from the last `RobotVisual` handed to the renderer — i.e. from state,
+   * through the canonical world transform — never from a marker element. Asking
+   * a marker where it is would make the renderer a second source of truth for a
+   * position state already owns, and would stop working the moment the
+   * representation changed (§Q).
+   */
+  const lastKnownPoint = useCallback(
+    (robotId) => anchorToLngLat(markersRef?.current?.get(robotId)?.visual?.anchor),
+    [markersRef]
+  );
+
   const removeRouteForRobot = useCallback(
     (robotId) => {
       const map = mapRef?.current;
@@ -567,63 +716,116 @@ export function useRobotStream({
       }
 
       routesRef.current.delete(robotId);
+      routeStateRef.current.delete(entry.taskId);
+      routeFindingsRef.current.delete(robotId);
     },
     [mapRef]
   );
 
+  /**
+   * Publish the current route findings upward (§3D — *report it*).
+   *
+   * Debounced by content, not by time: the callback fires only when the set of
+   * findings actually differs, so a unit driving along a route that crosses a
+   * building does not re-render the notice sixty times a minute saying the same
+   * sentence.
+   */
+  const publishFindings = useCallback(() => {
+    const handler = onRouteFindingsRef.current;
+    if (typeof handler !== 'function') return;
+    const summary = summariseRouteFindings([...routeFindingsRef.current.values()]);
+    const signature = summary.findings.map((f) => `${f.type}:${f.featureId || ''}:${f.metres ?? ''}`).join('|');
+    if (signature === findingsSignatureRef.current) return;
+    findingsSignatureRef.current = signature;
+    handler(summary);
+  }, []);
+
+  /**
+   * Record the task a robot is running.
+   *
+   * The ONLY writer of `robotTasksRef`. Everything that knows about a task —
+   * `TASK_ASSIGNED`, a `REROUTED` update, the cached paths replayed for a robot
+   * that was already running when the map opened — comes through here, so
+   * "which task is this unit on" has exactly one answer and one place to look
+   * for it. `pendingSegment` carries a segment the BACKEND stated, to be applied
+   * once and then handed back to observation (see `advanceRouteState`).
+   */
+  const rememberTask = useCallback((robotId, entry) => {
+    const id = String(robotId || '').trim();
+    const taskId = String(entry?.taskId || '').trim();
+    if (!id || !taskId) return null;
+
+    const previous = robotTasksRef.current.get(id) || null;
+    const record = {
+      ...previous,
+      ...entry,
+      taskId,
+      robotId: id,
+      // Bumped whenever the PATHS change, so route validation re-runs on a
+      // replan and only on a replan — never on every telemetry tick.
+      pathRevision:
+        previous && previous.taskId === taskId && previous.pathToPickup === entry.pathToPickup && previous.pathToDrop === entry.pathToDrop
+          ? previous.pathRevision || 0
+          : (previous?.pathRevision || 0) + 1,
+    };
+    robotTasksRef.current.set(id, record);
+    return record;
+  }, []);
+
   const upsertRoutes = useCallback(
-    (robot) => {
+    (robotIdIn, robotPoint) => {
       const map = mapRef?.current;
       if (!map) return;
 
-      const robotId = String(robot?.robotId || '').trim();
+      const robotId = String(robotIdIn || '').trim();
       if (!robotId) return;
 
-      const task = robot?.task && typeof robot.task === 'object' ? robot.task : null;
-      const taskId = task?.taskId ? String(task.taskId) : '';
+      // The task comes from the record, NOT from the payload that triggered
+      // this call. That is the whole fix: a telemetry tick carries no task, and
+      // reading "no task" off it used to delete the route (see `robotTasksRef`).
+      const record = robotTasksRef.current.get(robotId) || null;
+      const taskId = record?.taskId ? String(record.taskId) : '';
       const cached = taskId ? taskPathsRef.current.get(taskId) : null;
 
-      const pathToPickup = task?.pathToPickup || cached?.pathToPickup || null;
-      const pathToDrop = task?.pathToDrop || cached?.pathToDrop || null;
-      const pickup = task?.pickup || cached?.pickup || null;
-      const drop = task?.drop || cached?.drop || null;
+      const pathToPickup = record?.pathToPickup || cached?.pathToPickup || null;
+      const pathToDrop = record?.pathToDrop || cached?.pathToDrop || null;
+      const pickup = record?.pickup ?? cached?.pickup ?? null;
+      const drop = record?.drop ?? cached?.drop ?? null;
 
       const existing = routesRef.current.get(robotId) || null;
 
-      // No task => clear overlays.
+      // Reached only when something actually said this robot has no task — a
+      // terminal `TASK_UPDATED`, or the unit leaving the visible set.
       if (!taskId) {
         removeRouteForRobot(robotId);
         return;
       }
 
-      const pickupLine = lineGeoJsonFromPoints(pathToPickup);
-      const dropLine = lineGeoJsonFromPoints(pathToDrop);
+      const hasBothLegs =
+        Array.isArray(pathToPickup) && pathToPickup.length > 0 && Array.isArray(pathToDrop) && pathToDrop.length > 0;
 
-      // If paths are omitted on incremental updates, keep existing overlays
-      // as long as the taskId hasn't changed.
-      if ((!pickupLine || !dropLine) && existing && existing.taskId === taskId) {
-        // Still update mission markers if coords are provided.
-        const pickupLL = toLngLat(pickup);
-        const dropLL = toLngLat(drop);
-        if (pickupLL && existing.pickupMarker) {
-          try {
-            existing.pickupMarker.setLngLat(pickupLL);
-          } catch {
-            // ignore
+      if (!hasBothLegs) {
+        // Same task, paths not (yet) known: keep what is drawn and refresh the
+        // mission pins if their coordinates arrived.
+        if (existing && existing.taskId === taskId) {
+          const pickupLL = toLngLat(pickup);
+          const dropLL = toLngLat(drop);
+          if (pickupLL && existing.pickupMarker) {
+            try {
+              existing.pickupMarker.setLngLat(pickupLL);
+            } catch {
+              // ignore
+            }
           }
-        }
-        if (dropLL && existing.dropMarker) {
-          try {
-            existing.dropMarker.setLngLat(dropLL);
-          } catch {
-            // ignore
+          if (dropLL && existing.dropMarker) {
+            try {
+              existing.dropMarker.setLngLat(dropLL);
+            } catch {
+              // ignore
+            }
           }
+          return;
         }
-        return;
-      }
-
-      // If task changed and we don't yet have new paths, clear stale overlays.
-      if ((!pickupLine || !dropLine) && (!existing || existing.taskId !== taskId)) {
         removeRouteForRobot(robotId);
         return;
       }
@@ -639,45 +841,47 @@ export function useRobotStream({
       const dropDoneSourceId = `robot-route-drop-done-src-${robotId}`;
       const dropDoneLayerId = `robot-route-drop-done-layer-${robotId}`;
 
-      const phase = typeof task?.phase === 'string' ? task.phase : '';
-      const segmentRaw = typeof task?.segment === 'string' ? task.segment : '';
-      const segment = segmentRaw || (phase.includes('DROP') ? 'toDrop' : 'toPickup');
-      const pathIndex = typeof task?.pathIndex === 'number' ? task.pathIndex : 0;
+      // ── Progress, from the unit's own position (§3D) ─────────────────────
+      //
+      // A segment the backend actually stated wins, once. After that the state
+      // machine observes: it latches the pickup→drop transition, refuses to run
+      // backwards along a route that retraces itself, and reports rather than
+      // guesses when the unit is too far off its route to project onto it.
+      const point = robotPoint || existing?.lastPoint || null;
+      const declaredSegment = record?.pendingSegment || null;
+      if (declaredSegment && record) record.pendingSegment = null;
 
-      // Build progress-aware geometry.
-      let pickupDone = null;
-      let pickupTodo = null;
-      let dropDone = null;
-      let dropTodo = null;
+      const state = advanceRouteState(routeStateRef.current.get(taskId) || null, {
+        pathToPickup,
+        pathToDrop,
+        point,
+        taskId,
+        declaredSegment,
+      });
+      routeStateRef.current.set(taskId, state);
 
-      if (segment === 'toPickup') {
-        const split = splitPath(pathToPickup, pathIndex);
-        pickupDone = split.done;
-        pickupTodo = split.todo;
-        dropDone = null;
-        dropTodo = dropLine;
-      } else {
-        // toDrop
-        pickupDone = pickupLine;
-        pickupTodo = null;
-        const split = splitPath(pathToDrop, pathIndex);
-        dropDone = split.done;
-        dropTodo = split.todo;
-      }
+      // ── The redraw guard (§3T) ───────────────────────────────────────────
+      // Everything below writes to Mapbox sources. A stationary unit produces
+      // an identical split every tick, and pushing identical GeoJSON into four
+      // sources twenty times a minute is work with no output. The signature
+      // covers everything that can change what is drawn; `pathRevision` covers
+      // a replan that keeps the same task id.
+      const signature = [
+        taskId,
+        record?.pathRevision || 0,
+        state.segment,
+        state.onRoute ? 1 : 0,
+        state.pickupIndex,
+        state.dropIndex,
+        Math.round((state.fraction ?? 0) * 4000),
+      ].join('|');
 
-      // Waiting implies segment completion.
-      if (phase === 'WAIT_PICKUP') {
-        pickupDone = pickupLine;
-        pickupTodo = null;
-        dropDone = null;
-        dropTodo = dropLine;
-      }
-      if (phase === 'WAIT_DROP') {
-        pickupDone = pickupLine;
-        pickupTodo = null;
-        dropDone = dropLine;
-        dropTodo = null;
-      }
+      if (existing && existing.signature === signature) return;
+
+      const pickupDone = lineCollection(state.pickup?.travelled);
+      const pickupTodo = lineCollection(state.pickup?.ahead);
+      const dropDone = lineCollection(state.drop?.travelled);
+      const dropTodo = lineCollection(state.drop?.ahead);
 
       // Remove legacy layers if they exist (so we don't double-draw after upgrading).
       safeRemoveLayerAndSource(map, existing?.pickupLayerId, existing?.pickupSourceId);
@@ -746,8 +950,78 @@ export function useRobotStream({
 
       flowAnimatorRef.current?.start();
 
+      // ── Validate the route against the campus, and REPORT (§3D) ──────────
+      //
+      // Run when the ROUTE changes, never when progress does: the polyline is
+      // the thing being checked and it does not move as the unit travels along
+      // it. Re-checking every tick would be the same answer at ~19 000 segment
+      // tests a leg.
+      //
+      // Nothing here alters a route. A crossing is drawn exactly where the
+      // route data puts it and reported in words — the brief is explicit that
+      // hiding it with rendering is the failure, not the fix.
+      const pathRevision = record?.pathRevision || 0;
+      if (!existing || existing.validatedRevision !== pathRevision || existing.taskId !== taskId) {
+        const features = campusFeaturesRef.current;
+        if (Array.isArray(features) && features.length > 0) {
+          const pickupCheck = validateRoute({ path: pathToPickup, features, label: 'The approach route' });
+          const dropCheck = validateRoute({ path: pathToDrop, features, label: 'The delivery route' });
+          routeFindingsRef.current.set(robotId, {
+            robotId,
+            findings: [...pickupCheck.findings, ...dropCheck.findings],
+          });
+        } else {
+          routeFindingsRef.current.delete(robotId);
+        }
+      }
+
+      // The unit being off its own route is progress state, not route state, so
+      // it is folded in every time rather than only on a replan.
+      if (!state.onRoute && state.offsetM !== null) {
+        const entryFindings = routeFindingsRef.current.get(robotId) || { robotId, findings: [] };
+        const label = state.segment === ROUTE_SEGMENT.TO_DROP ? 'the delivery route' : 'the approach route';
+        const offRoute = validateRoute({
+          path: state.segment === ROUTE_SEGMENT.TO_DROP ? pathToDrop : pathToPickup,
+          features: [],
+          label,
+          robotOffsetM: state.offsetM,
+        }).findings.filter((f) => f.type !== 'DEGENERATE');
+        routeFindingsRef.current.set(robotId, {
+          robotId,
+          findings: [...entryFindings.findings.filter((f) => f.type !== 'ROBOT_OFF_ROUTE'), ...offRoute],
+        });
+      } else {
+        const entryFindings = routeFindingsRef.current.get(robotId);
+        if (entryFindings?.findings.some((f) => f.type === 'ROBOT_OFF_ROUTE')) {
+          routeFindingsRef.current.set(robotId, {
+            robotId,
+            findings: entryFindings.findings.filter((f) => f.type !== 'ROBOT_OFF_ROUTE'),
+          });
+        }
+      }
+      publishFindings();
+
+      const progress = {
+        taskId,
+        segment: state.segment,
+        onRoute: state.onRoute,
+        offsetM: state.offsetM,
+        remainingM: state.remainingM,
+        fraction: state.fraction,
+      };
+      // Only the selected unit's progress reaches React. Reached at most once
+      // per tick, and only when the signature guard above has already proved
+      // something actually changed.
+      if (selectedRobotIdRef.current === robotId) setSelectedRouteProgress(progress);
+
       routesRef.current.set(robotId, {
         taskId,
+        signature,
+        validatedRevision: pathRevision,
+        lastPoint: point,
+        // The progress an operator can be shown, kept beside the geometry it
+        // was derived from so the panel reads state rather than re-deriving it.
+        progress,
         pickupTodoSourceId,
         pickupTodoLayerId,
         pickupDoneSourceId,
@@ -760,7 +1034,7 @@ export function useRobotStream({
         dropMarker,
       });
     },
-    [mapRef, removeRouteForRobot, themeRef]
+    [mapRef, removeRouteForRobot, themeRef, publishFindings]
   );
 
   // ── Route flow animation ───────────────────────────────────────────────────
@@ -836,22 +1110,27 @@ export function useRobotStream({
       // Also keep the AppProvider cache in sync.
       if (taskPathCacheRef?.current) taskPathCacheRef.current.set(taskId, entry);
 
-      if (robotId && activeRobotIdsRef.current.has(robotId)) {
-        upsertRoutes({
-          robotId,
-          task: {
-            taskId,
-            phase: 'TO_PICKUP',
-            pathToPickup,
-            pathToDrop,
-            pickup: msg?.pickup ?? null,
-            drop: msg?.drop ?? null,
-          },
+      if (robotId) {
+        // The task is recorded FIRST and unconditionally. It used to be handed
+        // straight to the renderer and then forgotten, which is why the next
+        // telemetry tick could not find it (see `robotTasksRef`).
+        rememberTask(robotId, {
+          ...entry,
+          // The engine has just said this unit is heading for the pickup. That
+          // is a statement, so it wins once; from there the progress state
+          // machine observes the transition to the drop leg itself, because
+          // nothing on the wire ever announces it.
+          pendingSegment: ROUTE_SEGMENT.TO_PICKUP,
         });
-      } else if (robotId) {
-        // Robot not yet in active set (e.g. user navigated to map after assignment).
-        // Add it to the active set so the next telemetry tick updates its marker.
-        activeRobotIdsRef.current.add(robotId);
+
+        if (activeRobotIdsRef.current.has(robotId)) {
+          upsertRoutes(robotId, lastKnownPoint(robotId));
+        } else {
+          // Robot not yet in the active set (e.g. the operator navigated to the
+          // map after the assignment). Activate it so the next telemetry tick
+          // updates its marker — and the route is already on record.
+          activeRobotIdsRef.current.add(robotId);
+        }
       }
 
       // Auto-fit map to show the full route (robot → pickup → drop)
@@ -869,8 +1148,15 @@ export function useRobotStream({
       const robotId = String(msg?.robotId || '').trim();
 
       // Case A: task reached a terminal status — remove route overlays.
+      //
+      // This, and a robot leaving the visible set, are now the ONLY two things
+      // that delete a route. Forgetting the task record is what makes the
+      // removal stick: without it the next cache replay would draw it again.
       if (TERMINAL_STATUSES_ROUTE.has(msg?.status)) {
-        if (robotId) removeRouteForRobot(robotId);
+        if (robotId) {
+          robotTasksRef.current.delete(robotId);
+          removeRouteForRobot(robotId);
+        }
         return;
       }
 
@@ -889,18 +1175,16 @@ export function useRobotStream({
         };
         taskPathsRef.current.set(taskId, updated);
 
-        if (robotId && activeRobotIdsRef.current.has(robotId)) {
-          upsertRoutes({
-            robotId,
-            task: {
-              taskId,
-              phase: segment === 'toPickup' ? 'TO_PICKUP' : 'TO_DROP',
-              pathToPickup: updated.pathToPickup,
-              pathToDrop: updated.pathToDrop,
-              pickup: updated.pickup ?? null,
-              drop: updated.drop ?? null,
-            },
+        if (robotId) {
+          // A replan is the backend stating which leg it just recomputed, so
+          // that segment wins over whatever this session had observed.
+          rememberTask(robotId, {
+            ...updated,
+            pendingSegment: segment === 'toPickup' ? ROUTE_SEGMENT.TO_PICKUP : ROUTE_SEGMENT.TO_DROP,
           });
+          if (activeRobotIdsRef.current.has(robotId)) {
+            upsertRoutes(robotId, lastKnownPoint(robotId));
+          }
         }
       }
     };
@@ -916,7 +1200,7 @@ export function useRobotStream({
       socket.off(DASHBOARD_EVENTS.TASK_ASSIGNED, onAssigned);
       socket.off(DASHBOARD_EVENTS.TASK_UPDATED, onTaskUpdated);
     };
-  }, [upsertRoutes, removeRouteForRobot, mapRef, taskPathCacheRef]);
+  }, [upsertRoutes, removeRouteForRobot, rememberTask, lastKnownPoint, mapRef, taskPathCacheRef]);
 
   // Rebuild route layers after style changes.
   useEffect(() => {
@@ -1058,25 +1342,38 @@ export function useRobotStream({
         entry.visual = visual;
       }
 
+      const lngLat = anchorToLngLat(visual.anchor);
+
+      // A robot state that carries its own task — a REST row's `currentTask` —
+      // registers it. Telemetry carries none and simply says nothing, which is
+      // now read as "telemetry does not carry tasks" rather than as "the task
+      // ended".
+      const carried = robot?.task || robot?.currentTask;
+      if (carried?.taskId) rememberTask(visual.id, { ...carried, taskId: String(carried.taskId) });
+
       // Routes are a separate operational overlay keyed by task, not part of
       // the robot's representation — a 3D robot would not change any of this.
-      upsertRoutes(robot);
+      // The position is passed in because route PROGRESS is now derived from it
+      // (§3D); the route itself still comes from the task record.
+      upsertRoutes(visual.id, lngLat);
 
-      // Follow-selected camera. It tracks the robot's WORLD TRANSFORM, taken
-      // from the canonical anchor — not a marker element, not a mesh (§18), so
-      // it keeps working verbatim under a 3D renderer.
-      if (followSelectedRef.current && selectedRobotIdRef.current === visual.id) {
-        const lngLat = anchorToLngLat(visual.anchor);
-        if (lngLat) {
-          try {
-            map.easeTo({ center: lngLat, duration: 1200, essential: true });
-          } catch {
-            // ignore
-          }
-        }
+      // ── Follow-selected camera (§3G) ─────────────────────────────────────
+      //
+      // A telemetry tick updates a TARGET and nothing else. It issues no camera
+      // command, so it cannot interrupt one — which is what the previous
+      // `easeTo` per tick did, restarting a 1 200 ms ease every ~2 000 ms and
+      // producing a camera that accelerated, was cut off, and accelerated
+      // again. The frame loop below closes the gap continuously.
+      //
+      // It still tracks the robot's WORLD TRANSFORM, taken from the canonical
+      // anchor — not a marker element, not a mesh — so it keeps working
+      // verbatim under a 3D renderer.
+      if (followSelectedRef.current && selectedRobotIdRef.current === visual.id && lngLat) {
+        followTargetRef.current = { lng: lngLat[0], lat: lngLat[1], bearing: visual.anchor.rotation.yaw };
+        ensureFollowLoop();
       }
     },
-    [mapRef, markersRef, upsertRoutes, getRenderer, representation]
+    [mapRef, markersRef, upsertRoutes, rememberTask, ensureFollowLoop, getRenderer, representation]
   );
 
   const syncMarkersToRobots = useCallback(
@@ -1105,12 +1402,16 @@ export function useRobotStream({
           // ignore
         }
         store.delete(id);
+        // Out of the visible set: forget the task too, or the next cache replay
+        // would redraw a route for a unit that is no longer on the map.
+        robotTasksRef.current.delete(id);
         removeRouteForRobot(id);
       }
+      publishFindings();
 
       activeRobotIdsRef.current = nextIds;
     },
-    [mapRef, markersRef, upsertMarker, removeRouteForRobot]
+    [mapRef, markersRef, upsertMarker, removeRouteForRobot, publishFindings]
   );
 
   // Sync map markers from the global robots list whenever it changes or the
@@ -1151,13 +1452,29 @@ export function useRobotStream({
         if (!robotId || !pathToPickup || !pathToDrop) continue;
         if (!activeRobotIdsRef.current.has(robotId)) continue;
         if (routesRef.current.has(robotId)) continue; // already drawn
-        upsertRoutes({
-          robotId,
-          task: { taskId, phase: 'TO_PICKUP', pathToPickup, pathToDrop, pickup, drop },
-        });
+        // No `pendingSegment`: this is a REPLAY of an assignment that may have
+        // happened minutes ago, not the engine saying where the unit is now.
+        // Declaring TO_PICKUP here would drag the drawn progress back to the
+        // start of a leg the unit has already finished — the state machine
+        // works out which leg it is on from where it actually is.
+        rememberTask(robotId, { taskId, robotId, pathToPickup, pathToDrop, pickup, drop });
+        upsertRoutes(robotId, lastKnownPoint(robotId));
       }
     }
-  }, [countryId, stateId, cityId, locationId, campusId, globalRobots, mapRef, syncMarkersToRobots, upsertRoutes, taskPathCacheRef]);
+  }, [
+    countryId,
+    stateId,
+    cityId,
+    locationId,
+    campusId,
+    globalRobots,
+    mapRef,
+    syncMarkersToRobots,
+    upsertRoutes,
+    rememberTask,
+    lastKnownPoint,
+    taskPathCacheRef,
+  ]);
 
   // Live updates via Socket.IO
   useEffect(() => {
@@ -1270,20 +1587,73 @@ export function useRobotStream({
     // re-walk the fleet on every telemetry tick to do nothing.
   }, [selectedRobotId, markersRef]);
 
-  // Turning "follow" on should move the camera immediately rather than waiting
-  // for the next telemetry tick. Reads the canonical anchor, never a marker.
+  // Selecting a unit must show the route progress it ALREADY has, not wait for
+  // its next tick — and deselecting must not leave the previous unit's progress
+  // on screen (§3F: selection preserves context, it does not fabricate it).
+  useEffect(() => {
+    setSelectedRouteProgress(selectedRobotId ? routesRef.current.get(selectedRobotId)?.progress || null : null);
+  }, [selectedRobotId]);
+
+  // ── Entering and leaving Follow (§3G) ──────────────────────────────────────
+  //
+  // Entering is ONE deliberate framing move — travel to the unit and settle at
+  // a comfortable pitch — and the smoothing loop takes over when it lands. That
+  // ordering matters: `jumpTo` cancels an in-flight `easeTo`, so starting the
+  // loop first would kill the arrival flight on its first frame and the camera
+  // would cut to the robot instead of travelling to it.
+  //
+  // Leaving is instant, in one statement, with no animation to sit through —
+  // §3G: *The user must be able to exit Follow mode instantly.*
   useEffect(() => {
     const map = mapRef?.current;
-    if (!map || !followSelected || !selectedRobotId) return;
-    const entry = markersRef?.current?.get(selectedRobotId);
-    const lngLat = anchorToLngLat(entry?.visual?.anchor);
-    if (!lngLat) return;
-    try {
-      map.easeTo({ center: lngLat, duration: 900, essential: true });
-    } catch {
-      // ignore
+    if (!map) return;
+
+    if (!followSelected || !selectedRobotId) {
+      stopFollowLoop();
+      followStateRef.current = null;
+      followTargetRef.current = null;
+      return;
     }
-  }, [followSelected, selectedRobotId, mapRef, markersRef]);
+
+    const lngLat = anchorToLngLat(markersRef?.current?.get(selectedRobotId)?.visual?.anchor);
+    if (!lngLat) return;
+
+    followTargetRef.current = { lng: lngLat[0], lat: lngLat[1] };
+
+    let cancelled = false;
+    const handOverToLoop = () => {
+      if (cancelled) return;
+      let camera = { lng: lngLat[0], lat: lngLat[1], bearing: 0 };
+      try {
+        const c = map.getCenter();
+        camera = { lng: c.lng, lat: c.lat, bearing: map.getBearing() };
+      } catch {
+        // ignore — the seeded target is a usable starting point
+      }
+      followStateRef.current = createFollowCameraState(camera);
+      ensureFollowLoop();
+    };
+
+    try {
+      map.easeTo({
+        center: lngLat,
+        // The operator's own tilt is respected and only bounded — a follow
+        // camera that overrides a deliberate camera choice is worse than one
+        // that is a few degrees off (§3G: "pitch should remain comfortable").
+        pitch: comfortableFollowPitch(map.getPitch(), null),
+        duration: 900,
+        essential: true,
+      });
+      map.once('moveend', handOverToLoop);
+    } catch {
+      handOverToLoop();
+    }
+
+    return () => {
+      cancelled = true;
+      stopFollowLoop();
+    };
+  }, [followSelected, selectedRobotId, mapRef, markersRef, ensureFollowLoop, stopFollowLoop]);
 
   const robotCount = useMemo(() => (Array.isArray(robots) ? robots.length : 0), [robots]);
 
@@ -1324,5 +1694,7 @@ export function useRobotStream({
     robots,
     robotCount,
     recenter,
+    /** The selected unit's live progress along its route, or null (§3N). */
+    selectedRouteProgress,
   };
 }

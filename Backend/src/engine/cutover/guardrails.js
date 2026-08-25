@@ -196,8 +196,32 @@ function assess(declaration, window) {
   const startedAtMs = observed.windowStartedAtMs;
   const endedAtMs = observed.windowEndedAtMs;
 
-  if (typeof startedAtMs !== "number" || typeof endedAtMs !== "number") {
-    throw new Error("an assessment names the observation window it evaluated, by both endpoints");
+  /**
+   * ── Both endpoints are instants, not merely of type `number` ────────────────
+   *
+   * PHASE 15 remediation (P15-E1, second site). This read `typeof … !== "number"`, and
+   * `typeof NaN === "number"`. Every comparison against `NaN` is false, so a window with a
+   * `NaN` endpoint switched off **both** of this function's own rules rather than failing
+   * either: `startedAtMs < declaration.declaredAtMs` was false, so the pre-declaration
+   * refusal — *"the refusal this module exists for"*, two screens down — never fired; and
+   * `elapsedSeconds < declaration.observationWindowSeconds` was false, so a window of no
+   * length satisfied the length requirement. A shard with no breached guardrail then
+   * reported `PROCEED`.
+   *
+   * The production composition supplies finite endpoints today (`server.js` builds them
+   * from `declaration.declaredAtMs`, which `declare()` validates, and `Date.now()`), so this
+   * was latent rather than live. It is fixed rather than recorded because it is permissive:
+   * the sibling finding at `evidence.js`'s PRODUCTION branch is the identical mechanism and
+   * *was* reachable, and a fail-open on a path nobody reaches today is a fail-open waiting
+   * for the caller that does.
+   */
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(endedAtMs)) {
+    throw new Error(
+      "an assessment names the observation window it evaluated, by both endpoints, as finite instants. " +
+        "`NaN` and `Infinity` are refused rather than compared: every comparison against them is false, so " +
+        "an unusable endpoint would silently switch off both the pre-declaration ordering refusal and the " +
+        "window-length requirement instead of failing them.",
+    );
   }
 
   // The refusal this module exists for. A window that opened before its guardrails were

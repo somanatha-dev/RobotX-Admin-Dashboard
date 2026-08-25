@@ -31,10 +31,14 @@
 import {
   CAMPUS_FEATURE_KIND,
   CAMPUS_CATEGORY,
+  OPERATIONAL_ROLE,
+  OPERATIONAL_PRIORITY,
   ROAD_CLASS,
   PATH_CLASS,
   LABEL_PRIORITY,
+  isVerified,
   labelMinZoomFor,
+  operationalPriorityFor,
 } from './campusSchema.js';
 
 // ── Source and layer ids ─────────────────────────────────────────────────────
@@ -50,6 +54,20 @@ export const CAMPUS_SOURCE = Object.freeze({
 
 export const CAMPUS_LAYER = Object.freeze({
   VENDOR_CLIP: 'robotx-campus-vendor-clip',
+  /** A ring around gates only — see the gate treatment note on POINTS (§3B). */
+  GATE_RING: 'robotx-campus-gate-ring',
+  /**
+   * The selected feature's label, on its own layer so it can ignore collisions.
+   *
+   * §3K: *Always prioritize: selected feature.* A sort key only wins a
+   * collision it is IN — a selected building whose label was already dropped at
+   * this zoom is not competing at all, so raising its rank changes nothing. A
+   * dedicated layer with `text-allow-overlap` is the only thing that guarantees
+   * the thing an operator just clicked is the thing they can read. Its filter
+   * is set imperatively from the selection; with nothing selected it matches
+   * nothing and costs nothing.
+   */
+  LABEL_SELECTED: 'robotx-campus-label-selected',
   BOUNDARY_FILL: 'robotx-campus-boundary-fill',
   BOUNDARY_LINE: 'robotx-campus-boundary-line',
   GROUND_FILL: 'robotx-campus-ground-fill',
@@ -87,10 +105,14 @@ export const CAMPUS_LAYER_ORDER = Object.freeze([
   // Extrusions last among the geometry: a building stands ON the road surface,
   // and drawing it after the roads is what makes the contact read correctly.
   CAMPUS_LAYER.BUILDINGS,
+  // The gate ring sits under the point markers so the dot stays the thing that
+  // is read; the ring only says "this one is a way on and off the site".
+  CAMPUS_LAYER.GATE_RING,
   CAMPUS_LAYER.POINTS,
   CAMPUS_LAYER.LABEL_P3,
   CAMPUS_LAYER.LABEL_P2,
   CAMPUS_LAYER.LABEL_P1,
+  CAMPUS_LAYER.LABEL_SELECTED,
 ]);
 
 /** Layers whose features answer a click with a details card (§43). */
@@ -145,6 +167,19 @@ function featureProperties(f) {
     roadClass: f.roadClass || null,
     pathClass: f.pathClass || null,
     labelPriority: Number(f.labelPriority) || LABEL_PRIORITY.DETAIL,
+    // ── The operational hierarchy, as style inputs (§3C, §3K) ────────────
+    // Derived once at import (`semantics/campusOperational.js`) and carried
+    // through as data, so no layer expression ever asks what a feature IS —
+    // it asks what rank it holds. A definition built before this existed still
+    // renders: every field falls back to the neutral, non-operational value.
+    operationalRole: f.operationalRole || OPERATIONAL_ROLE.NONE,
+    operationalPriority: Number(f.operationalPriority) || operationalPriorityFor(f.operationalRole),
+    /** Lower wins a label collision. */
+    labelRank: Number(f.labelRank) || operationalPriorityFor(f.operationalRole),
+    /** Marker size multiplier — 1 is an ordinary POI. */
+    poiScale: typeof f.poiScale === 'number' ? f.poiScale : 1,
+    /** Drives the calm "checked" treatment in the UI, never a warning colour. */
+    verified: isVerified(f),
     // ── The two heights (§38) ────────────────────────────────────────────
     // `height` is only present when the record carries a MEASURED one, and it
     // exists here so an operator's details card can show it. `renderHeight` is
@@ -342,7 +377,7 @@ function groundColorExpression(palette) {
  * and the map is updated in place — no layer is removed, re-added or reloaded
  * (§20, §23).
  */
-export function campusStyleForTheme(theme, reveal = 1) {
+export function campusStyleForTheme(theme, reveal = 1, emphasis = 0) {
   const c = theme.campus;
   const r = theme.roads;
   const l = theme.labels;
@@ -353,6 +388,56 @@ export function campusStyleForTheme(theme, reveal = 1) {
   const v = Math.max(0, Math.min(1, typeof reveal === 'number' && Number.isFinite(reveal) ? reveal : 1));
   const o = (value) => value * v;
 
+  /**
+   * ── Operations emphasis (§3H) ────────────────────────────────────────────
+   * 0 = the campus as a place. 1 = the campus as a worksite.
+   *
+   * It is a MIX, not a switch, so the mode change animates on the same
+   * frame-by-frame path every other theme value does, and so "how much" is one
+   * number rather than a second set of colours to keep in sync.
+   *
+   * What it must not do is hide the campus (§3H says so twice). So nothing is
+   * removed and nothing is turned off: the building mass and the ground drop
+   * ONE step so the operational overlay separates from them, the POIs the fleet
+   * has no business with recede, and the roads — which are how an operator
+   * reads where a unit can go — are left completely alone.
+   */
+  const e = Math.max(0, Math.min(1, typeof emphasis === 'number' && Number.isFinite(emphasis) ? emphasis : 0));
+  /** Mix from the normal value toward the operations value. */
+  const em = (normal, operations) => normal + (operations - normal) * e;
+
+  /**
+   * Is this feature something the fleet operates on? Used to recede the
+   * scenery rather than to promote the work: a landmark stays on the map, at
+   * a lower opacity, because an operator still navigates by it.
+   */
+  const isOperational = ['<', ['coalesce', ['get', 'operationalPriority'], OPERATIONAL_PRIORITY.NONE], OPERATIONAL_PRIORITY.NONE];
+
+  /** Marker size multiplier, defaulting to an ordinary POI. */
+  const poiScale = ['coalesce', ['get', 'poiScale'], 1];
+
+  /**
+   * Read a theme number, with the value this layer had before that key existed.
+   *
+   * Mid-transition frames are produced by walking two theme trees, and a key
+   * present in only one of them is carried across verbatim — so a theme (or a
+   * hand-built frame in a test) that predates one of the lighting keys must
+   * still produce a complete, applicable paint value rather than `undefined`,
+   * which Mapbox accepts silently and then renders as black (§28).
+   */
+  const num = (value, fallback) => (typeof value === 'number' && Number.isFinite(value) ? value : fallback);
+  const hex = (value, fallback) => (typeof value === 'string' && value ? value : fallback);
+
+  /**
+   * ── Emissive strength (§59) ──────────────────────────────────────────────
+   * How much of this layer's colour survives the scene's lighting. Standard is
+   * a lit style: at 0 (the spec default) a colour is multiplied by whatever
+   * light is falling on it, which is why a near-white night road rendered grey.
+   * The theme states it per layer so "lit by the sun" and "lit by street
+   * lighting" are different, deliberate answers rather than one global fudge.
+   */
+  const emissive = (value, fallback = 0) => num(value, fallback);
+
   /** Selected features brighten rather than glow (§36). */
   const withSelection = (base, highlight) => [
     'case',
@@ -361,17 +446,21 @@ export function campusStyleForTheme(theme, reveal = 1) {
     base,
   ];
 
-  const labelPaint = (secondary) => ({
+  const labelPaint = (secondary, opacity = 1) => ({
     'text-color': secondary ? l.secondaryColor : l.color,
     'text-halo-color': l.halo,
     'text-halo-width': l.haloWidth,
     'text-halo-blur': 0.4,
-    'text-opacity': o(1),
+    'text-opacity': o(opacity),
   });
 
   return {
     [CAMPUS_LAYER.BOUNDARY_FILL]: {
-      paint: { 'fill-color': c.boundaryFill, 'fill-opacity': o(c.boundaryFillOpacity) },
+      paint: {
+        'fill-color': c.boundaryFill,
+        'fill-opacity': o(c.boundaryFillOpacity),
+        'fill-emissive-strength': emissive(c.groundEmissive),
+      },
     },
     [CAMPUS_LAYER.BOUNDARY_LINE]: {
       paint: {
@@ -379,12 +468,14 @@ export function campusStyleForTheme(theme, reveal = 1) {
         'line-opacity': o(c.boundaryLineOpacity),
         'line-width': ['interpolate', ['linear'], ['zoom'], 13, 1, 17, 2.4],
         'line-dasharray': [3, 2],
+        'line-emissive-strength': emissive(c.groundEmissive),
       },
     },
     [CAMPUS_LAYER.GROUND_FILL]: {
       paint: {
         'fill-color': withSelection(groundColorExpression(c.ground), c.buildingHighlight),
-        'fill-opacity': o(c.groundOpacity),
+        'fill-opacity': o(em(c.groundOpacity, c.groundOpacity * 0.78)),
+        'fill-emissive-strength': emissive(c.groundEmissive),
       },
     },
     [CAMPUS_LAYER.GROUND_LINE]: {
@@ -392,12 +483,15 @@ export function campusStyleForTheme(theme, reveal = 1) {
         'line-color': c.groundEdge,
         'line-opacity': o(c.groundEdgeOpacity),
         'line-width': ['interpolate', ['linear'], ['zoom'], 15, 0.6, 18, 1.4],
+        'line-emissive-strength': emissive(c.groundEmissive),
       },
     },
     [CAMPUS_LAYER.BUILDINGS]: {
       paint: {
         'fill-extrusion-color': withSelection(buildingColorExpression(c.buildings), c.buildingHighlight),
-        'fill-extrusion-opacity': o(c.buildingOpacity),
+        // One step back in Operations, never off: an operator still reads the
+        // route against the buildings it runs between (§3H).
+        'fill-extrusion-opacity': o(em(c.buildingOpacity, c.buildingOpacity * 0.86)),
         // ── What this height IS (§8, §38) ────────────────────────────────
         // `renderHeight` — a DRAWING value. For RNSIT it comes from OSM
         // `building:levels` where the source has them and from a conservative
@@ -416,31 +510,61 @@ export function campusStyleForTheme(theme, reveal = 1) {
           16, ['case', ['has', 'renderHeight'], ['get', 'renderHeight'], ['case', ['has', 'height'], ['get', 'height'], 0]],
         ],
         'fill-extrusion-base': 0,
-        // Roof-to-wall contrast without a second layer: the vertical gradient
-        // darkens each face toward its base, and the ambient occlusion lays a
-        // short contact shadow where the walls meet the ground. Together they
-        // are what stops a campus of low blocks reading as flat coloured
-        // rectangles (§11) — no glow, no exaggerated shadow (§46).
+        // ── What gives a low block its volume (§11, §46) ──────────────────
+        // The vertical gradient darkens each face toward its base; the ambient
+        // occlusion lays the contact shading where walls meet the ground.
+        //
+        // `-ground-radius` / `-wall-radius` are the forms Mapbox reads when the
+        // style has `lights` — which Standard always does — and the legacy
+        // `-radius` is kept for a style that has none. The GROUND radius is how
+        // far the shading reaches away from the wall, which is the honest way
+        // to lengthen a shadow at a low sun: it is the building's own occlusion
+        // extending, not a drawn shape standing in for one (§24, §26).
+        //
+        // Real cast shadows are left to the style's own directional light,
+        // which `fill-extrusion-cast-shadows` opts into by default — a low
+        // preset (Evening's `dawn`) therefore throws genuinely long ones
+        // without this layer claiming a sun position of its own.
         'fill-extrusion-vertical-gradient': true,
-        'fill-extrusion-ambient-occlusion-intensity': c.buildingAoIntensity,
-        'fill-extrusion-ambient-occlusion-radius': 3.2,
+        'fill-extrusion-ambient-occlusion-intensity': num(c.buildingAoIntensity, 0.28),
+        'fill-extrusion-ambient-occlusion-radius': num(c.buildingAoRadius, 3.2),
+        'fill-extrusion-ambient-occlusion-ground-radius': num(c.buildingAoGroundRadius, 3.2),
+        'fill-extrusion-ambient-occlusion-wall-radius': num(c.buildingAoWallRadius, 3.2),
+        // Self-lit fraction — zero by day, meaningful at night (§59).
+        'fill-extrusion-emissive-strength': emissive(c.buildingEmissive),
+        // Light pooling at the foot of a building. Zero by day, so this costs
+        // nothing where it would only look like a glow (§46).
+        'fill-extrusion-flood-light-color': hex(c.floodColor, '#ffffff'),
+        'fill-extrusion-flood-light-intensity': num(c.floodIntensity, 0),
+        'fill-extrusion-flood-light-wall-radius': num(c.floodWallRadius, 0),
+        'fill-extrusion-flood-light-ground-radius': num(c.floodGroundRadius, 0),
       },
     },
     [CAMPUS_LAYER.ROAD_MAIN_CASING]: {
-      paint: { 'line-color': r.main.casing, 'line-opacity': o(0.7), 'line-width': roadWidth(r.main.widthScale * 1.45) },
+      paint: {
+        'line-color': r.main.casing,
+        // Themed rather than fixed: a bright casing under a dark Day road is
+        // load-bearing, a dark casing under a lit Night road is load-bearing,
+        // and one hard-coded 0.7 cannot be both.
+        'line-opacity': o(num(r.main.casingOpacity, 0.7)),
+        'line-width': roadWidth(r.main.widthScale * num(r.main.casingScale, 1.45)),
+        'line-emissive-strength': emissive(r.main.emissive),
+      },
     },
     [CAMPUS_LAYER.ROAD_MAIN]: {
       paint: {
         'line-color': r.main.color,
         'line-opacity': o(r.main.opacity),
         'line-width': roadWidth(r.main.widthScale),
+        'line-emissive-strength': emissive(r.main.emissive),
       },
     },
     [CAMPUS_LAYER.ROAD_SECONDARY_CASING]: {
       paint: {
         'line-color': r.secondary.casing,
-        'line-opacity': o(0.6),
-        'line-width': roadWidth(r.secondary.widthScale * 1.5),
+        'line-opacity': o(num(r.secondary.casingOpacity, 0.6)),
+        'line-width': roadWidth(r.secondary.widthScale * num(r.secondary.casingScale, 1.5)),
+        'line-emissive-strength': emissive(r.secondary.emissive),
       },
     },
     [CAMPUS_LAYER.ROAD_SECONDARY]: {
@@ -448,6 +572,7 @@ export function campusStyleForTheme(theme, reveal = 1) {
         'line-color': r.secondary.color,
         'line-opacity': o(r.secondary.opacity),
         'line-width': roadWidth(r.secondary.widthScale),
+        'line-emissive-strength': emissive(r.secondary.emissive),
       },
     },
     [CAMPUS_LAYER.ROAD_SERVICE]: {
@@ -455,6 +580,7 @@ export function campusStyleForTheme(theme, reveal = 1) {
         'line-color': r.service.color,
         'line-opacity': o(r.service.opacity),
         'line-width': roadWidth(r.service.widthScale),
+        'line-emissive-strength': emissive(r.service.emissive),
       },
     },
     [CAMPUS_LAYER.PATH]: {
@@ -465,6 +591,7 @@ export function campusStyleForTheme(theme, reveal = 1) {
         // A dash is the cheapest unambiguous "this is not a road" signal, and
         // survives every theme without relying on colour alone.
         'line-dasharray': [1.6, 1.4],
+        'line-emissive-strength': emissive(r.path.emissive),
       },
     },
     [CAMPUS_LAYER.STEPS]: {
@@ -476,16 +603,37 @@ export function campusStyleForTheme(theme, reveal = 1) {
         // can route over, so it must not read as a thinner footpath — an
         // operator planning around one needs to see the difference (§17).
         'line-dasharray': [0.35, 0.55],
+        'line-emissive-strength': emissive(r.steps.emissive),
+      },
+    },
+    // ── The gate ring (§3B) ──────────────────────────────────────────────
+    // A gate must be recognisable at a glance and must not be huge — a marker
+    // that outgrows the robot beside it is a defect, because the robot is what
+    // the operator is reading (§3E). A ring says "this one is different" using
+    // shape rather than size: the dot stays a dot, and a hollow circle around
+    // it costs no extra area of attention. It is the ONLY campus feature that
+    // gets one.
+    [CAMPUS_LAYER.GATE_RING]: {
+      paint: {
+        'circle-color': c.gate,
+        // Hollow. A filled disc this size would be the loudest object on the
+        // campus; an outline is a badge.
+        'circle-opacity': 0,
+        'circle-stroke-color': c.gate,
+        'circle-stroke-opacity': o(em(0.55, 0.85)),
+        'circle-stroke-width': 1.4,
+        'circle-emissive-strength': emissive(c.pointEmissive),
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 14, 6, 17, 11, 19, 15],
       },
     },
     [CAMPUS_LAYER.POINTS]: {
       paint: {
-        // ── The one POI that outranks the others (§8, §15) ────────────────
-        // A gate is where a fleet enters and leaves the site, so it is the
-        // only point marker given its own colour and a wider ring. Everything
-        // else — facilities, parking, playgrounds, landmarks — shares the
-        // neutral treatment, because a map where every category shouts is a
-        // map where nothing does.
+        // ── The one POI that outranks the others (§8, §15, §3C) ───────────
+        // A gate is where a fleet enters and leaves the site, so it keeps its
+        // own colour and its ring. Everything else shares the neutral
+        // treatment and separates by SIZE alone, from the operational scale
+        // derived at import — because a map where every category has its own
+        // colour is a map where none of them means anything.
         'circle-color': withSelection(
           ['case', ['==', ['get', 'kind'], CAMPUS_FEATURE_KIND.GATE], c.gate, c.buildingRoof],
           c.buildingHighlight
@@ -495,25 +643,42 @@ export function campusStyleForTheme(theme, reveal = 1) {
           c.buildingHighlight
         ),
         'circle-stroke-width': ['case', ['==', ['get', 'kind'], CAMPUS_FEATURE_KIND.GATE], 2.4, 1.5],
-        'circle-opacity': o(0.9),
-        'circle-stroke-opacity': o(1),
+        // In Operations the scenery recedes and the working locations do not.
+        // Nothing disappears: the floor is 0.45, which is still clearly a
+        // marker on the map (§3H — do not hide the campus).
+        'circle-opacity': ['case', isOperational, o(0.92), o(em(0.9, 0.45))],
+        'circle-stroke-opacity': ['case', isOperational, o(1), o(em(1, 0.5))],
+        // A gate dot is a few pixels across. Unlit at night it is the first
+        // thing the scene lighting loses, and a gate an operator cannot find
+        // is the one POI that matters (§15, §59).
+        'circle-emissive-strength': emissive(c.pointEmissive),
         // Deliberately small. These markers sit under the robot layer and must
         // not compete with it — a robot is the thing an operator is reading
         // (§16), and a POI that draws the eye first is a defect, not a feature.
+        // `poiScale` is 1 for an ordinary location and at most 1.45 for a gate.
+        //
+        // The multiplication is inside each STOP, not wrapped around the
+        // interpolate. `["zoom"]` may only be the input of a top-level `step`
+        // or `interpolate`, so `['*', interpolate(zoom), scale]` is rejected by
+        // the style spec — quietly, on a live map, by `applyStyle`'s try/catch,
+        // which is precisely why `campusStyleSpec.test.mjs` runs these layers
+        // through the vendor's own validator.
         'circle-radius': [
           'interpolate',
           ['linear'],
           ['zoom'],
-          13, ['case', ['==', ['get', 'kind'], CAMPUS_FEATURE_KIND.GATE], 3.5, 2.5],
-          17, ['case', ['==', ['get', 'kind'], CAMPUS_FEATURE_KIND.GATE], 6.5, 4.5],
-          19, ['case', ['==', ['get', 'kind'], CAMPUS_FEATURE_KIND.GATE], 8.5, 6],
+          13, ['*', 2.5, poiScale],
+          17, ['*', 4.5, poiScale],
+          19, ['*', 6, poiScale],
         ],
       },
       layout: {
-        // Gates draw above the other points so a facility marker can never
-        // cover the way onto the site. (`circle-sort-key` is layout, not paint —
-        // setting it as paint fails silently and the ordering never applies.)
-        'circle-sort-key': ['case', ['==', ['get', 'kind'], CAMPUS_FEATURE_KIND.GATE], 1, 0],
+        // Operational markers draw above the scenery, so a landmark dot can
+        // never cover the way onto the site. (`circle-sort-key` is layout, not
+        // paint — setting it as paint fails silently and the order never
+        // applies.) Negated because a HIGHER sort key draws later, i.e. on top,
+        // while a LOWER operational priority means more important.
+        'circle-sort-key': ['-', 0, ['coalesce', ['get', 'operationalPriority'], OPERATIONAL_PRIORITY.NONE]],
       },
     },
     [CAMPUS_LAYER.LABEL_P1]: {
@@ -525,8 +690,20 @@ export function campusStyleForTheme(theme, reveal = 1) {
       layout: { 'text-size': ['interpolate', ['linear'], ['zoom'], 15.5, 11 * l.sizeScale, 18, 13.5 * l.sizeScale] },
     },
     [CAMPUS_LAYER.LABEL_P3]: {
-      paint: labelPaint(true),
+      // The detail band is where clutter lives — toilets, an ATM cabin, a
+      // fountain. In Operations it steps back rather than disappearing, so the
+      // map gets quieter without the operator losing the ability to read it.
+      paint: labelPaint(true, em(1, 0.62)),
       layout: { 'text-size': ['interpolate', ['linear'], ['zoom'], 17, 10 * l.sizeScale, 19, 12 * l.sizeScale] },
+    },
+    [CAMPUS_LAYER.LABEL_SELECTED]: {
+      paint: {
+        ...labelPaint(false, 1),
+        // A slightly stronger halo, because this label is deliberately allowed
+        // to overlap its neighbours and has to stay readable where it lands.
+        'text-halo-width': l.haloWidth + 0.5,
+      },
+      layout: { 'text-size': ['interpolate', ['linear'], ['zoom'], 13, 12 * l.sizeScale, 18, 14.5 * l.sizeScale] },
     },
   };
 }
@@ -553,9 +730,15 @@ function labelLayerSpec(id, priority, uppercase) {
       'text-max-width': 9,
       'text-letter-spacing': uppercase ? 0.08 : 0.01,
       'text-padding': 4,
-      // Lower priority number wins a collision — the campus name survives, the
-      // entrance label is the one that gets dropped.
-      'symbol-sort-key': ['get', 'labelPriority'],
+      // ── Which label survives a collision (§3K) ────────────────────────────
+      // Lower sort key wins. This used to be `labelPriority`, which is the ZOOM
+      // BAND — and every feature in one of these layers has the same band by
+      // construction, so the key was constant and collisions were resolved by
+      // whatever order the source happened to be in. `labelRank` is the
+      // operational priority derived at import, so within a band the gate beats
+      // the department, the department beats the fountain, and the answer comes
+      // from the semantic model rather than from array order.
+      'symbol-sort-key': ['coalesce', ['get', 'labelRank'], ['get', 'labelPriority']],
       'text-allow-overlap': false,
       'text-ignore-placement': false,
       // Labels are anchored to the world and reprojected by Mapbox every
@@ -670,6 +853,15 @@ export function campusLayerSpecs() {
       filter: ['==', ['get', 'kind'], CAMPUS_FEATURE_KIND.BUILDING],
     },
     {
+      id: CAMPUS_LAYER.GATE_RING,
+      type: 'circle',
+      source: CAMPUS_SOURCE.POINTS,
+      // Higher than the POINTS floor: below this the ring and the dot are the
+      // same few pixels and the badge reads as a fatter marker, not as a badge.
+      minzoom: 14,
+      filter: ['==', ['get', 'kind'], CAMPUS_FEATURE_KIND.GATE],
+    },
+    {
       id: CAMPUS_LAYER.POINTS,
       type: 'circle',
       source: CAMPUS_SOURCE.POINTS,
@@ -678,5 +870,52 @@ export function campusLayerSpecs() {
     labelLayerSpec(CAMPUS_LAYER.LABEL_P3, LABEL_PRIORITY.DETAIL, false),
     labelLayerSpec(CAMPUS_LAYER.LABEL_P2, LABEL_PRIORITY.SECONDARY, false),
     labelLayerSpec(CAMPUS_LAYER.LABEL_P1, LABEL_PRIORITY.PRIMARY, true),
+    selectedLabelLayerSpec(),
   ];
+}
+
+/**
+ * The selected feature's label (§3K).
+ *
+ * Two things make it different from the banded layers: it has no `minzoom`, so
+ * a selection made from search is readable the moment the camera arrives rather
+ * than only past zoom 15.5; and it ignores collisions, so it cannot be the
+ * label that gets dropped. Both are safe precisely because at most one feature
+ * matches — the filter below matches NOTHING until `useCampusLayer` narrows it
+ * to the selected id.
+ */
+export function selectedLabelLayerSpec() {
+  return {
+    id: CAMPUS_LAYER.LABEL_SELECTED,
+    type: 'symbol',
+    source: CAMPUS_SOURCE.LABELS,
+    filter: selectedLabelFilter(null),
+    layout: {
+      'text-field': ['get', 'name'],
+      'text-font': ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+      'text-anchor': 'top',
+      // Clear of the marker it belongs to, so the dot the operator just clicked
+      // is not covered by the label naming it.
+      'text-offset': [0, 0.9],
+      'text-max-width': 11,
+      'text-padding': 2,
+      'text-allow-overlap': true,
+      'text-ignore-placement': true,
+      'text-pitch-alignment': 'viewport',
+      'text-rotation-alignment': 'viewport',
+    },
+  };
+}
+
+/**
+ * The filter that narrows the selected-label layer to one feature.
+ *
+ * With no selection it compares against a string no campus id can be — every id
+ * is an OSM slug or a supplemental slug and none contains a space — so the
+ * layer stays present, valid and drawing nothing. Far less fragile than adding
+ * and removing a layer on every selection change, and it means the layer's
+ * position in the draw order is fixed once, at install.
+ */
+export function selectedLabelFilter(featureId) {
+  return ['==', ['get', 'id'], featureId ? String(featureId) : ' no selection '];
 }

@@ -23,17 +23,104 @@
   transition: background 900ms ease;
 }
 
-.map-view-controls {
+/* ── The colour grade ───────────────────────────────────────────────────────
+
+   Sits directly over the canvas and under every panel. One layer per theme,
+   cross-faded by opacity: the gradients themselves are static, so a theme
+   change animates without React re-rendering anything per frame — the same
+   contract the campus layers hold (§20).
+
+   Inert in every sense: no pointer events, no layout, and nothing beneath it
+   moves. It changes how the world LOOKS and never what the world IS (§24). */
+.map-grade {
   position: absolute;
-  top: 0.75rem;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.map-grade__layer {
+  position: absolute;
+  inset: 0;
+  /* Duration comes from THEME_TRANSITION_MS inline, so the grade and the map
+     are never two different lengths of the same transition. */
+  transition-property: opacity;
+  transition-timing-function: ease;
+  will-change: opacity;
+}
+
+/* The grade covers the WORLD. It must not cover the things drawn on top of the
+   world: a robot marker is the object the operator is reading (§16), and the
+   vendor's zoom / compass / attribution are controls, not scenery. Mapbox gives
+   its control corners `z-index: 2` and its markers none at all, so both fall
+   under `.map-grade` unless they are lifted past it. Neither element creates a
+   stacking context between here and there — `.mapboxgl-map` is `position:
+   relative; z-index: auto` and the canvas and control containers are unstyled
+   — so a single z-index above the grade is enough. */
+.mapboxgl-marker,
+.mapboxgl-popup,
+.map-canvas-host .mapboxgl-ctrl-top-left,
+.map-canvas-host .mapboxgl-ctrl-top-right,
+.map-canvas-host .mapboxgl-ctrl-bottom-left,
+.map-canvas-host .mapboxgl-ctrl-bottom-right {
+  z-index: 7;
+}
+
+/* ── The right-hand rail ────────────────────────────────────────────────────
+
+   The theme control, the camera modes and the selected-robot panel were three
+   independently-positioned absolute boxes at the same corner, each carrying
+   its own guess about how tall the ones above it were. They were wrong: at
+   campus focus the camera-mode row extended to ~4.3rem and the panel started
+   at 3.75rem, so the panel's header — the robot's ID — rendered underneath it.
+
+   A guess about someone else's height cannot be made correct; it can only be
+   removed. The rail is one flow, so the boxes stack by measurement instead. */
+.map-right-rail {
+  position: absolute;
+  /* Clears MapPage's fullscreen toggle (top-3 right-3, 2.25rem square), which
+     shares this corner and sits BELOW this rail in stacking order — without
+     the offset the theme control simply buries it. Matched to `.map-search`
+     on the opposite side so the two read as one band. */
+  top: 3.75rem;
   right: 0.75rem;
   z-index: 26;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 0.375rem;
+  gap: 0.5rem;
   /* The stack itself is inert so it never blocks a drag on the map; only the
      controls inside it accept pointer events. */
+  pointer-events: none;
+}
+
+.map-right-rail > * {
+  pointer-events: auto;
+}
+
+/* `.map-selected-panel` is positioned in globals.css, where it predates the
+   rail and is still the panel's own base rule. Inside the rail it is a flow
+   item: the rail owns this corner now, and it owns it once. */
+.map-right-rail .map-selected-panel {
+  position: static;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  z-index: auto;
+  max-width: 100%;
+}
+
+/* The view controls carry no position of their own — they are a rail item, and
+   a second opinion about where this corner is is exactly what caused the
+   overlap. Inert as a block so a drag over the gap between the two segmented
+   rows still pans the map; the rows themselves take pointer events. */
+.map-view-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.375rem;
   pointer-events: none;
 }
 
@@ -88,12 +175,19 @@
 
 /* ── Campus search ──────────────────────────────────────────────────────── */
 
+/* Indented past Mapbox's own NavigationControl, which the map adds at
+   `top-left`: the vendor's stylesheet puts that group at 10px/10px and each of
+   its three buttons is 29px square, so it occupies x 10-39px and y 10-107px.
+   At `left: 0.75rem` this input was laid straight over the zoom-out and
+   compass buttons — a control the operator uses constantly, hidden under one
+   they use occasionally. `top` stays clear of `.map-filters-overlay`, which
+   takes this corner when the filter bar is not portalled into a page host. */
 .map-search {
   position: absolute;
   top: 3.75rem;
-  left: 0.75rem;
+  left: 3.5rem;
   z-index: 26;
-  width: min(18rem, calc(100% - 1.5rem));
+  width: min(18rem, calc(100% - 4.25rem));
 }
 
 .map-search__input {
@@ -166,6 +260,12 @@
   color: rgba(56, 189, 248, 0.9);
 }
 
+/* A campus is a bigger jump than a building or a unit — it changes which site
+   is on screen — so it reads differently in the list. */
+.map-search__result-kind.is-campus {
+  color: rgba(163, 230, 53, 0.9);
+}
+
 .map-search__empty {
   padding: 0.5rem;
   font-size: 0.6875rem;
@@ -175,12 +275,19 @@
 
 /* ── Feature details card ───────────────────────────────────────────────── */
 
+/* The bottom-right corner is a stack, not a pile. From the edge upward:
+   Mapbox's attribution (vendor CSS, 10px), the Recenter button, then this
+   card. At `bottom: 0.75rem` the card sat squarely on top of Recenter, which
+   is how a details card ended up hiding the control for getting back to the
+   fleet. */
 .map-feature-card {
   position: absolute;
-  bottom: 0.75rem;
+  bottom: 5.5rem;
   right: 0.75rem;
   z-index: 27;
   width: 17rem;
+  max-height: calc(100% - 6.75rem);
+  overflow-y: auto;
   padding: 0.75rem;
   display: flex;
   flex-direction: column;
@@ -308,6 +415,251 @@
   background: rgba(56, 189, 248, 0.2);
 }
 
+/* Provenance and verification are TWO facts, so they get two cells (§3A).
+   Collapsing them into one badge is how a feature the owner has confirmed ends
+   up displaying "NOT VERIFIED". */
+.map-feature-card__provenance-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.375rem 0.75rem;
+  margin: 0;
+}
+
+.map-feature-card__provenance-grid dt {
+  font-size: 0.5625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(226, 232, 240, 0.7);
+}
+
+.map-feature-card__provenance-grid dd {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.map-feature-card__checked {
+  margin: 0.375rem 0 0;
+  font-size: 0.625rem;
+  line-height: 1.5;
+  color: rgba(190, 242, 200, 0.95);
+}
+
+/* ── Gate access ──────────────────────────────────────────────────────────
+   Its own block above the provenance block, because for a gate this is the
+   operationally load-bearing section — and when it is empty, saying so is the
+   point (§3B). */
+.map-feature-card__access {
+  padding: 0.5rem;
+  border-radius: var(--radius-md);
+  background: rgba(148, 163, 184, 0.1);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+}
+
+.map-feature-card__access-head {
+  font-size: 0.5625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(148, 163, 184, 0.95);
+}
+
+.map-feature-card__access-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.25rem 0.75rem;
+  margin: 0.375rem 0 0;
+}
+
+.map-feature-card__access-grid dt {
+  font-size: 0.5625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(148, 163, 184, 0.85);
+}
+
+.map-feature-card__access-grid dd {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.map-feature-card__access-note {
+  margin: 0.375rem 0 0;
+  font-size: 0.625rem;
+  line-height: 1.5;
+  color: rgba(226, 232, 240, 0.8);
+}
+
+/* ── Selected-robot panel additions (§3N) ─────────────────────────────────
+   The four-up grid stays for the short values an operator scans; anything that
+   can wrap — a coordinate pair, a feature name, a task id — goes in a label/value
+   list instead, because a wrapped value in a 2-column grid pushes its neighbour
+   out of alignment and the panel stops being scannable. */
+.map-selected-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.5rem 0 0;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.map-selected-panel__list > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.map-selected-panel__list dt {
+  font-size: 0.5625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(148, 163, 184, 0.9);
+  flex: 0 0 auto;
+}
+
+.map-selected-panel__list dd {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.map-selected-panel__muted {
+  font-weight: 500;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.map-selected-panel__route {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.map-selected-panel__route-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.map-selected-panel__bar {
+  margin-top: 0.3125rem;
+  height: 0.25rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.25);
+  overflow: hidden;
+}
+
+.map-selected-panel__bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.9);
+  transition: width 0.4s ease;
+}
+
+.map-selected-panel__route-warn {
+  font-size: 0.625rem;
+  line-height: 1.5;
+  color: rgba(253, 224, 71, 0.95);
+}
+
+/* ── Route findings notice (§3D) ──────────────────────────────────────────
+   Bottom-left, so it never shares a corner with the campus coverage notice
+   (bottom-centre) or the details card (bottom-right). Amber only when something
+   actually contradicts the campus geometry; a plain note stays neutral, because
+   an always-amber panel is one nobody reads. */
+.map-route-notice {
+  position: absolute;
+  bottom: 0.75rem;
+  left: 0.75rem;
+  z-index: 26;
+  width: min(22rem, calc(100% - 1.5rem));
+  border-radius: var(--radius);
+  background: rgba(9, 14, 27, 0.9);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  color: #e2e8f0;
+  overflow: hidden;
+}
+
+.map-route-notice.has-suspect {
+  border-color: rgba(234, 179, 8, 0.42);
+}
+
+.map-route-notice__toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4375rem 0.75rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.map-route-notice__dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.9);
+  flex: 0 0 auto;
+}
+
+.map-route-notice.has-suspect .map-route-notice__dot {
+  background: #eab308;
+  box-shadow: 0 0 0 3px rgba(234, 179, 8, 0.2);
+}
+
+.map-route-notice__chevron {
+  margin-left: auto;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.map-route-notice__body {
+  padding: 0 0.75rem 0.625rem;
+  font-size: 0.6875rem;
+  line-height: 1.55;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.map-route-notice__body ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1rem;
+}
+
+.map-route-notice__body li.is-suspect {
+  color: rgba(253, 224, 71, 0.95);
+}
+
+.map-route-notice__body li.is-note {
+  color: rgba(148, 163, 184, 0.95);
+}
+
+.map-route-notice__units {
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.map-route-notice__foot {
+  margin: 0.5rem 0 0;
+  font-size: 0.625rem;
+  color: rgba(148, 163, 184, 0.9);
+}
+
 /* ── Data coverage notice ───────────────────────────────────────────────── */
 
 .map-data-notice {
@@ -348,6 +700,23 @@
   background: #eab308;
   flex: 0 0 auto;
   box-shadow: 0 0 0 3px rgba(234, 179, 8, 0.2);
+}
+
+/* A campus the owner has confirmed is not a warning state (§3A). The notice
+   keeps its place and its full contents — every remaining gap is still listed
+   inside it — but it stops presenting itself as an alert. The map must read as
+   an operations map, not as a warning dashboard. */
+.map-data-notice.is-verified {
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
+.map-data-notice.is-verified .map-data-notice__dot {
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+}
+
+.map-data-notice.is-verified .map-data-notice__label {
+  color: rgba(148, 163, 184, 0.95);
 }
 
 .map-data-notice__chevron {
@@ -391,6 +760,17 @@
   /* The legend collapses now, so it has to be clickable. */
   pointer-events: auto;
   max-width: 15rem;
+  /* A campus with geometry adds seven rows. On a short viewport that ran the
+     legend off the bottom of the map rather than off the bottom of the panel. */
+  max-height: calc(100% - 1.5rem);
+  overflow-y: auto;
+}
+
+/* A dark carriageway on a dark panel is not a swatch. The casing colour goes
+   round it as a hairline, exactly as it does on the map — so the legend shows
+   the road TREATMENT, not just half of it. */
+.map-legend__swatch--road {
+  box-shadow: 0 0 0 1px var(--legend-road-casing, rgba(148, 163, 184, 0.6));
 }
 
 .map-legend__head {

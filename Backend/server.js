@@ -208,13 +208,20 @@ function startScheduledWorkers(context) {
   // rollback. See `engine/cutover/rollbackPublisher.js` for the whole argument, including
   // why an automated publish of *this* parameter is the one §22.3 permits.
   const rollback = rollbackPublisher.create({
-    versionInForce: async () => {
-      const latest = await prisma.configVersion.findFirst({
-        orderBy: { version: "desc" },
-        select: { payload: true },
-      });
-      return (latest && latest.payload) || null;
-    },
+    // PHASE 15 remediation (P15-E2) — the version **in force**, not the latest published.
+    //
+    // This was `findFirst({ orderBy: { version: "desc" } })`, which is the highest-numbered
+    // published version. That is the version in force only while nobody has published one
+    // without pinning it — and `config.controller.publishVersion` pins only
+    // `if (body.pin !== false)`, so an unpinned candidate awaiting review is a supported and
+    // ordinary state. In it, one automatic rollback carried the candidate's whole payload
+    // forward and **pinned** it: an unreviewed configuration put into force fleet-wide by the
+    // one control whose licence to run without a human is that it may only disable one shard.
+    //
+    // The reader now lives in `cutover/rollbackPublisher.js` beside the contract it satisfies,
+    // so there is one implementation of "which version is in force" rather than a composition
+    // root quietly disagreeing with the module it composes. See that function's header.
+    versionInForce: () => rollbackPublisher.versionInForceReader({ prisma }),
     publish: (request) => configService.publish(prisma, request),
     pin: (version, publishedBy) => configService.pinVersion(prisma, kv, version, publishedBy),
     record: (event, detail) => log.warn(`cutover.${event}`, detail),

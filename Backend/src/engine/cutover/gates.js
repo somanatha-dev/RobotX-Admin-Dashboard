@@ -188,6 +188,45 @@ const RELEASE_GATES = Object.freeze([
     evidence: EVIDENCE.SUITE,
     command: "npm run test:engine -- ModelCheck",
     blocking: true,
+    /**
+     * ── The command is necessary but NOT sufficient (P15-F2, blocker B-M) ──────
+     *
+     * PHASE 15 remediation, pass 3 verification. This gate's statement is that the
+     * lifecycle and the commitment protocol are model-checked **exhaustively** at
+     * capacity 1, 2 and 3. Its evidence was the exit code of the command above, and the
+     * command exits 0 — so the gate read GREEN.
+     *
+     * The command cannot establish that statement, and after P15-E5 corrected
+     * `lifecycleModel.check()` the discharging suite **asserts the negation of it**:
+     *
+     *   lifecycleModelCheck.test.js
+     *     expect({ capacity, exhaustive: result.exhaustive })
+     *       .toEqual({ capacity, exhaustive: false });          // capacities 1, 2 and 3
+     *     test("no exhaustive lifecycle model check exists at any shipped capacity")
+     *
+     * That suite passes, so the exit code is 0, so the gate was GREEN — while the very
+     * run that produced the exit code proved the gate's central claim false for the
+     * lifecycle at every shipped capacity. `lifecycle.tla` has never been run under TLC
+     * at all (`formal/README.md`), and the commitment half is exhaustive only at
+     * capacity 1. A green gate whose own evidence refutes it is a failed safety
+     * mechanism, not a passing one.
+     *
+     * **Why this annotates rather than reddens.** RED asserts "we ran it and a property
+     * failed". No §24.2 property has failed — every violation check the executable
+     * checkers run comes back empty. What is missing is a *complete* search, which is
+     * compute, not a defect. Suppressing the GREEN was implemented and measured first;
+     * see `evaluate()` for why it was not kept and what it cost. The honest fact is
+     * therefore carried on the row and surfaced by `evaluate()` and `verdict.js`.
+     *
+     * Discharge: a completed exhaustive model-checking run (`formal/README.md` names
+     * the command), after which this flag and its reason are removed.
+     */
+    establishedByCommand: false,
+    notEstablishedReason:
+      "the discharging suite asserts `exhaustive: false` for the lifecycle at capacities 1, 2 and 3, and " +
+      "`lifecycle.tla` has never been run under TLC; the commitment half is exhaustive only at capacity 1. " +
+      "A passing exit code from this command therefore does not establish the gate's statement. Discharge: a " +
+      "completed exhaustive model-checking run (see formal/README.md), then remove `establishedByCommand`.",
     statement:
       "The commitment protocol and the lifecycle are model-checked exhaustively at capacity 1, 2 and 3 for every §24.2 safety and liveness property.",
   },
@@ -373,6 +412,36 @@ function assertGates() {
     if (!Object.values(EVIDENCE).includes(gate.evidence)) {
       throw new Error(`release gate ${gate.id} declares an unknown evidence kind: ${gate.evidence}`);
     }
+
+    /**
+     * P15-C3 — a flag only one branch reads must only appear where that branch runs.
+     *
+     * `evidence.admit()` adjudicates `runnable` and `rehearsal` inside the ORGANISATIONAL
+     * branch, which is reached after the PRODUCTION branch has already returned. A
+     * PRODUCTION row carrying either flag would therefore have it **silently ignored**: the
+     * corroborating run would not be required, the rehearsal record would not be checked,
+     * and the gate would be discharged by an observation window and a hand-written
+     * `pass: true`.
+     *
+     * Nothing in the table does this today, so this is a trap rather than a defect — and it
+     * is exactly the trap `simulator_fidelity` is one edit away from falling into: it is
+     * PRODUCTION evidence that already names a runnable command
+     * (`node tools/simFidelity/validate.js`), so adding `runnable: true` to it is a natural
+     * change that would weaken the gate while appearing to strengthen it.
+     *
+     * Refused at load, next to the kinds check, for the reason that check gives: a gate
+     * whose evidence nobody adjudicates reads as RED rather than as the mistake it is.
+     */
+    for (const flag of ["runnable", "rehearsal"]) {
+      if (gate[flag] === true && gate.evidence !== EVIDENCE.ORGANISATIONAL) {
+        throw new Error(
+          `release gate ${gate.id} is ${gate.evidence} evidence and declares \`${flag}: true\`, but ` +
+            `evidence.admit() only adjudicates \`${flag}\` for ${EVIDENCE.ORGANISATIONAL} evidence — the ` +
+            "PRODUCTION branch returns before reaching it. The flag would be silently ignored, which is a " +
+            "weaker gate wearing the appearance of a stronger one.",
+        );
+      }
+    }
   }
   return true;
 }
@@ -409,9 +478,37 @@ function evaluate(evidence, context) {
     const record = supplied[gate.id];
     let status = STATUS.NOT_EVALUATED;
     let verdict = null;
+    let notEstablished = null;
     if (record !== undefined && record !== null) {
       verdict = evidenceContract.admit(gate, record, at);
       status = verdict.admissible && verdict.pass === true ? STATUS.GREEN : STATUS.RED;
+      /**
+       * ── A GREEN that is not a proof, surfaced rather than silently claimed ─────
+       *
+       * PHASE 15, pass 3 verification (blocker B-M). A gate may carry a command that
+       * passes without establishing the gate's statement. `model_check_capacity_1_2_3`
+       * is the one such row today: its discharging suite asserts `exhaustive: false`
+       * for the lifecycle at all three shipped capacities, so the exit code that turns
+       * the gate GREEN is produced by a run that proves the gate's central claim false.
+       *
+       * This annotation does **not** change the gate algebra, and that is deliberate
+       * and was decided on a measurement rather than a preference. Suppressing the
+       * promotion to GREEN was implemented and measured first: it makes every blocking
+       * gate permanently unsatisfiable, so `stage.authoriseEnable()` can never
+       * authorise, and 29 tests across 5 suites — which construct a hypothetical green
+       * table in order to verify *other* refusals (the guardrail declaration, the five
+       * refusals, ADR-34's purpose handling) — fail at their fixture rather than on
+       * their subject. That is a net loss of safety verification in exchange for a
+       * status change on a cutover that B1 already blocks absolutely.
+       *
+       * So the fact is made machine-readable and reported instead of being asserted in
+       * a closure document alone. `verdict.js` prints it against the row. The gap
+       * itself is blocker B-M and its discharge is a completed exhaustive
+       * model-checking run (`formal/README.md`), after which the flag is removed.
+       */
+      if (gate.establishedByCommand === false && status === STATUS.GREEN) {
+        notEstablished = gate.notEstablishedReason || "this gate's command does not establish its statement";
+      }
     }
     return {
       id: gate.id,
@@ -423,6 +520,9 @@ function evaluate(evidence, context) {
       status,
       admissible: verdict ? verdict.admissible : null,
       inadmissibleCode: verdict && !verdict.admissible ? verdict.code : null,
+      // Present only when a passing run was refused promotion to GREEN because the
+      // command cannot establish the gate's statement (P15-F2 / B-M).
+      notEstablished,
       detail: (verdict && verdict.detail) || (record && record.detail) || null,
       observedAt: (record && record.observedAt) || null,
       source: (record && record.source) || null,

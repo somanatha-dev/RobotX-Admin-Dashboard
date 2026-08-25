@@ -20,6 +20,16 @@ const killSwitches = require("../../src/engine/config/killSwitches");
 const NOW = 1_800_000_000_000;
 
 /**
+ * The authoritative parameter source `authoriseEnable` resolves the observation windows from
+ * (P15-F1). The real register: a stub here would be a caller-supplied bound with an extra
+ * function call in front of it, which is the defect this fixture change exists to remove.
+ */
+const REGISTER = service.loadRegister({ reload: true });
+const PARAMETER_VALUES = Object.freeze({
+  get: (name) => (REGISTER.entries.get(name) || {}).default,
+});
+
+/**
  * Every blocking gate green — the only evidence set that lets an enable through.
  *
  * ── PHASE 15 REMEDIATION — this fixture used to be the whole attack ────────
@@ -114,9 +124,12 @@ function allGreen(options) {
 }
 
 /**
- * The context `authoriseEnable` needs to age and bind evidence. The duration bounds are the
- * registered ones; without them `evidence.js` refuses the two windowed gates rather than
- * treating an unbounded window as satisfied.
+ * The context `authoriseEnable` needs to age and bind evidence.
+ *
+ * P15-F1 — the duration bounds are **not** here. A request that states `minObservationMs` is
+ * refused; the authority resolves the requirement from `parameterValues`, which is the real
+ * register rather than a stub, because the content of P15-F1 is precisely that the bound is
+ * the register's and not the caller's.
  */
 function evidenceContext() {
   return {
@@ -124,7 +137,7 @@ function evidenceContext() {
     // Mandatory: `evidence.admit()` refuses a run record when no tree is named to judge it
     // against, because judging one without knowing which tree is no check at all.
     sourceDigest: DIGEST,
-    minObservationMs: { shadow_agreement: 14 * 24 * 3600 * 1000, soak: 72 * 3600 * 1000 },
+    parameterValues: PARAMETER_VALUES,
   };
 }
 

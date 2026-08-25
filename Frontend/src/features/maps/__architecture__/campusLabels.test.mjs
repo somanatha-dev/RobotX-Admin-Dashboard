@@ -29,6 +29,7 @@ import {
   campusCollections,
   campusLayerSpecs,
   labelAnchorFor,
+  selectedLabelFilter,
 } from '../campus/campusLayers.js';
 import { buildCampusSearchIndex, searchCampusIndex, SEARCH_RESULT_TYPE } from '../campus/campusSearch.js';
 import {
@@ -108,8 +109,37 @@ test('each label layer carries the minzoom its priority declares', () => {
     assert.equal(spec.minzoom, labelMinZoomFor(priority));
     assert.deepEqual(spec.filter, ['==', ['get', 'labelPriority'], priority]);
     assert.equal(spec.layout['text-allow-overlap'], false, 'labels must yield to collision detection');
-    assert.deepEqual(spec.layout['symbol-sort-key'], ['get', 'labelPriority']);
+    // ── Which label survives a collision (§3K) ─────────────────────────────
+    // Sorting by `labelPriority` inside a layer that is already FILTERED to one
+    // priority made the key a constant, so collisions were decided by source
+    // order — an accident, not a hierarchy. `labelRank` is the operational
+    // priority derived at import, so the gate beats the department and the
+    // department beats the fountain. `labelPriority` stays as the fallback for
+    // a definition built before the operational model existed.
+    assert.deepEqual(spec.layout['symbol-sort-key'], [
+      'coalesce',
+      ['get', 'labelRank'],
+      ['get', 'labelPriority'],
+    ]);
   }
+});
+
+test('the selected feature gets a label that cannot be collided away (§3K)', () => {
+  // "Always prioritize the selected feature" is not something a sort key can
+  // deliver: a label already dropped at this zoom is not competing for space at
+  // all, so raising its rank changes nothing. Only a layer that ignores
+  // placement guarantees the thing an operator just clicked is readable.
+  const spec = campusLayerSpecs().find((s) => s.id === CAMPUS_LAYER.LABEL_SELECTED);
+  assert.ok(spec, 'the selected-label layer must exist');
+  assert.equal(spec.layout['text-allow-overlap'], true);
+  assert.equal(spec.layout['text-ignore-placement'], true);
+  assert.equal(spec.minzoom, undefined, 'a selection made from search must be readable on arrival');
+
+  // Safe only because it is empty until something is selected. With no
+  // selection the filter must match no feature; with one, exactly that one.
+  assert.deepEqual(selectedLabelFilter(null), ['==', ['get', 'id'], ' no selection ']);
+  assert.deepEqual(selectedLabelFilter('osm-way-123'), ['==', ['get', 'id'], 'osm-way-123']);
+  assert.deepEqual(spec.filter, selectedLabelFilter(null));
 });
 
 test('labels are anchored to the world, not to the screen (§10)', () => {

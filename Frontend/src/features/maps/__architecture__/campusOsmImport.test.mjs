@@ -36,7 +36,7 @@ import {
   VERIFICATION,
   validateCampusFeature,
 } from '../campus/campusSchema.js';
-import { RNSIT_CAMPUS_OSM } from '../campus/data/rnsitCampusOsm.js';
+import { RNSIT_CAMPUS_OSM } from '../campus/data/rnsit/rnsitCampusOsm.js';
 import {
   EXCLUSION_REASON,
   HEIGHT_BASIS,
@@ -79,7 +79,7 @@ test('the .js module is the .geojson file, not an edited copy of it', () => {
   // The module exists so `resolveCampusDefinition` can stay synchronous under
   // both Vite and plain Node. It must never become a place where geometry gets
   // quietly touched up — so it is compared against the artefact it mirrors.
-  const geojsonPath = fileURLToPath(new URL('../campus/data/rnsit-campus-osm.geojson', import.meta.url));
+  const geojsonPath = fileURLToPath(new URL('../campus/data/rnsit/rnsit-campus-osm.geojson', import.meta.url));
   const onDisk = JSON.parse(readFileSync(geojsonPath, 'utf8'));
   assert.deepEqual(RNSIT_CAMPUS_OSM, onDisk, 'regenerate the module from the .geojson; never hand-edit it');
 });

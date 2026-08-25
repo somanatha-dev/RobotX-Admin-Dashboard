@@ -155,10 +155,194 @@ export const PROVENANCE = Object.freeze({
   USER_SUPPLIED: 'USER_SUPPLIED',
 });
 
+/**
+ * Whether anyone has checked a coordinate against the real place — and, if so,
+ * WHO. Provenance and verification stay independent: a feature's geometry can
+ * originate in OpenStreetMap and subsequently be checked by the project owner,
+ * and both facts are carried, neither overwriting the other (§3A).
+ *
+ *   OPEN_DATA_IMPORT  +  VERIFIED_BY_USER
+ *   ─────────────────    ────────────────
+ *   where it came from   who checked it
+ */
 export const VERIFICATION = Object.freeze({
+  /**
+   * Checked against an authoritative external record — a georeferenced site
+   * plan, a survey, a GNSS walk-around. Nothing at RNSIT holds this today and
+   * nothing may claim it without such a source existing.
+   */
   VERIFIED: 'VERIFIED',
+  /**
+   * The project owner — the person who operates this system on this site — has
+   * personally confirmed the feature against the campus.
+   *
+   * This is a real check by someone who is there, and it is deliberately NOT
+   * the same word as VERIFIED. A survey and an owner's confirmation answer
+   * different questions: "is this coordinate correct to within the survey's
+   * tolerance" versus "is this the right thing, in the right place, on the site
+   * I run". The second is what an operations map needs and the first is what a
+   * legal or engineering claim needs, so the map states which one it has rather
+   * than promoting one into the other.
+   *
+   * Requires `verifiedBy` and `verifiedOn`, for the same reason VERIFIED
+   * requires a date: an unattributed, undated check is not a check.
+   */
+  VERIFIED_BY_USER: 'VERIFIED_BY_USER',
+  /** Nobody has checked it. The default, and never an embarrassment. */
   NOT_VERIFIED: 'NOT_VERIFIED',
 });
+
+/** Verification states that mean "somebody actually checked this". */
+const CHECKED_STATES = new Set([VERIFICATION.VERIFIED, VERIFICATION.VERIFIED_BY_USER]);
+
+/**
+ * Has this feature been checked against the real place, by anyone?
+ *
+ * The one predicate the UI, the coverage report and the search index share, so
+ * "is it verified" cannot be answered two different ways in two components —
+ * which is exactly how a VERIFIED_BY_USER feature ends up displaying
+ * "NOT VERIFIED" somewhere nobody looked (§3A).
+ */
+export function isVerified(feature) {
+  return CHECKED_STATES.has(feature?.verification);
+}
+
+// ── Gates as a first-class campus feature (§3B) ──────────────────────────────
+//
+// A gate is where a fleet gets on and off the site, so it is the one campus
+// feature whose ACCESS RULES are operationally load-bearing: a route that plans
+// through a gate closed to vehicles is a route that does not exist.
+//
+// This vocabulary exists so those rules have somewhere to live the day someone
+// records them. It does NOT invent them. Every channel of every gate on this
+// campus is `UNKNOWN` today, because the datasets say nothing about access, and
+// an explicit UNKNOWN is the point: an absent field reads as "nobody thought
+// about it", an UNKNOWN reads as "this is a known gap", and only the second one
+// ever gets filled in.
+
+/** Whether a class of traffic may use a gate. */
+export const ACCESS_STATE = Object.freeze({
+  ALLOWED: 'ALLOWED',
+  RESTRICTED: 'RESTRICTED',
+  PROHIBITED: 'PROHIBITED',
+  UNKNOWN: 'UNKNOWN',
+});
+
+/** Whether the gate is currently passable. A live fact, once anything reports it. */
+export const GATE_STATUS = Object.freeze({
+  OPEN: 'OPEN',
+  CLOSED: 'CLOSED',
+  MANNED: 'MANNED',
+  UNKNOWN: 'UNKNOWN',
+});
+
+/** The traffic classes a gate answers for, in the order the UI lists them. */
+export const GATE_ACCESS_CHANNELS = Object.freeze(['vehicle', 'pedestrian', 'service', 'emergency']);
+
+/** Every channel UNKNOWN, status UNKNOWN — the only honest default. */
+export function unknownGateAccess() {
+  const access = { status: GATE_STATUS.UNKNOWN };
+  for (const channel of GATE_ACCESS_CHANNELS) access[channel] = ACCESS_STATE.UNKNOWN;
+  return access;
+}
+
+/** Does any channel of this access record say something other than UNKNOWN? */
+export function gateAccessIsKnown(access) {
+  if (!access) return false;
+  if (access.status && access.status !== GATE_STATUS.UNKNOWN) return true;
+  return GATE_ACCESS_CHANNELS.some((c) => access[c] && access[c] !== ACCESS_STATE.UNKNOWN);
+}
+
+function gateAccessErrors(feature, label) {
+  const access = feature?.access;
+  if (access === undefined) return [];
+
+  const errs = [];
+  if (!access || typeof access !== 'object') {
+    return [`${label}: access must be an object of ${GATE_ACCESS_CHANNELS.join(' / ')} states`];
+  }
+  // Only a way on or off the site has access rules. Letting a building carry
+  // them would put "vehicle access: ALLOWED" on a lecture block, which reads to
+  // an operator as a routing fact and is not one.
+  if (feature?.kind !== CAMPUS_FEATURE_KIND.GATE && feature?.kind !== CAMPUS_FEATURE_KIND.OPERATIONAL_POINT) {
+    errs.push(`${label}: only a GATE or OPERATIONAL_POINT may declare access rules`);
+  }
+  for (const channel of GATE_ACCESS_CHANNELS) {
+    const v = access[channel];
+    if (v !== undefined && !ACCESS_STATE[v]) {
+      errs.push(`${label}: access.${channel} must be one of ${Object.keys(ACCESS_STATE).join(', ')}`);
+    }
+  }
+  if (access.status !== undefined && !GATE_STATUS[access.status]) {
+    errs.push(`${label}: access.status must be one of ${Object.keys(GATE_STATUS).join(', ')}`);
+  }
+  return errs;
+}
+
+// ── Operational hierarchy (§3C) ──────────────────────────────────────────────
+//
+// The distinction this vocabulary draws is not "important vs unimportant". It
+// is: does the FLEET have business here? A gate, a parking apron, a food court
+// and a department are places a robot is sent to or through. A statue and a
+// fountain are landmarks an operator navigates BY. Both belong on the map; only
+// the first group earns operational prominence.
+//
+// Roles are DERIVED from what a feature already declares (see
+// `semantics/campusOperational.js`) — never asserted here by name, and never
+// invented. CHARGING_POINT and DOCKING_STATION are declared and carry no
+// features at RNSIT, because no dataset says where a charger or a dock is; they
+// exist so the day one does, it is a row in a rule table and not a migration.
+
+export const OPERATIONAL_ROLE = Object.freeze({
+  /** A way on or off the site. */
+  GATE: 'GATE',
+  /** Where a robot returns to dock. NOTHING at RNSIT claims this — no data. */
+  DOCKING_STATION: 'DOCKING_STATION',
+  /** Where a robot charges. NOTHING at RNSIT claims this — no data. */
+  CHARGING_POINT: 'CHARGING_POINT',
+  /**
+   * A task's pickup or drop. Held by the OPERATIONAL layer, from live task
+   * records — never by a static campus feature, which is why no imported
+   * feature carries it.
+   */
+  PICKUP_DROP_POINT: 'PICKUP_DROP_POINT',
+  /** Vehicle/cycle parking — a place a fleet stages and an obstruction to route around. */
+  PARKING: 'PARKING',
+  /** Canteen, food court, cafe — a high-traffic delivery destination. */
+  FOOD_SERVICE: 'FOOD_SERVICE',
+  /** A department or academic block: where people are, so where deliveries go. */
+  DEPARTMENT: 'DEPARTMENT',
+  /** Administration, a bank, a library — served, but not a primary fleet destination. */
+  SERVICE_POINT: 'SERVICE_POINT',
+  /** A place on the map the fleet has no business with. Landmarks, grounds, plant. */
+  NONE: 'NONE',
+});
+
+/**
+ * Ranking among operational roles. LOWER WINS — a label collision, a marker
+ * size, a draw order. A single scale so "the gate outranks the canteen" is one
+ * number in one table rather than an opinion re-expressed in each layer.
+ */
+export const OPERATIONAL_PRIORITY = Object.freeze({
+  GATE: 1,
+  DOCKING_STATION: 2,
+  CHARGING_POINT: 2,
+  PICKUP_DROP_POINT: 3,
+  PARKING: 4,
+  FOOD_SERVICE: 5,
+  DEPARTMENT: 6,
+  SERVICE_POINT: 7,
+  NONE: 9,
+});
+
+export function operationalPriorityFor(role) {
+  return OPERATIONAL_PRIORITY[role] ?? OPERATIONAL_PRIORITY.NONE;
+}
+
+/** Roles the fleet actually operates on, as opposed to navigates by. */
+export function isOperationalRole(role) {
+  return Boolean(role) && role !== OPERATIONAL_ROLE.NONE;
+}
 
 // ── Label hierarchy (§9) ─────────────────────────────────────────────────────
 //
@@ -390,6 +574,23 @@ export function validateCampusFeature(feature, where = 'feature') {
       errs.push(`${label}: VERIFIED requires verifiedOn (ISO date of the check)`);
     }
   }
+  // An owner's confirmation is a real check, so it carries the same burden of
+  // attribution — and one more field, because "verified" with no named checker
+  // is precisely the claim that erodes into "verified" meaning nothing (§3A).
+  if (feature?.verification === VERIFICATION.VERIFIED_BY_USER) {
+    if (typeof feature?.verifiedOn !== 'string' || !feature.verifiedOn.trim()) {
+      errs.push(`${label}: VERIFIED_BY_USER requires verifiedOn (ISO date of the check)`);
+    }
+    if (typeof feature?.verifiedBy !== 'string' || !feature.verifiedBy.trim()) {
+      errs.push(`${label}: VERIFIED_BY_USER requires verifiedBy — name who confirmed it`);
+    }
+  }
+
+  errs.push(...gateAccessErrors(feature, label));
+
+  if (feature?.operationalRole !== undefined && !OPERATIONAL_ROLE[feature.operationalRole]) {
+    errs.push(`${label}: unknown operationalRole ${JSON.stringify(feature.operationalRole)}`);
+  }
 
   const geomErrs = geometryErrors(feature?.geometry, `${label}.geometry`);
   errs.push(...geomErrs);
@@ -432,7 +633,7 @@ export function describeCampusCoverage(definition) {
       present.push({
         ...cap,
         count: matches.length,
-        verified: matches.filter((f) => f?.verification === VERIFICATION.VERIFIED).length,
+        verified: matches.filter(isVerified).length,
       });
     } else {
       missing.push({ ...cap, count: 0, verified: 0 });
@@ -507,6 +708,7 @@ export function validateCampusDefinition(definition) {
     rejected,
     errors,
     coverage: describeCampusCoverage({ features: accepted }),
-    verifiedCount: accepted.filter((f) => f.verification === VERIFICATION.VERIFIED).length,
+    verifiedCount: accepted.filter(isVerified).length,
+    ownerVerifiedCount: accepted.filter((f) => f.verification === VERIFICATION.VERIFIED_BY_USER).length,
   };
 }

@@ -18,8 +18,21 @@ const path = require("path");
 
 const gate = require("../../tools/gates/checkCalibration");
 const gates = require("../../src/engine/cutover/gates");
+const evidenceContract = require("../../src/engine/cutover/evidence");
+const guardrails = require("../../src/engine/cutover/guardrails");
 const stage = require("../../src/engine/cutover/stage");
 const killSwitches = require("../../src/engine/config/killSwitches");
+const configService = require("../../src/engine/config/service");
+
+/**
+ * P15-F1 — the shipped register's own values, snapshotted once at load.
+ *
+ * Snapshotted rather than read live because this suite writes throwaway register directories
+ * for the gate tool, and the bound `stage.authoriseEnable()` resolves must be the **real**
+ * `release.soak_duration` / `cutover.shadow_agreement_window` regardless of what any fixture
+ * in this file has written to a temporary directory.
+ */
+const SHIPPED_REGISTER = configService.loadRegister({ reload: true });
 
 /** Write a throwaway register directory containing exactly the entries given. */
 function registerWith(parameters) {
@@ -194,27 +207,119 @@ describe("it is a LAUNCH gate, not a build gate — and the difference is enforc
     // The mechanical consequence, asserted rather than described. `calibration_safety_derived`
     // is a blocking row in the release-gate table, so `authoriseEnable` refuses while it is
     // not GREEN — which is what "hard launch gate" means and what "build gate" does not.
+    //
+    // ── Strengthened by the P15-C1/P15-C2 remediation ─────────────────────────
+    //
+    // This test used to file `{ pass: <bool> }` for every gate, supply no `sourceDigest` and
+    // no `evidenceMaxAgeMs`, and hand over a declaration of `{ shardId, declaredAtMs,
+    // guardrails: [] }`. It passed, and it could not have failed for the reason it names:
+    //
+    //   · a bare `{ pass }` object carries no `gateId`, so **all twenty-four** gates were
+    //     inadmissible, and the assertion `toMatch(/calibration_safety_derived \(RED\)/)`
+    //     only asked that calibration appear somewhere in a list of twenty-four red rows.
+    //     Delete the calibration gate's blocking flag entirely and this test still passed.
+    //   · the empty guardrail set is P15-C2's exact reproduction shape, and the missing
+    //     context is P15-C1's — so the fixture embodied two defects the audit then found
+    //     elsewhere. That is the tell worth recording: a fixture built to be *ignored* by
+    //     the code under test is a fixture that will not notice when the code stops
+    //     ignoring it.
+    //
+    // So the request is now valid in every respect **except** the one gate under test, and
+    // the assertion is that calibration is the *only* thing standing between this shard and
+    // a cutover. That is the claim the test's own title makes.
+    const nowMs = Date.UTC(2026, 7, 23, 12, 0, 0);
+    const digest = "c".repeat(64);
+    const day = 86400000;
+
+    const admissible = (row) => {
+      if (row.evidence === gates.EVIDENCE.BUILD || row.evidence === gates.EVIDENCE.SUITE) {
+        return {
+          gateId: row.id,
+          producedAtMs: nowMs - 1000,
+          producer: "tools/release/collectEvidence.js",
+          run: { command: row.command, exitCode: 0, build: { sourceDigest: digest } },
+          build: { sourceDigest: digest },
+        };
+      }
+      if (row.evidence === gates.EVIDENCE.PRODUCTION) {
+        return {
+          gateId: row.id,
+          producedAtMs: nowMs - 1000,
+          producer: "observability",
+          owner: "sre-oncall",
+          pass: true,
+          observation: { windowStartedAtMs: nowMs - 40 * day, windowEndedAtMs: nowMs, source: "prod" },
+        };
+      }
+      const record = {
+        gateId: row.id,
+        producedAtMs: nowMs - 1000,
+        producer: "operator tooling",
+        owner: "release-manager",
+        pass: true,
+        approval: { recordedBy: "alice", approvedBy: "bob" },
+      };
+      if (row.runnable === true) {
+        record.corroboratingRun = { command: row.command, exitCode: 0, build: { sourceDigest: digest } };
+      }
+      if (row.rehearsal === true) {
+        record.rehearsal = {
+          environment: { id: "staging-1", production: false },
+          configVersion: "17",
+          automaticRollbackFired: true,
+          steps: Object.fromEntries(evidenceContract.REHEARSAL_STEPS.map((step) => [step, true])),
+        };
+      }
+      return record;
+    };
+
     const evidence = gates.RELEASE_GATES.reduce((all, row) => {
-      all[row.id] = { pass: row.id !== "calibration_safety_derived" };
+      all[row.id] = admissible(row);
       return all;
     }, {});
 
-    const outcome = stage.authoriseEnable({
+    // The one red row, and it is red for this gate's own reason: the calibration owner's
+    // attestation is contradicted by a non-zero exit from `npm run gate:calibration`.
+    evidence.calibration_safety_derived.corroboratingRun.exitCode = 1;
+
+    const request = {
       shard: { shardId: "s", regionId: "r", state: "ACTIVE" },
       allShards: [{ shardId: "s", regionId: "r", agentCount: 1, state: "ACTIVE" }],
       liveShardIds: [],
       releaseEvidence: evidence,
       killSwitchState: killSwitches.defaultState(),
-      declaration: { shardId: "s", declaredAtMs: 1, guardrails: [] },
+      declaration: guardrails.declare({
+        shardId: "s",
+        declaredBy: "release-manager",
+        declaredAtMs: nowMs - day,
+        observationWindowSeconds: 3600,
+        guardrails: [{ id: "commit_latency_p99", direction: "AT_MOST", threshold: 250, minSamples: 100 }],
+      }),
       requestedBy: "a",
       approvedBy: "b",
       reason: "attempt",
-      requestedAtMs: 2,
-    });
+      requestedAtMs: nowMs,
+      sourceDigest: digest,
+      evidenceMaxAgeMs: day,
+      // P15-F1 — the observation bound is the register's, not this fixture's. It used to say
+      // `soak: day`, a 24-hour bound against a registered 72; the authority now resolves it.
+      parameterValues: { get: (name) => (SHIPPED_REGISTER.entries.get(name) || {}).default },
+    };
+
+    const outcome = stage.authoriseEnable(request);
 
     expect(outcome.authorised).toBe(false);
     expect(outcome.refusal.code).toBe(stage.REFUSAL.RELEASE_GATE_NOT_GREEN);
     expect(outcome.refusal.message).toMatch(/calibration_safety_derived \(RED\)/);
+    // The assertion the old fixture could not make: calibration is the *only* blocker, so
+    // this test now fails if the gate stops blocking rather than only if it stops existing.
+    expect(outcome.refusal.detail).toHaveLength(1);
+    expect(outcome.refusal.detail[0].id).toBe("calibration_safety_derived");
+
+    // And the converse, so "refused" cannot come from something else in the request: with
+    // the corroborating run passing, this very request is authorised.
+    evidence.calibration_safety_derived.corroboratingRun.exitCode = 0;
+    expect(stage.authoriseEnable(request).authorised).toBe(true);
   });
 
   test("the gate's evidence kind is ORGANISATIONAL, so no build can close it", () => {

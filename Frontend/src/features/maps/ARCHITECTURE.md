@@ -42,8 +42,11 @@ Mapbox GL scene
 │
 ├── OPERATIONAL LAYER          mapControl/hooks/useRobotStream.js
 │   ├── robot visuals ─────────► the renderer seam (below)
-│   ├── route lines (todo / travelled + directional flow)
-│   └── mission pins (pickup / drop)
+│   ├── route lines (ahead / travelled + directional flow)
+│   │     progress from position   operational/routeGeometry.js
+│   │     findings, reported       operational/routeValidation.js
+│   ├── mission pins (pickup / drop)
+│   └── follow camera             camera/followCamera.js
 │
 ├── THEME LAYER                theme/useMapTheme.js
 │   └── Day / Evening / Night      theme/mapThemes.js
@@ -69,23 +72,92 @@ moving cannot rebuild a campus layer or restart a theme transition.
 
 ---
 
+## Multi-campus: one engine, N datasets
+
+A campus is **data**. There is one importer, one classifier, one registry, one
+set of Mapbox sources and layers, one camera, one theme system and one search
+index, and every campus goes through all of them:
+
+```
+REGISTERED_CAMPUSES              campusRegistry.js — metadata + which files
+        │
+        ▼
+buildCampus(entry)               the pipeline, written once, run per campus
+        │
+CAMPUS_GEOMETRY[Campus.code]     features · dataset · verification · notes
+        │
+resolveCampusDefinition(record)  + the DB centre → the renderable definition
+        │
+campusLayers · useCampusLayer · campusSearch · cameraModes · mapThemes
+                                 none of which knows a campus code exists
+```
+
+Adding campus #3 is:
+
+1. a `Campus` row (`code`, `name`, `centerLat`, `centerLon`) in the database;
+2. a dataset under `campus/data/<campus>/`;
+3. an entry in `REGISTERED_CAMPUSES` naming both.
+
+There is no step 4. No renderer, no layer, no camera rule, no theme, no search
+implementation and no `MapControl` logic changes, and
+`__architecture__/campusMultiCampus.test.mjs` scans every source file under
+`features/maps` to assert that no code branches on a campus id.
+
+### Registered today
+
+| code | name | datasets | verification |
+|---|---|---|---|
+| `RNSIT` | RNS Institute of Technology | OSM extract + user-supplied points | `VERIFIED_BY_USER` (project owner, 2026-08-23) |
+| `jssate-bengaluru` | JSS Academy of Technical Education | OSM extract | `NOT_VERIFIED` — nobody has been |
+
+The two are in deliberately different states, and the map says so per campus
+rather than averaging them into one badge. Everything a campus reports — its
+coverage notes, its outstanding-data request, its trust line — is **derived
+from that campus's own import**, so a hand-written paragraph cannot go stale
+against the data it describes.
+
+### Selecting a campus loads it, and only it
+
+`CAMPUS_REGISTRY` carries metadata only — name, aliases, city — so listing or
+searching campuses touches no geometry. A campus's features reach the GPU when
+`resolveCampusDefinition` is called for its record, which happens when it is
+selected. World, country, state and city zoom push nothing, whether the build
+holds two campuses or a hundred.
+
+### Switching campus is a `setData`
+
+Sources and layers are installed once per style load and are never rebuilt for
+a campus change:
+
+```
+useCampusLayer install effect   deps: [map, isMapLoaded, environmentReady, …]
+useCampusLayer data effect      deps: [definition] → pushCampusData()
+```
+
+So RNSIT → JSSATE → RNSIT adds no source, adds no layer, removes nothing, and
+cannot recreate the Mapbox instance. Stale geometry, stale labels and duplicate
+layers are structurally unavailable rather than cleaned up afterwards — asserted
+against a fake style that **throws on a duplicate id**, exactly as Mapbox does.
+
+---
+
 ## Campus geography: the contract, and what RNSIT actually has
 
 RNSIT's campus geography comes from **two sources**, which meet only at the
 semantic model in `campusRegistry.js`:
 
 ```
-rnsit-campus-osm.geojson          ──►  osmCampusImport          ──┐
-  57 features → 54                                                ├──► 65 features
-rnsit-campus-supplemental.geojson ──►  supplementalCampusImport ──┘     (+1 DB centre)
+rnsit/rnsit-campus-osm.geojson          ──►  osmCampusImport          ──┐
+  57 features → 54                                                      ├──► 65 features
+rnsit/rnsit-campus-supplemental.geojson ──►  supplementalCampusImport ──┘   (+1 DB centre)
   11 locations → 10
 ```
 
-**1. An OpenStreetMap extract** — `campus/data/rnsit-campus-osm.geojson`,
+**1. An OpenStreetMap extract** — `campus/data/rnsit/rnsit-campus-osm.geojson`,
 classified by `campus/osm/osmCampusImport.js`. 57 source features become 54:
 the boundary, 19 buildings, 16 roads, 8 paths, 2 landmarks, 8 facilities.
 
-**2. User-supplied point locations** — `campus/data/rnsit-campus-supplemental.geojson`,
+**2. User-supplied point locations** — `campus/data/rnsit/rnsit-campus-supplemental.geojson`,
 classified by `campus/supplemental/supplementalCampusImport.js`. 11 supplied
 locations become 10 features (one merged into OSM): the main gate, two
 playgrounds, parking, a food court, three colleges, an innovation centre and a
@@ -94,26 +166,50 @@ holds — someone who knows the campus pointing at where a thing is — and they
 `POINT_LOCATION` only. Neither source file can edit the other; a disagreement
 between them is reported, never resolved by overwriting.
 
-**It is real geometry and it is not a survey.** Those are different claims and
-the system keeps them apart:
+**It is real geometry, it has been checked by the project owner, and it is
+still not a survey.** Those are three different claims and the system keeps all
+three apart:
 
 ```
 geometry       real, community-mapped, ODbL, held and rendered by us
-verification   NOT_VERIFIED — no survey, no ground truth, no site plan
+provenance     OPEN_DATA_IMPORT / USER_SUPPLIED — where the coordinates came from
+verification   VERIFIED_BY_USER — the owner checked them against the site
+               (NOT `VERIFIED`, which is reserved for a survey; nothing here has one)
 ```
 
-Every imported feature carries `provenance: OPEN_DATA_IMPORT`, its OSM element
-id, its complete original tag set in `sourceTags`, and a `source` string naming
-the dataset, the element and the licence. The `CampusDataNotice` leads with
-*"Campus geometry: OpenStreetMap · Unverified"*, and every details card repeats
-it. That is deliberate: generic vendor blocks at least *looked* generic —
-correctly-shaped, correctly-named OSM footprints look exactly like a survey.
+Every imported feature carries its `provenance`, its OSM element id, its
+complete original tag set in `sourceTags`, and a `source` string naming the
+dataset, the element and the licence — **and**, separately, `verification`,
+`verifiedBy` and `verifiedOn`. Origin and confirmation are independent fields
+and neither overwrites the other, which is the whole point: a feature that came
+from OpenStreetMap still says OpenStreetMap after the owner confirms it, so it
+can be re-derived, re-licensed and re-checked against its source forever.
+
+The details card shows them as two rows — *Source: OpenStreetMap* /
+*Campus verification: Verified by project owner* — for exactly this reason.
+Collapsing them into one badge is how a confirmed feature ends up displaying
+"NOT VERIFIED".
+
+**The verification is one dated, attributed record**, in
+`campus/verification/campusVerification.js`, applied at the registry merge point
+by a pure array→array transform that passes geometry through by reference.
+Importers still emit `NOT_VERIFIED` and always will: an importer classifies a
+file, and no file has ever been to Bengaluru. Revoking the check is deleting one
+object; widening it is editing one field.
+
+The record also states what it does **not** cover, and that list is displayed:
+the seeded DB centre (a repository row, not a place anyone walked to — it stays
+`NOT_VERIFIED` and is the only unverified feature on the map), metre-level
+positional accuracy of the imported vertices, drawn building heights, and every
+gate access rule.
 
 What makes it hold under pressure is the contract, not discipline:
 
 - every feature must declare `provenance`, `source` and `verification`, or
   `validateCampusFeature` rejects it;
-- `VERIFIED` without a `verifiedOn` date is rejected;
+- `VERIFIED` without a `verifiedOn` date is rejected, and `VERIFIED_BY_USER`
+  without both a `verifiedOn` and a `verifiedBy` is rejected — an unattributed,
+  undated check is not a check;
 - geometry is validated numerically and against the kind (a building must be a
   polygon), and an invalid feature is **excluded**, never best-efforted;
 - absent capabilities are enumerated by name in `coverage.missing` — for RNSIT
@@ -368,6 +464,56 @@ Consequences worth knowing:
 
 ---
 
+## Route progress: derived here, because nothing sends it
+
+The map drew *travelled* and *ahead* as two differently-styled lines, split at
+`task.pathIndex`. That index is real — the simulation holds one, the routing
+service holds one — and **nothing sends it to the browser**. `robot:update`
+carries `robotId, lat, lon, battery, status, speed, isOnline, lastSeenAt,
+heading`; `TASK_ASSIGNED` carries both paths and no progress. So the split index
+was `0` for the entire life of every task: *travelled* was a zero-length stub
+and *ahead* was the whole route, from assignment to completion. Two colours,
+one meaning.
+
+Progress now comes from the robot's own streamed position, projected onto its
+route by `operational/routeGeometry.js`. Nothing was asked of the backend and no
+navigation semantic changed: the position is already streamed, the route is
+already held, and where a point falls on a polyline is arithmetic.
+
+Three properties make it safe to draw:
+
+| | |
+|---|---|
+| **aligned** | every emitted coordinate is a source vertex or a point *on* the source line — nothing is smoothed, snapped or nudged |
+| **continuous** | the projected point is the last vertex of *travelled* and the first of *ahead*, so the halves meet exactly. A vertex-index split leaves a gap that reads on a pitched map as the route breaking |
+| **monotonic** | the state machine carries a floor index, so a route that retraces itself (a drop leg back along the pickup's service road) cannot drag the travelled line backwards while the unit moves forwards |
+
+The pickup→drop transition is **observed**, because nothing announces it: the
+unit reaching the end of the pickup leg latches it onto the drop leg, and a
+session that never saw the transition (a reload mid-task) recognises a unit
+sitting on the drop path. A segment the backend *states* — `TASK_ASSIGNED`'s
+phase, a `REROUTED` message — always wins, once, and then observation resumes.
+
+**Off its own route, nothing is invented.** Beyond `MAX_ROUTE_OFFSET_M` (40 m,
+chosen against this campus: its service roads run 15–25 m apart) the nearest
+point of a route says where the *route* is, not where the unit has got to. The
+leg is drawn whole, progress reports `null`, and the operator is told.
+
+### A route that contradicts the campus is reported, never rendered away
+
+`operational/routeValidation.js` checks each drawn route against the campus
+geometry — footprints crossed, steps crossed, boundary left, unit off route —
+and returns *findings*. It has no map, no source and no setter; a test asserts
+it cannot reference one. The line is drawn exactly where the route data puts it
+and `RouteIssuesNotice` says what is wrong with it, because nudging it off the
+footprint would be falsifying the route and drawing it underneath would be
+falsifying it more quietly.
+
+Validation runs when the **route** changes, never when progress does — the
+polyline is what is being checked and it does not move as the unit travels.
+
+---
+
 ## Camera: fly flat, then tilt
 
 The focus camera moves in **two stages**, and this is a correctness
@@ -406,6 +552,90 @@ an abandoned target.
 
 ---
 
+## Follow: two clocks, deliberately
+
+```
+telemetry  ──►  followTarget (a value)          ~ every 2 000 ms
+                      │
+                      ▼
+frame      ──►  stepFollowCamera()  ──► camera  ~ 60 times a second
+```
+
+Every `robot:update` used to call `map.easeTo({ center, duration: 1200 })`.
+Telemetry arrives about every 2 000 ms, so each ease was still running when the
+next replaced it — and an interrupted `easeTo` does not blend, it restarts from
+wherever the camera reached with a fresh ease-in. The camera accelerated, was
+cut off, and accelerated again, forever. Turning Follow on fired a second,
+competing 900 ms ease at the same target.
+
+Separating the clocks is the whole fix: telemetry writes a **value**, so it
+cannot interrupt anything, and a frame loop closes the gap. The smoothing is
+exponential rather than a tween because a tween needs an endpoint and a moving
+target invalidates one every tick; each frame closes `1 - e^(-λ·dt)` of the
+remaining gap, which is frame-rate independent, converges on a stationary unit
+and trails a moving one by a constant distance.
+
+- **Entering** is one deliberate `easeTo` — travel to the unit, settle at a
+  bounded-comfortable pitch — and the loop takes over on `moveend`. That order
+  matters: `jumpTo` cancels an in-flight `easeTo`, so starting the loop first
+  would cut to the robot instead of travelling to it.
+- **Leaving** is instant, in one statement.
+- **A dead band** (0.5 m) stops a parked unit's GPS jitter from shivering the
+  camera, and lets the loop stop itself so an idle follow costs no frames.
+- **`maxDtMs`** clamps the delta a backgrounded tab resumes with, so it flies
+  rather than teleports.
+- **North stays screen-up.** Bearing smoothing exists and is tested — through
+  the short arc, so 350° → 10° is 20° — and is off by default, preserving the
+  decision in `cameraModes.js`.
+
+---
+
+## Operational semantics: what the fleet has business with
+
+`campus/semantics/campusOperational.js` derives, for every campus feature, an
+`operationalRole` and a priority — from fields the feature **already declares**
+(its kind, its category, the `kind` word the supplemental dataset supplied, an
+OSM tag, and as a last stage the name the source itself asserts). Never from
+position, never from size, never from a hard-coded id, and every profile records
+`operationalBasis` so the derivation shows on the card rather than passing as
+source data. Delete every rule and the map is still geographically correct —
+every feature simply becomes `NONE`.
+
+It drives three things and nothing else: marker size (`poiScale`, capped at
+1.45× so no POI outgrows the robot beside it), label collision rank
+(`labelRank` — the old `symbol-sort-key` was `labelPriority` *inside a layer
+already filtered to one priority*, i.e. a constant, so collisions were resolved
+by array order), and what recedes in Operations mode.
+
+**`CHARGING_POINT` and `DOCKING_STATION` have rules and zero features**, because
+no dataset says where a charger or a dock is. A test asserts the count is zero.
+That is what keeps "prepared for" from drifting into "pretended".
+
+Gates are first-class: `GATE_ACCESS_CHANNELS` (vehicle / pedestrian / service /
+emergency) plus a status, every one of them explicitly `UNKNOWN` on this campus,
+carried rather than omitted — an absent field reads as "nobody thought about
+it", an `UNKNOWN` reads as "this is a known gap", and only the second gets
+filled in. The schema refuses access rules on anything that is not a gate.
+
+---
+
+## Operations mode is a number, not a branch
+
+`campusStyleForTheme(theme, reveal, emphasis)`. Operations is a *way of looking
+at* the campus, so it lives where every other viewing decision lives: a value
+interpolated in place, on layers that already exist. No layer is added, removed,
+hidden or re-filtered, so entering Operations cannot disturb geometry, a robot,
+a route or the selection — the same property a theme change has, for the same
+structural reason.
+
+It steps the building mass and the ground back one notch, recedes the POIs the
+fleet has no business with (floor 0.45 — still clearly a marker), and quiets the
+detail label band. **The roads are untouched**, because they are how an operator
+reads where a unit can go. Nothing is hidden; a test asserts no layer gains a
+`visibility` switch.
+
+---
+
 ## Performance contract
 
 - The environment effect depends on the map instance and the style epoch only.
@@ -420,6 +650,17 @@ an abandoned target.
 - Selection touches only the two robots whose selected-ness changed.
 - Position tweens are cancelled on `destroy`, and the renderer's `dispose`
   tears down every element and DOM listener it created.
+- **Routes are redrawn only when what is drawn changes.** `upsertRoutes` carries
+  a signature over task, path revision, segment, on-route state and progress; an
+  identical signature returns before touching a source. A stationary unit used
+  to push identical GeoJSON into four sources twenty times a minute.
+- **Route validation runs on a path revision, not on a tick.** ~19 000 segment
+  tests per leg, run on assignment and on replan.
+- **The search index is two memos**, not one. The campus half depends on the
+  campus and the fleet half on the fleet; a telemetry tick no longer re-derives
+  65 label anchors to change one robot's status string.
+- **Only the selected unit's route progress reaches React state.** Every other
+  unit's progress lives beside its route entry.
 
 ---
 
@@ -439,21 +680,62 @@ whatever draws.
 
 ## Known gaps (data, not code)
 
-- **No campus geometry here is verified.** The OSM extract is real and it is
-  unchecked against the physical site. Every feature is `NOT_VERIFIED`, the map
-  says so on screen, and `MISSING_GEOMETRY_REQUEST` states what a verification
-  pass would need.
-- **The gate is user-supplied, not surveyed.** The OSM extract contains no
-  `barrier=gate`, `entrance=*` or access-control node anywhere on the site; the
-  supplemental dataset supplies one. Campus geometry coverage is therefore
-  complete — but it is complete because a person said where the gate is, and its
-  access properties (vehicle / pedestrian / service / emergency, opening status)
-  are all explicitly `UNKNOWN`. It is available to future routing as a semantic
-  feature; no route uses it and the solver is untouched.
-- **User-supplied locations are the least verified thing on the map.** Ten point
-  locations with no external record behind them. They are labelled as such in
-  the details card, in the on-map notice and in the legend ("Campus location
-  (point only)").
+Most of the list below is written from RNSIT, the campus with the most data.
+Each gap is reported **per campus** from that campus's own import
+(`missingGeometryRequestFor(code)`), so the sentences differ where the campuses
+do. JSSATE's differences are called out first.
+
+### JSSATE specifically
+
+- **Nobody has checked JSSATE against the physical site.** Every one of its
+  features is `NOT_VERIFIED`. Its geometry is real, community-mapped ODbL data,
+  and being present in OpenStreetMap is not a verification — the map does not
+  upgrade one into the other. The project owner's RNSIT confirmation is a dated,
+  attributed record scoped to RNSIT and does not reach it.
+- **No gate, entrance or barrier is mapped anywhere on the JSSATE site.** The
+  `gates` capability is reported MISSING rather than filled by promoting a road
+  end or a parking entrance into an entrance. How a fleet gets on and off the
+  site is unknown.
+- **No supplemental dataset exists for JSSATE.** That is fine and nothing was
+  fabricated to stand in for one. The OSM/user-supplied separation is the reason
+  there are two importers; a campus with nothing in the second category reports
+  nothing there.
+- **One imported feature lies outside the JSSATE boundary** — Omkar Ashram
+  (`way/1120154290`), a temple compound that shares a border with the campus. An
+  Overpass query is a bounding box, not a campus. It is drawn, because it is
+  real correctly-attributed geometry, and it is reported as outside on its
+  details card and in the coverage notice rather than deleted. Three further
+  features the extract swept in (two city postal-code relations and the
+  neighbouring Turahalli reserve forest) carry no tag this map understands and
+  are excluded with a stated reason.
+- **Only one JSSATE building records `building:levels`.** The other ten draw at
+  the conservative rendering default. See "Two heights, on purpose".
+
+### Both campuses
+
+- **No campus geometry here is *surveyed*.** The owner's confirmation is a
+  first-hand check by the person who runs the site, and it is not a
+  georeferenced survey: it settles *what* each feature is and *where* it is on
+  the campus, and puts no tolerance on the imported vertices. `VERIFIED` is
+  reserved for a source that does; nothing holds one.
+  `missingGeometryRequestFor(code)` states what would be needed, per campus.
+- **The seeded campus centre is the one unverified feature on the map.** It is a
+  row in this repository's database, not a place anyone walked to. It stays
+  `SEED_RECORD` / `NOT_VERIFIED` and is cross-checked against the imported
+  boundary (`centreWithinBoundary`) rather than asserted.
+- **Gate access rules are entirely unknown**, and this is now the highest-value
+  outstanding record on the list. The gate's *location* is supplied and
+  confirmed; whether it admits a vehicle, a pedestrian, a service vehicle or an
+  emergency vehicle, and whether it is open, are four explicit `UNKNOWN`s. A
+  route planned through a gate closed to vehicles is a route that does not
+  exist. The gate is available to future routing as a semantic feature; no route
+  uses it and the solver is untouched.
+- **The supplied locations are still point locations.** Ten of them. Their
+  positions are confirmed; their shape, extent and height are unknown, and
+  nothing derives a footprint or a volume from a coordinate.
+- **No charging point and no docking station exists in any dataset.** Both roles
+  are declared in the operational vocabulary and both carry zero features; no
+  parking apron has been quietly reinterpreted as a dock.
 - **No measured building heights.** See "Two heights, on purpose" above. Drawn
   heights are drawn heights.
 - **Buildings the extract does not contain are absent inside the campus.**

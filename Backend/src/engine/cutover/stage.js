@@ -65,7 +65,9 @@
  */
 
 const { compareStrings } = require("../determinism/ordering");
+const auditStream = require("../observability/auditStream");
 const enabled = require("./enabled");
+const evidence = require("./evidence");
 const gates = require("./gates");
 const guardrails = require("./guardrails");
 const killSwitches = require("../config/killSwitches");
@@ -147,6 +149,37 @@ const REFUSAL = Object.freeze({
   REHEARSAL_REQUIRES_NON_PRODUCTION: "REHEARSAL_REQUIRES_NON_PRODUCTION",
   /** ADR-34 — a purpose this module does not recognise. Fail closed rather than default. */
   UNKNOWN_PURPOSE: "UNKNOWN_PURPOSE",
+  /**
+   * P15-C1 — the request did not supply what the release evidence must be judged against.
+   *
+   * Kept apart from `RELEASE_GATE_NOT_GREEN` because they are different incidents. That one
+   * says *the evidence was judged and it does not discharge the table*; this one says *the
+   * request did not say what to judge the evidence against*, which is the caller's defect
+   * and not the release's. Reporting the second as the first is how the previous behaviour
+   * — silently judging against nothing — would have read if it had failed closed.
+   */
+  EVIDENCE_CONTEXT_INCOMPLETE: "EVIDENCE_CONTEXT_INCOMPLETE",
+  /**
+   * P15-F1 — the request stated a minimum observation window.
+   *
+   * Kept apart from `EVIDENCE_CONTEXT_INCOMPLETE` for the same reason that one is kept apart
+   * from `RELEASE_GATE_NOT_GREEN`: they are different incidents. That one says *the request
+   * did not supply a dependency*; this one says *the request supplied a value it does not own*.
+   * A caller who states `{ soak: 1000 }` has not made a mistake of omission — they have
+   * asserted an authority the register holds, and being told so by name is the difference
+   * between a fixed request and a repeated attempt.
+   */
+  OBSERVATION_BOUND_NOT_THE_CALLERS: "OBSERVATION_BOUND_NOT_THE_CALLERS",
+  /**
+   * P15-F1 — the authoritative parameter source was supplied and could not be read.
+   *
+   * Distinct from a parameter that is *absent* or *invalid*: those two resolve to no bound,
+   * which refuses the gate they bound (`evidence.admit`'s `OBSERVATION_WINDOW_REQUIRED`) and
+   * leaves the rest of the table judged. A register accessor that throws has told us nothing
+   * about any parameter, so nothing about this request can be judged and the whole of it is
+   * refused rather than the two rows that happen to depend on it.
+   */
+  PARAMETER_REGISTER_UNREADABLE: "PARAMETER_REGISTER_UNREADABLE",
 });
 
 /** Shard states that may be taken live. A draining or retired shard may not (§3.5). */
@@ -219,6 +252,10 @@ function refuse(code, message, detail) {
  * @param {object[]} request.allShards every shard in the fleet, for the ordering check
  * @param {object} request.liveShardIds ids already live
  * @param {object} request.releaseEvidence evidence for `gates.evaluate`
+ * @param {{ get: (name: string) => any }} request.parameterValues the authoritative parameter
+ *   source. The minimum observation windows are resolved from it **here** (P15-F1); a request
+ *   that states `minObservationMs` is refused, because a caller who can state the bound can
+ *   state a smaller one.
  * @param {object} request.killSwitchState the state that will be published
  * @param {object} request.declaration the pre-declared guardrails (`guardrails.declare`)
  * @param {string} request.requestedBy
@@ -286,14 +323,146 @@ function authoriseEnable(request) {
   // or one produced a month ago, is admitted. `requestedAtMs` is the instant the operator
   // asked, which is the right clock to age evidence against — a record is stale relative to
   // the decision it is being used to justify, not relative to when it was written.
+  //
+  // ── P15-C1 — the context is checked here, not passed through as `undefined` ──
+  //
+  // These three fields used to be forwarded with `typeof … === "number" ? … : undefined`,
+  // and `evidence.admit()` read `nowMs` and `maxAgeMs` through `typeof` guards of its own.
+  // The two omissions composed into a fail-open at the exact point this module exists to be
+  // the authority: a request that named no `requestedAtMs` and no `evidenceMaxAgeMs`
+  // authorised a production cutover against evidence whose age nothing had looked at —
+  // including `rollback_rehearsed`, which carries no source digest and for which the age
+  // bound is therefore the only binding to the system being shipped.
+  //
+  // `admit()` now refuses a missing bound by name, so this would already fail closed. It is
+  // still checked *here*, first, because a caller who forgot a field must be told that
+  // rather than handed "24 blocking gates are not green" — a refusal that names the wrong
+  // thing sends the next operator to look at the release instead of at their request.
+  //
+  // `requestedAtMs` earns its own mention: it is read again below to decide whether the
+  // guardrails were declared *before* this request, so omitting it silently disabled the
+  // "pre-declared" ordering check as well. One missing field, three protections off.
+  //
+  // ── P15-F1 — the observation bound is the register's, and a request may not state it ──
+  //
+  // P15-E4 closed the degenerate values of this field and left the class open. It refuses a
+  // bound of `0`, `NaN`, `±Infinity`, a string or `null`; it admits **any positive finite
+  // number, however small**, because nothing anywhere compared the caller's bound against the
+  // register's. Measured against the shipped module before this fix, with
+  // `release.soak_duration = 72` hours and `cutover.shadow_agreement_window = 14` days in the
+  // register:
+  //
+  //     *** ADMITTED + PASS ***  soak: window 2 000 ms, caller bound 1 000 ms
+  //     *** ADMITTED + PASS ***  soak: window 1 ms,     caller bound 0.5 ms
+  //     *** ADMITTED + PASS ***  shadow_agreement: window 1 000 ms, caller bound 1 000 ms
+  //
+  // A gate whose entire content is *"72 hours of production soak"* was discharged by a
+  // one-second window, by adding one field to the request object. And it was not hypothetical:
+  // `tools/verify/phase15EvidenceBinding.js` supplied `soak: DAY` — 24 hours against a
+  // register value of 72 — and its 17/17 green included a soak gate judged against a third of
+  // the required duration, because nothing compared it to anything.
+  //
+  // The previous comment here read *"Resolved by the caller from the register"*. That was the
+  // whole defect: a contract stated in a comment and enforced nowhere is not a contract, and
+  // the field it describes is an override with the register's name on it. The same argument
+  // this module makes for the second approver applies — the party the rule constrains may not
+  // supply the rule — so the number is removed from the request and resolved **here**, by the
+  // authority, from the authoritative parameter source.
+  //
+  // Both directions are refused, not only the weakening one. A caller-supplied *larger* bound
+  // would be extra caution, and refusing it costs nothing this system needs: the requirement
+  // is §21.6's and §24.6's, it is registered, and an operator who believes 72 hours is too
+  // short changes `release.soak_duration` through the Config Service — a versioned, approved,
+  // audited change — rather than by typing a bigger number into one cutover request. An
+  // authority that accepts a stricter bound from a caller has conceded that the bound is the
+  // caller's, and the next caller states a smaller one.
+  if (Object.hasOwn(source, "minObservationMs")) {
+    return refuse(
+      REFUSAL.OBSERVATION_BOUND_NOT_THE_CALLERS,
+      "this request states `minObservationMs`. The minimum observation window for " +
+        `${Object.keys(evidence.MIN_OBSERVATION_PARAMETER).join(" and ")} is the register's — ` +
+        `${Object.values(evidence.MIN_OBSERVATION_PARAMETER).join(", ")} — and is resolved here rather than ` +
+        "supplied. A caller who can state the bound can state a smaller one, and a gate whose whole content " +
+        "is a duration would then be discharged by whatever duration the caller was willing to wait. Supply " +
+        "`parameterValues` instead: the authority reads the requirement, the request does not declare it.",
+      { field: "minObservationMs", supplied: source.minObservationMs },
+    );
+  }
+
+  const missingContext = [];
+  if (typeof source.requestedAtMs !== "number" || !Number.isFinite(source.requestedAtMs)) {
+    missingContext.push("`requestedAtMs` — the instant to age the evidence against, and the instant the " +
+      "guardrail pre-declaration is ordered against");
+  }
+  if (typeof source.evidenceMaxAgeMs !== "number" || !Number.isFinite(source.evidenceMaxAgeMs) || source.evidenceMaxAgeMs < 0) {
+    missingContext.push("`evidenceMaxAgeMs` — how stale a record may be and still describe this system");
+  }
+  if (typeof source.sourceDigest !== "string" || source.sourceDigest.trim() === "") {
+    missingContext.push("`sourceDigest` — the tree the build gates' run records must have run against");
+  }
+  // P15-F1 — the authoritative parameter source, made an explicit dependency of the authority.
+  //
+  // Absent, it is refused here rather than defaulted to an empty accessor. An empty accessor
+  // would also fail closed — `resolveMinObservationMs({})` yields no bound and `admit()`
+  // refuses both windowed gates — but it would fail closed while *reporting the wrong thing*:
+  // "soak and shadow_agreement are not green", sending the next operator to look at the
+  // release when the defect is that this process cannot read the register. That is the exact
+  // argument P15-C1 gives one screen up for checking the other three fields here rather than
+  // relying on `admit()` alone, and it applies unchanged.
+  if (!source.parameterValues || typeof source.parameterValues.get !== "function") {
+    missingContext.push(
+      "`parameterValues` — the authoritative parameter source (`{ get(name) }`, as the Config Service " +
+        "resolves it) from which the minimum observation windows for " +
+        `${Object.keys(evidence.MIN_OBSERVATION_PARAMETER).join(" and ")} are read`,
+    );
+  }
+  if (missingContext.length > 0) {
+    return refuse(
+      REFUSAL.EVIDENCE_CONTEXT_INCOMPLETE,
+      "the release evidence cannot be judged: this request supplies no " +
+        missingContext.join("; and no ") +
+        ". Evidence judged against nothing is not weaker evidence; it is no evidence, and this is the one " +
+        "call in the system whose answer takes a shard live.",
+      missingContext,
+    );
+  }
+
+  /**
+   * P15-F1 — the authority resolves the requirement, from the register, itself.
+   *
+   * `resolveMinObservationMs` **omits** any parameter that is absent or that resolves to
+   * something other than a finite positive number, and `evidence.admit()` refuses a gate the
+   * register bounds whose bound did not resolve. So the four states the mandate distinguishes
+   * stay distinguished, and three of the four are refusals:
+   *
+   *   - the parameter source is **absent**            → `EVIDENCE_CONTEXT_INCOMPLETE`, above
+   *   - a **parameter** is absent from the register   → omitted → that gate is refused
+   *     (`OBSERVATION_WINDOW_REQUIRED`), the rest of the table still judged
+   *   - a parameter is **invalid** (0, `NaN`, `-1`,
+   *     `Infinity`, a string, `null`)                 → omitted → the same refusal
+   *   - a parameter is **valid**                      → it, and only it, is the requirement
+   *
+   * Nothing here invents a default, reads a missing value as zero, or reads one as unlimited.
+   * A register that lost `release.soak_duration` reddens the soak gate; it does not unbound it.
+   */
+  let minObservationMs;
+  try {
+    minObservationMs = evidence.resolveMinObservationMs(source.parameterValues);
+  } catch (error) {
+    return refuse(
+      REFUSAL.PARAMETER_REGISTER_UNREADABLE,
+      "the authoritative parameter source threw while resolving the minimum observation windows: " +
+        `${error && error.message}. A register that cannot be read has said nothing about any parameter, ` +
+        "so this request is refused rather than judged against the bounds that happen to have resolved.",
+      { message: error && error.message },
+    );
+  }
+
   const blocking = gates.blockers(source.releaseEvidence, {
-    nowMs: typeof source.requestedAtMs === "number" ? source.requestedAtMs : undefined,
-    maxAgeMs: typeof source.evidenceMaxAgeMs === "number" ? source.evidenceMaxAgeMs : undefined,
+    nowMs: source.requestedAtMs,
+    maxAgeMs: source.evidenceMaxAgeMs,
     sourceDigest: source.sourceDigest,
-    // Resolved by the caller from the register (`evidence.resolveMinObservationMs`). Absent
-    // here, the two windowed gates are refused rather than unbounded — which is the correct
-    // direction, and the reason this is passed through rather than defaulted.
-    minObservationMs: source.minObservationMs,
+    minObservationMs,
   });
   // ADR-34 — a rehearsal excludes exactly the gate it exists to produce, and nothing else.
   //
@@ -347,15 +516,65 @@ function authoriseEnable(request) {
   }
 
   // 4. Pre-declared guardrails, for this shard, declared before now.
-  const declaration = source.declaration || null;
-  if (!declaration || declaration.shardId !== shardId) {
+  //
+  // ── P15-C2 — the declaration is validated, not merely present ──────────────
+  //
+  // This step used to check two things about `source.declaration`: that it existed, and that
+  // its `shardId` matched. Nothing else. It was then copied verbatim into the action as
+  // `guardrailDeclaration`, and `auditEventFor` wrote it into §21.7's stream.
+  //
+  // The read side does not accept what the write side was accepting. `cutover/store.js`
+  // states its own rule — *"`declarationFor` returns exactly what was written at enable
+  // time, **re-validated through `guardrails.declare()`** so that a corrupted or truncated
+  // payload is refused rather than partially honoured"* — and returns `null` when the
+  // re-validation throws.
+  //
+  // So a hand-built `{ shardId, declaredAtMs }`, or any declaration with an empty guardrail
+  // set, was authorised here, written to the audit, and then **refused by the controller on
+  // its very first pass**. `cutover.worker.assessShard` reports that shard as *"live with no
+  // pre-declared guardrails"* and returns HOLD without assessing it — on that pass and on
+  // every pass afterwards. The shard is live, unguarded, and the automatic rollback of §22.4
+  // item 4 can never fire for it.
+  //
+  // That is the same end state P15-R1 found and fixed from the rollback side, reached from
+  // the enable side, and it is worse here: there the shard had at least breached something,
+  // and here nothing was ever watching. `guardrails.declare()` refuses an empty set in as
+  // many words — *"a guardrail declaration with no guardrails is a stage with no
+  // guardrails"* — and this call site simply never asked it.
+  //
+  // Validated through the **same function** the reader uses, deliberately. A second
+  // implementation of "is this declaration well formed" is how the two sides came to
+  // disagree in the first place, and the normalised result is what goes into the action, so
+  // what the audit records is exactly what the controller will later accept.
+  if (!source.declaration) {
     return refuse(
       REFUSAL.GUARDRAILS_NOT_DECLARED,
       `no pre-declared SLI guardrails for shard ${shardId}. §22.4 item 4 stages by shard "monitored against ` +
         'pre-declared SLI guardrails, with automatic rollback"; declaring them afterwards is not that.',
     );
   }
-  if (typeof source.requestedAtMs === "number" && declaration.declaredAtMs > source.requestedAtMs) {
+
+  let declaration;
+  try {
+    declaration = guardrails.declare(source.declaration);
+  } catch (error) {
+    return refuse(
+      REFUSAL.GUARDRAILS_NOT_DECLARED,
+      `the guardrail declaration for shard ${shardId} does not validate: ${error && error.message} — so ` +
+        "`cutover/store.declarationFor` would refuse it on the controller's first pass and report this shard " +
+        "as live with no pre-declared guardrails, for ever. A declaration the reader will not accept must not " +
+        "authorise a cutover.",
+      { message: error && error.message },
+    );
+  }
+
+  if (declaration.shardId !== shardId) {
+    return refuse(
+      REFUSAL.GUARDRAILS_NOT_DECLARED,
+      `the guardrail declaration names shard ${declaration.shardId} and this request is for ${shardId}`,
+    );
+  }
+  if (declaration.declaredAtMs > source.requestedAtMs) {
     return refuse(
       REFUSAL.GUARDRAILS_NOT_DECLARED,
       `the guardrails for shard ${shardId} are stamped after this request. "Pre-declared" is an ordering, ` +
@@ -485,12 +704,45 @@ function authoriseRollback(request) {
 /**
  * The audit event body for an authorised action (§21.7's audit stream).
  *
+ * ── PHASE 15 remediation (P15-C4) — this event was never writable ───────────
+ * Two independent reasons, both found by writing one to a real database for the first time:
+ * its `eventType` was outside the enforced vocabulary (see below), and it carried **no
+ * instant**. `auditStream.link()` builds the row's `recordedAt` as
+ * `new Date(source.recordedAtMs)`, so an absent one produced `new Date(undefined)` — an
+ * Invalid Date, which PostgreSQL then refused.
+ *
+ * The instant was never missing from the *action*: both `authoriseEnable` and
+ * `authoriseRollback` carry `requestedAtMs`, which is the right clock — a cutover is
+ * recorded as of the moment it was authorised, not the moment the row happened to be
+ * written, and the two differ by however long the publish took.
+ *
+ * Refused rather than defaulted to `Date.now()`. An audit event is a non-repudiation record
+ * (§21.7); stamping one with the writer's clock because the authorisation's was missing
+ * would put a plausible number where a fact belongs, and the caller that lost the instant
+ * is the thing to fix.
+ *
  * @param {object} action
  * @returns {object}
  */
 function auditEventFor(action) {
+  if (typeof action.requestedAtMs !== "number" || !Number.isFinite(action.requestedAtMs)) {
+    throw new TypeError(
+      "a cutover audit event carries the instant its action was authorised (`requestedAtMs`). Without one " +
+        "`auditStream.link()` stamps the row `new Date(undefined)` and the append is refused — which is how " +
+        "this event came to be unwritable. Substituting the writer's clock would put a plausible number where " +
+        "§21.7 requires a fact.",
+    );
+  }
   return {
-    eventType: action.type === ACTION.ENABLE ? "CUTOVER_SHARD_ENABLED" : "CUTOVER_SHARD_ROLLED_BACK",
+    recordedAtMs: action.requestedAtMs,
+    // PHASE 15 remediation (P15-C4) — from the vocabulary the stream and the database
+    // actually enforce, not from a literal here. As literals these two names were refused
+    // by `auditStream.append()` and by the `AuditEvent_event_type_known` CHECK constraint,
+    // so no cutover event could be written and `store.declarationFor()` found none.
+    eventType:
+      action.type === ACTION.ENABLE
+        ? auditStream.EVENT_TYPE.CUTOVER_SHARD_ENABLED
+        : auditStream.EVENT_TYPE.CUTOVER_SHARD_ROLLED_BACK,
     subjectType: "SHARD",
     subjectId: action.shardId,
     actorId: action.type === ACTION.ENABLE ? action.requestedBy : action.requestedBy || "AUTOMATIC",

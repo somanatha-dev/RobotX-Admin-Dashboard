@@ -42,16 +42,49 @@ import {
 } from '../campusSchema.js';
 import { categoryFromName, metresBetween, pointInPolygon } from '../osm/osmCampusImport.js';
 
-export const SUPPLEMENTAL_DATASET = Object.freeze({
-  file: 'rnsit-campus-supplemental.geojson',
-  origin: 'User-supplied campus locations',
-  crs: 'WGS84 (EPSG:4326), lon/lat order — verified against the supplied file',
-});
+export const SUPPLEMENTAL_DATASET_ORIGIN = 'User-supplied campus locations';
+export const SUPPLEMENTAL_DATASET_CRS =
+  'WGS84 (EPSG:4326), lon/lat order — verified against the supplied file';
 
-export function supplementalSourceString(id) {
+/**
+ * Which supplied file this is, and whose campus it describes.
+ *
+ * All three vary per campus and none is a property of the importer, so all three
+ * come from the registry entry:
+ *
+ *   file        the artefact, named in every feature's `source` string
+ *   campus      the campus CODE — the trust disclaimer names it, because
+ *               "not official RNSIT data" says more than "not official campus
+ *               data", and it has to say the right institution once there is
+ *               more than one
+ *   campusName  the campus's full name, whose words are stopwords for
+ *               duplicate detection — see `significantTokens`
+ *
+ * @param {string|null} file        e.g. `rnsit-campus-supplemental.geojson`
+ * @param {string|null} campus      e.g. `RNSIT`
+ * @param {string|null} campusName  e.g. `RNS Institute of Technology`
+ */
+export function supplementalDataset(file, campus, campusName) {
+  const clean = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  return Object.freeze({
+    file: clean(file),
+    campus: clean(campus),
+    campusName: clean(campusName),
+    origin: SUPPLEMENTAL_DATASET_ORIGIN,
+    crs: SUPPLEMENTAL_DATASET_CRS,
+  });
+}
+
+/** The generic descriptor, for a collection imported outside a registered campus. */
+export const SUPPLEMENTAL_DATASET = supplementalDataset(null, null, null);
+
+export function supplementalSourceString(id, dataset = SUPPLEMENTAL_DATASET) {
+  const ds = dataset || SUPPLEMENTAL_DATASET;
+  const file = ds.file ? ` — ${ds.file}` : '';
+  const owner = ds.campus ? `not official ${ds.campus} data` : 'not official campus data';
   return (
-    `${SUPPLEMENTAL_DATASET.origin} — ${SUPPLEMENTAL_DATASET.file} (${id}). ` +
-    'Supplied from local knowledge; not surveyed, not official RNSIT data, not verified.'
+    `${ds.origin}${file} (${id}). ` +
+    `Supplied from local knowledge; not surveyed, ${owner}, not verified.`
   );
 }
 
@@ -144,20 +177,43 @@ function normaliseName(name) {
 }
 
 /**
- * Words that carry no identity on this campus. "RNSIT Block" and "RNSIT
- * Department" share two tokens and describe nothing in common, so matching on
- * them would make almost every pair of features look related.
+ * Words that carry no identity ON ANY CAMPUS. "X Block" and "X Department"
+ * share two tokens and describe nothing in common, so matching on them would
+ * make almost every pair of features look related.
  */
-const NAME_STOPWORDS = new Set([
-  'rnsit', 'rns', 'the', 'of', 'and', 'a', 'an', 'block', 'building', 'department',
-  'centre', 'center', 'campus', 'college', 'institute', 'technology', 'lot', 'area', 'new', 'old',
+const GENERIC_NAME_STOPWORDS = Object.freeze([
+  'the', 'of', 'and', 'a', 'an', 'block', 'building', 'department',
+  'centre', 'center', 'campus', 'college', 'institute', 'technology',
+  'academy', 'school', 'university', 'lot', 'area', 'new', 'old',
 ]);
 
-function significantTokens(name) {
+/**
+ * The stopwords for ONE campus: the generic list, plus the campus's own name.
+ *
+ * The campus's own name is the strongest false signal there is — every second
+ * feature on a site is called "<campus> something", so treating those tokens as
+ * identity would flag half the dataset as possible duplicates of the other half.
+ * It used to be handled by hard-coding `rnsit` and `rns` into the shared list,
+ * which is a fact about one campus living in code every campus runs. It is now
+ * derived from the dataset's own `campus` code and `campusName`, so campus #2
+ * and campus #100 get the same treatment without an edit here.
+ */
+function stopwordsFor(dataset) {
+  const set = new Set(GENERIC_NAME_STOPWORDS);
+  for (const source of [dataset?.campus, dataset?.campusName]) {
+    for (const token of normaliseName(source).split(' ')) {
+      if (token) set.add(token);
+    }
+  }
+  return set;
+}
+
+function significantTokens(name, stopwords) {
+  const stop = stopwords || new Set(GENERIC_NAME_STOPWORDS);
   return new Set(
     normaliseName(name)
       .split(' ')
-      .filter((t) => t.length > 2 && !NAME_STOPWORDS.has(t))
+      .filter((t) => t.length > 2 && !stop.has(t))
   );
 }
 
@@ -178,11 +234,11 @@ function significantTokens(name) {
  * UNCLASSIFIED never matches UNCLASSIFIED: "neither of these is classified" is
  * an absence of information, not a similarity between them.
  */
-function possibleDuplicateEvidence(supplementalName, supplementalCategory, osmFeature) {
+function possibleDuplicateEvidence(supplementalName, supplementalCategory, osmFeature, stopwords) {
   if (!osmFeature?.name || osmFeature.nameIsDescriptive) return null;
 
-  const a = significantTokens(supplementalName);
-  const b = significantTokens(osmFeature.name);
+  const a = significantTokens(supplementalName, stopwords);
+  const b = significantTokens(osmFeature.name, stopwords);
   for (const t of a) {
     if (b.has(t)) return `both names contain "${t}"`;
   }
@@ -345,7 +401,10 @@ export const SUPPLEMENTAL_EXCLUSION = Object.freeze({
  *   containment: Array<{id: string, name: string, containment: string, metresFromBoundary: number|null}>,
  * }}
  */
-export function importSupplementalCampus(collection, { osmFeatures = [], boundary = null } = {}) {
+export function importSupplementalCampus(
+  collection,
+  { osmFeatures = [], boundary = null, dataset = SUPPLEMENTAL_DATASET } = {}
+) {
   const source = Array.isArray(collection?.features) ? collection.features : [];
 
   const excluded = [];
@@ -353,6 +412,9 @@ export function importSupplementalCampus(collection, { osmFeatures = [], boundar
   const possibleDuplicates = [];
   const coLocations = [];
   const containmentReport = [];
+
+  /** This campus's own name words, which carry no identity here. */
+  const stopwords = stopwordsFor(dataset);
 
   // OSM features that a point could plausibly BE. Roads, paths and the
   // boundary are excluded: a point is never "the same place" as a line.
@@ -445,7 +507,7 @@ export function importSupplementalCampus(collection, { osmFeatures = [], boundar
           merged = { osm: o, metres: Math.round(d) };
         }
       } else if (d <= PROXIMITY_RADIUS_M) {
-        const evidence = possibleDuplicateEvidence(s.name, s.category, o);
+        const evidence = possibleDuplicateEvidence(s.name, s.category, o, stopwords);
         if (evidence && (!nearMiss || d < nearMiss.metres)) {
           nearMiss = { osm: o, metres: Math.round(d), evidence };
         }
@@ -485,7 +547,7 @@ export function importSupplementalCampus(collection, { osmFeatures = [], boundar
       });
     }
 
-    features.push(buildFeature(s, { containment, nearMiss }));
+    features.push(buildFeature(s, { containment, nearMiss, dataset }));
   }
 
   // ── Co-location: two records, one place, one marker (§5) ─────────────────
@@ -517,7 +579,7 @@ export function importSupplementalCampus(collection, { osmFeatures = [], boundar
   return { features, excluded, merges, possibleDuplicates, coLocations, containment: containmentReport };
 }
 
-function buildFeature(s, { containment, nearMiss }) {
+function buildFeature(s, { containment, nearMiss, dataset }) {
   const { sf, id, name, props, rule, category, categoryBasis } = s;
 
   const metadata = {
@@ -566,7 +628,7 @@ function buildFeature(s, { containment, nearMiss }) {
     provenance: PROVENANCE.USER_SUPPLIED,
     verification: VERIFICATION.NOT_VERIFIED,
     verifiedOn: null,
-    source: supplementalSourceString(id),
+    source: supplementalSourceString(id, dataset),
     sourceId: id,
     sourceKind: props.kind,
     sourceTags: Object.freeze({ ...props }),
@@ -622,8 +684,11 @@ export function applyMergesToOsmFeatures(osmFeatures, merges, supplementalCollec
 
 // ── Report (§28) ────────────────────────────────────────────────────────────
 
-export function describeSupplementalImport(collection, { osmFeatures = [], boundary = null } = {}) {
-  const r = importSupplementalCampus(collection, { osmFeatures, boundary });
+export function describeSupplementalImport(
+  collection,
+  { osmFeatures = [], boundary = null, dataset = SUPPLEMENTAL_DATASET } = {}
+) {
+  const r = importSupplementalCampus(collection, { osmFeatures, boundary, dataset });
   const source = Array.isArray(collection?.features) ? collection.features : [];
 
   const byContainment = (c) => r.containment.filter((x) => x.containment === c).map((x) => x.name);

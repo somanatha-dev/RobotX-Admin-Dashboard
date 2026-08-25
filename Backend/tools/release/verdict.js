@@ -152,7 +152,15 @@ function verdict(options) {
 function formatReport(result) {
   const rows = result.evaluation.results.map((row) => {
     const reason = row.inadmissibleCode ? `  [${row.inadmissibleCode}] ${row.detail || ""}` : row.detail ? `  ${row.detail}` : "";
-    return `  ${row.status.padEnd(13)} ${row.id.padEnd(36)} ${row.evidence.padEnd(15)} ${row.section}${reason ? `\n${" ".repeat(4)}${reason.trim()}` : ""}`;
+    /**
+     * A GREEN whose command does not establish the gate's statement is printed as
+     * such (blocker B-M). Without this line the table's most misleading row is also
+     * its most reassuring one: `model_check_capacity_1_2_3` reads GREEN while the run
+     * that greened it asserts the lifecycle is *not* exhaustively checked at any
+     * shipped capacity. A reader of this table must not have to know that already.
+     */
+    const unproven = row.notEstablished ? `\n${" ".repeat(4)}[NOT PROVEN] ${row.notEstablished}` : "";
+    return `  ${row.status.padEnd(13)} ${row.id.padEnd(36)} ${row.evidence.padEnd(15)} ${row.section}${reason ? `\n${" ".repeat(4)}${reason.trim()}` : ""}${unproven}`;
   });
 
   const counts = result.evaluation.counts;
@@ -185,11 +193,59 @@ module.exports = { DEFAULT_EVIDENCE, DEFAULT_ATTESTATIONS, DEFAULT_MAX_AGE_HOURS
 
 if (require.main === module) {
   const argv = process.argv.slice(2);
+  /**
+   * A flag that was *given* is read as given, empty or not.
+   *
+   * PHASE 15, pass 3 verification (P15-F3). This tested `argv[index + 1]` for
+   * truthiness, so an **empty** value made the flag read as absent and the run silently
+   * took `DEFAULT_MAX_AGE_HOURS` — while every other malformed value (`NaN`,
+   * `Infinity`, `banana`, `-1`) was correctly refused with exit 2 by the validator two
+   * screens down. The validator was not lenient about the empty string; it never saw it.
+   *
+   * The realistic way to produce one is not a typo but a shell: `--max-age-hours
+   * "$MAX_AGE"` with `MAX_AGE` unset expands to exactly this, and the operator who
+   * intended a *stricter* bound than the default gets the default with no message. The
+   * distinction that matters is "the flag is absent" versus "the flag was given a value
+   * I cannot use", and only the first may fall back to a default.
+   */
   const at = (flag) => {
     const index = argv.indexOf(flag);
-    return index !== -1 && argv[index + 1] ? argv[index + 1] : undefined;
+    return index !== -1 ? argv[index + 1] : undefined;
   };
   const maxAgeHours = at("--max-age-hours");
+
+  if (argv.includes("--max-age-hours") && String(maxAgeHours || "").trim() === "") {
+    process.stderr.write(
+      "--max-age-hours was given with no value. A bound the operator asked for and did not supply is not the " +
+        "default bound; it is an unanswered question, and evidence age is the only binding PRODUCTION and " +
+        "ORGANISATIONAL records have.\n",
+    );
+    process.exitCode = 2;
+    return;
+  }
+
+  /**
+   * P15-C1 — a bound that does not parse must not become no bound.
+   *
+   * `Number("banana")` is `NaN`, `typeof NaN === "number"`, and every comparison against
+   * `NaN` is false. Forwarding it turned `--max-age-hours <typo>` into "no record is ever
+   * stale", silently and with no message anywhere. `evidence.admit()` now refuses a
+   * non-finite bound, so this would fail closed as `AGE_BOUND_REQUIRED` on every gate; it is
+   * still refused here, up front, because the operator's mistake is a typo in an argument
+   * and the report they would otherwise read is twenty-four inadmissible records.
+   */
+  if (maxAgeHours !== undefined) {
+    const parsed = Number(maxAgeHours);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      process.stderr.write(
+        `--max-age-hours must be a non-negative number of hours; got "${maxAgeHours}". ` +
+          "A bound that does not parse is not a wider bound, it is no bound, and evidence age is the only " +
+          "binding PRODUCTION and ORGANISATIONAL records have.\n",
+      );
+      process.exitCode = 2;
+      return;
+    }
+  }
 
   /**
    * `--collect` runs the producer first, in this process's own working tree, and then

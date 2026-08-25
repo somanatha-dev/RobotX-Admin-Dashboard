@@ -107,16 +107,51 @@ async function main() {
   // 2. CAMPUS
   //////////////////////////////////////////////////
 
-  await prisma.campus.upsert({
-    where: { code: "RNSIT" },
-    update: {},
-    create: {
+  //
+  // A Campus row is the JOIN between the database and the frontend campus
+  // registry: `Campus.code` is the key `Frontend/src/features/maps/campus/
+  // campusRegistry.js` looks its geometry up by, and `centerLat/centerLon` is
+  // the only campus-scale coordinate this system OWNS — the map reads the centre
+  // from here rather than hard-coding it, so the two cannot drift apart.
+  //
+  // Adding a campus to the map is therefore two things and no more: a row here,
+  // and a dataset + entry in the registry. There is no third step, and nothing
+  // in the renderer, the camera, the themes or the search changes.
+  //
+  // Both centres are cross-checked against their campus's imported boundary at
+  // render time (`centreWithinBoundary`), which is what catches a row wired to
+  // the wrong campus's dataset — geometry from the wrong site would otherwise
+  // load, validate and draw perfectly, kilometres from where the record says.
+  const CAMPUSES = [
+    {
       code: "RNSIT",
       name: "RNS Institute of Technology",
       centerLat: 12.9023,
       centerLon: 77.5186
+    },
+    {
+      // JSS Academy of Technical Education, Bengaluru — India / Karnataka /
+      // Bengaluru, on Dr. Vishnuvardhan Road, Kengeri.
+      //
+      // The centre is the vertex centroid of the campus site polygon in the
+      // OpenStreetMap extract (way/106873634, `amenity=college`) — derived from
+      // the imported boundary rather than estimated off a satellite image, and
+      // it falls inside that boundary. It is a SEED_RECORD like RNSIT's and is
+      // rendered NOT_VERIFIED: nobody has stood on it.
+      code: "jssate-bengaluru",
+      name: "JSS Academy of Technical Education",
+      centerLat: 12.9027,
+      centerLon: 77.5050
     }
-  });
+  ];
+
+  for (const campus of CAMPUSES) {
+    await prisma.campus.upsert({
+      where: { code: campus.code },
+      update: {},
+      create: campus
+    });
+  }
 
   //////////////////////////////////////////////////
   // 3. PARAMETER REGISTER (§22, Appendix A + §8.10) — Phase 1

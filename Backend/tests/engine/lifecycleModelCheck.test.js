@@ -16,19 +16,52 @@
  * added to `lifecycle/transitions.js` is explored on the next run without this file
  * changing, and a guard whose logic is wrong produces a counterexample here.
  *
- * ── Why each run asserts exhaustion ─────────────────────────────────────────
- * A bounded search that hit its bound has explored a prefix of the state space and proved
- * nothing about the rest. `check()` reports `exhaustive`, and every assertion below
- * demands it, so a future change that grows the space announces itself as a failed
- * exhaustion rather than as a quietly weaker check.
+ * ──────────────────── What these runs establish, and what they do not (P15-E5)
+ * **These searches are bounded, not exhaustive, at every capacity.** That sentence replaces
+ * the one that stood here until the Phase 15 third-pass audit, which read *"Depth is chosen
+ * per configuration to keep every run exhaustive within a test lane's budget — 12 / 9 / 7"*
+ * and was asserted below as `expect(result.exhaustive).toBe(true)`.
  *
- * ── Depth is per capacity, and the reason is stated ────────────────────────
- * The space grows by roughly 5x per capacity step. Depth is chosen per configuration to
- * keep every run **exhaustive** within a test lane's budget — 12 / 9 / 7 — because an
- * exhaustive search of a smaller space is worth more than a truncated search of a larger
- * one. The resulting state counts are asserted as lower bounds so that a change which
- * *shrinks* the explored space (an accidentally over-restrictive guard, say) fails here
- * instead of quietly passing faster.
+ * Both were false, and neither could fail. `lifecycleModel.check()` set its `exhaustive` flag
+ * from the **state cap** alone; the depth bound — which every configuration here sets, and
+ * which every one of them hits — did not move it. Measured on these exact shapes before the
+ * correction:
+ *
+ * ```
+ * capacity 1 (legs 2, depth 12)   1 350 nodes stopped at the bound,    26 876 successors unexplored
+ * capacity 2 (legs 3, depth  9)  12 237 nodes stopped at the bound,   348 549 successors unexplored
+ * capacity 3 (legs 4, depth  7)  37 880 nodes stopped at the bound, 1 389 004 successors unexplored
+ * ```
+ *
+ * At capacity 3 the unexplored frontier was twenty times the explored state space, and the run
+ * reported itself exhaustive. `commitmentModel.js` carried the identical defect and was
+ * corrected during the Phase 3 re-verification; `formal/README.md` recorded that this module
+ * still carried it and named Phase 15 as its owner.
+ *
+ * ──────────────────── Whether the search can be closed at all: measured, and it cannot
+ * Raising the bound was tried rather than assumed. At capacity 1 — the smallest shape here —
+ * the state count is still growing monotonically at depth 32 (5 750 → 90 867 states over
+ * depths 12 → 32) with no sign of closure, at 30 s per run; capacity 2 reaches 333 366 states
+ * at depth 15, still truncated, in 167 s. **No configuration of this checker closes within a
+ * test lane's budget, and none closes within a workstation session.** So the honest assertion
+ * is truncation, and that is what is asserted below — the precedent `commitmentModel`'s suite
+ * set: *assert a closed search where one is affordable, and assert truncation where it is not.*
+ *
+ * ──────────────────── The consequence for the §24 gate, stated here because it belongs here
+ * `cutover/gates.js`'s `model_check_capacity_1_2_3` is discharged by
+ * `npm run test:engine -- ModelCheck` and states that the lifecycle is model-checked
+ * **exhaustively** at capacity 1, 2 and 3. This suite exits 0 and cannot establish that, and
+ * `lifecycle.tla` has never been run under TLC (`formal/README.md`). The gate's substance is
+ * therefore **NOT PROVEN for the lifecycle at any capacity**, and what is missing is compute
+ * for a completed model-checking run, not a different specification or more code. It is
+ * recorded as a blocker rather than papered over here, and this suite now says in its
+ * assertions exactly what it does and does not establish.
+ *
+ * ──────────────────── Depth is per capacity, and the reason is stated
+ * The space grows by roughly 5x per capacity step; the depths — 12 / 9 / 7 — are what a test
+ * lane can afford at each. The resulting state counts are asserted as lower bounds so that a
+ * change which *shrinks* the explored space (an accidentally over-restrictive guard, say)
+ * fails here instead of quietly passing faster.
  */
 
 const legMachine = require("../../src/engine/lifecycle/legMachine");
@@ -51,13 +84,22 @@ describe("§24.2 — the lifecycle is model-checked at capacity 1, 2 and 3", () 
   const results = new Map();
 
   test.each(CONFIGURATIONS)(
-    "capacity $capacity: the search is exhaustive and every safety property holds",
+    "capacity $capacity: every safety property holds over the bounded search",
     ({ capacity, legs, depth, minStates }) => {
       const result = model.check({ capacity, legs, depth });
       results.set(capacity, result);
 
-      // A truncated search is not a proof.
-      expect({ capacity, exhaustive: result.exhaustive }).toEqual({ capacity, exhaustive: true });
+      // What this run is: a search to `depth` actions with no violation found. Asserted as
+      // truncation rather than as exhaustion, because that is the fact — see the header. If a
+      // future change ever closes one of these searches this assertion FAILS, which is the
+      // right direction: a closed search is a stronger result and must be re-declared
+      // deliberately rather than absorbed silently.
+      expect({ capacity, depthTruncated: result.depthTruncated }).toEqual({ capacity, depthTruncated: true });
+      // The state cap is a different bound and must not be the one that intervened: hitting it
+      // would mean the depth figure below is describing a search that stopped earlier.
+      expect({ capacity, stateCapExceeded: result.stateCapExceeded }).toEqual({ capacity, stateCapExceeded: false });
+      expect({ capacity, exhaustive: result.exhaustive }).toEqual({ capacity, exhaustive: false });
+      expect(result.maxDepthReached).toBe(depth);
       expect(result.states).toBeGreaterThan(minStates);
 
       // The counterexample, not just the count: a failure here must be diagnosable from
@@ -74,6 +116,58 @@ describe("§24.2 — the lifecycle is model-checked at capacity 1, 2 and 3", () 
     // decoration.
     expect(results.get(2).states).toBeGreaterThan(results.get(1).states * 4);
     expect(results.get(3).states).toBeGreaterThan(results.get(2).states * 2);
+  });
+
+  test("the completeness flags can each fail, and are not all the same flag (P15-E5)", () => {
+    // The defect this suite carried was a flag that could not move. Three shapes, each
+    // stopped by a different bound, so `exhaustive` is shown to be derived from both of the
+    // others rather than from one of them.
+    const truncated = model.check({ capacity: 1, legs: 2, depth: 3 });
+    expect(truncated.depthTruncated).toBe(true);
+    expect(truncated.stateCapExceeded).toBe(false);
+    expect(truncated.exhaustive).toBe(false);
+
+    const capped = model.check({ capacity: 1, legs: 2, depth: 12, maxStates: 200 });
+    expect(capped.stateCapExceeded).toBe(true);
+    expect(capped.exhaustive).toBe(false);
+
+    // A shape whose frontier genuinely empties — the flag is reachable, so asserting
+    // `false` above is a measurement and not a tautology.
+    //
+    // This assertion is only satisfiable at all because `MAX_VERSION` bounds the Leg
+    // version counter (P15-E5). Without it `leg.version` grew without limit inside the
+    // state key, the space was infinite, and NO shape of this checker could ever close:
+    // one Leg at capacity 1 reached 13 354 states at depth 640, still growing linearly.
+    // With the bound the same shape closes at depth 40 with 166 states.
+    const closed = model.check({ capacity: 1, legs: 1, depth: 40 });
+    expect(closed.depthTruncated).toBe(false);
+    expect(closed.stateCapExceeded).toBe(false);
+    expect(closed.exhaustive).toBe(true);
+    expect(closed.violations).toEqual([]);
+  });
+
+  test("the version bound loses no behaviour: it never makes a guard fail (P15-E5)", () => {
+    // The bound is sound because `leg.version` is handed to the shipped guard as the
+    // *current* value, so the CAS always matches and the counter can never decide a
+    // transition. If that ever stops being true, collapsing states that differ only in it
+    // stops being an abstraction and starts being a hole — so it is pinned rather than
+    // left in a comment. A search that saturates the bound must still find no violation.
+    const saturated = model.check({ capacity: 1, legs: 2, depth: 45 });
+    expect(saturated.violations).toEqual([]);
+    // And the shipped depths do not reach the bound at all, so today's numbers are the
+    // same numbers with and without it.
+    const shipped = model.check({ capacity: 1, legs: 2, depth: 12 });
+    expect(shipped.states).toBe(5750);
+  });
+
+  test("no exhaustive lifecycle model check exists at any shipped capacity — pinned, not implied", () => {
+    // The §24 gate `model_check_capacity_1_2_3` states that the lifecycle is checked
+    // *exhaustively* at capacity 1, 2 and 3. It is not, by either checker: this one is
+    // truncated at all three shapes, and `lifecycle.tla` has never been run under TLC.
+    // Pinned here so the gap lives in the repository rather than only in a closure document.
+    for (const { capacity } of CONFIGURATIONS) {
+      expect({ capacity, exhaustive: results.get(capacity).exhaustive }).toEqual({ capacity, exhaustive: false });
+    }
   });
 });
 

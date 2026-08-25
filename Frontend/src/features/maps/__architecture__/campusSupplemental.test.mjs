@@ -36,9 +36,9 @@ import {
   VERIFICATION,
   validateCampusFeature,
 } from '../campus/campusSchema.js';
-import { RNSIT_CAMPUS_OSM } from '../campus/data/rnsitCampusOsm.js';
-import { RNSIT_CAMPUS_SUPPLEMENTAL } from '../campus/data/rnsitCampusSupplemental.js';
-import { importOsmCampus } from '../campus/osm/osmCampusImport.js';
+import { RNSIT_CAMPUS_OSM } from '../campus/data/rnsit/rnsitCampusOsm.js';
+import { RNSIT_CAMPUS_SUPPLEMENTAL } from '../campus/data/rnsit/rnsitCampusSupplemental.js';
+import { importOsmCampus, osmDataset } from '../campus/osm/osmCampusImport.js';
 import {
   BOUNDARY_UNCERTAINTY_M,
   CONTAINMENT,
@@ -48,6 +48,7 @@ import {
   importSupplementalCampus,
   kindRuleFor,
   metresToPolygonEdge,
+  supplementalDataset,
 } from '../campus/supplemental/supplementalCampusImport.js';
 import {
   CAMPUS_SOURCE,
@@ -65,10 +66,21 @@ const RNSIT_RECORD = Object.freeze({
   centerLon: 77.5186,
 });
 
-const OSM = importOsmCampus(RNSIT_CAMPUS_OSM);
+// The dataset descriptors the registry supplies for RNSIT. Both importers are
+// campus-agnostic — they are told WHICH artefact they are reading rather than
+// knowing one campus's filename — so a direct call has to say so too.
+const OSM_DS = osmDataset('rnsit-campus-osm.geojson');
+const SUP_DS = supplementalDataset(
+  'rnsit-campus-supplemental.geojson',
+  'RNSIT',
+  'RNS Institute of Technology'
+);
+
+const OSM = importOsmCampus(RNSIT_CAMPUS_OSM, { dataset: OSM_DS });
 const SUP = importSupplementalCampus(RNSIT_CAMPUS_SUPPLEMENTAL, {
   osmFeatures: OSM.features,
   boundary: OSM.boundary,
+  dataset: SUP_DS,
 });
 const BY_ID = new Map(SUP.features.map((f) => [f.id, f]));
 const sourceById = (id) => RNSIT_CAMPUS_SUPPLEMENTAL.features.find((f) => f.properties.id === id);
@@ -91,7 +103,7 @@ const SUPPLIED_NAMES = Object.freeze([
 // ── The source artefact (§24.1, §24.2) ──────────────────────────────────────
 
 test('the .js module is the supplied .geojson, not an edited copy of it', () => {
-  const p = fileURLToPath(new URL('../campus/data/rnsit-campus-supplemental.geojson', import.meta.url));
+  const p = fileURLToPath(new URL('../campus/data/rnsit/rnsit-campus-supplemental.geojson', import.meta.url));
   assert.deepEqual(
     RNSIT_CAMPUS_SUPPLEMENTAL,
     JSON.parse(readFileSync(p, 'utf8')),
@@ -383,7 +395,7 @@ test('the cyber security point is not assigned to the nearest building (§12)', 
 test('the OSM import is not mutated by the supplemental pass (§22)', () => {
   // The merge annotates a COPY. Re-importing the OSM extract from scratch must
   // produce exactly what it produced before the second dataset existed.
-  const fresh = importOsmCampus(RNSIT_CAMPUS_OSM);
+  const fresh = importOsmCampus(RNSIT_CAMPUS_OSM, { dataset: OSM_DS });
   const node = fresh.features.find((f) => f.sourceId === 'node/2146315474');
   assert.equal(node.corroboratedBy, undefined, 'the OSM importer must be unaware of the supplemental data');
   assert.equal(node.metadata['Also recorded as'], undefined);
@@ -593,7 +605,7 @@ test('the merged campus definition is valid and both sources survive it', () => 
 
 test('the existing OSM geometry is unchanged by the second source', () => {
   const def = resolveCampusDefinition(RNSIT_RECORD);
-  const fresh = importOsmCampus(RNSIT_CAMPUS_OSM);
+  const fresh = importOsmCampus(RNSIT_CAMPUS_OSM, { dataset: OSM_DS });
   for (const before of fresh.features) {
     const after = def.features.find((f) => f.sourceId === before.sourceId);
     assert.ok(after, `${before.sourceId} must still be present`);
@@ -602,7 +614,15 @@ test('the existing OSM geometry is unchanged by the second source', () => {
     assert.equal(after.category, before.category);
     assert.equal(after.renderHeight, before.renderHeight);
     assert.equal(after.provenance, before.provenance);
-    assert.equal(after.verification, before.verification);
+    assert.equal(after.source, before.source, `${before.sourceId}: the source string was rewritten`);
+    assert.equal(after.sourceId, before.sourceId);
+
+    // Verification is the ONE field the registry is allowed to change, and only
+    // by adding a dated, attributed record on top (§3A). What it must never do
+    // is edit the OSM record underneath: the importer still produces
+    // NOT_VERIFIED, and the feature still says it came from OpenStreetMap.
+    assert.equal(before.verification, VERIFICATION.NOT_VERIFIED, 'the importer must not verify anything');
+    assert.equal(after.verification, VERIFICATION.VERIFIED_BY_USER);
   }
 });
 
@@ -612,6 +632,7 @@ test('the supplemental summary matches the artefact it describes', () => {
   const s = describeSupplementalImport(RNSIT_CAMPUS_SUPPLEMENTAL, {
     osmFeatures: OSM.features,
     boundary: OSM.boundary,
+    dataset: SUP_DS,
   });
 
   assert.equal(s.sourceFeatures, 11);

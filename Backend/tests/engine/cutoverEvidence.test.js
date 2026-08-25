@@ -24,6 +24,7 @@ const gates = require("../../src/engine/cutover/gates");
 const guardrails = require("../../src/engine/cutover/guardrails");
 const stage = require("../../src/engine/cutover/stage");
 const killSwitches = require("../../src/engine/config/killSwitches");
+const configService = require("../../src/engine/config/service");
 
 const NOW = 1_800_000_000_000;
 const HOUR = 3600 * 1000;
@@ -32,11 +33,37 @@ const DAY = 24 * HOUR;
 /** The tree the run records below claim to have run against. */
 const DIGEST = "a1b2c3d4".repeat(8);
 
+/**
+ * The authoritative parameter source, as `stage.authoriseEnable()` requires it (P15-F1).
+ *
+ * The **real** register, not a stub: the whole content of P15-F1 is that the observation
+ * bound is the register's and not the caller's, so a fixture that hand-rolled its own
+ * accessor would be the defect wearing the fix's clothes. What the two windowed gates
+ * require here is therefore whatever `release.soak_duration` and
+ * `cutover.shadow_agreement_window` say, and a test below pins that it is 72 h and 14 days.
+ */
+const REGISTER = configService.loadRegister({ reload: true });
+const PARAMETER_VALUES = Object.freeze({
+  get: (name) => (REGISTER.entries.get(name) || {}).default,
+});
+
+/** The *adjudicator's* context — `evidence.admit()` and `gates.evaluate()` still take the bound. */
 const CONTEXT = Object.freeze({
   nowMs: NOW,
   maxAgeMs: 24 * HOUR,
   sourceDigest: DIGEST,
   minObservationMs: { shadow_agreement: 14 * DAY, soak: 72 * HOUR },
+});
+
+/**
+ * The *authority's* request context. P15-F1 — `minObservationMs` is absent by contract and
+ * `parameterValues` is present: `authoriseEnable` resolves the requirement itself.
+ */
+const REQUEST_CONTEXT = Object.freeze({
+  requestedAtMs: NOW,
+  evidenceMaxAgeMs: CONTEXT.maxAgeMs,
+  sourceDigest: DIGEST,
+  parameterValues: PARAMETER_VALUES,
 });
 
 const BUILD_GATE = gates.GATE_BY_ID.tier_dependencies;
@@ -145,9 +172,7 @@ describe("THE ORIGINAL ATTACK — a hand-typed boolean must never close a gate",
       requestedBy: "operator-a",
       approvedBy: "operator-b",
       reason: "ship it",
-      requestedAtMs: NOW,
-      ...CONTEXT,
-      evidenceMaxAgeMs: CONTEXT.maxAgeMs,
+      ...REQUEST_CONTEXT,
     });
 
     expect(outcome.authorised).toBe(false);
@@ -473,10 +498,7 @@ describe("D-7 / ADR-34 — the bootstrap circularity, and the purpose that resol
       requestedBy: "operator-a",
       approvedBy: "operator-b",
       reason: "rehearsal step 1: take a staging shard live",
-      requestedAtMs: NOW,
-      evidenceMaxAgeMs: CONTEXT.maxAgeMs,
-      sourceDigest: CONTEXT.sourceDigest,
-      minObservationMs: CONTEXT.minObservationMs,
+      ...REQUEST_CONTEXT,
     });
 
     expect(outcome.authorised).toBe(false);
@@ -522,10 +544,7 @@ describe("D-7 / ADR-34 — the bootstrap circularity, and the purpose that resol
       requestedBy: "operator-a",
       approvedBy: "operator-b",
       reason: "rehearsal step 1: take a staging shard live",
-      requestedAtMs: NOW,
-      evidenceMaxAgeMs: CONTEXT.maxAgeMs,
-      sourceDigest: CONTEXT.sourceDigest,
-      minObservationMs: CONTEXT.minObservationMs,
+      ...REQUEST_CONTEXT,
       purpose: stage.PURPOSE.REHEARSAL,
       environment: { id: "staging-eu-west", production: false },
       ...(overrides || {}),
@@ -890,5 +909,78 @@ describe("the table itself", () => {
 
     // A register that cannot answer yields no bound, which reddens the gate.
     expect(evidence.resolveMinObservationMs({ get: () => undefined })).toEqual({});
+  });
+});
+
+describe("a GREEN that is not a proof — model_check_capacity_1_2_3 (blocker B-M)", () => {
+  /**
+   * PHASE 15, pass 3 verification. The gate's statement is that the commitment protocol
+   * and the lifecycle are model-checked **exhaustively** at capacity 1, 2 and 3. Its
+   * evidence is the exit code of `npm run test:engine -- ModelCheck`, and that lane
+   * exits 0 — so the gate reads GREEN.
+   *
+   * After P15-E5 corrected `lifecycleModel.check()`, the very suite that produces the
+   * exit code asserts `exhaustive: false` for the lifecycle at all three shipped
+   * capacities. The gate is therefore GREEN on a run that proves its central claim
+   * false. These tests pin the annotation that says so; without them the most
+   * misleading row in the release table is also its most reassuring one.
+   */
+  const MODEL_CHECK = "model_check_capacity_1_2_3";
+  const runRecord = (gateId, command, exitCode) => ({
+    gateId,
+    producedAtMs: NOW - 1000,
+    producer: "tools/release/collectEvidence.js",
+    build: { sourceDigest: DIGEST, fileCount: 1 },
+    run: {
+      command,
+      exitCode,
+      startedAtMs: NOW - 5000,
+      finishedAtMs: NOW - 1000,
+      build: { sourceDigest: DIGEST, fileCount: 1 },
+    },
+  });
+  const rowFor = (gateId, evidenceTable) =>
+    gates.evaluate(evidenceTable, CONTEXT).results.find((row) => row.id === gateId);
+
+  test("the gate declares that its command does not establish its statement", () => {
+    expect(gates.GATE_BY_ID[MODEL_CHECK].establishedByCommand).toBe(false);
+    expect(typeof gates.GATE_BY_ID[MODEL_CHECK].notEstablishedReason).toBe("string");
+  });
+
+  test("a passing run is GREEN but is annotated NOT PROVEN", () => {
+    const row = rowFor(MODEL_CHECK, {
+      [MODEL_CHECK]: runRecord(MODEL_CHECK, "npm run test:engine -- ModelCheck", 0),
+    });
+    expect(row.status).toBe(gates.STATUS.GREEN);
+    expect(row.notEstablished).toEqual(expect.stringContaining("exhaustive"));
+  });
+
+  test("the annotation never converts a refusal — a failing run is still RED", () => {
+    const row = rowFor(MODEL_CHECK, {
+      [MODEL_CHECK]: runRecord(MODEL_CHECK, "npm run test:engine -- ModelCheck", 1),
+    });
+    expect(row.status).toBe(gates.STATUS.RED);
+    expect(row.notEstablished).toBeNull();
+  });
+
+  test("no other gate carries the annotation, so it cannot be read as decoration", () => {
+    const annotated = gates.RELEASE_GATES.filter((gate) => gate.establishedByCommand === false).map((gate) => gate.id);
+    expect(annotated).toEqual([MODEL_CHECK]);
+
+    const control = rowFor("determinism_replay", {
+      determinism_replay: runRecord("determinism_replay", "npm run test:engine -- determinism", 0),
+    });
+    expect(control.status).toBe(gates.STATUS.GREEN);
+    expect(control.notEstablished).toBeNull();
+  });
+
+  test("the discharging suite asserts the negation of the gate's statement", () => {
+    // The reason the annotation exists, pinned against the checker itself rather than
+    // against a document: a search that is depth-truncated is not an exhaustive one.
+    const lifecycle = require("./helpers/lifecycleModel");
+    const result = lifecycle.check({ capacity: 1, legs: 2, depth: 12 });
+    expect(result.exhaustive).toBe(false);
+    expect(result.depthTruncated).toBe(true);
+    expect(gates.GATE_BY_ID[MODEL_CHECK].statement).toEqual(expect.stringContaining("exhaustively"));
   });
 });

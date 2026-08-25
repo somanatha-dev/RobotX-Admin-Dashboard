@@ -35,12 +35,24 @@
  */
 
 const guardrails = require("./guardrails");
+const auditStream = require("../observability/auditStream");
 const sli = require("../observability/sli");
 
-/** Audit event types this module reads. Written by `stage.auditEventFor`. */
+/**
+ * Audit event types this module reads. Written by `stage.auditEventFor`.
+ *
+ * PHASE 15 remediation (P15-C4) — taken from `auditStream.EVENT_TYPE` rather than restated
+ * as literals. These two names existed in three places: here, in `stage.auditEventFor()`,
+ * and in the database's `AuditEvent_event_type_known` CHECK constraint — and the third one
+ * is the one that decides. It did not have them, so every cutover event was refused at both
+ * the application and the database, `declarationFor()` below returned null for every shard,
+ * and the staged-rollout controller never assessed one. Two copies that agreed with each
+ * other and disagreed with the authority is the whole shape of the defect, so there is now
+ * one copy and it is the authority's.
+ */
 const EVENT = Object.freeze({
-  ENABLED: "CUTOVER_SHARD_ENABLED",
-  ROLLED_BACK: "CUTOVER_SHARD_ROLLED_BACK",
+  ENABLED: auditStream.EVENT_TYPE.CUTOVER_SHARD_ENABLED,
+  ROLLED_BACK: auditStream.EVENT_TYPE.CUTOVER_SHARD_ROLLED_BACK,
 });
 
 /**

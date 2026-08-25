@@ -9,7 +9,24 @@
  *       ├── roads        main · secondary · path · service   (§12 hierarchy)
  *       ├── labels       colour, halo, size
  *       ├── routes       ahead / travelled / flow / halo     (§13)
- *       └── robot        the contrast the 2D marker sits against
+ *       ├── robot        the contrast the 2D marker sits against
+ *       └── grade        the colour grade laid over the whole scene (§60)
+ *
+ * ── Emissive strength: why every layer now declares one (§59) ─────────────
+ * Mapbox Standard is a LIT style. Its `lights` multiply every non-emissive
+ * layer by the scene's illumination, so at `night` a road we painted `#a8bcd8`
+ * is not drawn at `#a8bcd8` — it is drawn at whatever a dark blue night light
+ * leaves of it, which is the muddy grey the operator was actually seeing. The
+ * spec default for `line/fill/circle-emissive-strength` is 0, i.e. "fully lit",
+ * so this was never a colour-picking problem: the colours were being dimmed
+ * after we chose them.
+ *
+ * Each theme therefore states how much of each layer is SELF-lit:
+ *   Day       ~0    — the sun is the light; roads and ground take its shading
+ *   Evening   low   — a warm low sun still shades, street lighting starts
+ *   Night     high  — a campus road at night is an ILLUMINATED surface
+ *
+ * Labels are exempt: `text-emissive-strength` already defaults to 1.
  *
  * ── Why this file exists (§22) ────────────────────────────────────────────
  * Not one `if (night)` anywhere in the map components. A theme is a value;
@@ -103,6 +120,16 @@ function buildingPalette(hexByCategory, fallback) {
  * DAY (§17) — bright, clean, high contrast, built for daytime operations.
  * Buildings are deliberately not white: pure white loses all face-to-face
  * shading and the skyline flattens into paper cut-outs.
+ *
+ * ── Why the campus roads are DARK here (§12, §59) ─────────────────────────
+ * They used to be white, on the reasoning that a road is a pale surface. On a
+ * daylight basemap that is a road drawn in the same value as the ground it
+ * crosses: at RNSIT the campus network disappeared into the pale apron it runs
+ * over, and the legend's "campus road" swatch was a white bar on a white map.
+ * A dark carriageway inside a bright casing is the drawn-map convention for
+ * exactly this reason — it is the only treatment that survives both a pale
+ * ground and a pale building face. Night inverts it (see NIGHT): after dark the
+ * road is the ILLUMINATED element, so it becomes the bright one.
  */
 const DAY = {
   id: MAP_THEME.DAY,
@@ -113,16 +140,16 @@ const DAY = {
     showPlaceLabels: true,
     showTransitLabels: false,
     // ── Theming the VENDOR's geometry (§12, §30) ──────────────────────────
-    // At RNSIT the buildings and roads on screen are the basemap's, because
-    // this repository has no surveyed campus geometry. Mapbox Standard seals
-    // its layers inside an import, so `setPaintProperty` cannot reach them —
-    // but it does expose these colour knobs, and they are the only lever that
-    // gives the road hierarchy and the building mass any contrast at campus
-    // zoom. Each is applied through the same tolerant path as `lightPreset`,
-    // so a Standard version without one loses that knob, not the theme.
-    colorMotorways: '#c9d4e2',
+    // Outside the campus boundary the buildings and roads on screen are the
+    // basemap's. Mapbox Standard seals its layers inside an import, so
+    // `setPaintProperty` cannot reach them — but it does expose these colour
+    // knobs, and they are the only lever that gives the city context any
+    // hierarchy behind the campus. Each is applied through the same tolerant
+    // path as `lightPreset`, so a Standard version without one loses that
+    // knob, not the theme.
+    colorMotorways: '#c4d0e0',
     colorRoads: '#ffffff',
-    colorGreenspace: '#d6e8c8',
+    colorGreenspace: '#cfe4bd',
     colorBuildingHighlight: '#dfe7f0',
     colorPlaceLabelHighlight: '#1d4ed8',
   },
@@ -138,14 +165,14 @@ const DAY = {
     sunIntensity: 8,
   },
   campus: {
-    boundaryLine: '#64748b',
-    boundaryLineOpacity: 0.55,
-    boundaryFill: '#94a3b8',
-    boundaryFillOpacity: 0.06,
-    buildingOpacity: 0.92,
+    boundaryLine: '#5b6b82',
+    boundaryLineOpacity: 0.6,
+    boundaryFill: '#8aa0bd',
+    boundaryFillOpacity: 0.07,
+    buildingOpacity: 0.94,
     buildingRoof: '#f8fafc',
-    buildingEdge: '#94a3b8',
-    buildingEdgeOpacity: 0.5,
+    buildingEdge: '#7f8fa6',
+    buildingEdgeOpacity: 0.55,
     buildingHighlight: '#2563eb',
     /**
      * Gates. The one campus POI with its own colour, because a gate is where a
@@ -154,47 +181,75 @@ const DAY = {
      */
     gate: '#c9862f',
     gateEdge: '#8a5a15',
-    /** Contact shading where a wall meets the ground. Depth, not drama (§46). */
-    buildingAoIntensity: 0.28,
+    // ── Contact shading (§46) ───────────────────────────────────────────
+    // `Ao*Radius` are the lit-style forms of the legacy `-radius`: with
+    // `lights` present — which Standard always has — Mapbox reads the ground
+    // and wall radii instead, and the ground radius is how far the shading
+    // spreads AWAY from the wall. That is the honest lever for "long shadows":
+    // it is the building's own occlusion reaching further, not a drawn shape
+    // pretending to be a shadow (§24). Day's sun is high, so it stays short.
+    buildingAoIntensity: 0.34,
+    buildingAoRadius: 3.4,
+    buildingAoGroundRadius: 5,
+    buildingAoWallRadius: 3.4,
+    /** Self-lit fraction. Zero by day: the sun should do the shading. */
+    buildingEmissive: 0,
+    groundEmissive: 0,
+    pointEmissive: 0,
+    /** Light spilling from the base of a building. Off in daylight. */
+    floodColor: '#ffffff',
+    floodIntensity: 0,
+    floodWallRadius: 0,
+    floodGroundRadius: 0,
     buildings: buildingPalette(
       {
-        ACADEMIC: '#c3d0e0',
-        ADMINISTRATIVE: '#dcd0bd',
-        RESIDENTIAL: '#c6d6c9',
-        SPORTS: '#c2d8b4',
-        UTILITY: '#c8ccd3',
-        COMMERCIAL: '#e0d3ba',
+        // More chroma than the near-greys this started as. The categories have
+        // to be TELLABLE APART at a glance — that is the whole claim the legend
+        // makes with "colour = type" — while staying quiet enough that no
+        // category reads as a highlight (§11, §46).
+        ACADEMIC: '#b9cbe4',
+        ADMINISTRATIVE: '#e2d1b1',
+        RESIDENTIAL: '#bad4c2',
+        SPORTS: '#c3daa6',
+        UTILITY: '#c2c8d2',
+        COMMERCIAL: '#e6d2ab',
         // Warm stone rather than the pink it started as: on the live map a
         // rosier hue made the temple the most saturated object on a campus of
         // blue-greys, sages and tans, and a category tint must not read as a
         // highlight (§11, §46).
-        RELIGIOUS: '#d8ccc4',
-        OPERATIONAL: '#c9d3e2',
+        RELIGIOUS: '#dcc9bd',
+        OPERATIONAL: '#bfcde6',
       },
-      '#c9cfd8'
+      '#c7cfda'
     ),
     // Ground areas — playing fields, courts, parking aprons. Held quieter than
     // the buildings they sit beside so the skyline stays the primary read.
-    groundOpacity: 0.55,
-    groundEdge: '#8fa0b5',
-    groundEdgeOpacity: 0.4,
+    groundOpacity: 0.6,
+    groundEdge: '#8296ae',
+    groundEdgeOpacity: 0.45,
     ground: {
-      SPORTS: '#cfe0b7',
-      OPERATIONAL: '#d8dde5',
-      OTHER: '#d9dfe6',
+      SPORTS: '#c9e0a8',
+      OPERATIONAL: '#d4dae4',
+      OTHER: '#d8dee7',
     },
   },
   roads: {
-    main: { color: '#ffffff', casing: '#94a3b8', opacity: 1, widthScale: 1 },
-    secondary: { color: '#f6f8fb', casing: '#a8b3c2', opacity: 0.95, widthScale: 0.72 },
-    service: { color: '#e9edf3', casing: '#aab4c2', opacity: 0.85, widthScale: 0.5 },
-    path: { color: '#8fa0b5', casing: '#ffffff', opacity: 0.9, widthScale: 0.34 },
-    steps: { color: '#7d8ea6', casing: '#ffffff', opacity: 0.95, widthScale: 0.46 },
+    // `casingScale` / `casingOpacity` are part of the theme because the casing
+    // is what carries a dark road on a light map: at Day the bright casing is
+    // doing as much work as the carriageway. See ROAD_MAIN_CASING.
+    main: { color: '#2b3a52', casing: '#ffffff', casingOpacity: 0.95, casingScale: 1.5, opacity: 1, widthScale: 1, emissive: 0 },
+    secondary: { color: '#3c4d68', casing: '#f7fafd', casingOpacity: 0.9, casingScale: 1.55, opacity: 0.97, widthScale: 0.72, emissive: 0 },
+    service: { color: '#56657f', casing: '#f2f6fb', casingOpacity: 0.85, casingScale: 1.6, opacity: 0.9, widthScale: 0.5, emissive: 0 },
+    // Footpaths stay warm and dashed so they never read as a narrow road: the
+    // difference between "a robot can drive this" and "it cannot" must survive
+    // being seen at a glance (§17).
+    path: { color: '#8a6640', casing: '#fdfbf7', casingOpacity: 0.8, casingScale: 1.7, opacity: 0.92, widthScale: 0.34, emissive: 0 },
+    steps: { color: '#6f4f30', casing: '#fdfbf7', casingOpacity: 0.8, casingScale: 1.7, opacity: 0.95, widthScale: 0.46, emissive: 0 },
   },
   labels: {
-    color: '#111c2e',
+    color: '#0f1a2b',
     halo: '#ffffff',
-    haloWidth: 1.6,
+    haloWidth: 1.7,
     secondaryColor: '#3d4a5c',
     sizeScale: 1,
   },
@@ -213,6 +268,29 @@ const DAY = {
     contactShadow: '#0b1220',
     contactShadowOpacity: 0.5,
     labelContrast: 'dark-on-light',
+  },
+  /**
+   * ── The colour grade (§60) ───────────────────────────────────────────────
+   * A DOM layer over the canvas, under every panel, `pointer-events: none`.
+   *
+   * It exists because the two things a time-of-day theme most wants to change
+   * — how dark the whole scene is, and how the light falls across it — are the
+   * two the vendor does not expose. Standard's ground, water and land colours
+   * live inside a sealed import; only `lightPreset` moves them, and the preset
+   * that actually looks like dusk (`dusk`) was measured to dim the vendor's
+   * place labels to unreadable. Those labels are load-bearing at RNSIT.
+   *
+   * So the grade is a VIGNETTE, not a wash: transparent through the middle of
+   * the viewport, deepening toward the edges, with a warm band along the top
+   * where the sky is. The campus and its labels sit in the clear centre and
+   * lose nothing; the frame around them carries the hour. It is chrome over a
+   * picture of the world, never a change to what the world is (§24).
+   */
+  grade: {
+    vignette: '#1b2a44',
+    vignetteOpacity: 0.14,
+    skyTint: '#bcd6f2',
+    skyTintOpacity: 0.1,
   },
 };
 
@@ -240,6 +318,21 @@ const DAY = {
  * The palette below is therefore tuned against a BRIGHT warm basemap: dark
  * labels on light haloes, like Day, not the light-on-dark set a dusk theme
  * would need.
+ *
+ * ── How Evening gets DARK without going back to `dusk` (§60) ──────────────
+ * The vendor preset stays `dawn`, because that decision was made on measured
+ * label readability and nothing here changes that measurement. The dusk
+ * quality is produced by the three levers we actually own:
+ *
+ *   1. the grade — a deep plum vignette that closes the frame in and leaves
+ *      the campus and its labels in a clear, warm centre;
+ *   2. our own palette — every campus surface dropped a full step in
+ *      lightness, so the site reads as lit by a low sun, not by a noon one;
+ *   3. the occlusion ground radius — nearly doubled, which is what actually
+ *      lengthens the shading a low sun throws off each building.
+ *
+ * The result is darker and warmer than before at every point EXCEPT the
+ * labels, which is precisely the trade `dusk` could not make.
  */
 const EVENING = {
   id: MAP_THEME.EVENING,
@@ -249,91 +342,121 @@ const EVENING = {
     showRoadLabels: true,
     showPlaceLabels: true,
     showTransitLabels: false,
-    // Roads held near-white against the warm ground — this is what keeps the
-    // hierarchy legible when everything else shifts amber.
-    colorMotorways: '#d8cdbe',
-    colorRoads: '#fbf7f2',
-    colorGreenspace: '#cfdcb4',
-    colorBuildingHighlight: '#f0dcc4',
+    // The city outside the campus, taken down into dusk. Roads stay the
+    // brightest thing in the vendor set — at a low sun a carriageway is still
+    // catching light when the roofs beside it have stopped — which is also
+    // what keeps the through-network readable behind the campus.
+    colorMotorways: '#8c7561',
+    colorRoads: '#d8c2a4',
+    colorGreenspace: '#8fa06a',
+    colorBuildingHighlight: '#c9a276',
     colorPlaceLabelHighlight: '#b45309',
   },
   atmosphere: {
-    background: '#e9dccb',
-    fogColor: '#e8d5bd',
-    fogHighColor: '#e0a878',
-    fogSpaceColor: '#b58a6a',
-    horizonBlend: 0.09,
-    starIntensity: 0.02,
-    skyColor: '#e0a878',
-    skyHaloColor: '#fbdcb0',
-    sunIntensity: 12,
+    background: '#ad8c68',
+    fogColor: '#c9a27a',
+    fogHighColor: '#c07a4e',
+    fogSpaceColor: '#6d4a3a',
+    horizonBlend: 0.12,
+    starIntensity: 0.05,
+    skyColor: '#c9793f',
+    skyHaloColor: '#f5c07a',
+    sunIntensity: 10,
   },
   campus: {
-    boundaryLine: '#8a6b53',
-    boundaryLineOpacity: 0.6,
-    boundaryFill: '#b08a63',
-    boundaryFillOpacity: 0.09,
-    buildingOpacity: 0.94,
-    buildingRoof: '#fbf1e2',
-    buildingEdge: '#a8845f',
-    buildingEdgeOpacity: 0.5,
-    buildingHighlight: '#c2410c',
-    // Pushed cooler and darker than the Day gate: against Evening's warm ground
-    // a warm marker would disappear into it.
-    gate: '#8c5a12',
-    gateEdge: '#5c3806',
-    // Longer contact shadows at a low sun (§26) — still shading, not staging.
-    buildingAoIntensity: 0.36,
+    boundaryLine: '#6d523c',
+    boundaryLineOpacity: 0.65,
+    boundaryFill: '#7a5a3e',
+    boundaryFillOpacity: 0.14,
+    buildingOpacity: 0.95,
+    buildingRoof: '#efdcc0',
+    buildingEdge: '#7d5c3d',
+    buildingEdgeOpacity: 0.55,
+    buildingHighlight: '#e2600c',
+    // Brightened rather than darkened for the dusk ground: a gate has to stay
+    // findable as the light goes, and this is the hour it starts to be lit.
+    gate: '#f0a83c',
+    gateEdge: '#6b3f08',
+    // ── The long shadows (§26) ──────────────────────────────────────────
+    // A low sun throws shading that reaches: the ground radius is what makes
+    // it reach, and at 9m it is nearly double Day's. Still the building's own
+    // occlusion — nothing here draws a shadow shape that is not earned by a
+    // wall standing on the ground.
+    buildingAoIntensity: 0.48,
+    buildingAoRadius: 4.2,
+    buildingAoGroundRadius: 9,
+    buildingAoWallRadius: 4.5,
+    buildingEmissive: 0.08,
+    groundEmissive: 0.05,
+    pointEmissive: 0.2,
+    // First light spilling from the base of the buildings — the hour the
+    // campus lighting comes on, held low so it reads as warmth, not as a glow.
+    floodColor: '#ffb765',
+    floodIntensity: 0.18,
+    floodWallRadius: 3,
+    floodGroundRadius: 5,
     buildings: buildingPalette(
       {
-        ACADEMIC: '#d9cec2',
-        ADMINISTRATIVE: '#e6cfae',
-        RESIDENTIAL: '#d2d3bd',
-        SPORTS: '#cdd8ab',
-        UTILITY: '#d3cbc2',
-        COMMERCIAL: '#ecd4b0',
-        RELIGIOUS: '#e0cec2',
-        OPERATIONAL: '#d6cdcb',
+        // A full step down from Day, and warmer: these are faces taking a low
+        // amber sun, not faces in flat noon light. The category hues are the
+        // same hues — a building keeps its identity from day to night (§30).
+        ACADEMIC: '#b39a86',
+        ADMINISTRATIVE: '#c9a878',
+        RESIDENTIAL: '#a9a583',
+        SPORTS: '#a8ad74',
+        UTILITY: '#a99b8d',
+        COMMERCIAL: '#cfa877',
+        RELIGIOUS: '#bb9c8c',
+        OPERATIONAL: '#ab9a9e',
       },
-      '#d6ccc1'
+      '#b0a091'
     ),
-    groundOpacity: 0.55,
-    groundEdge: '#a08667',
-    groundEdgeOpacity: 0.42,
+    groundOpacity: 0.6,
+    groundEdge: '#7a5e40',
+    groundEdgeOpacity: 0.5,
     ground: {
-      SPORTS: '#d5dcae',
-      OPERATIONAL: '#e0d5c6',
-      OTHER: '#e2d8c9',
+      SPORTS: '#a7ae72',
+      OPERATIONAL: '#b7a68f',
+      OTHER: '#bcab94',
     },
   },
   roads: {
-    main: { color: '#fffaf3', casing: '#a08667', opacity: 1, widthScale: 1 },
-    secondary: { color: '#f6ece0', casing: '#ab8f74', opacity: 0.95, widthScale: 0.72 },
-    service: { color: '#e8dbcb', casing: '#b09474', opacity: 0.85, widthScale: 0.5 },
-    path: { color: '#9c8166', casing: '#fffaf3', opacity: 0.9, widthScale: 0.34 },
-    steps: { color: '#8a6c4f', casing: '#fffaf3', opacity: 0.95, widthScale: 0.46 },
+    // Dark carriageway, cream casing — the same read as Day, in Evening's
+    // temperature. On a ground this warm a pale road would vanish exactly the
+    // way the white one did in daylight.
+    main: { color: '#33291f', casing: '#ffeacb', casingOpacity: 0.92, casingScale: 1.5, opacity: 1, widthScale: 1, emissive: 0.12 },
+    secondary: { color: '#443627', casing: '#f7e3c6', casingOpacity: 0.88, casingScale: 1.55, opacity: 0.97, widthScale: 0.72, emissive: 0.12 },
+    service: { color: '#5a4934', casing: '#f2ddbe', casingOpacity: 0.82, casingScale: 1.6, opacity: 0.9, widthScale: 0.5, emissive: 0.1 },
+    path: { color: '#7c5a36', casing: '#ffeacb', casingOpacity: 0.78, casingScale: 1.7, opacity: 0.92, widthScale: 0.34, emissive: 0.1 },
+    steps: { color: '#63452a', casing: '#ffeacb', casingOpacity: 0.78, casingScale: 1.7, opacity: 0.95, widthScale: 0.46, emissive: 0.1 },
   },
   labels: {
-    color: '#2a1c10',
-    halo: '#fff6e8',
-    haloWidth: 1.8,
-    secondaryColor: '#5b4632',
+    color: '#2a1b0e',
+    halo: '#ffefd8',
+    haloWidth: 1.9,
+    secondaryColor: '#54402c',
     sizeScale: 1,
   },
   routes: {
     todo: '#4338ca',
-    done: '#8a7f79',
-    halo: '#3b2a1a',
-    haloOpacity: 0.3,
-    flow: '#fff8ec',
+    done: '#7d6a5c',
+    halo: '#2c1c0e',
+    haloOpacity: 0.34,
+    flow: '#fff3dd',
     flowOpacity: 0.62,
     todoOpacity: 0.95,
     doneOpacity: 0.32,
   },
   robot: {
-    contactShadow: '#3b2a1a',
-    contactShadowOpacity: 0.5,
+    contactShadow: '#2c1c0e',
+    contactShadowOpacity: 0.55,
     labelContrast: 'dark-on-light',
+  },
+  grade: {
+    vignette: '#2a1330',
+    vignetteOpacity: 0.42,
+    skyTint: '#e08a3c',
+    skyTintOpacity: 0.28,
   },
 };
 
@@ -342,6 +465,15 @@ const EVENING = {
  * Base is a deep blue-slate rather than black, roads are illuminated, and the
  * label/route contrast is the highest of the three themes because night is
  * when an operator most needs the operational layer to separate cleanly.
+ *
+ * ── Why the campus roads finally look white here (§59) ────────────────────
+ * They were already the palest colour in this theme. They did not RENDER pale,
+ * because `line-emissive-strength` defaults to 0 and Standard's night lighting
+ * multiplied them down to the same grey as everything else — which is what the
+ * legend's bright "campus road" swatch was disagreeing with. The road is now
+ * both painted near-white AND declared self-lit, which is what an illuminated
+ * carriageway is: a surface that is bright because it is lit, not because the
+ * sun is on it.
  */
 const NIGHT = {
   id: MAP_THEME.NIGHT,
@@ -353,74 +485,95 @@ const NIGHT = {
     showTransitLabels: false,
     // Roads are the illuminated element at night — lifted well clear of the
     // dark ground so the network an operator navigates by stays legible.
-    colorMotorways: '#8fa6c4',
-    colorRoads: '#a9bcd6',
-    colorGreenspace: '#1d3326',
-    colorBuildingHighlight: '#37445c',
+    colorMotorways: '#7f97b8',
+    colorRoads: '#c2d6f2',
+    colorGreenspace: '#16281c',
+    colorBuildingHighlight: '#3b4a66',
     colorPlaceLabelHighlight: '#7dd3fc',
   },
   atmosphere: {
-    background: '#111a2b',
-    fogColor: '#162034',
+    background: '#0e1626',
+    fogColor: '#131d30',
     fogHighColor: '#1f3352',
-    fogSpaceColor: '#0a1120',
+    fogSpaceColor: '#070d18',
     horizonBlend: 0.05,
-    starIntensity: 0.15,
+    starIntensity: 0.18,
     skyColor: '#16233c',
     skyHaloColor: '#2b4a7a',
     sunIntensity: 4,
   },
   campus: {
-    boundaryLine: '#5a7ba6',
-    boundaryLineOpacity: 0.6,
-    boundaryFill: '#2a3d5c',
-    boundaryFillOpacity: 0.16,
-    buildingOpacity: 0.95,
-    buildingRoof: '#3a4761',
-    buildingEdge: '#6b86ad',
-    buildingEdgeOpacity: 0.42,
-    buildingHighlight: '#5b9dff',
+    boundaryLine: '#6b90c4',
+    boundaryLineOpacity: 0.65,
+    boundaryFill: '#22406b',
+    boundaryFillOpacity: 0.2,
+    buildingOpacity: 0.96,
+    buildingRoof: '#44536e',
+    buildingEdge: '#7d9ac4',
+    buildingEdgeOpacity: 0.5,
+    buildingHighlight: '#60a5fa',
     // Brightened for the dark ground — the gate has to stay findable at night
     // without becoming the neon the brief rules out.
-    gate: '#e0a94e',
+    gate: '#ffc45c',
     gateEdge: '#8a6522',
     // Lighter at night: the ground is already dark, so heavy contact shading
     // would only close the small gap the buildings have left to read against
     // (§27 — dark buildings, never a black campus).
-    buildingAoIntensity: 0.18,
+    buildingAoIntensity: 0.22,
+    buildingAoRadius: 3,
+    buildingAoGroundRadius: 4,
+    buildingAoWallRadius: 2.6,
+    // The one theme where the buildings must carry some of their own light.
+    // Without it the night lighting takes an already-dark palette to black,
+    // and §27's "dark buildings, never a black campus" stops holding.
+    buildingEmissive: 0.22,
+    groundEmissive: 0.3,
+    pointEmissive: 0.85,
+    // Campus lighting, pooling on the ground at the foot of each block. This
+    // is the detail that separates "a map at night" from "a map turned down".
+    floodColor: '#7fb4ff',
+    floodIntensity: 0.34,
+    floodWallRadius: 4,
+    floodGroundRadius: 7,
     buildings: buildingPalette(
       {
-        ACADEMIC: '#2f3d55',
-        ADMINISTRATIVE: '#453c4c',
-        RESIDENTIAL: '#2e4247',
-        SPORTS: '#2c4436',
-        UTILITY: '#333a46',
-        COMMERCIAL: '#463f38',
-        RELIGIOUS: '#453444',
-        OPERATIONAL: '#333a5a',
+        // Lifted a step off the previous set and pushed apart in hue: at night
+        // the lighting compresses everything toward the ground colour, so the
+        // categories need MORE separation here than by day, not less.
+        ACADEMIC: '#35486a',
+        ADMINISTRATIVE: '#4d4257',
+        RESIDENTIAL: '#2f4c52',
+        SPORTS: '#2d4d3a',
+        UTILITY: '#39404f',
+        COMMERCIAL: '#4e4437',
+        RELIGIOUS: '#4b3a4c',
+        OPERATIONAL: '#374063',
       },
-      '#323a4a'
+      '#373f52'
     ),
-    groundOpacity: 0.5,
-    groundEdge: '#4f6689',
-    groundEdgeOpacity: 0.4,
+    groundOpacity: 0.55,
+    groundEdge: '#5b76a0',
+    groundEdgeOpacity: 0.45,
     ground: {
-      SPORTS: '#22321f',
-      OPERATIONAL: '#232b3c',
-      OTHER: '#242c3b',
+      SPORTS: '#1f3524',
+      OPERATIONAL: '#232c40',
+      OTHER: '#252d3f',
     },
   },
   roads: {
-    main: { color: '#a8bcd8', casing: '#0b1424', opacity: 1, widthScale: 1 },
-    secondary: { color: '#7d92b0', casing: '#0b1424', opacity: 0.95, widthScale: 0.72 },
-    service: { color: '#5b6c86', casing: '#0b1424', opacity: 0.85, widthScale: 0.5 },
-    path: { color: '#6f88a8', casing: '#0b1424', opacity: 0.9, widthScale: 0.34 },
-    steps: { color: '#8298b8', casing: '#0b1424', opacity: 0.95, widthScale: 0.46 },
+    // The inversion of Day: bright carriageway, dark casing. The casing is now
+    // doing the separating — a lit road on a dark ground needs an edge for the
+    // same reason a dark road on a light one does.
+    main: { color: '#f4f8ff', casing: '#08101d', casingOpacity: 0.85, casingScale: 1.55, opacity: 1, widthScale: 1, emissive: 1 },
+    secondary: { color: '#cddcf1', casing: '#08101d', casingOpacity: 0.8, casingScale: 1.6, opacity: 0.97, widthScale: 0.72, emissive: 0.9 },
+    service: { color: '#93a8c6', casing: '#08101d', casingOpacity: 0.75, casingScale: 1.65, opacity: 0.9, widthScale: 0.5, emissive: 0.75 },
+    path: { color: '#86a3c9', casing: '#08101d', casingOpacity: 0.7, casingScale: 1.7, opacity: 0.92, widthScale: 0.34, emissive: 0.7 },
+    steps: { color: '#a7c0e0', casing: '#08101d', casingOpacity: 0.7, casingScale: 1.7, opacity: 0.95, widthScale: 0.46, emissive: 0.75 },
   },
   labels: {
-    color: '#eaf2ff',
-    halo: '#0a1120',
-    haloWidth: 2,
+    color: '#eef4ff',
+    halo: '#060d18',
+    haloWidth: 2.1,
     secondaryColor: '#a9bcd6',
     sizeScale: 1,
   },
@@ -438,6 +591,12 @@ const NIGHT = {
     contactShadow: '#000814',
     contactShadowOpacity: 0.6,
     labelContrast: 'light-on-dark',
+  },
+  grade: {
+    vignette: '#03070f',
+    vignetteOpacity: 0.5,
+    skyTint: '#12305c',
+    skyTintOpacity: 0.22,
   },
 };
 

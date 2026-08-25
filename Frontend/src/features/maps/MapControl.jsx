@@ -25,10 +25,20 @@ import { useAppState } from '@/context/appContext.js';
 
 // ── The new layers this milestone adds ───────────────────────────────────────
 import { useMapTheme } from './theme/useMapTheme.js';
-import { resolveCampusDefinition, EMPTY_CAMPUS_DEFINITION } from './campus/campusRegistry.js';
+import {
+  resolveCampusDefinition,
+  campusRegistryEntry,
+  EMPTY_CAMPUS_DEFINITION,
+} from './campus/campusRegistry.js';
 import { useCampusLayer } from './campus/useCampusLayer.js';
-import { buildCampusSearchIndex, SEARCH_RESULT_TYPE } from './campus/campusSearch.js';
+import {
+  buildCampusFeatureIndex,
+  buildCampusRegistryIndex,
+  buildRobotIndex,
+  SEARCH_RESULT_TYPE,
+} from './campus/campusSearch.js';
 import { labelAnchorFor } from './campus/campusLayers.js';
+import { nearestNamedFeature } from './campus/semantics/campusOperational.js';
 import { CAMPUS_CAMERA_MODE, campusCameraFor, createCameraSequencer } from './camera/cameraModes.js';
 
 import { MapFiltersBar } from './mapControl/ui/MapFiltersBar.jsx';
@@ -36,9 +46,11 @@ import { SelectedRobotPanel } from './mapControl/ui/SelectedRobotPanel.jsx';
 import { MapUnavailableFallback } from './mapControl/ui/MapUnavailableFallback.jsx';
 import { MapLegend } from './mapControl/ui/MapLegend.jsx';
 import { MapThemeControl } from './mapControl/ui/MapThemeControl.jsx';
+import { MapGrade } from './mapControl/ui/MapGrade.jsx';
 import { CampusSearch } from './mapControl/ui/CampusSearch.jsx';
 import { CampusFeatureCard } from './mapControl/ui/CampusFeatureCard.jsx';
 import { CampusDataNotice } from './mapControl/ui/CampusDataNotice.jsx';
+import { RouteIssuesNotice } from './mapControl/ui/RouteIssuesNotice.jsx';
 import './mapControl/ui/campusUi.css';
 
 // WORLD VIEW (strict)
@@ -310,6 +322,18 @@ function MapControlInner({ filtersHost }) {
 
   const [selectedFeature, setSelectedFeature] = useState(null);
   const [cameraMode, setCameraMode] = useState(CAMPUS_CAMERA_MODE.OVERVIEW);
+  /** What the route validator has to say about the routes on screen (§3D). */
+  const [routeFindings, setRouteFindings] = useState(null);
+
+  // ── Operations mode (§3H) ──────────────────────────────────────────────────
+  //
+  // A single number, not a branch. Operations is a way of LOOKING at the campus,
+  // so it belongs in the same place every other viewing decision lives — a value
+  // fed to `campusStyleForTheme`, interpolated in place like a theme. Follow
+  // mode is a framing of Operations, not a third appearance, so it carries the
+  // same emphasis rather than a look of its own.
+  const operationsEmphasis =
+    campusActive && (cameraMode === CAMPUS_CAMERA_MODE.OPERATIONS || cameraMode === CAMPUS_CAMERA_MODE.FOLLOW) ? 1 : 0;
 
   const { campusFeatureCount, vendorClipActive } = useCampusLayer(mapRef, {
     isMapLoaded,
@@ -319,6 +343,7 @@ function MapControlInner({ filtersHost }) {
     subscribeToTheme,
     selectedFeatureId: selectedFeature && !selectedFeature.isVendor ? selectedFeature.id : null,
     onSelectFeature: setSelectedFeature,
+    operationsEmphasis,
   });
 
   // ── Campus context labels ──────────────────────────────────────────────────
@@ -582,7 +607,7 @@ function MapControlInner({ filtersHost }) {
   // `representation` is what a future 3D robot milestone flips. Everything else
   // passed here — state, selection, camera-follow, theme — is
   // representation-agnostic.
-  const { robots, robotCount, recenter } = useRobotStream({
+  const { robots, robotCount, recenter, selectedRouteProgress } = useRobotStream({
     robots: globalRobots,
     taskPathCacheRef,
     countryId,
@@ -599,6 +624,11 @@ function MapControlInner({ filtersHost }) {
     onHoverRobot: setHoveredRobotId,
     themeRef,
     subscribeToTheme,
+    // Read-only, for route VALIDATION (§3D). The operational layer checks the
+    // routes it is drawing against the campus geometry and reports what it
+    // finds; it never moves, snaps or hides a route to make one agree.
+    campusFeatures: campusDefinition.features,
+    onRouteFindings: setRouteFindings,
   });
 
   const selectedRobot = useMemo(
@@ -619,11 +649,38 @@ function MapControlInner({ filtersHost }) {
     clearSelection();
   }, [robots, selectedRobotId, clearSelection]);
 
-  // ── Search (§34) ───────────────────────────────────────────────────────────
-  const searchIndex = useMemo(
-    () => buildCampusSearchIndex({ definition: campusDefinition, robots }),
-    [campusDefinition, robots]
+  // ── Search (§34, §3I) ──────────────────────────────────────────────────────
+  //
+  // ONE search system, as §3I requires — campus places and units in the same
+  // index, ranked by the same function. What changed is that its two halves are
+  // memoised separately (§3T): the campus half depends on the campus and the
+  // fleet half on the fleet, so a telemetry tick no longer re-derives 65 label
+  // anchors and 65 lowercased haystacks to update one robot's status string.
+  //
+  // The index gained a third half when the map gained a second campus: the
+  // CAMPUSES themselves, so "JSSATE" is something an operator can type from
+  // anywhere rather than a dropdown entry they have to already know to look
+  // for. It is metadata only — a name, its aliases, the DB centre — and it is
+  // memoised against the campus LIST, so it is built once per session and costs
+  // the same at a hundred campuses as at two (§30).
+  const registryIndex = useMemo(
+    () => buildCampusRegistryIndex(campuses, campusRegistryEntry),
+    [campuses]
   );
+  const campusIndex = useMemo(() => buildCampusFeatureIndex(campusDefinition), [campusDefinition]);
+  const robotIndex = useMemo(() => buildRobotIndex(robots), [robots]);
+  const searchIndex = useMemo(
+    () => [...registryIndex, ...campusIndex, ...robotIndex],
+    [registryIndex, campusIndex, robotIndex]
+  );
+
+  // ── "Where is this unit?", in campus terms (§3N) ───────────────────────────
+  // Derived only for the SELECTED robot — one distance calculation over the
+  // campus features, not one per unit per tick.
+  const nearestFeature = useMemo(() => {
+    if (!selectedRobot || typeof selectedRobot.lat !== 'number' || typeof selectedRobot.lon !== 'number') return null;
+    return nearestNamedFeature(campusDefinition.features, [selectedRobot.lon, selectedRobot.lat], labelAnchorFor);
+  }, [selectedRobot, campusDefinition]);
 
   const focusLngLat = useCallback(
     (lon, lat, zoom) => {
@@ -639,18 +696,49 @@ function MapControlInner({ filtersHost }) {
     [mapRef]
   );
 
+  /**
+   * A search result becomes a selection and a camera move (§3I).
+   *
+   * The branches deliberately do the same three things in the same order —
+   * clear the other kinds of selection, make this one, let the camera follow —
+   * so a search for "R01" and a search for "Main Gate" behave identically apart
+   * from what ends up selected. A robot additionally switches the camera into
+   * Operations, because "find this unit" is an operational question and the
+   * answer is easier to read against the operational framing; Follow is then one
+   * click away in the panel that has just appeared, rather than being forced on
+   * the operator by a search.
+   *
+   * A CAMPUS result sets `campusId` and stops. It does not fly the camera
+   * itself, does not load geometry itself and does not touch a layer: setting
+   * the filter is exactly what the campus dropdown does, and everything after
+   * that — resolving the definition, pushing it into the already-installed
+   * sources, the two-stage focus flight, clearing the previous campus's
+   * selection — is the generic machinery that already existed, reached the same
+   * way from both controls. That is why picking a campus here cannot drift from
+   * picking one there.
+   */
   const onSearchPick = useCallback(
     (entry) => {
       if (!entry) return;
+      if (entry.type === SEARCH_RESULT_TYPE.CAMPUS) {
+        setCampusId(entry.campusId);
+        return;
+      }
       if (entry.type === SEARCH_RESULT_TYPE.ROBOT) {
         setSelectedFeature(null);
-        selectRobot(entry.robotId);
+        // `selectRobot` toggles, so a second search for the same unit would
+        // otherwise deselect the thing the operator just asked to see.
+        setSelectedRobotId(entry.robotId);
+        if (campusActive && cameraMode === CAMPUS_CAMERA_MODE.OVERVIEW) {
+          setCameraMode(CAMPUS_CAMERA_MODE.OPERATIONS);
+        }
       } else {
+        setSelectedRobotId(null);
         setSelectedFeature(entry.feature);
       }
       focusLngLat(entry.lon, entry.lat);
     },
-    [focusLngLat, selectRobot]
+    [focusLngLat, setSelectedRobotId, setCampusId, campusActive, cameraMode]
   );
 
   const focusSelectedFeature = useCallback(() => {
@@ -713,26 +801,56 @@ function MapControlInner({ filtersHost }) {
         <div ref={mapContainerRef} className="w-full h-full" />
       </div>
 
+      {/* Over the canvas, under every panel. Inert — see MapGrade. */}
+      {!mapFailure && <MapGrade themeId={themeId} />}
+
       {mapFailure && <MapUnavailableFallback reason={mapFailure} robots={globalRobots} />}
 
+      {/* ── The right-hand rail ────────────────────────────────────────────
+          The view controls and the selected-robot panel share this corner, so
+          they share one flow. Positioning them independently meant each had to
+          guess the other's height, and at campus focus the camera-mode row was
+          taller than the panel's guess — which is how the panel's header ended
+          up rendered underneath it. */}
       {!mapFailure && (
-        <MapThemeControl
-          themeId={themeId}
-          onThemeChange={setThemeId}
-          isTransitioning={isTransitioning}
-          cameraMode={cameraMode}
-          onCameraModeChange={applyCameraMode}
-          showCameraModes={campusActive}
-          followDisabled={!selectedRobotId}
-          onResetCamera={() => {
-            setSelectedFeature(null);
-            applyCameraMode(CAMPUS_CAMERA_MODE.OVERVIEW);
-          }}
-        />
+        <div className="map-right-rail">
+          <MapThemeControl
+            themeId={themeId}
+            onThemeChange={setThemeId}
+            isTransitioning={isTransitioning}
+            cameraMode={cameraMode}
+            onCameraModeChange={applyCameraMode}
+            showCameraModes={campusActive}
+            followDisabled={!selectedRobotId}
+            onResetCamera={() => {
+              setSelectedFeature(null);
+              applyCameraMode(CAMPUS_CAMERA_MODE.OVERVIEW);
+            }}
+          />
+
+          <SelectedRobotPanel
+            robot={selectedRobot}
+            followSelected={followSelected}
+            onToggleFollow={toggleFollow}
+            onClear={clearSelection}
+            routeProgress={selectedRouteProgress}
+            nearestFeature={nearestFeature}
+          />
+        </div>
       )}
 
-      {!mapFailure && campusActive && (
-        <CampusSearch index={searchIndex} onPick={onSearchPick} hasCampusPlaces={campusHasGeometry} />
+      {/* Mounted whether or not a campus is focused. It used to appear only at
+          campus focus, because until there was a second campus the only things
+          it could find were inside the campus already on screen. Now the index
+          also holds the campuses themselves, so hiding it until one is selected
+          would hide the one control that can select one. */}
+      {!mapFailure && (
+        <CampusSearch
+          index={searchIndex}
+          onPick={onSearchPick}
+          hasCampusPlaces={campusHasGeometry}
+          campusActive={campusActive}
+        />
       )}
 
       {!mapFailure && campusActive && (
@@ -748,8 +866,15 @@ function MapControlInner({ filtersHost }) {
           vendorClipActive={vendorClipActive}
           centreWithinBoundary={campusDefinition.centreWithinBoundary}
           supplemental={supplementalSummary}
+          outsideBoundaryCount={campusDefinition.dataset?.outsideBoundary?.length || 0}
+          verificationRecord={campusDefinition.verificationRecord}
         />
       )}
+
+      {/* Sits beside the coverage notice, and only when the validator has
+          something to say. §3D: a route that contradicts the campus geometry is
+          reported, never rendered away. */}
+      {!mapFailure && <RouteIssuesNotice summary={routeFindings} />}
 
       {!mapFailure && selectedFeature && (
         <CampusFeatureCard
@@ -768,25 +893,20 @@ function MapControlInner({ filtersHost }) {
           campusFeatureCount={campusFeatureCount}
           campusName={campusDefinition.name}
           geometrySource={campusDefinition.geometrySource}
+          verificationLabel={campusDefinition.verificationRecord ? 'verified by owner' : 'unverified'}
         />
       )}
 
-      {!mapFailure && (
-        <SelectedRobotPanel
-          robot={selectedRobot}
-          followSelected={followSelected}
-          onToggleFollow={toggleFollow}
-          onClear={clearSelection}
-        />
-      )}
-
+      {/* Sits between Mapbox's attribution (which its own stylesheet pins at
+          10px from each edge) and the feature card above it — see the stack
+          documented on `.map-feature-card`. */}
       {!mapFailure && focusTarget && (
         <Button
           type="button"
           variant="secondary"
           size="sm"
           onClick={() => recenter?.()}
-          className="absolute bottom-6 right-4 z-10 shadow-lg"
+          className="absolute bottom-11 right-3 z-10 shadow-lg"
           title="Recenter on active robots and routes"
         >
           Recenter

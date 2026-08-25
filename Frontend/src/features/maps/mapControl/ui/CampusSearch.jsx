@@ -3,13 +3,28 @@ import React, { useMemo, useRef, useState } from 'react';
 import { SEARCH_RESULT_TYPE, searchCampusIndex } from '../../campus/campusSearch.js';
 
 /**
- * UI LAYER — find a place or a unit without knowing its coordinates (§34).
+ * UI LAYER — find a campus, a place or a unit without knowing its coordinates
+ * (§34, §3I).
  *
  * The empty-state copy is load-bearing. When the campus definition carries no
  * surveyed features, this control says so in as many words rather than looking
  * broken or, worse, offering plausible place names it cannot actually locate.
+ *
+ * The three result kinds are styled apart and are otherwise identical here:
+ * this component ranks nothing, knows no campus by name, and does not care
+ * which kind it is handing back. What a pick MEANS is the caller's business.
  */
-export function CampusSearch({ index, onPick, hasCampusPlaces }) {
+/** A result kind's style modifier. Data, so a fourth kind is a row, not a ternary. */
+const RESULT_MODIFIER = Object.freeze({
+  [SEARCH_RESULT_TYPE.ROBOT]: ' is-robot',
+  [SEARCH_RESULT_TYPE.CAMPUS]: ' is-campus',
+});
+
+function resultModifier(type) {
+  return RESULT_MODIFIER[type] || '';
+}
+
+export function CampusSearch({ index, onPick, hasCampusPlaces, campusActive }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const blurTimerRef = useRef(null);
@@ -28,8 +43,8 @@ export function CampusSearch({ index, onPick, hasCampusPlaces }) {
         type="search"
         className="map-search__input"
         value={query}
-        placeholder="Search campus or unit…"
-        aria-label="Search campus places and units"
+        placeholder={campusActive ? 'Search campus, place or unit…' : 'Search a campus or unit…'}
+        aria-label="Search campuses, campus places and units"
         onChange={(e) => {
           setQuery(e.target.value);
           setOpen(true);
@@ -61,11 +76,7 @@ export function CampusSearch({ index, onPick, hasCampusPlaces }) {
                 onClick={() => pick(entry)}
               >
                 <span className="map-search__result-name">{entry.name}</span>
-                <span
-                  className={`map-search__result-kind${
-                    entry.type === SEARCH_RESULT_TYPE.ROBOT ? ' is-robot' : ''
-                  }`}
-                >
+                <span className={`map-search__result-kind${resultModifier(entry.type)}`}>
                   {entry.subtitle}
                 </span>
               </button>
@@ -74,9 +85,11 @@ export function CampusSearch({ index, onPick, hasCampusPlaces }) {
 
           {results.length === 0 && (
             <li className="map-search__empty">
-              {hasCampusPlaces
-                ? 'No match.'
-                : 'No match. This campus has no surveyed places in the dataset — only units and the campus centre are searchable.'}
+              {!campusActive
+                ? 'No match. Search a campus by name to open it, or a unit by id.'
+                : hasCampusPlaces
+                  ? 'No match.'
+                  : 'No match. This campus has no surveyed places in the dataset — only units and the campus centre are searchable.'}
             </li>
           )}
         </ul>

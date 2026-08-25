@@ -19,8 +19,10 @@ export function MapLegend({
   campusFeatureCount,
   campusName,
   geometrySource,
+  /** e.g. "verified by owner" — the calm form, not a warning (§3A). */
+  verificationLabel,
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const hasCampusGeometry = campusFeatureCount > 1; // the centre point alone is not geometry
 
   const swatch = (style) => <span className="map-legend__swatch" style={style} />;
@@ -63,7 +65,18 @@ export function MapLegend({
                 <span>Ground / sports area</span>
               </div>
               <div className="map-legend__row">
-                {swatch({ background: theme.roads.main.color, height: '0.25rem' })}
+                {/* Carriageway AND casing. A campus road is dark-in-bright by
+                    day and bright-in-dark at night, and a swatch showing only
+                    the fill would disagree with the map in one of those two
+                    directions — which is exactly what it used to do. */}
+                <span
+                  className="map-legend__swatch map-legend__swatch--road"
+                  style={{
+                    background: theme.roads.main.color,
+                    height: '0.25rem',
+                    '--legend-road-casing': theme.roads.main.casing,
+                  }}
+                />
                 <span>Campus road</span>
               </div>
               <div className="map-legend__row">
@@ -92,6 +105,21 @@ export function MapLegend({
                 <span>Gate — campus entrance</span>
               </div>
               <div className="map-legend__row">
+                {/* Operational POIs are the SAME colour as any other campus
+                    location and differ only in size (§3C). A legend row that
+                    invented a second colour would describe a map that does not
+                    exist. */}
+                {swatch({
+                  background: theme.campus.buildingRoof,
+                  border: `1.5px solid ${theme.campus.buildingEdge}`,
+                  height: '0.6875rem',
+                  width: '0.6875rem',
+                  borderRadius: '50%',
+                  flex: '0 0 auto',
+                })}
+                <span>Operational location — parking, food, department</span>
+              </div>
+              <div className="map-legend__row">
                 {swatch({
                   background: theme.campus.buildingRoof,
                   border: `1.5px solid ${theme.campus.buildingEdge}`,
@@ -100,7 +128,7 @@ export function MapLegend({
                   borderRadius: '50%',
                   flex: '0 0 auto',
                 })}
-                <span>Campus location (point only)</span>
+                <span>Campus POI (point only)</span>
               </div>
               <div className="map-legend__row">
                 {swatch({
@@ -120,7 +148,9 @@ export function MapLegend({
               <>
                 <br />
                 {hasCampusGeometry
-                  ? `${campusFeatureCount} campus features · ${geometrySource || 'imported data'} · unverified`
+                  ? `${campusFeatureCount} campus features · ${geometrySource || 'imported data'} · ${
+                      verificationLabel || 'unverified'
+                    }`
                   : 'Campus geometry: centre point only — buildings shown are basemap context'}
               </>
             ) : null}

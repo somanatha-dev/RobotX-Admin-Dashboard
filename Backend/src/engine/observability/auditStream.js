@@ -94,6 +94,36 @@ const EVENT_TYPE = Object.freeze({
    * belongs in the record that cannot itself be quietly lost.
    */
   TIER_B_SHEDDING: "TIER_B_SHEDDING",
+  /**
+   * ── PHASE 15 remediation (P15-C4) — the two the cutover produces ──────────
+   *
+   * `cutover/stage.auditEventFor()` has always emitted these two names and
+   * `cutover/store.js` has always read them back. **Neither was ever in this table**, and
+   * neither was in the `AuditEvent_event_type_known` CHECK constraint that mirrors it — so
+   * `append()` refused every cutover event by name, and PostgreSQL refused it again
+   * underneath.
+   *
+   * The consequence was not a missing log line. `store.declarationFor()` finds the
+   * pre-declared guardrails by querying for exactly these two types, so with no row able to
+   * exist it returned `null` for **every shard, always** — and `cutover.worker.assessShard`
+   * reports a shard whose declaration is null as *"live with no pre-declared guardrails"*
+   * and returns without assessing it. The staged-rollout controller of §22.4 item 4 could
+   * therefore never assess any shard, and the automatic rollback could never fire, on a
+   * deployment where every other part of that mechanism was correct and wired.
+   *
+   * No test saw it because no test ever wrote a cutover event to a database: every test
+   * hands `declarationFor`'s output to the controller directly, which is the join the
+   * defect lives in.
+   *
+   * A cutover is both an operator action and a config change, so re-using an existing name
+   * was possible — and it was rejected. `store.js` reads the pre-declaration by event type,
+   * and folding these into `OPERATOR_ACTION` would make that query match every override and
+   * quarantine ever written and force the reader to re-identify cutovers from the payload.
+   * §21.7's stream is where "was this shard staged, and when" is answered months later; the
+   * type is the answer.
+   */
+  CUTOVER_SHARD_ENABLED: "CUTOVER_SHARD_ENABLED",
+  CUTOVER_SHARD_ROLLED_BACK: "CUTOVER_SHARD_ROLLED_BACK",
 });
 
 const EVENT_TYPES = Object.freeze(Object.values(EVENT_TYPE));

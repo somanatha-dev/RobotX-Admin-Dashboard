@@ -37,9 +37,21 @@ import {
 import {
   CAMPUS_GEOMETRY,
   EMPTY_CAMPUS_DEFINITION,
-  MISSING_GEOMETRY_REQUEST,
+  missingGeometryRequestFor,
   resolveCampusDefinition,
 } from '../campus/campusRegistry.js';
+
+/**
+ * The outstanding-data request is now derived PER CAMPUS from that campus's own
+ * import, rather than being one module constant describing RNSIT. Same
+ * assertions, addressed to the campus they were always about.
+ */
+const MISSING_GEOMETRY_REQUEST = missingGeometryRequestFor('RNSIT');
+import {
+  VERIFICATION_METHOD,
+  applyCampusVerification,
+  campusVerificationFor,
+} from '../campus/verification/campusVerification.js';
 
 /** A well-formed building, used as the baseline the negative cases mutate. */
 const GOOD_BUILDING = Object.freeze({
@@ -174,11 +186,17 @@ test('absent capabilities are reported by name, not silently omitted', () => {
 
 // ── RNSIT, as the repository actually holds it ──────────────────────────────
 
-test('every RNSIT feature declares a real provenance and NOT_VERIFIED', () => {
-  // RNSIT's geometry comes from two sources now — an OpenStreetMap extract and
-  // a set of user-supplied point locations. What must NOT change is the honesty
-  // of either. Real data arriving does not make it a survey, and this is where
-  // a future edit that quietly upgrades the claim gets caught.
+test('every RNSIT feature keeps its original provenance AND records who verified it', () => {
+  // RNSIT's geometry comes from two sources — an OpenStreetMap extract and a
+  // set of user-supplied point locations — and the project owner has since
+  // confirmed those features against the site (§3A).
+  //
+  // The property this test defends is that VERIFYING SOMETHING DID NOT ERASE
+  // WHERE IT CAME FROM. Those are two independent facts and the failure mode is
+  // an edit that treats them as one: a feature that says "verified" and has
+  // forgotten it is an OSM import can never be re-derived, re-licensed or
+  // re-checked against its source. Provenance below is asserted exactly as it
+  // was before the verification existed.
   assert.ok(CAMPUS_GEOMETRY.RNSIT.features.length > 0, 'the imports must supply geometry');
 
   const allowed = new Set([PROVENANCE.OPEN_DATA_IMPORT, PROVENANCE.USER_SUPPLIED]);
@@ -187,12 +205,15 @@ test('every RNSIT feature declares a real provenance and NOT_VERIFIED', () => {
 
   for (const f of CAMPUS_GEOMETRY.RNSIT.features) {
     assert.ok(allowed.has(f.provenance), `${f.id}: unexpected provenance ${f.provenance}`);
-    // The rule that matters, and it is the same for both sources.
-    assert.equal(f.verification, VERIFICATION.NOT_VERIFIED, `${f.id}: nothing here has been verified`);
-    assert.equal(f.verifiedOn, null);
+    // Checked by the owner — and NOT promoted to VERIFIED, which is reserved
+    // for a survey. No such source exists for this campus.
+    assert.equal(f.verification, VERIFICATION.VERIFIED_BY_USER, `${f.id}: the owner's check must be recorded`);
+    assert.notEqual(f.verification, VERIFICATION.VERIFIED, `${f.id}: an owner check is not a survey`);
+    assert.equal(f.verifiedOn, '2026-08-23', `${f.id}: a check with no date is not a check`);
+    assert.ok(f.verifiedBy, `${f.id}: a check with no named checker is not a check`);
 
-    // The original record travels with the feature, so a later verification
-    // pass can see what the import was working from (§34).
+    // The original record travels with the feature, so the verification can be
+    // re-examined against what the import was actually working from (§34).
     assert.equal(typeof f.sourceTags, 'object');
 
     if (f.provenance === PROVENANCE.OPEN_DATA_IMPORT) {
@@ -205,11 +226,87 @@ test('every RNSIT feature declares a real provenance and NOT_VERIFIED', () => {
       assert.match(f.source, /User-supplied/i, `${f.id}: the source must say it was supplied by a person`);
       assert.match(f.source, /not surveyed/i, `${f.id}: the source must refuse the survey claim outright`);
       assert.equal(f.sourceTags.source, 'USER_SUPPLIED_LOCATION');
+      // The RAW FILE still says UNVERIFIED, and must. The owner's check is a
+      // separate, dated record applied downstream — it did not go back and edit
+      // the dataset on disk (§3P: do not modify raw source files).
       assert.equal(f.sourceTags.verificationStatus, 'UNVERIFIED');
     }
   }
 
   assert.ok(osm > 0 && supplied > 0, 'both sources must actually be present');
+});
+
+test('the verification is one dated, attributed record — not a flag sprinkled per feature', () => {
+  // If "verified" is ever set feature-by-feature, it stops being auditable: no
+  // single place says who checked what, and a half-applied edit is invisible.
+  // One record, applied by one function, at one merge point.
+  const record = campusVerificationFor('RNSIT');
+  assert.ok(record, 'RNSIT must carry a verification record');
+  assert.equal(record.verifiedBy, 'Project owner');
+  assert.match(record.verifiedOn, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(record.method, VERIFICATION_METHOD.OWNER_SITE_CHECK);
+  assert.notEqual(record.method, VERIFICATION_METHOD.SURVEY);
+
+  // And the record states the LIMITS of the claim, in as many words. A
+  // verification that does not say what it does not cover is the one that gets
+  // read as covering everything.
+  assert.ok(record.doesNotCover.length >= 3);
+  assert.ok(record.doesNotCover.some((s) => /height/i.test(s)), 'drawn heights are still not measured');
+  assert.ok(record.doesNotCover.some((s) => /access/i.test(s)), 'gate access is still unknown');
+  assert.ok(record.doesNotCover.some((s) => /centre/i.test(s)), 'the seeded DB centre is outside the claim');
+  assert.match(record.statement, /not a georeferenced survey/i);
+});
+
+test('applying the verification does not touch geometry, provenance or the source record', () => {
+  // The transform runs across every campus feature. If it ever copied a
+  // coordinate — rounded it, reprojected it, rebuilt the array — the campus
+  // would move by a metre nobody could account for. Identity, not equality.
+  const before = [
+    {
+      id: 'x',
+      name: 'X',
+      kind: CAMPUS_FEATURE_KIND.BUILDING,
+      geometry: { type: 'Polygon', coordinates: [[[0, 0], [0, 1], [1, 1], [0, 0]]] },
+      provenance: PROVENANCE.OPEN_DATA_IMPORT,
+      verification: VERIFICATION.NOT_VERIFIED,
+      verifiedOn: null,
+      source: 'source string',
+      sourceId: 'way/1',
+      sourceTags: { '@id': 'way/1' },
+    },
+  ];
+  const record = campusVerificationFor('RNSIT');
+  const { features, verified } = applyCampusVerification(before, record);
+
+  assert.equal(verified, 1);
+  assert.equal(features[0].geometry, before[0].geometry, 'geometry must be the SAME object');
+  assert.equal(features[0].provenance, PROVENANCE.OPEN_DATA_IMPORT);
+  assert.equal(features[0].source, 'source string');
+  assert.equal(features[0].sourceTags, before[0].sourceTags, 'the source tags must be the SAME object');
+  assert.equal(features[0].verification, VERIFICATION.VERIFIED_BY_USER);
+
+  // And the input is untouched, so re-running the import produces what it
+  // produced before this record existed.
+  assert.equal(before[0].verification, VERIFICATION.NOT_VERIFIED);
+});
+
+test('the verification refuses to reach past what it covers', () => {
+  // A record covering OSM and user-supplied data must not verify a database
+  // seed row, a vendor basemap feature, or anything else that appears later.
+  const record = campusVerificationFor('RNSIT');
+  const outOfScope = [
+    { id: 'a', provenance: PROVENANCE.SEED_RECORD, verification: VERIFICATION.NOT_VERIFIED },
+    { id: 'b', provenance: PROVENANCE.VENDOR_BASEMAP, verification: VERIFICATION.NOT_VERIFIED },
+    { id: 'c', provenance: PROVENANCE.OPERATIONAL_RECORD, verification: VERIFICATION.NOT_VERIFIED },
+  ];
+  const { features, verified, skipped } = applyCampusVerification(outOfScope, record);
+  assert.equal(verified, 0);
+  assert.equal(skipped, 3);
+  for (const f of features) assert.equal(f.verification, VERIFICATION.NOT_VERIFIED);
+
+  // No record at all verifies nothing, rather than defaulting to something.
+  const none = applyCampusVerification(outOfScope, null);
+  assert.equal(none.verified, 0);
 });
 
 test('no RNSIT feature claims a measured height, because the dataset has none', () => {
@@ -241,14 +338,19 @@ test('the RNSIT definition carries the campus centre, from the DB record, unveri
   assert.ok(centre, 'the seeded centre must still be a feature in its own right');
   assert.deepEqual(centre.geometry.coordinates, [77.5186, 12.9023]);
 
-  // Provenance is real (a database record) AND verification is honest (nobody
-  // in this repository has checked that coordinate against the physical site).
-  // It stays SEED_RECORD rather than being absorbed into the OSM import — two
-  // different sources agreeing is worth more than one source restated.
+  // Provenance is real (a database record) AND verification is honest. The
+  // owner's check covers the CAMPUS FEATURES — the imported geometry and the
+  // supplied locations. It does not cover a seed row in this repository's own
+  // database, which nobody walked to, and the verification record says so by
+  // name. This is the one feature on the map that is still unverified, and it
+  // is the assertion that keeps a blanket "verify everything" edit honest.
   assert.equal(centre.provenance, PROVENANCE.SEED_RECORD);
   assert.equal(centre.verification, VERIFICATION.NOT_VERIFIED);
-  assert.equal(def.verifiedCount, 0, 'nothing on this map is verified');
   assert.match(centre.source, /Campus\.centerLat/);
+
+  // Everything except the centre is owner-verified.
+  assert.equal(def.ownerVerifiedCount, def.features.length - 1);
+  assert.equal(def.verifiedCount, def.ownerVerifiedCount);
 });
 
 test('the database centre and the imported boundary agree about where RNSIT is (§22, §49)', () => {
@@ -278,9 +380,7 @@ test('RNSIT now covers every campus geometry capability, across two sources', ()
 
   // Gates were the one gap the OSM extract left: it contains no barrier=gate,
   // no entrance=* and no access-control node anywhere on the site. The
-  // supplemental dataset supplies one, so coverage is complete — and it is
-  // complete because a person said where the gate is, which is exactly why the
-  // verification status below still matters.
+  // supplemental dataset supplies one, so GEOMETRY coverage is complete.
   const present = def.coverage.present.map((m) => m.id).sort();
   assert.deepEqual(present, ['boundary', 'buildings', 'facilities', 'gates', 'landmarks', 'paths', 'roads']);
   assert.deepEqual(def.missingGeometry, []);
@@ -288,15 +388,18 @@ test('RNSIT now covers every campus geometry capability, across two sources', ()
   const gates = def.features.filter((f) => f.kind === 'GATE');
   assert.equal(gates.length, 1);
   assert.equal(gates[0].provenance, PROVENANCE.USER_SUPPLIED);
-  assert.equal(gates[0].verification, VERIFICATION.NOT_VERIFIED);
+  assert.equal(gates[0].verification, VERIFICATION.VERIFIED_BY_USER);
 
-  // Full coverage must not read as full confidence.
-  assert.equal(def.verifiedCount, 0, 'covering every capability verifies nothing');
+  // Covering every capability, and confirming every feature, still leaves real
+  // gaps — and the notes have to keep naming them, or "complete coverage" reads
+  // as "complete information". The three that remain are a measured height, a
+  // footprint for a point location, and a gate's access rules.
   assert.equal(def.hasCampusGeometry, true);
   assert.match(def.geometrySource, /OpenStreetMap/);
-  assert.match(def.notes, /NOT a survey/);
-  assert.match(def.notes, /NOT_VERIFIED/);
-  assert.match(def.notes, /least verified/, 'the notes must rank the supplemental data honestly');
+  assert.match(def.notes, /not a georeferenced survey/i);
+  assert.match(def.notes, /MEASURED height/);
+  assert.match(def.notes, /point locations/i);
+  assert.match(def.notes, /UNKNOWN/, 'gate access must stay named as unknown');
 });
 
 test('a campus with no registered geometry yields a definition with nothing to draw', () => {
@@ -324,11 +427,22 @@ test('the data the map is still waiting on is stated, in the form it must arrive
   // The request must name what the OSM import DID supply, or the gap list reads
   // as if the map still has nothing.
   assert.match(MISSING_GEOMETRY_REQUEST.suppliedBy.origin, /OpenStreetMap/);
-  assert.match(MISSING_GEOMETRY_REQUEST.suppliedBy.verification, /NOT_VERIFIED/);
+  assert.match(MISSING_GEOMETRY_REQUEST.suppliedBy.verification, /VERIFIED_BY_USER/);
+  assert.match(
+    MISSING_GEOMETRY_REQUEST.suppliedBy.verification,
+    /not a georeferenced survey/i,
+    'the owner check must not be allowed to read as a survey'
+  );
 
+  // The gate LOCATION is supplied and confirmed; its ACCESS RULES are not, and
+  // that is now the outstanding record with real operational consequences.
   assert.ok(
-    MISSING_GEOMETRY_REQUEST.artefacts.some((s) => /gate/i.test(s)),
-    'gates are the capability the import did not supply and must stay requested'
+    MISSING_GEOMETRY_REQUEST.artefacts.some((s) => /gate access/i.test(s)),
+    'gate access rules are unknown and must stay requested'
+  );
+  assert.ok(
+    MISSING_GEOMETRY_REQUEST.artefacts.some((s) => /charging|docking/i.test(s)),
+    'charging and docking locations are declared roles with no data and must stay requested'
   );
   assert.ok(
     MISSING_GEOMETRY_REQUEST.notAcceptable.some((s) => /satellite image by eye/i.test(s)),

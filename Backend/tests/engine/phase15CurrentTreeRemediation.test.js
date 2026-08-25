@@ -419,16 +419,25 @@ describe("P15-R1 — an automatic rollback takes a shard out of service", () => 
     const published = [];
     const pinned = [];
     const deps = {
+      // PHASE 15 remediation (P15-E2) — `versionInForce` reports **which** version it read
+      // as well as its payload, and `publishRollback` refuses a reading that does not. The
+      // fixture is unchanged in substance; what it now also says is that the version it
+      // describes is the one in force *and* the latest, which is the state this group is
+      // about. The divergent state has its own tests below.
       versionInForce: async () => ({
-        bindings: [
-          { level: "region", key: REGION, name: enabled.PARAMETER, value: true },
-          { level: "region", key: "region-beta", name: enabled.PARAMETER, value: true },
-          { level: "global", key: "", name: "dispatch.offer_ttl", value: 45 },
-        ],
-        killSwitchState: { opportunity_cost_term: true },
-        regimes: [],
-        spatial: { some: "declaration" },
-        shards: [{ shardId: "shard-1" }],
+        version: 8,
+        latestVersion: 8,
+        payload: {
+          bindings: [
+            { level: "region", key: REGION, name: enabled.PARAMETER, value: true },
+            { level: "region", key: "region-beta", name: enabled.PARAMETER, value: true },
+            { level: "global", key: "", name: "dispatch.offer_ttl", value: 45 },
+          ],
+          killSwitchState: { opportunity_cost_term: true },
+          regimes: [],
+          spatial: { some: "declaration" },
+          shards: [{ shardId: "shard-1" }],
+        },
       }),
       publish: async (request) => {
         published.push(request);

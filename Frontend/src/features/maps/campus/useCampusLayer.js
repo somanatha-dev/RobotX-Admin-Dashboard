@@ -54,10 +54,21 @@ import {
   campusCollections,
   campusLayerSpecs,
   campusStyleForTheme,
+  selectedLabelFilter,
 } from './campusLayers.js';
 
 /** How long the campus geometry takes to fade in on arrival (§25, stage 6). */
 const REVEAL_MS = 700;
+
+/**
+ * How long Operations mode takes to settle in (§3H).
+ *
+ * Matched to the camera ease that accompanies a mode change, so the framing and
+ * the emphasis arrive together rather than as two separate events — a map that
+ * moves and then, a beat later, changes appearance reads as two things going
+ * wrong rather than one thing happening.
+ */
+const EMPHASIS_MS = 900;
 
 /** Sources that carry clickable features, so they need stable feature ids. */
 const PROMOTED_SOURCES = new Set([CAMPUS_SOURCE.AREAS, CAMPUS_SOURCE.POINTS]);
@@ -112,7 +123,19 @@ function installVendorClip(map, spec) {
   }
 }
 
-function installSourcesAndLayers(map) {
+/**
+ * Install the campus sources and layers into a Mapbox style, ONCE.
+ *
+ * Exported so the multi-campus architecture test can drive it against a fake
+ * map and assert the property that makes campus switching safe: every call is
+ * idempotent, because every `addSource` and every `addLayer` is guarded by a
+ * `get*` check. Switching campus does not call this at all — it is a `setData`
+ * (see the data effect) — but a style reload does, and re-installing must never
+ * produce a second copy of anything.
+ *
+ * Not a React function and it never was; it only ever needed the map.
+ */
+export function installSourcesAndLayers(map) {
   let installed = 0;
   let clipActive = false;
 
@@ -162,7 +185,8 @@ function installSourcesAndLayers(map) {
   return { installed, clipActive };
 }
 
-function removeCampusLayers(map) {
+/** The teardown half, exported for the same reason as the install half. */
+export function removeCampusLayers(map) {
   // Layers first, then sources — a source with a layer still attached cannot
   // be removed.
   for (const layerId of [...CAMPUS_LAYER_ORDER].reverse()) {
@@ -181,9 +205,36 @@ function removeCampusLayers(map) {
   }
 }
 
-function applyStyle(map, theme, reveal) {
+/**
+ * Feed the campus sources a definition. THIS IS WHAT SWITCHING CAMPUS IS.
+ *
+ * Not a teardown, not a re-install, not a style reload: five `setData` calls
+ * onto sources that were installed once and never touched again. That is the
+ * whole reason RNSIT → JSSATE → RNSIT cannot accumulate layers, duplicate
+ * sources, strand geometry or recreate the Mapbox instance — there is no code
+ * path in a campus change that adds or removes anything.
+ *
+ * A campus with no registered geometry pushes empty collections, which is the
+ * same operation with a different value, so an unknown campus clears the map
+ * rather than leaving the previous one's buildings on screen.
+ *
+ * Exported so the architecture test can drive the real function.
+ */
+export function pushCampusData(map, definition) {
+  if (!map) return;
+  const collections = campusCollections(definition);
+  for (const [sourceId, data] of Object.entries(collections)) {
+    try {
+      map.getSource(sourceId)?.setData?.(data);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function applyStyle(map, theme, reveal, emphasis) {
   if (!map || !theme) return;
-  const style = campusStyleForTheme(theme, reveal);
+  const style = campusStyleForTheme(theme, reveal, emphasis);
 
   for (const [layerId, spec] of Object.entries(style)) {
     let exists = false;
@@ -269,7 +320,17 @@ function readVendorFeature(feature, index) {
  */
 export function useCampusLayer(
   mapRef,
-  { isMapLoaded, environmentReady, definition, active, subscribeToTheme, selectedFeatureId, onSelectFeature } = {}
+  {
+    isMapLoaded,
+    environmentReady,
+    definition,
+    active,
+    subscribeToTheme,
+    selectedFeatureId,
+    onSelectFeature,
+    /** 0 = the campus as a place, 1 = the campus as a worksite (§3H). */
+    operationsEmphasis = 0,
+  } = {}
 ) {
   const [layersReady, setLayersReady] = useState(false);
   /** Is the vendor's own 3D geometry actually being clipped inside the campus? */
@@ -278,35 +339,30 @@ export function useCampusLayer(
   const themeRef = useRef(null);
   const revealRef = useRef(0);
   const revealRafRef = useRef(null);
+  const emphasisRef = useRef(0);
+  const emphasisRafRef = useRef(null);
   // Read inside imperative callbacks — the click handler, the reveal animation
   // frame — never during render. They are seeded with the first value and
   // synced after each commit, so the map handlers always see current data
   // without the handlers themselves having to be re-subscribed on every change.
   const definitionRef = useRef(definition);
   const onSelectFeatureRef = useRef(onSelectFeature);
+  const selectedFeatureIdRef = useRef(selectedFeatureId);
   useEffect(() => {
     definitionRef.current = definition;
     onSelectFeatureRef.current = onSelectFeature;
-  }, [definition, onSelectFeature]);
+    selectedFeatureIdRef.current = selectedFeatureId;
+  }, [definition, onSelectFeature, selectedFeatureId]);
 
   /** The feature id currently carrying `feature-state.selected`, for clean removal. */
   const highlightedRef = useRef(null);
 
   const repaint = useCallback(() => {
-    applyStyle(mapRef?.current, themeRef.current, revealRef.current);
+    applyStyle(mapRef?.current, themeRef.current, revealRef.current, emphasisRef.current);
   }, [mapRef]);
 
   const pushData = useCallback(() => {
-    const map = mapRef?.current;
-    if (!map) return;
-    const collections = campusCollections(definitionRef.current);
-    for (const [sourceId, data] of Object.entries(collections)) {
-      try {
-        map.getSource(sourceId)?.setData?.(data);
-      } catch {
-        // ignore
-      }
-    }
+    pushCampusData(mapRef?.current, definitionRef.current);
   }, [mapRef]);
 
   // ── Install (once per style load) ──────────────────────────────────────────
@@ -322,6 +378,17 @@ export function useCampusLayer(
       const { installed, clipActive } = installSourcesAndLayers(map);
       pushData();
       repaint();
+      // A style reload rebuilds every layer from its spec, and the spec's
+      // filter is the empty one. Re-applying the live selection here is what
+      // stops a `setStyle` from silently dropping the selected feature's label
+      // until the operator happens to select something else.
+      try {
+        if (map.getLayer(CAMPUS_LAYER.LABEL_SELECTED)) {
+          map.setFilter(CAMPUS_LAYER.LABEL_SELECTED, selectedLabelFilter(selectedFeatureIdRef.current));
+        }
+      } catch {
+        // ignore
+      }
       // Installing into the Mapbox scene IS the external-system case; the
       // setState only reports whether the GPU accepted the layers, and runs
       // once per style load — never per frame, never per telemetry tick.
@@ -410,6 +477,68 @@ export function useCampusLayer(
       }
     };
   }, [active, repaint]);
+
+  // ── Operations emphasis (§3H) ──────────────────────────────────────────────
+  //
+  // Ramped rather than switched, on the same mechanism as the arrival reveal:
+  // paint properties written onto layers that already exist. No layer is added,
+  // removed, hidden or re-filtered, so entering Operations mode cannot disturb
+  // the campus geometry, a robot, a route or the selection — the same property
+  // a theme change has, for the same structural reason (§20).
+  useEffect(() => {
+    const target = Math.max(0, Math.min(1, Number(operationsEmphasis) || 0));
+    const from = emphasisRef.current;
+    if (from === target) {
+      repaint();
+      return;
+    }
+
+    if (emphasisRafRef.current !== null) {
+      try {
+        cancelAnimationFrame(emphasisRafRef.current);
+      } catch {
+        // ignore
+      }
+      emphasisRafRef.current = null;
+    }
+
+    const start = performance.now();
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / EMPHASIS_MS);
+      emphasisRef.current = from + (target - from) * t;
+      repaint();
+      emphasisRafRef.current = t < 1 ? requestAnimationFrame(step) : null;
+    };
+    emphasisRafRef.current = requestAnimationFrame(step);
+
+    return () => {
+      if (emphasisRafRef.current !== null) {
+        try {
+          cancelAnimationFrame(emphasisRafRef.current);
+        } catch {
+          // ignore
+        }
+        emphasisRafRef.current = null;
+      }
+    };
+  }, [operationsEmphasis, repaint]);
+
+  // ── The selected feature's label (§3K) ─────────────────────────────────────
+  //
+  // One `setFilter` on a layer that is always installed. The layer is never
+  // added or removed, so its position in the draw order — above every other
+  // label — is fixed once, at install, and cannot drift as selections change.
+  useEffect(() => {
+    const map = mapRef?.current;
+    if (!map) return;
+    try {
+      if (map.getLayer(CAMPUS_LAYER.LABEL_SELECTED)) {
+        map.setFilter(CAMPUS_LAYER.LABEL_SELECTED, selectedLabelFilter(selectedFeatureId));
+      }
+    } catch {
+      // ignore — losing the emphasised label costs emphasis, never the campus
+    }
+  }, [selectedFeatureId, mapRef, layersReady]);
 
   // ── Selection highlight (§36) ──────────────────────────────────────────────
   useEffect(() => {

@@ -56,7 +56,10 @@
  *
  * Every record also expires. `maxAgeMs` is supplied by the caller rather than defaulted
  * here, because how stale a soak may be and how stale a tier scan may be are different
- * questions; what is *not* negotiable is that both have an answer.
+ * questions; what is *not* negotiable is that both have an answer — and until the P15-C1
+ * remediation that sentence was true of the intent and false of the code. `nowMs` and
+ * `maxAgeMs` are now **required**, and a caller that omits either is refused by name rather
+ * than granted an unbounded record. See `admit()`.
  *
  * ── Inadmissible is RED, not a fourth status ───────────────────────────────
  * `gates.js` deliberately has three statuses. An inadmissible record does not need a
@@ -98,6 +101,10 @@ const INADMISSIBLE = Object.freeze({
   PASS_CONTRADICTS_EXIT_CODE: "PASS_CONTRADICTS_EXIT_CODE",
   SOURCE_DIGEST_MISMATCH: "SOURCE_DIGEST_MISMATCH",
   SOURCE_DIGEST_REQUIRED: "SOURCE_DIGEST_REQUIRED",
+  /** The caller supplied no instant to judge the record's age against (P15-C1). */
+  EVALUATION_INSTANT_REQUIRED: "EVALUATION_INSTANT_REQUIRED",
+  /** The caller supplied no age bound, or one that is not a usable duration (P15-C1). */
+  AGE_BOUND_REQUIRED: "AGE_BOUND_REQUIRED",
   BUILD_CANNOT_CLOSE: "BUILD_CANNOT_CLOSE",
   OBSERVATION_WINDOW_REQUIRED: "OBSERVATION_WINDOW_REQUIRED",
   OBSERVATION_WINDOW_TOO_SHORT: "OBSERVATION_WINDOW_TOO_SHORT",
@@ -235,6 +242,59 @@ function normaliseCommand(command) {
  */
 function admit(gate, record, context) {
   const at = context || {};
+
+  /**
+   * ── The binding context is whole, or there is no judgement ─────────────────
+   *
+   * PHASE 15 remediation (P15-C1). The source-digest binding was made **mandatory** here,
+   * and the reason given for it was this, verbatim:
+   *
+   * > A run record is a claim about a particular tree. Judging one without knowing which
+   * > tree is being judged is not a weaker check; it is no check.
+   *
+   * The identical argument governs the age bound, this module's header said so — *"what is
+   * **not** negotiable is that both have an answer"* — and it was not enforced. `nowMs` and
+   * `maxAgeMs` were both read as `typeof … === "number"` guards, so a caller who omitted
+   * either got **no staleness check and no future-stamp check at all**, silently.
+   *
+   * That was reachable at the one call site whose whole job is to be the authority.
+   * `stage.authoriseEnable()` passes both fields straight through from its request, so a
+   * request that named neither authorised a real production cutover on a three-year-old
+   * rollback rehearsal — with every other gate green and nothing anywhere reporting that
+   * freshness had not been checked.
+   *
+   * It matters most for exactly the records the digest cannot bind. A `PRODUCTION` or
+   * `ORGANISATIONAL` record carries no source digest by construction — a soak is about the
+   * fleet and a rehearsal is about a person — so for six of the twenty-four gates **the age
+   * bound is the only binding to reality there is**. Unbounded, `rollback_rehearsed` is
+   * discharged by a rehearsal of a system that no longer exists.
+   *
+   * `GET /api/health`'s cutover view had already named both fields together as the two
+   * things that make an evaluation authoritative (`notCheckedHere: ["sourceDigest binding",
+   * "evidence age bound"]`). Only one of the two was ever enforced.
+   *
+   * Refused rather than defaulted, for the reason `MIN_OBSERVATION_PARAMETER` gives one
+   * screen up: a missing bound must never read as a satisfied one, and inventing a default
+   * here would be inventing how stale a soak may be.
+   */
+  if (typeof at.nowMs !== "number" || !Number.isFinite(at.nowMs)) {
+    return refuse(
+      INADMISSIBLE.EVALUATION_INSTANT_REQUIRED,
+      "no instant was supplied to evaluate this record against. A record's age is the difference between " +
+        "when it was produced and when it is being relied on; without the second, neither staleness nor a " +
+        "future stamp can be detected, and both checks would pass silently.",
+    );
+  }
+  if (typeof at.maxAgeMs !== "number" || !Number.isFinite(at.maxAgeMs) || at.maxAgeMs < 0) {
+    return refuse(
+      INADMISSIBLE.AGE_BOUND_REQUIRED,
+      "no usable evidence age bound was supplied. Every record expires, and how stale a soak may be and how " +
+        "stale a tier scan may be are different questions — so the bound is the caller's to state and is " +
+        "refused rather than defaulted. For PRODUCTION and ORGANISATIONAL evidence, which carries no source " +
+        "digest, this bound is the only thing binding the record to the system being shipped.",
+    );
+  }
+
   if (!record || typeof record !== "object") {
     return refuse(INADMISSIBLE.NOT_AN_OBJECT, "evidence must be a record, not a value");
   }
@@ -254,17 +314,15 @@ function admit(gate, record, context) {
       "a record carries the instant it was produced; without one it cannot be aged, ordered or disputed",
     );
   }
-  if (typeof at.nowMs === "number" && record.producedAtMs > at.nowMs) {
+  // Unconditional, both of them: the context was proven whole above, so a `typeof` guard
+  // here would only be a way for the hole to come back.
+  if (record.producedAtMs > at.nowMs) {
     return refuse(
       INADMISSIBLE.PRODUCED_IN_THE_FUTURE,
       "a record stamped after the moment it is read has a clock nobody should trust",
     );
   }
-  if (
-    typeof at.nowMs === "number" &&
-    typeof at.maxAgeMs === "number" &&
-    at.nowMs - record.producedAtMs > at.maxAgeMs
-  ) {
+  if (at.nowMs - record.producedAtMs > at.maxAgeMs) {
     return refuse(
       INADMISSIBLE.STALE,
       `record is ${Math.round((at.nowMs - record.producedAtMs) / 1000)}s old; the gate admits ` +
@@ -369,16 +427,44 @@ function admit(gate, record, context) {
 
   if (kind === KINDS.PRODUCTION) {
     const observation = record.observation;
+    /**
+     * ── The endpoints must be instants, not merely of type `number` ────────────
+     *
+     * PHASE 15 remediation (P15-E1). These two were read through bare
+     * `typeof … === "number"` guards, and `typeof NaN === "number"`. Every comparison
+     * against `NaN` is false, so a window of `NaN … NaN` reached the duration checks below
+     * and **passed all of them**: `duration <= 0` was false, and `duration < required` was
+     * false. `Infinity` did the same from the other side.
+     *
+     * That is the identical mechanism P15-C1 found in `verdict.js`'s `--max-age-hours` and
+     * closed there, one module along and still open here — and it landed on the four gates
+     * for which it matters most. `invariants_enforced`, `simulator_fidelity`, `soak` and
+     * `shadow_agreement` are exactly the rows this programme has classified, pass after
+     * pass, as *not closable by any commit in this repository* because they need a fleet to
+     * have operated. Each was dischargeable by a hand-written record carrying
+     * `{ windowStartedAtMs: NaN, windowEndedAtMs: NaN, pass: true }`.
+     *
+     * The measured shape of it, against the shipped module: an **honest** one-second soak
+     * was refused — *"window is 0h and soak requires 72h. The duration is the gate."* — and
+     * a `NaN` one was admitted and passed. The check was not weaker for a malformed record
+     * than for an honest one; it was absent, and only for the malformed one.
+     *
+     * `Number.isFinite` rather than `typeof`, therefore, and the same rule the header states
+     * for the age bound applies: a bound nobody can evaluate is refused, never treated as
+     * satisfied.
+     */
     if (
       !observation ||
-      typeof observation.windowStartedAtMs !== "number" ||
-      typeof observation.windowEndedAtMs !== "number" ||
+      !Number.isFinite(observation.windowStartedAtMs) ||
+      !Number.isFinite(observation.windowEndedAtMs) ||
       !nonEmpty(observation.source)
     ) {
       return refuse(
         INADMISSIBLE.OBSERVATION_WINDOW_REQUIRED,
         `${gate.id} is discharged by realised data over wall-clock time. A record must carry the window ` +
-          "it observed and the system that observed it.",
+          "it observed — both endpoints as finite instants — and the system that observed it. `NaN` and " +
+          "`Infinity` are refused here rather than compared: every comparison against them is false, so an " +
+          "unusable endpoint would silently switch the duration requirement off instead of failing it.",
       );
     }
     const duration = observation.windowEndedAtMs - observation.windowStartedAtMs;
@@ -387,14 +473,74 @@ function admit(gate, record, context) {
     if (duration <= 0) {
       return refuse(INADMISSIBLE.OBSERVATION_WINDOW_TOO_SHORT, "the observation window ends before it begins");
     }
-    if (MIN_OBSERVATION_PARAMETER[gate.id] && typeof required !== "number") {
+    /**
+     * A window cannot close after the moment the record is being read.
+     *
+     * The same argument as `PRODUCED_IN_THE_FUTURE` one screen up, applied to the thing the
+     * record is *about* rather than to the record. `producedAtMs` being sane says only that
+     * the file was written recently; it says nothing about the interval claimed inside it,
+     * and a fourteen-day shadow window that ends next month has not been observed.
+     */
+    if (observation.windowEndedAtMs > at.nowMs) {
       return refuse(
         INADMISSIBLE.OBSERVATION_WINDOW_REQUIRED,
-        `${gate.id}'s minimum window is ${MIN_OBSERVATION_PARAMETER[gate.id]} and it did not resolve. An ` +
-          "unbounded window is not a window; the bound is refused rather than defaulted.",
+        `the observation window closes ${Math.round((observation.windowEndedAtMs - at.nowMs) / MS_PER_HOUR)}h ` +
+          "after the instant this record is being read. A window that has not finished has not been observed, " +
+          "and its duration is a plan rather than a measurement.",
       );
     }
-    if (typeof required === "number" && duration < required) {
+    /**
+     * ── A bound of zero is not a bound (P15-E4) ────────────────────────────────
+     *
+     * This read `typeof required !== "number"`, which admits `0` and `NaN` alike. Both then
+     * sail through the comparison below — `duration < 0` is false, and `duration < NaN` is
+     * false — so a gate *whose whole content is a duration* was discharged by a window of one
+     * millisecond.
+     *
+     * It mattered because `required` was **caller-supplied**. `stage.authoriseEnable()` passed
+     * `request.minObservationMs` straight through, so the attack was a field in the request
+     * object: `{ soak: 0, shadow_agreement: 0 }` turned the two windowed PRODUCTION gates into
+     * gates any window satisfies. Found by re-attacking §7's "caller-supplied status fields"
+     * against the current tree.
+     *
+     * ── P15-F1 — and closing the degenerate values was not closing the class ───
+     *
+     * This guard refuses `0`, `NaN`, `±Infinity`, a string and `null`. It admits **any
+     * positive finite number**, however small, because it can only ask whether a bound is
+     * usable — it cannot ask whether it is *the* bound. `{ soak: 1000 }` therefore discharged
+     * a 72-hour gate with a one-second window, and one shipped harness was already supplying
+     * `soak: DAY` against a register value of 72 hours.
+     *
+     * That half is not fixable here, and deliberately so: this module is the adjudicator, and
+     * §22.1 keeps the *number* out of it — the table one screen up binds each gate to a
+     * registered parameter and holds no value. The fix belongs at the **authority**, which now
+     * resolves the bound from the register through `resolveMinObservationMs` and refuses a
+     * request that states one at all (`stage.REFUSAL.OBSERVATION_BOUND_NOT_THE_CALLERS`).
+     * What remains here is the consuming-side guard that a resolved bound is usable, which is
+     * still needed: `resolveMinObservationMs` is injectable, and a guard on one side of a
+     * producer/consumer pair is how P15-C1 and P15-E4 both happened.
+     *
+     * The legitimate producer could never emit either value — `resolveMinObservationMs` above
+     * requires `Number.isFinite(value) && value > 0` and **omits** the gate otherwise,
+     * precisely so that a parameter which failed to resolve refuses the gate rather than
+     * unbounding it. That guard existed on the producing side and not on the consuming side,
+     * which is the same asymmetry P15-C1 found for the age bound, and this module's own
+     * sentence governs both: *"a missing bound must never read as a satisfied one."*
+     *
+     * Note the deliberate difference from `maxAgeMs`, where a zero **is** honoured. There,
+     * zero is the strict direction — nothing is fresh enough — and a stated bound is a bound.
+     * Here zero is the permissive direction, and the same value cannot mean "as strict as
+     * possible" in one place and "no requirement" in another.
+     */
+    if (MIN_OBSERVATION_PARAMETER[gate.id] && !(Number.isFinite(required) && required > 0)) {
+      return refuse(
+        INADMISSIBLE.OBSERVATION_WINDOW_REQUIRED,
+        `${gate.id}'s minimum window is ${MIN_OBSERVATION_PARAMETER[gate.id]} and it did not resolve to a ` +
+          `positive duration (got ${JSON.stringify(required)}). An unbounded window is not a window, and ` +
+          "neither is a window of zero; the bound is refused rather than defaulted.",
+      );
+    }
+    if (Number.isFinite(required) && duration < required) {
       return refuse(
         INADMISSIBLE.OBSERVATION_WINDOW_TOO_SHORT,
         `window is ${Math.round(duration / MS_PER_HOUR)}h and ${gate.id} requires ` +

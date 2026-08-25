@@ -190,9 +190,56 @@ describe("Phase 11 migration — the four new tables match Prisma's own generate
   });
 
   test("the audit event vocabulary is closed at the schema, matching auditStream.EVENT_TYPES", () => {
+    // ── Read from the constraint IN FORCE, not from this migration's snapshot ──
+    //
+    // PHASE 15 remediation (P15-C4). This test used to read the CHECK list out of
+    // `MIGRATION` — the Phase 11/12 file that first created it — and compare that to
+    // `auditStream.EVENT_TYPES`. The pairing was right and the source was not: a later
+    // migration may supersede the constraint, and then this test is comparing the
+    // application against a list the database stopped using.
+    //
+    // It is the same subtraction `columnsAddedLater()` above performs for columns, and the
+    // header's argument for it governs here word for word: *"a subtraction and not a
+    // relaxation … while letting the schema move forward."* The effective constraint is the
+    // one the last migration to define it states, because that is the one still standing
+    // when the chain finishes applying.
+    //
+    // ── What this guard did and did not catch, stated plainly ────────────────
+    // This guard was correct, and it was **not** what let P15-C4 happen. It kept
+    // `auditStream.EVENT_TYPES` and the CHECK constraint in exact agreement, and they were
+    // in exact agreement — both were missing `CUTOVER_SHARD_ENABLED` and
+    // `CUTOVER_SHARD_ROLLED_BACK`, so every cutover audit event was refused at both layers
+    // and `cutover/store.declarationFor()` found none, for every shard, always.
+    //
+    // The missing leg was the third one: nothing checked that the event types
+    // `cutover/stage.auditEventFor()` actually *emits* are in that vocabulary. Two of three
+    // pairs pinned is how a vocabulary drifts from its only producer.
+    // `tests/engine/phase15EvidenceBindingRemediation.test.js` pins the third.
     const auditStream = require("../../src/engine/observability/auditStream");
-    const check = /CHECK \("eventType" IN \(([^)]*)\)\)/.exec(MIGRATION)[1];
-    const inSql = check.split(",").map((value) => value.trim().replace(/'/g, "")).sort();
+
+    const migrationsRoot = path.join(BACKEND_ROOT, "prisma", "migrations");
+    const defining = fs
+      .readdirSync(migrationsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .filter((name) => fs.existsSync(path.join(migrationsRoot, name, "migration.sql")))
+      .filter((name) =>
+        fs
+          .readFileSync(path.join(migrationsRoot, name, "migration.sql"), "utf8")
+          .includes(`ADD CONSTRAINT "AuditEvent_event_type_known"`),
+      )
+      .sort();
+
+    // The original is still one of them, so this cannot pass by finding nothing.
+    expect(defining).toContain(MIGRATION_DIR);
+
+    const inForce = fs.readFileSync(
+      path.join(migrationsRoot, defining[defining.length - 1], "migration.sql"),
+      "utf8",
+    );
+    const body = inForce.slice(inForce.lastIndexOf(`ADD CONSTRAINT "AuditEvent_event_type_known"`));
+    const inSql = [...body.matchAll(/'([A-Z_]+)'/g)].map((match) => match[1]).sort();
+
     expect(inSql).toEqual([...auditStream.EVENT_TYPES].sort());
   });
 

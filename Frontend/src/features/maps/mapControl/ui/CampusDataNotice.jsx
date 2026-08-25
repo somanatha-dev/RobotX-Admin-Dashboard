@@ -6,7 +6,11 @@ import React, { useState } from 'react';
  * This component exists because the most dangerous failure available to a
  * campus map is not an ugly one. It is a map that renders convincing buildings
  * at campus zoom and lets an operator believe they are looking at a survey of
- * RNSIT.
+ * the campus.
+ *
+ * Every line below is fed from the selected campus's own import result. Nothing
+ * here knows which campus is on screen, so a campus the owner has confirmed and
+ * a campus nobody has visited each get the sentence that is true of them.
  *
  * That risk did not go away when real geometry arrived — it got sharper. Generic
  * vendor blocks at least LOOKED generic. Correctly-shaped, correctly-named OSM
@@ -31,21 +35,36 @@ export function CampusDataNotice({
   vendorClipActive,
   centreWithinBoundary,
   supplemental,
+  /** Imported features that fall outside the campus boundary (§46). */
+  outsideBoundaryCount,
+  /** The owner's verification record for this campus, or null (§3A). */
+  verificationRecord,
 }) {
   const [open, setOpen] = useState(false);
   const missingList = Array.isArray(missing) ? missing : [];
 
-  // With geometry present the notice is always worth showing — the verification
-  // status is the point of it. Without geometry it only appears if there is
-  // something to report.
+  // With geometry present the notice is always worth showing — the provenance
+  // is the point of it. Without geometry it only appears if there is something
+  // to report.
   if (!hasCampusGeometry && missingList.length === 0 && !rejectedCount) return null;
 
+  const ownerVerified = Boolean(verificationRecord);
+
+  // ── The line this component leads with (§3A) ─────────────────────────────
+  // It used to be "Campus geometry: OpenStreetMap · Unverified", which was the
+  // honest summary while nobody had checked anything. It is no longer true, and
+  // a standing "Unverified" over a campus the owner has confirmed is not
+  // caution — it is a false statement that also trains the operator to ignore
+  // the one banner that will matter when something really is unverified. So the
+  // summary states what IS known and the body keeps every remaining gap by name.
   const summary = hasCampusGeometry
-    ? `Campus geometry: ${geometrySource || 'imported dataset'} · Unverified`
+    ? ownerVerified
+      ? `Campus: ${geometrySource || 'imported dataset'} · verified by project owner`
+      : `Campus geometry: ${geometrySource || 'imported dataset'} · Unverified`
     : `${campusName || 'This campus'}: no campus geometry`;
 
   return (
-    <div className={`map-data-notice${open ? ' is-open' : ''}`}>
+    <div className={`map-data-notice${open ? ' is-open' : ''}${ownerVerified ? ' is-verified' : ''}`}>
       <button
         type="button"
         className="map-data-notice__toggle"
@@ -66,27 +85,51 @@ export function CampusDataNotice({
               <p>
                 <strong>{campusName || 'This campus'}</strong>
                 <br />
-                Campus geometry: {geometrySource || 'imported dataset'}
+                Source: {geometrySource || 'imported dataset'}
                 <br />
-                Verification: <strong>Unverified</strong>
+                Campus verification:{' '}
+                <strong>
+                  {ownerVerified
+                    ? `${verificationRecord.verifiedBy}, ${verificationRecord.verifiedOn}`
+                    : 'Unverified'}
+                </strong>
               </p>
               <p>
-                The {featureCount ? `${featureCount} ` : ''}campus features drawn inside the boundary —
-                buildings, roads, paths, landmarks — come from OpenStreetMap and are shown as
-                <strong> the campus itself</strong>. They are real community-mapped data. Nothing in this
-                system has checked them against the physical site, and no building carries a measured
-                height: extrusion heights are derived from floor counts where the source has them and from a
-                conservative default otherwise. Click any feature to see which.
+                The {featureCount ? `${featureCount} ` : ''}campus features — buildings, roads, paths,
+                landmarks — come from {geometrySource || 'the imported dataset'} and are shown as
+                <strong> the campus itself</strong>.{' '}
+                {ownerVerified
+                  ? 'The project owner has confirmed them against the site. Where each coordinate came from is unchanged and still shown on every card: origin and verification are two separate facts and the map keeps both.'
+                  : 'They are real community-mapped data, unchecked against the physical site — being present in OpenStreetMap is not a verification.'}
               </p>
+              {outsideBoundaryCount > 0 && (
+                <p className="map-data-notice__notes">
+                  {outsideBoundaryCount} imported feature(s) fall <strong>outside the campus boundary</strong>
+                  {' '}— an extract is a bounding box, not a campus. They are drawn because they are real,
+                  correctly-attributed geometry, and each one says so on its details card. Nothing was
+                  deleted to tidy the picture.
+                </p>
+              )}
+              {ownerVerified && (
+                <>
+                  <div className="map-data-notice__label">What that confirmation does not cover</div>
+                  <ul>
+                    {verificationRecord.doesNotCover.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
               {supplemental && supplemental.importedFeatureCount > 0 && (
                 <>
                   <div className="map-data-notice__label">Also on this map</div>
                   <p>
                     {supplemental.importedFeatureCount} <strong>user-supplied locations</strong> — a gate,
-                    playgrounds, parking, departments and facilities OpenStreetMap does not carry. These are
-                    the <strong>least verified</strong> thing here: someone who knows the campus pointing at
-                    where a thing is. They are <strong>point locations only</strong> — no footprint, extent
-                    or height is drawn from them, and they are shown as small markers rather than buildings.
+                    playgrounds, parking, departments and facilities OpenStreetMap does not carry. They are{' '}
+                    <strong>point locations only</strong>: their position is
+                    {ownerVerified ? ' confirmed' : ' supplied from local knowledge'}, and their shape,
+                    extent and height are unknown. No footprint or volume is drawn from them, so they appear
+                    as small markers rather than as buildings.
                     {supplemental.outsideCount > 0 && (
                       <>
                         {' '}

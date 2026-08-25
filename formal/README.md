@@ -68,10 +68,36 @@ bound — which every run hit — left it reading `true`. `commitmentModel.js` n
 `exhaustive`, `depthTruncated` and `stateCapExceeded` separately, and its suite asserts a
 closed search where one is affordable and asserts *truncation* where it is not.
 
-**`lifecycleModel.js` still carries the original defect** (`tests/engine/helpers/
-lifecycleModel.js`, `exhaustive` set only at `maxStates`). It is Phase 15's artefact and is
-left for Phase 15 rather than changed here; it is recorded in
-`PHASE_3_IMPLEMENTATION_REPORT.md` §25 as a carried-forward finding.
+~~**`lifecycleModel.js` still carries the original defect**~~ — **corrected 2026-08-24 by the
+Phase 15 third-pass audit (P15-E5).** It was Phase 15's artefact and was left for Phase 15;
+this is Phase 15 taking it. What was found is worse than what was recorded here, and both
+halves are now fixed:
+
+1. **The reporting**, as recorded: `exhaustive` was set at `maxStates` alone, so the depth
+   bound — which every configuration set and every one of them hit — never moved it.
+   Measured on the shipped shapes: 1 350 / 12 237 / 37 880 nodes stopped at the bound at
+   capacity 1 / 2 / 3, with 26 876 / 348 549 / **1 389 004** successors left unexplored. At
+   capacity 3 the unexplored frontier was twenty times the explored space. It now reports
+   `exhaustive`, `depthTruncated`, `stateCapExceeded` and `maxDepthReached` separately, as
+   `commitmentModel.js` does.
+
+2. **The state space was infinite.** `leg.version` advanced on every applied transition and
+   is part of the state key, and unlike `fence` it was **not bounded** — so no search of this
+   model could ever close, at any depth, for any shape. One Leg at capacity 1 reached 13 354
+   states at depth 640, growing linearly with no convergence. `MAX_VERSION` now bounds it for
+   the same reason `MAX_FENCE` bounds the fence; the same shape then closes at depth 40 with
+   166 states and no violation. The bound is sound because the version is handed to the
+   shipped guard as the *current* value, so it can never make a guard fail — it distinguished
+   histories, not behaviours. It does not move any shipped configuration: 5 750 states at
+   capacity 1 and 30 531 at capacity 2, before and after.
+
+**What this does not fix.** The shipped configurations at capacity 1, 2 and 3 are still
+depth-truncated within a test lane's budget, and `lifecycle.tla` has still never been run
+under TLC. So **no exhaustive lifecycle model check exists at any capacity**, by either
+checker. `lifecycleModelCheck.test.js` now asserts that truncation rather than a flag that
+could not move, and pins the gap explicitly. The consequence for
+`model_check_capacity_1_2_3` is in `PHASE_15_REMEDIATION_AND_CLOSURE.md`: exhaustion is now
+*possible* rather than impossible, and what it needs is compute.
 
 ### Why both forms are kept
 

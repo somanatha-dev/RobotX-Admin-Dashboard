@@ -333,10 +333,14 @@ async function main() {
     await accepted("B2", "the publisher writes and PINS a version that disables exactly this region", async () => {
       // Driven through the same object `server.js` builds, with the real Config Service.
       const publisher = rollbackPublisher.create({
-        versionInForce: async () => {
-          const latest = await prisma.configVersion.findFirst({ orderBy: { version: "desc" }, select: { payload: true } });
-          return (latest && latest.payload) || null;
-        },
+        // PHASE 15 remediation (P15-E2) — the production reader, not a local re-derivation.
+        // This used to be `findFirst({ orderBy: { version: "desc" } })`, copied from the
+        // composition root, which returned the LATEST published version rather than the one
+        // IN FORCE. The two differ whenever a version has been published without being
+        // pinned, and this harness never built that state, so it could not see it. Calling
+        // the shipped reader is what makes this check about production rather than about a
+        // fixture; the divergent state has its own group in phase15VersionInForce.js.
+        versionInForce: () => rollbackPublisher.versionInForceReader({ prisma }),
         publish: (request) => configService.publish(prisma, request),
         pin: (v, by) => configService.pinVersion(prisma, null, v, by),
       });
@@ -393,7 +397,10 @@ async function main() {
     await accepted("B6", "PLANTED — a rollback carrying an ENABLE is refused, and writes nothing", async () => {
       const before = await prisma.configVersion.count();
       const publisher = rollbackPublisher.create({
-        versionInForce: async () => ({ bindings: [] }),
+        // Well-formed as a reading, so the refusal below is about the ACTION being an
+        // ENABLE and not about the version reading — a fixture that is refused for the
+        // wrong reason proves nothing about the rule under test (P15-E2).
+        versionInForce: async () => ({ version: 1, latestVersion: 1, payload: { bindings: [] } }),
         publish: async () => {
           throw new Error("publish must not be reached");
         },

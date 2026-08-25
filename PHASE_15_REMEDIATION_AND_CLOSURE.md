@@ -1,862 +1,2085 @@
-# Phase 15 — Targeted Blocker Remediation, Adversarial Re-verification and Closure
+# Phase 15 — Third-Pass Adversarial Audit, Remediation, Re-verification and Closure
 
-**Date:** 2026-08-22
-**Branch:** `feature/dashboard`
-**Baseline:** `PHASE_15_FINAL_IMPLEMENTATION_AND_CLOSURE_REPORT.md` (2026-08-21), commit `e5c9655`
-**Scope:** D-5, D-4, D-6, D-7 — fix the root cause of each, attack the fixes, re-verify Phase 15
-**Verdict:** **PHASE 15 BLOCKED — PHASE 16 NOT READY**
-
----
-
-## 1. Executive summary
-
-Two of the four targeted blockers are **fixed at the root, attacked, and mutation-tested**.
-Two are not, and the reason they are not is the most important finding of this work:
-
-> **D-5 and D-4 were misclassified.** The baseline report lists both under
-> "**In-repository** (fixable here, not fixed)". They are not. The Tier 0 decision path
-> terminates, at its leaves, in a **routing engine that B1 has not selected** — and B1 is
-> blocked on D1, D3 and D8, which are Operations, Product and Commercial decisions. No
-> commit in this repository closes them.
-
-That is not a softer conclusion than the baseline's. It is a harder one. "We have not wired
-it yet" is a task; "the thing it must be wired to does not exist, and choosing it is not
-ours" is a dependency, and the difference decides whether Phase 15 can close on engineering
-effort at all. It cannot.
-
-| Blocker | Baseline classification | This work | Status |
-|---|---|---|---|
-| **D-6** socket shard staging | In-repository | **FIXED** at the root, live-DB verified | ✅ |
-| **D-7** rehearsal/cutover circularity | Contract-level (needs ADR) | **FIXED** — ADR-34, no gate weakened | ✅ |
-| **D-5** Tier 0 decision path | In-repository | **PARTIALLY FIXED**; the remainder is **EXTERNAL** | ⚠ |
-| **D-4** shadow composition | In-repository | **NOT FIXED — EXTERNAL**, same blocker as D-5 | ❌ |
-
-Half of D-5 *was* a wiring gap and is now closed: `workers/leaderWorkers.js` is the shard
-supervisor's promotion hook that neither `server.js` nor `shardSupervisor.worker.js` had, and
-it starts the `outbox` and `reconciler` workers on leadership acquisition. Wiring the outbox
-closed a **live dangling path nobody had reported** (D-8 below): `membership.migrate()` has
-been enqueuing `SHARD_MIGRATE` rows inside the handoff transaction that nothing ever
-delivered.
-
-Six findings beyond the four assigned are recorded, four of them fixed. **Two are defects in
-this work's own remediation**, both found by the §19 hostile pass and both fixed:
-
-- a **fail-open in the D-6 gate itself** — a shard with no region inherited a *global*
-  `cutover.engine_enabled` binding, which is the exact substitution per-shard staging exists
-  to prevent (D-13);
-- a test that was structurally **incapable of failing**, so a planted duplicate-writer defect
-  survived it (D-11).
-
-**Measured, not asserted:**
-
-```
-npm test        155 suites, 6 850 tests, 0 failures   (baseline: 154 / 6 792)
-npm run gates   exit 1 — gate:composition, 2 findings  (baseline: 4 findings)
-live PostgreSQL 12/12 checks pass against a disposable PG 18.3, 26 migrations from empty
-§19 audit       11 planted defects, 11 caught, 0 survived (2 survived on the first pass)
-```
+**Date:** 2026-08-24 · **Branch:** `feature/dashboard` · **Baseline commit:** `3f0e522` ("maps enhanced")
+**Source digest at arrival:** `134ebc0d1d6cd047b5ebb62de9808489274520c9c9607795a9ef0d9e43373a2c` (562 files)
+**Source digest at closure:** *(§19)*
+**Authority order:** `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` (FROZEN) → `IMPLEMENTATION_EXECUTION_PLAN.md` → the repository → the phase documents.
 
 ---
 
-## 2. Starting state (measured on an unmodified tree)
+## 0. What this document supersedes, and what it does not
 
-| Check | Result at baseline |
-|---|---|
-| `npm test` | 154 suites, 6 792 tests, 0 failures |
-| `npm run gates` | **exit 1** — `gate:composition` fails, 4 × `LEADER_ONLY_UNREACHABLE` |
-| `npm run gate:calibration` | exit 1 — 39 Safety-class parameters (B8) |
-| `npm run sim:fidelity` | exit 1 — 5 safety-relevant models `NOT_MEASURED` |
-| `npm run routing:readiness` | **BLOCKED** — D1, D3, D8; no engine selected |
-| `npm run release:gates` | exit 1 — 16 green, 1 red, 7 not evaluated |
+This file previously held the 2026-08-22 targeted-blocker remediation. **That content is
+preserved verbatim** at `PHASE_15_REMEDIATION_AND_CLOSURE_2026-08-22.md`; not one character
+of it was altered, and the copy was verified by hash. No finding of any earlier pass has been
+removed, softened or rewritten.
 
-All four assigned blockers were reproduced independently before any code was changed; the
-reproductions are recorded under each finding.
+| Document | Written against | Status |
+|---|---|---|
+| `PHASE_15_FINAL_IMPLEMENTATION_AND_CLOSURE_REPORT.md` (2026-08-21) | pre-Phase-5 tree | **Superseded** |
+| `PHASE_15_REMEDIATION_AND_CLOSURE_2026-08-22.md` (this file's prior content) | 155 suites / 6 850 tests; D-4 … D-13 | **Preserved. Its findings stand; its verdict is superseded.** |
+| `PHASE_15_ADVERSARIAL_AUDIT_PASS_1_2026-08-22.md` | 156 → 157 suites; P15-R1 … R6, X2a, X2b | **Preserved. Findings stand; verdict superseded.** |
+| `PHASE_15_ADVERSARIAL_REMEDIATION_AND_CLOSURE.md` (pass 2, 2026-08-23) | 157 → 158 suites; P15-C1 … C4 | **Preserved. Findings stand; verdict superseded by this pass.** |
+| `PHASE_15_REMEDIATION_AND_CLOSURE_2026-08-24_PASS3_ASWRITTEN.md` | pass 3 exactly as it left the tree, §19 unfilled | **Preserved verbatim** (sha256 `55d77027…`) |
+| **this document** | 158 → 159 suites, current tree | **Current** — pass 3 plus its independent verification (§23–§26). |
 
----
+> **Correction, made by the verification pass and not by pass 3.** This row previously read
+> "158 → 160 suites". The measured count is **159**; only one suite file was added
+> (`phase15ObservationWindowRemediation.test.js`). The claim was never measured because
+> pass 3 never ran its own §19. See §23.
 
-## 3. The structural measurement that reframed D-5 and D-4
+### The mandate's premise, checked rather than accepted
 
-Before touching the wiring, the question "what does production actually reach?" was answered
-mechanically rather than by reading. A transitive `require` walk from `server.js` over
-`Backend/src/`:
+The instruction for this exercise states the current position as *158 suites, 7 001 tests, 0
+failures, 269 live PostgreSQL checks, 14/14 mutations, release:gates 16/1/7, digest
+`134ebc0d…`, PHASE 15 BLOCKED* — and adds that *"the remaining blockers now appear to be
+external/evidence/specification dependencies rather than ordinary Phase-15 implementation
+defects."*
 
-```
-src/ modules total:       279
-reachable from server.js: 179
-NOT reachable:            100
-```
+**Every measured number in that premise was re-derived on the current tree and every one of
+them was correct.** The qualitative half was not. Pass 2's own §10 states *"In-repository:
+none remaining — P15-C1…C4 were the last four and are fixed."*
 
-The 100 are not scattered. They are, almost exactly, **the decision path**:
+**Six further Phase-15-owned, in-repository defects were found on this tree. Five are fixed in
+full and the sixth in part**, with the unfixed half stated and argued rather than left implied
+(§3, P15-E6). Two are permissive fail-opens at the release authority; one is a fail-open in the
+automatic rollback's composition root that only a live database could prove; one made the §24
+state-machine gate's exhaustiveness claim **unachievable in principle**; one is a permissive
+fail-open on a currently-unreachable path; and one is a broken operator procedure whose check can
+never pass.
 
-| Area | Unreachable |
-|---|---|
-| `feasibility/` (38 predicates + evaluator + cache + volatileSubset + systemicGuard) | 41 |
-| `cost/` (8 terms + `phi.js` + `signDiscipline.js`) | 9 |
-| `solve/` (`round`, `minCostFlow`, `objective`, `costScaling`, `budgets`, `regime`) | 6 |
-| `plan/` (`planBuilder`, `insertion`, `timeline`, `column`, `columnBuilder`) | 5 |
-| `commitment/` (`commit`, `guards`, `model`) | 3 |
-| `lifecycle/` (`transitions`, `reassignment`, `cancellation`) | 3 |
-| `payload/`, `energy/`, `pricing/`, `routing/` caches, `determinism/snapshot`, … | 33 |
-
-Module reachability overstates the case, so it was checked at **function** level too, and the
-picture is worse rather than better: `candidates/expansion.js` *is* reachable — but only
-because `diagnostics.controller.js` imports `unexploredRingFloorMilliCU`. Its actual entry
-point, `expandCandidates()`, has no production caller. `feasibility/evaluate.gate()` has none.
-`commitment/commit()` has none. `lifecycle/transitions.apply()` has none.
-
-**The decision path is internally wired and externally unreached.** `round.execute()` is
-called by `coordinator.worker.js`, which is called by nothing. The four `LEADER_ONLY` workers
-were the visible top of that, which is why the baseline found them; they were not the extent
-of it.
-
-Then the chain was followed to its leaves, and this is where D-5 stops being a wiring problem:
-
-```
-coordinator.runRound
-  → round.execute
-    → expandCandidates          (deps.evaluateExact, deps.loadAgentSnapshot, deps.energyFor …)
-      → evaluateExact → plan build → planBuilder.hopsForSequence
-        → routing/cellPairCache.hopsFor
-          → deps.route          ←── THE ROUTING ENGINE
-                                     B1 has selected none.
-```
-
-`cellPairCache.read()` is explicit: *"if (typeof source.route !== 'function') return { ok:
-false, … reason: 'no router is available and the entry is not cached' }"*. And
-`npm run routing:readiness` reports, unchanged by this work:
-
-```
-OVERALL: BLOCKED
-  BLOCKED  D1  [Operations + Commercial]      no authoritative operating region declared
-  BLOCKED  D3  [Product + Fleet Engineering]  no fleet speed model exists
-  BLOCKED  D8  [Operations]                   extract vintage / cadence / budget undecided
-  BLOCKED  step 5  ENGINE SELECTION — no recorded evidence exists
-```
-
-`DEGRADED_ROUTING` (§18.5, B5/B6) is **not** an escape: it is the mode entered when "the
-Routing Service is unavailable or partially failing" — a mode for an engine that exists and
-has failed — and its `uniformDegradedEstimation` still needs D3's speed model, which also
-does not exist. Entering it permanently at cutover would be operating the fleet in a degraded
-envelope indefinitely, which §18.5 does not sanction.
-
-**Conclusion.** Composing the Tier 0 decision path requires inventing a routing engine, a
-fleet speed model, and the calibration values B8 blocks. §23 of the assignment forbids all
-three by name. D-5's remainder and D-4 in full are therefore **externally blocked**, and are
-reported as such rather than fixed.
+A seventh item is a **blocker this pass discovered rather than closed**: `model_check_capacity_1_2_3`
+is GREEN and its statement is not established (§14, B-M).
 
 ---
 
-## 4. D-5 — the Tier 0 decision path
+## 1. Final verdict
 
-### 4.1 Reproduction
+# PHASE 15 — BLOCKED. PHASE 16 — NOT READY.
+
+The verdict is unchanged from three earlier passes, and it is unchanged for the same reason:
+the decision path terminates in a routing engine that B1 has not selected. Nothing here moves
+that, and nothing here pretends to.
+
+What *has* changed is that the claim "every repository-owned blocker is closed" was false when
+it was made, and the six defects behind it are now closed — plus one blocker this pass
+**discovered rather than closed**, which is recorded as such (§14, §22).
+
+| | Baseline (measured, before this pass) | After |
+|---|---|---|
+| Test suites / tests | 158 / 7 001 | *(§19)* |
+| Build gates | 7 PASS, `gate:composition` FAIL (1, `coordinator`, EXTERNAL/B1) | *(§19)* — unchanged in substance |
+| `gate:calibration` | exit 1 — 39 findings; 242 entries (52 DERIVED, 152 PROVISIONAL, 38 UNCALIBRATED), 54 Safety-class | **unchanged, nothing manufactured** |
+| `sim:fidelity` | exit 1 — 7 models `NOT_MEASURED`, 6 safety-relevant | **unchanged, nothing manufactured** |
+| `routing:readiness` | `OVERALL: BLOCKED` — D1, D3, D8; no engine selected | **unchanged** |
+| Live-PostgreSQL checks | 269 | **288** (19 new) |
+| Migrations applied from empty | 27 | 27, 0 failures, 74 tables |
+| Mutations | 14 / 14 (pass 2) | **10 / 12 caught, 2 survivors proven benign** (§16) |
+| Source digest | `134ebc0d…` (562) | *(§19)* |
+
+### What the six findings have in common
+
+Pass 1's lesson was *"implemented, unit-tested, never called."* Pass 2's was *"a rule enforced
+only when the caller happens to supply the input it is enforced against"*, and it named the
+mechanism precisely:
+
+> A protection guarded by `typeof x === "number"` is a protection with an off switch, and the
+> off switch is "omit the argument."
+
+Pass 2 then fixed four such guards **and left three standing in the same two files**. Two of
+the three are worse than omission, because `typeof NaN === "number"`: the caller need not omit
+anything, and every comparison against the value it does supply is false. This pass's lesson is
+therefore narrower and less comfortable:
+
+> **A pass that names a defect shape and does not sweep for it has found one instance, not the
+> class.** The search that produced P15-E1 and P15-E3 was one `grep` for the pattern pass 2
+> wrote down.
+
+And its companion, which accounts for the other three:
+
+> **A claim of completeness must be able to be false.** `lifecycleModel`'s `exhaustive` flag,
+> the health endpoint's `releaseGates.blocking` list, and `rollbackPublisher`'s "the version in
+> force" all reported a state they were structurally incapable of contradicting.
+
+---
+
+## 2. Current baseline, measured before anything was changed
 
 ```
-$ node tools/gates/checkCompositionRoot.js
-  FAIL — 4 violation(s): coordinator, outbox, reconciler, timer
-         [LEADER_ONLY_UNREACHABLE] … no module under src/ or server.js requires it
+$ git log --oneline -1
+3f0e522 maps enhanced        (Backend unchanged since 450d829; uncommitted paths are pass 2's + Frontend/maps)
 
-$ grep -rn "coordinator.worker|outbox.worker|reconciler.worker|timer.worker" src/ server.js
-  → every hit is a comment. Zero require() statements.
+$ npx jest --runInBand --forceExit
+Test Suites: 158 passed, 158 total
+Tests:       7001 passed, 7001 total
+Time:        221.311 s
+
+$ npm run gates
+gate: tier-dependencies          PASS
+gate: parameter-register         PASS
+gate: tenets                     PASS
+gate: identity-isolation         PASS
+gate: reconstruction-equivalence PASS — 3 corpus decisions, byte for byte
+gate: legacy-retirement          PASS — 4 retired modules absent, 339 files
+gate: column-generation          PASS — NOT_REQUIRED
+gate: composition-root           FAIL — 1 violation: coordinator [LEADER_ONLY_NOT_COMPOSABLE, EXTERNAL, B1]
+
+$ node tools/gates/checkCalibration.js ; echo $?
+FAIL — 39 blocking finding(s).  242 entries: 52 DERIVED, 152 PROVISIONAL, 38 UNCALIBRATED. 54 Safety-class.
+1
+$ node tools/simFidelity/validate.js ; echo $?        → 7 NOT_MEASURED (6 SAFETY); 1
+$ node tools/routing/b1Readiness.js                   → OVERALL: BLOCKED (D1, D3, D8; steps 1,3,4,5)
+$ node tools/release/verdict.js ; echo $?             → 1
+$ node tools/release/sourceDigest.js
+134ebc0d1d6cd047b5ebb62de9808489274520c9c9607795a9ef0d9e43373a2c  (562 files)
+
+# disposable PostgreSQL 18.3, port 55439, chain applied from an empty database
+tables before: 0 → APPLIED 27 migrations from empty, FAILED: (none) → 74 tables
+AuditEvent_event_type_known admits CUTOVER_SHARD_ENABLED and CUTOVER_SHARD_ROLLED_BACK
+
+tools/verify/phase15EvidenceBinding.js   17 / 17
+tools/verify/phase15CurrentTree.js       32 / 32
+tools/verify/phase15LiveDatabase.js      12 / 12
+tools/verify/phase5ExpirySemantics.js   102 / 102
+tools/verify/phase5LiveDatabase.js      106 / 106
+                                        ───────────
+                                        269 / 269
 ```
 
-Confirmed independently of the baseline report.
+Registry: **18 workers — 8 SCHEDULED, 4 LEADER_ONLY, 6 DEFERRED.** `modeRegister.INVARIANTS`
+declares **22** (I1 … I22).
 
-### 4.2 Root cause
+Every number the mandate supplied was reproduced. Nothing below is inherited from a report.
 
-`registry.js` says `LEADER_ONLY` workers are "started and stopped by the shard supervisor
-rather than at boot". `server.js` says they "belong to the shard supervisor's leadership
-lifecycle". `shardSupervisor.worker.js` **has no promotion hook**. Each of the three
-documents was individually accurate and no one of them owned the wiring, so the wiring did
-not exist — the classic three-way deferral.
+---
 
-The supervisor's `runOnce()` already computed the exact signal a promotion hook needs:
+## 3. New findings — all Phase-15-owned, all fixed
+
+### P15-E1 — a PRODUCTION observation window that is not a window · **BLOCKING (permissive)** · FIXED
+
+**Root cause.** `evidence.admit()`'s PRODUCTION branch read both window endpoints through
+`typeof … === "number"`, which admits `NaN` and `±Infinity`. Every duration comparison against
+`NaN` is false, so **the checks did not fail — they did not run**:
 
 ```js
-// The one question a coordinator asks this worker, answered in one place rather than
-// reconstructed from the four passes above.
-mayRunRound: recovery.session ? recovery.session.mayCommit === true : false,
+const duration = observation.windowEndedAtMs - observation.windowStartedAtMs;   // NaN
+if (duration <= 0) …                                    // false
+if (typeof required === "number" && duration < required) …   // false
+return accept(record.pass === true, …);                 // ADMITTED, PASS
 ```
 
-It was returned on every tick and read by nothing.
-
-### 4.3 Fix
-
-**New — `src/workers/leaderWorkers.js`.** The missing hook, driven from `onTick`:
-
-- `apply(tick)` starts the `LEADER_ONLY` workers when `mayRunRound` becomes true and stops
-  them when it becomes false. Idempotent, so the repeated true-ticks of a stable leadership
-  start nothing twice.
-- Each worker is built by a **composer** that either returns a started handle **or refuses
-  with a stated blocker**. There is no third outcome and, deliberately, no "started with what
-  we had".
-- `server.js` requires only `leaderWorkers` — never the three worker modules Phase 0's
-  scaffold guard forbids it from naming. That guard is intact and was re-verified.
-
-**Started (2 of 4):**
-
-| Worker | Collaborators, and their production producers |
-|---|---|
-| `outbox` | `deliver` = `commandDispatcher.outboxDeliveryArm(io)` (production code, already existed); `readStoreTime` = `clock.readStoreTime`; `runInTransaction` = `runSerializable` |
-| `reconciler` | `prisma`, `runInTransaction`, `readStoreTime` — the identical trio `server.js` already builds for the failover path |
-
-**Refused (2 of 4)** — see §3 for why, and §5/§6 for the two findings this exposed.
-
-**Shutdown.** `leaderLifecycle.stop()` runs *before* the leadership release, so the standby
-that takes the shard inherits no in-flight writer of ours. Releasing first would advance the
-fence while a drain pass was still running here.
-
-### 4.4 Verification
-
-- 16 tests in `tests/engine/leaderWorkerLifecycle.test.js`, driving the lifecycle through
-  supervisor ticks exactly as the composition root does.
-- Live PostgreSQL: group C of `tools/verify/phase15LiveDatabase.js` (below).
-- §19 hostile audit: M1, M2, M3 — all caught (M1 only after the test was repaired; see §8).
-
-### 4.5 What is NOT fixed, and the honest gate
-
-`gate:composition` is **still red**, now with two precise findings instead of four vague ones:
+**Reproduction (before), against the shipped module.** The asymmetry is the finding:
 
 ```
-FAIL — 2 violation(s) across 18 registered worker(s):
-  coordinator (tier 0)  [LEADER_ONLY_NOT_COMPOSABLE]
-      … B1 has selected no routing engine (blocked on D1/D3/D8) …
-      [owner: B1 — Operations + Commercial (D1), Product + Fleet Eng (D3), Operations (D8)]
-      — this blocker is EXTERNAL to this repository and no commit here closes it.
-  timer (tier 0)  [LEADER_ONLY_NOT_COMPOSABLE]
-      … sixteen §4.3/§4.2 expiry actions declared, none implemented under src/ …
-      [owner: Phase 5 (§4.5 timer semantics) — in repository, unimplemented]
-      — this blocker is in this repository.
+refused/failed [OBSERVATION_WINDOW_TOO_SHORT]  soak: honest 1-second window
+      window is 0h and soak requires 72h. The duration is the gate.
+*** ADMITTED + PASS ***                        soak: NaN..NaN window
+*** ADMITTED + PASS ***                        soak: 0..Infinity window
+*** ADMITTED + PASS ***                        shadow_agreement: NaN window
+*** ADMITTED + PASS ***                        invariants_enforced: NaN window
+*** ADMITTED + PASS ***                        invariants_enforced: window ENTIRELY IN THE FUTURE
 ```
 
-**The gate was made stricter, not weaker.** See D-10 (§7).
+An honest one-second soak was refused; a malformed one was not. The check was absent **only for
+the malformed record**.
+
+**Why it matters most here.** The four gates it lands on — `invariants_enforced`,
+`simulator_fidelity`, `soak`, `shadow_agreement` — are precisely the four this programme has
+classified, pass after pass, as *"not closable by any commit in this repository"* because they
+need a fleet to have operated. There is no collector for them; an operator files them by hand.
+Each was dischargeable by `{ windowStartedAtMs: NaN, windowEndedAtMs: NaN, pass: true }`, and
+`stage.authoriseEnable()` would then take a shard live.
+
+**Fix.** `Number.isFinite` on both endpoints, refusing by name rather than comparing; and a
+window may not close after the instant the record is read — the same argument as
+`PRODUCED_IN_THE_FUTURE`, applied to the interval the record is *about* rather than to the
+record. A fourteen-day shadow window ending next month has not been observed.
+
+**Regression.** 18 tests — 14 against `evidence.admit()` (eight malformed endpoint shapes, the honest/malformed pair, every PRODUCTION gate, the future window, a window ending exactly now, and the 71 h / 73 h bounds either side of `soak`'s) and 4 against `stage.authoriseEnable()`. **Mutations M1, M2, M3: caught.** Live: B1–B7.
 
 ---
 
-## 5. D-4 — the shadow worker's composition root
+### P15-E2 — the automatic rollback's base configuration was the wrong version · **BLOCKING** · FIXED
 
-### 5.1 Reproduction
+**Root cause.** `rollbackPublisher.create()` documents its dependency as *"the payload of the
+currently **pinned** configuration version"*; its header says *"every other binding, kill-switch
+state, regime, spatial declaration and shard definition of **the version in force** is carried
+forward unchanged"*; `docs/runbooks/rollback.md` §3 says the same. The composition root supplied
+something else:
 
-`registry.js` marks `shadow` `DEFERRED`; `tests/engine/observabilitySchema.test.js:406`
-asserts `server.js` does not include it. Both confirmed.
+```js
+// Backend/server.js, before this pass
+const latest = await prisma.configVersion.findFirst({ orderBy: { version: "desc" }, … });
+return (latest && latest.payload) || null;
+```
 
-### 5.2 Root cause — restated, because the recorded one was incomplete
+That is the **highest-numbered published** version. It is the version in force only while nobody
+has published one without pinning it — and publishing without pinning is a shipped, supported
+operation: `config.controller.publishVersion` pins only `if (body.pin !== false)`, which is how a
+candidate configuration is put up for review.
 
-The registry said the blocker was *"the composition root that builds those five
-collaborators outside a test fixture"*. That is accurate and it reads as work this repository
-can do. It is not: the shadow worker runs **the same solve path the coordinator does**
-(`observability/shadow.js` calls `deps.round.plan()` with `expandCandidates` and
-`pricedCandidateFor`), and that path bottoms out in the same absent `route` function.
+**A payload alone cannot say which version it is.** That is why the disagreement between the
+module's stated contract and its only production producer survived 7 001 tests: no fixture ever
+built a database in which the two differed.
 
-**The blocker is not similar to the coordinator's. It is the same blocker.**
+**Reproduction (before), live, driving the shipped modules against real rows:**
 
-### 5.3 Fix
+```
+v6 published AND PINNED  (sla.assignment_deadline = 300)
+v7 published, NOT pinned (sla.assignment_deadline = 900) — under review
 
-**None. Not fixable here.** What was done instead:
+version IN FORCE (ConfigActiveVersion): v6
+version server.js hands the rollback publisher: v7   <-- NOT the one in force
 
-- `registry.js`'s `blockedBy` for `shadow` now names B1, D1/D3/D8 and the owner explicitly,
-  and states the consequence: the `shadow_agreement` gate cannot *begin* accumulating
-  evidence — the system is not merely short of the fourteen-day window, it cannot start the
-  clock.
-- No stub was written. The registry's own rule governs: *"A stub would produce a worker that
-  runs, reports success, and compares nothing — the worst of the three possible states."*
+automatic rollback published v8 and pinned it: true
 
-### 5.4 Verification
+version NOW IN FORCE: v8
+  cutover.engine_enabled(repro-region) : {"level":"region","value":false}
+  sla.assignment_deadline              : 900
 
-`shadow_agreement` remains `NOT_EVALUATED`. No shadow evidence was manufactured.
+>>> the operator had 300 in force and had NOT pinned 900.
+>>> an AUTOMATIC, unreviewed, one-directional "disable one shard" control put 900 into force fleet-wide.
+```
+
+**The second consequence, which is structural rather than incidental.** `service.publish()`
+computes `safetyClassChanges` by diffing the candidate against the **latest** version's values,
+and `checkSafetyApproval` refuses an `automated: true` publish that changes any Safety-class
+parameter — finding **S1**, §22.3's absolute rule, *"No automated tuner may modify a Safety-class
+parameter."* When the base set **is** the latest version, that diff cannot contain anything the
+base did not already contain, **so S1 is structurally unable to fire.** The one automated writer
+in the system was laundering arbitrary configuration changes past the check that exists to stop
+exactly that, by choosing its own baseline.
+
+**Fix, in three parts.**
+
+1. **`rollbackPublisher.versionInForceReader({ prisma })`** — the production read, resolving
+   `ConfigActiveVersion` → that version's payload. It lives in the module that states the
+   requirement, not in the composition root, because the composition root held the only
+   implementation and its disagreement with the contract was invisible. `server.js` now calls it.
+2. **The reading carries its own identity** — `{ version, latestVersion, payload }`. A reading of
+   any other shape is refused (`VERSION_IN_FORCE_UNREADABLE`) rather than read as a payload. Made
+   mandatory rather than optional deliberately: an optional second field would be pass 2's own
+   defect shape reintroduced one module along.
+3. **`SUPERSEDES_AN_UNPINNED_VERSION`** — when the two versions differ, the rollback **refuses**.
+
+**Why refusing is the answer, and what it costs.** Version numbering is linear: anything this
+control publishes is `latest + 1` and therefore supersedes the unpinned candidate either way.
+Carrying the in-force set forward reverts that candidate's content; carrying the candidate's set
+forward puts a configuration nobody approved into force. Both are decisions *about the candidate*,
+and §22.3 forbids the second absolutely. Neither is a decision an automatic, one-directional
+control may take.
+
+The cost is real and is stated in the refusal itself rather than discovered: **the shard stays
+live until an operator acts.** The refusal names both versions and the two remedies — resolve the
+candidate, or take the runbook's Action A by hand, which is an operator publish and is not subject
+to this rule. `docs/runbooks/rollback.md` §3 now carries the same, including the measured
+reproduction.
+
+Three refusal codes, deliberately distinct, so an incident review can tell "nothing is published"
+from "the dependency is miswired" from "a human left a candidate unpinned".
+
+**Regression.** 14 tests, including five malformed reading shapes, the three refusal codes being distinct, and the pin's singleton key pinned against the Config Service's own constant — if those two ever diverge every rollback refuses with `NO_VERSION_IN_FORCE`, a fail-closed direction for a reason nobody could diagnose. **Mutations M5, M6, M7: caught.** Live: A1–A9, including the pre-fix producer reproduced against the same database (A3) and the rollback firing correctly once the candidate is resolved (A6, A7).
 
 ---
 
-## 6. D-6 — the cutover switch was a conjunction everywhere except the socket layer
+### P15-E3 — the same `NaN` shape in `guardrails.assess()` · **Latent (permissive)** · FIXED
 
-### 6.1 Reproduction
+`assess()` read `typeof startedAtMs !== "number"`. With a `NaN` endpoint **both** of the
+function's own rules silently stopped applying: `startedAtMs < declaration.declaredAtMs` is false,
+so the pre-declaration refusal — *"the refusal this module exists for"*, in its own header — never
+fired; and `elapsedSeconds < observationWindowSeconds` is false, so a window of no length
+satisfied the length requirement. A shard with no breached guardrail then reported `PROCEED`.
 
-`tests/engine/cutoverSwitchConjunction.test.js` (baseline) pinned it, and it reproduced
-exactly: six call sites reading `process.env.ENGINE_ENABLED === "true"` with no shard in the
-question, three of them in front of engine **writes**:
+Unreachable in production today: `server.js` builds both endpoints from finite values. Fixed
+anyway, and the distinction from pass 2's deferred **X-C2** is deliberate — that one *throws* on
+a malformed declaration, which is loud; this one is **permissive**, and a fail-open on a path
+nobody reaches today is a fail-open waiting for the caller that does. Its reachable sibling
+(P15-E1) is the same mechanism one module away.
 
-| Site | Gates |
+**Regression.** 8 tests. **Mutation M4: caught.** Live: C1–C3.
+
+---
+
+### P15-E4 — a caller-supplied minimum-observation bound of zero · **BLOCKING (permissive)** · FIXED
+
+Found by **re-attacking pass 2's fixes** against the current tree (§4) rather than by reading:
+one of thirty-nine attacks got through.
+
+```
+*** AUTHORISED ***  caller-supplied minObservationMs of 0 for soak
+```
+
+**Root cause.** `admit()` read `typeof required !== "number"` for the "did this bound resolve?"
+check, which admits `0` and `NaN`. Both then sail through the comparison, so a gate **whose whole
+content is a duration** was discharged by a one-millisecond window. `required` is
+caller-supplied — `stage.authoriseEnable()` passes `request.minObservationMs` straight through —
+so the attack is a field in the request object.
+
+The legitimate producer could never emit either value: `resolveMinObservationMs` requires
+`Number.isFinite(value) && value > 0` and **omits** the gate otherwise, precisely so that a
+parameter which failed to resolve refuses the gate rather than unbounding it. **That guard existed
+on the producing side and not on the consuming side** — the same asymmetry P15-C1 found for the
+age bound, in the same file, one function down.
+
+**Fix.** A bound for a gate the register bounds must be a finite, **positive** duration. Note the
+deliberate difference from `maxAgeMs`, where zero *is* honoured: there zero is the strict
+direction and a stated bound is a bound; here zero is the permissive direction, and the same value
+cannot mean "as strict as possible" in one place and "no requirement" in another.
+
+**Regression.** 12 tests — six bound shapes (zero, `NaN`, negative, `Infinity`, a numeric string, `null`), an absent bound, the defect at the authority, and one pinning **both sides** of the producer/consumer pair so neither can drift alone. **Mutations M10, M12: caught.** Live: B7.
+
+---
+
+### P15-E5 — the lifecycle model check claimed an exhaustion that was **impossible** · **BLOCKING** · FIXED
+
+`formal/README.md` recorded that `lifecycleModel.js` still carried a defect corrected in its
+sibling `commitmentModel.js` during the Phase 3 re-verification, and named the owner: *"It is
+Phase 15's artefact and is left for Phase 15 rather than changed here."* This pass took it, and
+what was found is worse than what was recorded.
+
+**Part one — the reporting, as recorded.** `exhaustive` was set by the **state cap** alone. The
+depth bound — which every configuration sets, and which every one of them hits — did not move it.
+Measured on the shipped shapes before the correction:
+
+| Configuration | nodes stopped **at** the bound | successors never explored | reported |
+|---|---:|---:|---|
+| capacity 1 (legs 2, depth 12) | 1 350 | 26 876 | `exhaustive: true` |
+| capacity 2 (legs 3, depth 9) | 12 237 | 348 549 | `exhaustive: true` |
+| capacity 3 (legs 4, depth 7) | 37 880 | **1 389 004** | `exhaustive: true` |
+
+At capacity 3 the unexplored frontier was **twenty times** the explored state space.
+`lifecycleModelCheck.test.js` asserted that flag — `expect(result.exhaustive).toEqual(true)` — and
+its header stated depth was chosen *"to keep every run exhaustive within a test lane's budget"*.
+Both were false and neither could fail.
+
+**Part two — and this is the part nobody had recorded: the state space was infinite.**
+`leg.version` advances on every applied transition and is part of the state key, and unlike
+`fence` — which `MAX_FENCE` bounds, with a comment saying "bounding the space" — it was **not
+bounded**. So no search of this model could ever close, at any depth, for any shape. Measured on
+the smallest possible configuration:
+
+```
+one Leg, capacity 1:   depth   10   20    40    80   160    320    640
+                      states  124  334   754  1594  3274   6634  13354      (linear, no convergence)
+```
+
+**`exhaustive: true` was therefore not merely unproven. It was unachievable**, and the depth bound
+was silently doing all the work of terminating a search that had no other way to stop.
+
+**Why this is blocking rather than cosmetic.** `model_check_capacity_1_2_3` is a **blocking §24
+release gate**, discharged by `npm run test:engine -- ModelCheck`, and it is **GREEN** in the
+release table. Its statement is that the commitment protocol *and the lifecycle* are model-checked
+**exhaustively** at capacity 1, 2 and 3. A green gate rested on a claim of proof for a search that
+could not perform one.
+
+**Fix.**
+1. `check()` now reports `exhaustive`, `depthTruncated`, `stateCapExceeded` and `maxDepthReached`
+   separately, deriving `exhaustive` from both bounds — written to match `commitmentModel.js` line
+   for line, because two checkers that report their own completeness differently are two checkers a
+   reader has to compare by hand.
+2. **`MAX_VERSION` bounds the version counter**, for the reason `MAX_FENCE` bounds the fence. The
+   bound is sound: the version's only behavioural use is `expectedVersion: target.version` — always
+   the *current* value, so the CAS always matches and the counter can never decide a transition. It
+   distinguished histories, not behaviours. With it, one Leg at capacity 1 closes at depth 40 with
+   166 states and no violation.
+3. **It moves no shipped configuration.** At depths 12 / 9 / 7 no Leg reaches the bound: 5 750
+   states at capacity 1 and 30 531 at capacity 2, identical before and after. The bound changes what
+   is reachable *in principle*, not what is measured today.
+4. The suite asserts the truth — truncation where that is the fact, `maxDepthReached`, and a
+   deliberately-failing assertion if a search ever *does* close, so a stronger result must be
+   re-declared rather than absorbed silently. Three shapes prove each completeness flag can
+   independently be false, and one shape proves `exhaustive: true` is reachable at all.
+5. `formal/README.md` is corrected at its source rather than left stale.
+
+**What this does not fix, and §14 records it as a blocker:** the shipped configurations remain
+depth-truncated within a test lane's budget, and `lifecycle.tla` has still never been run under
+TLC. **No exhaustive lifecycle model check exists at any capacity, by either checker.** What
+changed is that it is now *possible* rather than impossible, and what it needs is compute.
+
+**Regression.** Two new tests and three rewritten in `lifecycleModelCheck.test.js`, plus the measurement itself: seven depths per shape at capacity 1 and the smallest shape probed to depth 640.
+
+---
+
+### P15-E6 — the cutover runbook's prerequisite 2 cannot be discharged by the check it names · **Medium (procedure)** · FIXED (documentation); the producer gap is REPORTED
+
+`docs/runbooks/cutover.md` prerequisite 2 reads:
+
+| 2 | Every **§24 release gate** GREEN | `GET /api/health/cutover` → `releaseGates.blocking` is empty | Eng |
+
+That endpoint evaluates `req.app.locals.releaseEvidence`. **Nothing in this repository assigns
+that field** — three readers, all in `health.controller.js`, and no producer anywhere under
+`src/` or in `server.js`. Every one of the twenty-four gates is therefore reported
+`NOT_EVALUATED`, always, whatever the real release state is, and `releaseGates.blocking` is never
+empty. An operator following row 2 literally will never see it satisfied.
+
+It **fails closed**, which is why this is a broken procedure rather than an unsafe one — and it is
+the "real consumer, no production producer" shape the mandate's §4 asks for by name.
+
+The same note also carried a claim the *previous* pass had already established was false. Pass 2
+corrected it in `health.controller.js` — *"omitting the source digest makes BUILD/SUITE records
+inadmissible, which is less permissive, not more"* — and left the identical sentence standing in
+the runbook. A correction applied to the code and not to the operator procedure that quotes it is
+how the two come to disagree at 3 a.m.
+
+**Fixed in the runbook**, with both errors named and the working alternative given
+(`npm run release:gates`, which collects the evidence, judges the whole table under a digest and an
+age bound, and exits non-zero unless every blocking gate is GREEN).
+
+**The producer gap itself is reported, not fixed, and the reason is specific.** The natural
+producer is `Backend/docs/release-evidence.json`. Loading it into a request handler would make the
+advisory view assert a table whose freshness it cannot judge — it holds neither the source digest
+nor the age bound, and deliberately does not invent them. That is the *exact* failure P15-C1
+removed from this file one pass ago. Wiring it correctly is a design decision about where the
+release evidence lives at runtime, and inventing one here would be trading a procedure defect for
+a permissive one.
+
+---
+
+## 4. Re-attacking the previous passes' fixes
+
+Not trusted. Thirty-nine attacks from the mandate's §5 and §7 lists, run against the current tree.
+**One got through** — it is P15-E4 above — and after the fix all thirty-nine hold.
+
+```
+baseline — the complete request authorises (or every refusal below is vacuous)   authorised ✓
+
+P15-C1 — the evidence binding context
+  refused [EVIDENCE_CONTEXT_INCOMPLETE]  requestedAtMs omitted · evidenceMaxAgeMs omitted ·
+                                         sourceDigest omitted · all three omitted · NaN maxAge ·
+                                         Infinity maxAge · negative maxAge · string maxAge ·
+                                         NaN requestedAtMs · null sourceDigest · empty sourceDigest
+  refused [RELEASE_GATE_NOT_GREEN]       wrong sourceDigest · 3-year-old rehearsal ·
+                                         rehearsal stamped in the future ·
+                                         pass:true over a failing exit code ·
+                                         hand-written {pass:true} for all 24 gates
+  → AUTHORISED                           caller-supplied minObservationMs of 0    ← P15-E4, now refused
+
+P15-C2 — the guardrail declaration                                        10 / 10 refused
+  declaration omitted · hand-built {shardId, declaredAtMs} · empty guardrail set · no declaredBy ·
+  no observation window · guardrail with no minSamples · guardrail declared twice ·
+  declaration for another shard · declaration stamped after the request · truthy non-declaration
+
+ADR-34 / ship state / approval                                             8 / 8 refused
+  unknown purpose · REHEARSAL with no environment · REHEARSAL in production ·
+  REHEARSAL with production undefined · a Tier 2 mechanism live · self-approved · automated ·
+  draining shard
+
+P15-C2 round trip   authoriseEnable → guardrails.declare, normalised and ordered      holds
+P15-C4              eventType in the vocabulary, recordedAt valid                     holds
+P15-C4              an action with no instant is refused, not stamped with Date.now() holds
+```
+
+**P15-C4's round trip** is additionally re-verified end to end against a real database by
+`phase15CurrentTree.js` (32/32) and `phase15EvidenceBinding.js` (17/17), both unchanged and both
+passing on this tree: producer → `EVENT_TYPE` → CHECK constraint → persistence → readback →
+staged controller → automatic rollback.
+
+---
+
+## 5. Production-composition audit
+
+The mandate's primary audit: *module → producer → consumer → composition root → configuration →
+real database → observable side effect*, with **no dependency whose only producer is a test
+fixture**.
+
+**Registry: 18 workers — 8 SCHEDULED, 4 LEADER_ONLY, 6 DEFERRED.**
+
+| Worker | Started by | Outcome |
+|---|---|---|
+| `shard_supervisor`, `invariant`, `cutover`, `tier_b`, `rejection_aggregation`, `certificate_rotation`, `calibration`, `counterfactual` | `server.js` → `startScheduledWorkers()`, inside the `ENGINE_ENABLED` gate | STARTED |
+| `outbox`, `reconciler`, `timer` | `server.js:607` → `leaderWorkers.create()` → `apply(tick)` on the supervisor's `mayRunRound` | STARTED on promotion, stopped on demotion |
+| `coordinator` | same hook | **REFUSED** — `EXTERNAL_DEPENDENCY_UNAVAILABLE`, B1 |
+| `shadow` + 5 others | — | `DEFERRED` with a named blocker (`assertRegistry` refuses an unexplained deferral) |
+
+**Every field Phase-15 code reads, traced to its production producer.** The one that failed is
+P15-E2: `versionInForce` had a production producer and it produced the wrong row. The one that has
+no producer at all is P15-E6: `app.locals.releaseEvidence`.
+
+**Leader gating, demotion, restart, duplicate start** — re-verified: `leaderLifecycle.stop()` runs
+*before* the leadership release at shutdown; `startAll()` is idempotent by call count, not by map
+key (pass 1's D-11); a deadline that passed while no worker ran is fired by a freshly started one
+(live).
+
+---
+
+## 6. Phase-5 integration — X2a, X2b, X3
+
+Phase 5 is CLOSED and was not reopened. Its consumption by Phase 15 was re-verified.
+
+**X2a — `offers.applyAccept` → `ACCEPTED` → ACCEPTED timer · HOLDS.** `legEntryDeadline
+.superviseEntry` is armed in the accepting transaction (`offer.handler.js:155`); expiry fires
+`probeThenReassign`; recovery is `ACCEPTED → REASSIGNING`, fence↑, RECALL outbox row, commitment
+released. Two production consumers, both verified live.
+
+**X2b — outbox withdrawal → `QUEUED` → QUEUED timer · HOLDS.** `outbox.worker.js:332` arms the
+same function in the same transaction as `offers.withdrawExpiredOffer`;
+`assignmentDeadlineSeconds` has a real production producer (`leaderWorkers.js`,
+`finite(values, "sla.assignment_deadline")`). Both paths to `QUEUED` share one implementation of
+the obligation, with deliberately identical payloads.
+
+**X3 — no `TASK` timer producer · NOT FIXED, and must not be.** Re-derived live rather than
+carried: `phase15CurrentTree.js` check G1 reports **0** TASK-entity timers in the store after the
+whole harness, and a structural scan confirms no `timers.register` call under `src/` names the
+TASK entity while LEG producers do.
+
+§4.3 has §4.4, a complete transition table. **§4.2 has no transition table at all** — a state
+table with an exit-deadline column and nothing saying what a Task moves to on any event. Adopting
+`RECEIVED` would arm `intake.validation_budget` on a state with no defined exit, which is invariant
+I4's violation created deliberately rather than found. **Classified SPECIFICATION.** Wiring a
+producer would require inventing the §4.2 semantics the frozen specification does not contain.
+
+`phase5ExpirySemantics.js` **102/102** and `phase5LiveDatabase.js` **106/106** against a fresh
+database on this tree. **No Phase-5-owned defect was discovered by this pass.**
+
+---
+
+## 7. Release-evidence and cutover-authority audit
+
+The mandate's §7 list, each attacked against the current tree.
+
+| Attack | Result |
 |---|---|
-| `command.handler.js:82` | settles an outbox row to `ACKED` |
-| `offer.handler.js:47` | releases a commitment, moves a Leg, renews a lease |
-| `robot.handler.js:271` | suppresses outbox rows, advances an agent's `authority_epoch` |
+| hand-written boolean evidence | refused — a bare `{pass:true}` carries no `gateId` (`GATE_ID_MISMATCH`) |
+| gates actually executed | `collectEvidence.run()` spawns each command and captures its real exit code |
+| `pass` contradicting the exit code | refused — `pass` is **derived**, never read, for BUILD/SUITE |
+| stale evidence | refused (`STALE`); the age bound is mandatory (P15-C1) |
+| changed source after collection | `SOURCE_DIGEST_MISMATCH`; the collector takes the digest **twice** and voids a collection whose tree moved |
+| missing digest | `SOURCE_DIGEST_REQUIRED`; and `EVIDENCE_CONTEXT_INCOMPLETE` at the authority |
+| malformed digest / another tree | `SOURCE_DIGEST_MISMATCH` |
+| missing timestamps | `SELF_ASSERTED` / `EVALUATION_INSTANT_REQUIRED` |
+| future timestamps | `PRODUCED_IN_THE_FUTURE` |
+| **future observation window** | **WAS NOT — P15-E1.** Now refused |
+| **NaN / Infinity observation window** | **WAS NOT — P15-E1.** Now refused |
+| **caller-supplied zero duration bound** | **WAS NOT — P15-E4.** Now refused |
+| NaN CLI arguments | `verdict.js --max-age-hours <typo>` exits 2 |
+| expired evidence | refused |
+| partial gate collection | `--only build` leaves SUITE gates `NOT_EVALUATED`, which blocks |
+| missing gate | `NOT_EVALUATED`, which blocks |
+| `NOT_EVALUATED` → PASS | impossible: `evaluate()` returns GREEN only for `admissible && pass` |
+| command failure | a killed process records exit 1, never 0; the collector exits non-zero; the verdict judges independently |
+| evidence from another environment | PRODUCTION/ORGANISATIONAL rows are refused a run record (`BUILD_CANNOT_CLOSE`) |
+| caller-supplied status fields | `pass` is derived for BUILD/SUITE; **the duration bound is now adjudicated too (P15-E4)** |
+| a declaration the reader refuses | refused (P15-C2), validated through the reader's own function |
+| the audit event the authority writes | writable, read back, and acted on (P15-C4), verified live |
+| **the base configuration a rollback carries forward** | **WAS NOT — P15-E2.** Now the version in force, or a named refusal |
 
-A staged rollout *requires* a deployment-wide `ENGINE_ENABLED=true`. Those writes were
-therefore live for **every** shard, including ones `stage.js` had deliberately not reached.
+**One divergence reported, not fixed.** `gates.evaluate()` reports `unknownEvidence` and folds it
+into `ok`; `gates.blockers()` — which `stage.authoriseEnable()` calls — does not. Evidence filed
+against a gate id that does not exist therefore blocks `verdict.js` and not the authority. It is
+**not permissive**: a mis-filed record leaves its real gate `NOT_EVALUATED`, which blocks. It is a
+lost diagnostic, recorded here rather than repaired, because changing what the authority refuses is
+a change to the authority and this one buys no safety.
 
-### 6.2 Root cause
+---
 
-`cutover/enabled.js` was written because the switch has two halves. Phase 15 converted
-exactly one call site — `task.service.js`, the intake path — and the agent-facing remainder
-still read Phase 0's single master switch. The refusals in `stage.js` govern intake and not
-the agent path.
-
-The reason it was left unconverted was a real design question, recorded in the pinning test:
-resolving a robot's shard costs a lookup **per event** on the telemetry hot path.
-
-### 6.3 Fix
-
-**New — `src/engine/cutover/agentGate.js`.** One decision, asked once:
+## 8. Calibration — re-run, nothing manufactured
 
 ```
-ENGINE_ENABLED ∧ session authenticated ∧ shard identity known and fresh
-               ∧ a configuration is loaded ∧ it enables this shard
+$ node tools/gates/checkCalibration.js ; echo $?
+FAIL — 39 blocking finding(s). This is execution-plan pre-work item B8.
+242 entr(ies): 52 DERIVED, 152 PROVISIONAL, 38 UNCALIBRATED. 54 are Safety-class.
+1
 ```
 
-Every one of those is a **named refusal** when absent (`PROCESS_NOT_ENABLED`,
-`SESSION_NOT_AUTHENTICATED`, `SHARD_IDENTITY_UNRESOLVED`, `SHARD_IDENTITY_STALE`,
-`CONFIGURATION_UNAVAILABLE`, `SHARD_NOT_ENABLED`). No branch reaches "allowed" through a
-missing input.
+Identical to arrival. **No value was manufactured, promoted or defaulted.** Each of the 39 names
+what it awaits, and none is an engineering task: *per-class rated-mass certification*; *the
+operated CA's revocation-publication latency*; *measured p99 round-trip to the operated consensus
+store*; *a safety decision per degraded mode*; *the first one-sided simulator fidelity study
+against production*.
 
-**The hot-path question, answered without a per-event lookup:**
+**Can a Safety-class parameter be promoted by editing one word?** No, and this was attacked rather
+than assumed. `checkCalibration.hasSubstantiation()` requires a Safety-class entry claiming
+`DERIVED` to carry a **`derivation`** — a cross-reference is explicitly not enough for the Safety
+class — so a one-word edit yields `SAFETY_DERIVATION_NOT_STATED`, which blocks. §22.4's own words
+are the reason, quoted in the gate: *"a status field can be edited without the source existing."*
 
-- **Resolved once at AUTH** from the durable record — `ShardMembership` → `Shard` → region —
-  and cached on `socket.data`. §3.5 makes membership explicit, so an agent with no live
-  membership row belongs to **no** shard and is refused; it is deliberately *not* defaulted
-  to `DEFAULT_SHARD_ID`, which would have placed every unplaced agent in whichever shard the
-  staging order reached first.
-- **Invalidated by migration, not polled.** `membership.migrate()` advances the agent's
-  `authority_epoch`, voiding every mission authority it holds (§19.2), and §11.5's dedup
-  handshake rides on `AUTH_SUCCESS` — so the agent must re-AUTH anyway. `server.js`'s
-  `onTick` now disconnects a migrated agent's sockets, cross-process via the Socket.IO Redis
-  adapter, using the same pattern the §23.2 revocation sweep already uses.
-- **A bounded freshness backstop.** An identity older than `DEFAULT_MAX_AGE_MS` (twice the
-  heartbeat's existing durable-mirror throttle) is refused as stale. Refreshed on that same
-  existing throttle — one extra indexed read per agent per 15 s, and no new cadence.
+**Can the gate be bypassed?** `calibration_safety_derived` is ORGANISATIONAL with `runnable: true`,
+so an attestation must be accompanied by a corroborating run of `npm run gate:calibration` that
+**exited 0**, bound to this tree's digest. The command exits 1. P15-C3 closed the one way that
+pairing could have been silently skipped.
 
-**All six call sites converted.** `socket.server.js:179` — "which loop owns §12.4 row 9" — is
-a genuinely *process*-level question and correctly stays on `processEnabled()` alone; it now
-reads it through the owning module rather than as a raw comparison. Zero raw
-`process.env.ENGINE_ENABLED` reads remain under `src/` outside `enabled.js` and the Config
-Service's own bootstrap decision.
+**A consequence sharper than the gate.** The publish validator refuses the register's own defaults
+(V9) — reproduced live during this pass while building the P15-E2 fixture, which could not publish
+a first configuration version until it bound `route.degraded_reserve_factor` explicitly. A
+deployment cannot publish from defaults at all.
 
-### 6.4 Verification
+---
 
-**Unit / adversarial** — `tests/engine/cutoverSwitchConjunction.test.js` was **replaced, not
-edited**, as its own header instructed. 25 tests: the four headline cases §8 names, thirteen
-planted refusals covering §9's list (stale session, unknown robot, missing shard, shard with
-no region, stale mapping, robot moved between shards, forged identity on an unauthenticated
-socket, no configuration, a snapshot whose `resolve()` throws, a truthy-but-not-`true`
-binding, direct invocation with no socket, explicit invalidation), and an exhaustiveness
-check that a new raw read anywhere is a new finding.
+## 9. Invariants — WIRED, not OBSERVED
 
-**Live PostgreSQL** — `tools/verify/phase15LiveDatabase.js`, groups A and B, **12/12**:
+`modeRegister.INVARIANTS` declares **22** (I1 … I22). `invariantWorker.start(…)` is composed and
+started at `server.js:142` with `prisma`, `kv`, `emit`, and its full check context.
 
 | | |
 |---|---|
-| A1 | the shipped resolver returns shard **and** region from the business key |
-| A2 | an unknown agent → `null` (fails closed) |
-| A3 | a commissioned-but-unplaced agent → `null`, **not** the default shard |
-| A4 | staged region → allowed; unstaged region → `SHARD_NOT_ENABLED` |
-| B1 | the store refuses a second live membership (SQLSTATE 23505, row absent) |
-| B2 | **after a migration the resolver returns the NEW shard and region** |
-| B3 | a session holding the pre-migration identity is refused once stale |
+| WIRED | **yes** — it runs on an interval against the real store and writes `InvariantStatus` rows and `INVARIANT_STATUS_CHANGED` events |
+| IMPLEMENTED | **yes** — 22 checks |
+| EXECUTED | **yes** — in a running process |
+| OBSERVED | **no** |
+| RELEASE-PROVEN | **no** |
 
-A1 is not ceremony: `resolveIdentity()` reads `Agent` by its *business* key and
-`ShardMembership` by the agent's *primary* key. A unit fixture using one string for both
-cannot tell those apart, and getting it wrong returns `null` — which fails closed, so the
-failure mode is a whole fleet silently refused rather than a crash.
+The `invariants_enforced` gate is PRODUCTION evidence requiring a zero-violation SLI over an
+observation window. No such window exists, because no production fleet exists. **The missing
+requirement is production observation, not composition**, and it is not recorded as a wiring
+defect. The gate is `NOT_EVALUATED` and blocks, which is the honest state.
 
-**Mutation** — removing the shard half of the conjunction fails 6 tests; removing the
-staleness bound fails 3; removing the session check fails 3. Restored and re-verified.
-
----
-
-## 7. D-7 — the gate set could not be brought to green by any legitimate sequence
-
-### 7.1 Reproduction
-
-Demonstrated mechanically: with fully admissible evidence for all twenty-three other gates,
-`stage.authoriseEnable()` refuses by exactly `rollback_rehearsed (NOT_EVALUATED)`.
-`rollback.md` §5 step 1 discharges that gate by taking a staging shard live — which calls the
-function that just refused.
-
-### 7.2 Architectural decision — **ADR-34**
-
-Three obvious resolutions were considered and **rejected**: make the gate non-blocking (ships
-a cutover whose rollback was never exercised — §22.5); add a `WAIVED` status (`gates.js`
-names this as the thing it must not have); file an attestation for a rehearsal that did not
-happen (the forgery the evidence contract exists to prevent).
-
-The diagnosis: `authoriseEnable()` was answering one question for two different acts — a
-**production cutover**, and a **rehearsal** whose whole purpose is to *produce* the evidence
-the gate is about. "You may not take a shard live until the rollback has been rehearsed" is
-exactly right for the first and a category error for the second.
-
-`docs/adr/ADR-34-cutover-rehearsal-purpose.md`, registered in `docs/adr/README.md`, marked
-`Accepted` as an integration decision under a frozen architecture, contradicting no frozen
-record.
-
-### 7.3 Implementation
-
-**`stage.js`:**
-
-- `PURPOSE.PRODUCTION` is the **default** and is unchanged in every respect. An unrecognised
-  purpose is refused (`UNKNOWN_PURPOSE`), never defaulted — the only thing a purpose can do is
-  *reduce* the gate set, so an unnamed one must reduce nothing.
-- `PURPOSE.REHEARSAL` is refused unless the request declares
-  `environment: { id, production: false }` (`REHEARSAL_REQUIRES_NON_PRODUCTION`).
-- `REHEARSAL_EXCLUDED_GATES` is a named constant containing **exactly one** id. Every other
-  blocking gate, the §1.8 rule 3 ship state, two-person approval, the guardrail
-  pre-declaration and the staging order apply unchanged.
-- The exclusion is applied **after** the whole table is evaluated, never by hiding the row.
-  The action carries `purpose`, `environment` and `gatesSetAside` (each with the status it
-  held), so an audit reads the rehearsal rather than reconstructing it — and `gatesSetAside`
-  is empty for a production cutover *by construction*.
-
-**`evidence.js` — the necessary other half.** Making the rehearsal *performable* without
-making its evidence *checkable* would have moved the forgery one step along rather than
-removing it. `rollback_rehearsed` is flagged `rehearsal: true`, and `admit()` now requires the
-record to carry the rehearsal itself: the declared non-production environment, the published
-configuration version, `automaticRollbackFired`, and each of the six `rollback.md` §5 steps
-**named individually** — because §22.5's argument is about *which* step is skipped ("Step 4 is
-the one that will be skipped and it is the one that matters"), and a contract that only
-counted them could not tell. It ages by the same `maxAgeMs` rule as every other record, so a
-rehearsal cannot be performed once and cited for ever.
-
-### 7.4 Verification
-
-`tests/engine/cutoverEvidence.test.js` grew from 35 to 56 tests. The original circularity pin
-is **retained** as a test of `PURPOSE.PRODUCTION` — it still refuses by exactly
-`rollback_rehearsed`. Added: the rehearsal is authorised against a declared non-production
-environment; the exclusion set is exactly one gate; a production cutover never sets a gate
-aside; and §11's attacks — a rehearsal with no environment, in production, with an
-`undefined` production flag, an unrecognised purpose, a rehearsal that excuses another gate,
-the ship state, the second approver or the guardrails; two signatures and no rehearsal; a
-production environment in the record; an unnamed environment; no configuration version; each
-of the six steps missing (six cases, each asserting the refusal *names* the step); an omitted
-step; a rollback called by hand rather than fired by the controller; a self-approved
-rehearsal; a stale rehearsal; a record filed against another gate; a truthy non-record.
-
-`docs/runbooks/rollback.md`'s ⚠ OPEN FINDING is replaced by the resolved procedure and the
-rehearsal-record field table.
+*(P15-E1 is the reason this row deserves a second look: until this pass, `invariants_enforced` —
+along with the other three PRODUCTION gates — was dischargeable by a record whose window was
+`NaN`. The gate was honest; the adjudicator was not.)*
 
 ---
 
-## 8. Findings beyond the four assigned
-
-### D-8 — `SHARD_MIGRATE` had a producer and no consumer (FIXED)
-
-`shard/membership.js:migrate()` runs on the supervisor's **own migration pass**, which
-`runOnce()` executes unconditionally every tick. Inside the handoff transaction it advances
-the agent's `authority_epoch`, suppresses its outstanding outbox rows, allocates a dispatch
-sequence, and enqueues a signed `SHARD_MIGRATE` command telling the agent its authority has
-changed.
-
-**Nothing ever delivered it.** The outbox worker had no production caller, so with
-`ENGINE_ENABLED=true` an agent would be migrated, have every mission authority it held
-voided, and never be told. This was not in the baseline report.
-
-**Fixed** by the D-5 wiring: `leaderWorkers` starts the outbox worker on leadership
-acquisition, with the delivery arm that already existed. Regression test:
-`leaderWorkerLifecycle.test.js` — "the outbox is started, so `SHARD_MIGRATE` finally has a
-deliverer". Live verification: group C, including `Outbox_fence_scope_columns` refusing an
-AGENT-scope command that carries a commitment fence (SQLSTATE 23514, row absent).
-
-### D-9 — the timer worker's handler map has no producer at all (REPORTED, in-repository)
-
-`timer.worker.js` requires `deps.handlers`, keyed by the §4.3/§4.2 "on expiry" action.
-Sixteen actions are declared across `legMachine.js` and `taskMachine.js` —
-`ESCALATION_LADDER`, `FORCE_WIDEN_AND_ESCALATE`, `HARDEN_OR_REPLAN`,
-`WITHDRAW_EXCLUDE_REPLAN`, `PROBE_THEN_REASSIGN`, `PROGRESS_PROBE`, `OPERATOR_ALERT`,
-`VERIFICATION_ESCALATION`, `FORCE_STRANDED`, `PAGE_OPERATIONS`,
-`PAGE_OPERATIONS_AND_EXTERNAL_ESCALATION`, `ESCALATE`, `REJECT_OR_ESCALATE`,
-`DECOMPOSITION_STALLED`, `REPROJECT_TIMELINE`, `OPERATOR_REVIEW` — and **none has an
-implementation anywhere under `src/`**. `lifecycle/transitions.apply()`, which such a handler
-would use, has no production caller either.
-
-This is **not** composition work: the map has no producer because the expiry semantics
-themselves are unimplemented. Started with an empty map, `fireOne()` returns
-`HANDLER_NOT_REGISTERED` and leaves each due timer `PENDING` for ever — a supervisor that
-supervises nothing while reporting a healthy tick.
-
-**Not fixed.** It is in-repository and Phase 5-owned, and implementing sixteen lifecycle
-expiry semantics is not remediation of a Phase 15 wiring finding. Recorded in
-`leaderWorkers.UNCOMPOSABLE.timer` with `external: false`, and reported by the gate.
-
-### D-10 — the composition gate's own check was a path-string proxy (FIXED)
-
-`checkCompositionRoot.js` matched the registry's module tail as a **substring** of a
-`require(...)` literal. That was wrong in both directions:
-
-- A sibling in `src/workers/` writes `require("./coordinator.worker")`, which contains no
-  `workers/` segment — so a *real* production reference was invisible to it.
-- A comment, or a require with no call, satisfied it — so the gate could be turned green
-  without the worker ever running.
-
-Worse, its single `LEADER_ONLY_UNREACHABLE` finding conflated "nobody wired this" with "the
-thing it must be wired to does not exist", and invited exactly the wrong repair.
-
-**Fixed and strengthened:** requires are now **resolved** to absolute paths, and `LEADER_ONLY`
-is checked three ways — reachable, has a composer, and the composer is not declared unable to
-build it. Two new finding kinds, `LEADER_ONLY_NO_COMPOSER` and `LEADER_ONLY_NOT_COMPOSABLE`,
-the latter carrying the blocker, what it requires, its owner, and whether it is external.
-Mutation M3 confirms the gate goes green if the blocker table is ignored. A regression test
-asserts a relative sibling require now resolves.
-
-### D-11 — a test in *this* remediation was incapable of failing (FIXED)
-
-The §19 hostile pass planted "remove the idempotence guard from `startAll()`" and the suite
-**passed**. Cause: handles live in a `Map` keyed by worker id, so a second `start()` cannot
-add a duplicate *key* — it silently replaces the value, orphaning the first interval, which
-then runs for ever and can never be stopped. That is a genuine second writer, and
-`lifecycle.running()` looks identical either way.
-
-**Fixed** by counting calls to the worker modules' own `start()`, plus a second test proving
-every handle created is later stopped exactly once. Re-attacked: caught.
-
-### D-12 — 100 of 279 `src/` modules are unreachable from the composition root
-
-Recorded in §3. Not a defect with a fix; a measurement that reframes D-5/D-4.
-
-### D-13 — a FAIL-OPEN in the D-6 gate itself (FIXED)
-
-The §19 pass re-audited `agentGate.assess()` without trusting the notes that produced it, and
-asked the one question the module's own header claims to answer: *is there any branch that
-reaches "allowed" through a missing input?* There was.
-
-`enabled.configEnabled()` builds its resolution context as:
-
-```js
-const context = {};
-const regionId = shard && (shard.regionId || null);
-if (regionId) context.region = regionId;
-return snapshot.resolve(PARAMETER, context) === true;
-```
-
-A null region yields an **empty context** — and an empty context resolves
-`cutover.engine_enabled` at **global** scope. Demonstrated against the shipped module:
+## 10. Shadow / counterfactual
 
 ```
-*** ALLOWED ***  shard with NO region     (global cutover.engine_enabled = true)
-refused          shard with an unstaged region   SHARD_NOT_ENABLED
+real decision  → coordinator.worker   ✗ NOT COMPOSED (B1)
+               → shadow.worker        ✗ NOT COMPOSED (same solve path, same blocker)
+               → shadow result        no producer
+               → persistence          no producer
+               → comparison           no producer
+               → agreement metric     no producer
+               → release evidence     shadow_agreement — NOT_EVALUATED
 ```
 
-So a deployment holding a global `true` binding would have enabled a region-less shard: the
-answer to "is the whole deployment cut over" returned in place of "is *this shard* cut over",
-which is precisely the substitution the per-shard staging exists to prevent — the D-6 defect
-reintroduced one layer in, inside its own fix.
+**Can the 14-day window begin? No.** It cannot begin until the shadow worker composes, which
+cannot happen until B1 selects a routing engine. The system is not merely short of the window — it
+cannot start the clock. **No observation data was fabricated, and no 14-day period was
+manufactured.**
 
-`Shard.regionId` is `NOT NULL`, so the *data* should never produce this. But
-`resolveIdentity()` sets `regionId: null` when the `Shard` read **throws**, which made a
-transient store blip a fail-open on a Tier 0 path. A `catch` that degrades to a value which
-happens to be permissive is the same defect shape as D-3c, one module along.
-
-**Fixed.** `SHARD_REGION_UNRESOLVED` refuses the identity by name, before the snapshot is
-consulted — because a missing region does not make the answer `false`, it makes the question a
-different one. Regression test asserts `null`, `undefined` and `""`; a dedicated test plants
-the global-binding attack. Mutation **M11** confirms removing the check reopens it.
-
-This is the single most valuable finding of the hostile pass, and it argues for the pass
-itself: the module was written to fail closed, its header says so, and it did not.
+`cutover.shadow_agreement_window` is a registered parameter and `evidence.resolveMinObservationMs`
+resolves the bound from it, so the gate is *refused for want of a window* rather than
+*unbounded* — and after P15-E4 that is true of a **zero** window as well as an absent one.
 
 ---
 
-## 9. Release-gate integrity (D-3 must not regress)
+## 11. Simulator fidelity
 
-Re-verified by mutation rather than by reading. **M10:** replacing `evidence.admit()` with a
-stub that trusts `record.pass` fails the suite — the D-3 fix is load-bearing and the tests
-that pin it are capable of failing.
+```
+$ node tools/simFidelity/validate.js ; echo $?
+simulator fidelity gate (§24.4) — one-sided, bound 5.0 % optimistic
+  NOT_MEASURED  TRAVEL_TIME  SAFETY        NOT_MEASURED  SERVICE_TIME
+  NOT_MEASURED  ENERGY_CONSUMPTION SAFETY  NOT_MEASURED  CHARGE_DURATION  SAFETY
+  NOT_MEASURED  FAILURE_RATE SAFETY        NOT_MEASURED  INTERVENTION_RATE SAFETY
+  NOT_MEASURED  DISCONNECT_RATE SAFETY
+  No study was supplied (--input <file.json>).
+1
+```
 
-The full attack set from the baseline is retained and still refuses: the 23 hand-typed
-`{pass:true}` records, empty evidence, `pass` over a non-zero exit, wrong command, wrong gate
-id, no run record, no exit code, wrong tree digest, absent digest, stale, from-the-future,
-anonymous, a BUILD run closing a PRODUCTION gate, a 14-day claim over four minutes, a short
-soak, a missing duration bound, an unowned production record, a self-approved attestation, an
-attestation while its own check exits 1, a runnable organisational gate with no corroboration,
-an unknown gate id, and a void mid-collection tree change.
+**7 models NOT_MEASURED, 6 of them safety-relevant.** Unchanged, and nothing was faked.
 
-The new rehearsal contract adds five refusal codes to that set and does not relax any
-existing one. `NOT_EVALUATED` is still not a pass. No threshold was moved and no gate was made
-non-blocking.
+Classified as the mandate asks:
 
----
-
-## 10. External blockers — not fabricated, and now more precisely owned
-
-| Item | Status | Owner | What is actually required |
-|---|---|---|---|
-| **B1 routing** | **BLOCKED** | Ops + Commercial (D1), Product + Fleet Eng (D3), Ops (D8) | An authoritative operating region as GeoJSON; a real fleet speed model over roadClass/gradient/surface/payload/congestion/weather; an OSM extract vintage, cadence and re-contraction budget. **Then** B1 steps 1, 3, 4 and the Step 5 ADR. |
-| **B8 calibration** | **BLOCKED** | §22.4's calibration owner | 39 Safety-class parameters awaiting measured fleet, vendor and authority data. §22.4 itself: values that "require data the fleet does not yet produce and cannot produce before it operates." |
-| **Shadow agreement** | **NOT_EVALUATED — cannot start** | blocked by B1 | 14 days of live traffic. The clock cannot begin: D-4. |
-| **Soak** | **NOT_EVALUATED** | — | 72 h wall clock (`release.soak_duration`). |
-| **Simulator fidelity** | **RED** | — | A study against realised production distributions. |
-| **§26 invariants** | **NOT_OBSERVED** | — | Production traffic with a zero-violation SLI. The worker *is* started; what is missing is traffic. |
-| **TLC capacity 3 / checked-in capacity 2** | Partial | — | Compute beyond a workstation session. |
-
-**Nothing here was manufactured.** No region, no speed model, no extract, no calibration
-value, no shadow window, no soak duration, no invariant observation. `NOT_EVALUATED` was not
-converted to `PASS` anywhere.
-
-The one change is that **D-5 and D-4 now appear in this table's dependency chain**, where the
-baseline had them under in-repository work.
-
----
-
-## 11. Cross-phase regression (Phases 0–14)
-
-**Full suite: 155 suites, 6 850 tests, 0 failures.** Gates: 7 of 8 pass; `gate:composition`
-is red for the two documented reasons.
-
-**Earlier-phase source modified, and why each was necessary as a Phase-15 integration seam:**
-
-| File | Phase | Change | Justification |
-|---|---|---|---|
-| `sockets/handlers/{command,offer,robot,telemetry,dtaro}.handler.js` | 0/4/5/14 | read the cutover switch through `agentGate` | **D-6 itself.** The per-shard cutover is the Phase 15 deliverable; these were the unconverted call sites. Permitted by the existing architecture — `enabled.js` was written for exactly this conjunction. |
-| `sockets/socket.server.js` | 0/5 | `processEnabled()` instead of a raw env read; `appLocals` threaded to two handlers | Same seam. The predicate is unchanged. |
-| `workers/registry.js` | 15 | `shadow`'s `blockedBy` restated with the real owner | Phase 15 owns this table. |
-| `server.js` | 15 | the promotion hook, migration invalidation, lifecycle shutdown | Phase 15 owns the composition root. |
-
-**Earlier-phase tests updated (3), each made strictly stronger:**
-
-| Test | Was | Now |
-|---|---|---|
-| `supervisionWorkers.test.js` (P5) | matched the raw `ENGINE_ENABLED !== "true"` text | matches `!cutoverEnabled.processEnabled()` **and** asserts the raw read is *absent* |
-| `phase14Remediation.test.js` (P14) | matched `!engineEnabled()` | matches `!engineEnabled(socket, configOf())`, asserts `agentGate.mayAct` is used, and asserts no raw read |
-| `phase0Scaffold.test.js` (P0) | — | registers `cutover/agentGate.js` against its owning phase |
-
-Each replaced a **source-text proxy** for a behaviour that is preserved and narrowed. No
-assertion was relaxed, no tolerance widened, no threshold moved.
-
-**Explicitly verified unchanged:**
-
-- No applied migration edited — `prisma/migrations/` untouched; 26 migrations apply cleanly
-  from empty.
-- No historical closure, implementation or independent-verification document rewritten.
-- No earlier gate weakened; no earlier threshold moved.
-- Phase 0's scaffold guard intact: `server.js` still names none of the outbox, timer or
-  reconciler worker modules (it names `leaderWorkers`, which names them).
-- Phase 10 solver untouched. The new composition does not reach it — the coordinator is not
-  started — so no Phase 10 regression is possible or was observed. No parallel solver was
-  written.
-- Phase 13 leadership not bypassed: the lifecycle reads the supervisor's own `mayRunRound`
-  rather than re-deriving leadership.
-- Phase 14 security/privacy not bypassed: the D-6 gate **adds** a refusal in front of three
-  write paths and removes none.
-
----
-
-## 12. Live PostgreSQL verification
-
-Disposable **PostgreSQL 18.3** cluster, port **55434**, built from installed binaries into
-the scratchpad. Never Neon, never the user's 5432 cluster; the harness refuses both by name.
-
-- **26 migrations applied from an empty database, 0 failures** (verified empty first:
-  `count(*) = 0` over `information_schema.tables`).
-- 16 Phase-15-relevant tables present.
-- **Constraints made to fire, judged on SQLSTATE and on the row being absent afterwards —
-  never on message text**, because Prisma embeds the calling file's own source in its errors
-  and a text match would report PASS for a probe that never reached the database:
-
-| Constraint | Probe | Result |
-|---|---|---|
-| `ShardMembership_one_current_per_agent` | a second live membership | refused, 23505 |
-| `ShardMembership_migration_advances_epoch` | migration without an epoch advance | refused, 23514 |
-| `ShardMembership_move_changes_shard` | migration to the same shard | refused, 23514 |
-| `Shard_regionId_key` | two shards in one region | refused, 23505 |
-| `Outbox_idempotencyKey_key` | one migration, two commands | refused, 23505 |
-| `Outbox_fence_scope_columns` | AGENT command with a COMMITMENT fence | refused, 23514 |
-
-`tools/verify/phase15LiveDatabase.js`: **12/12 passed** (exit 0). Three harness defects were
-found and fixed during this run — a missing NOT NULL column set, a text-based refusal judge,
-and an incorrect fence-scope fixture. The third became a new positive probe (C3).
-
----
-
-## 13. Adversarial and mutation testing
-
-**§19 hostile audit: 11 planted defects, 11 caught, 0 survived.** Two survived the first pass
-— D-11 (a test that could not fail) and D-13 (a genuine fail-open in the gate) — and in both
-cases the *code or the test* was repaired rather than the finding explained away.
-
-| | Defect | Caught by |
-|---|---|---|
-| M11 | region check removed — a region-less shard inherits the **global** binding | `cutoverSwitchConjunction` (D-13, after the fix) |
-| M1 | idempotence removed — duplicate/orphaned writers | `leaderWorkerLifecycle` (after D-11 fix) |
-| M2 | demotion no longer stops the workers | `leaderWorkerLifecycle`, 3 tests |
-| M3 | the gate stops reporting declared blockers | `checkCompositionRoot`, 2 tests |
-| M4 | staleness bound removed | `cutoverSwitchConjunction`, 3 tests |
-| M5 | the session check removed | `cutoverSwitchConjunction`, 3 tests |
-| M6 | a rehearsal may run in production | `cutoverEvidence`, 2 tests |
-| M7 | the exclusion set widened without an ADR | `cutoverEvidence`, 2 tests |
-| M8 | a hand-called rollback counts as automatic | `cutoverEvidence`, 1 test |
-| M9 | skipped rehearsal steps no longer refuse | `cutoverEvidence`, 2 tests |
-| M10 | `evaluate()` trusts `record.pass` again (D-3) | `cutoverEvidence`, suite |
-
-Every mutation was applied to a real file and reverted from an in-memory backup; the tree was
-verified clean afterwards (`grep -rn MUTATED` → none) and the full suite re-run green.
-
-Plus the 12 planted refusals in `cutoverSwitchConjunction` and the 20-odd in
-`cutoverEvidence`, all automated.
-
----
-
-## 14. Performance status
-
-Not re-profiled, and no claim is made that it was. The D-6 fix was designed against a
-performance constraint rather than measured after it: the shard identity is resolved **once
-at AUTH** and refreshed on the heartbeat's **existing** throttle, so the telemetry hot path
-gains **zero** database round trips and the socket layer gains no new cadence. The steady-state
-cost is one additional indexed read per agent per `legacy.liveness.db_flush_interval_ms`
-(15 s), on a pass that already performs a durable write.
-
-`scale_targets`, `locality` and `overload_admission_control` are exercised by the release
-collection's own runs; §20.1's whole-round measurement was not re-derived here.
-
----
-
-## 15. Phase 16 contamination check
-
-**CLEAN.** No Phase 16 functionality implemented. Verified: `src/engine/fairness/` contains
-no runtime module; `branchAndBound` absent; every Tier 2 kill switch thrown by default;
-`tierTwoAtShipState` refuses a cutover with any Tier 2 mechanism live — and now refuses it
-under `PURPOSE.REHEARSAL` too, which is asserted by test rather than assumed.
-
----
-
-## 16. Files changed
-
-**New**
-
-| Path | Purpose |
+| Requirement | Answer |
 |---|---|
-| `Backend/src/engine/cutover/agentGate.js` | D-6 — the one place an agent session is held to both halves of the switch |
-| `Backend/src/workers/leaderWorkers.js` | D-5 — the shard supervisor's promotion hook, and the declarative blocker table |
-| `Backend/tests/engine/leaderWorkerLifecycle.test.js` | 16 tests — promotion, demotion, duplicate writers, refusals |
-| `Backend/tools/verify/phase15LiveDatabase.js` | 12 live-PostgreSQL checks for D-5 and D-6 |
-| `docs/adr/ADR-34-cutover-rehearsal-purpose.md` | D-7's architectural decision |
+| repository-owned and executable now? | **No.** The tool is executable; the *study* is its input and does not exist. |
+| requires real hardware / fleet data? | **Yes.** §24.4 validates model distributions against **realised production data**, one-sided. |
+| requires external approval? | Partly — `sim.max_optimistic_bias` is one of B8's 39 Safety-class values. |
 
-**Modified**
+A study cannot be performed locally without inventing production distributions, so it was not
+performed and the gate stays `NOT_EVALUATED`. **EXTERNAL / OBSERVATION.**
 
-| Path | Change |
+---
+
+## 12. B1 — the routing engine
+
+```
+$ node tools/routing/b1Readiness.js
+step 1  BLOCKED — authoritative operating region unavailable; fleet mobility/speed model unavailable  [D1, D3]
+step 2  PASS    — 3 adapters implemented (osrm, valhalla, graphhopper); 1 correctly NOT_IMPLEMENTED
+step 3  BLOCKED — nothing deployed to measure                                                          [D1, D3]
+step 4  BLOCKED — extract vintage/refresh decision unavailable                                         [D1, D8]
+step 5  BLOCKED — ENGINE SELECTION: no recorded evidence exists                                        [D1, D3, D8]
+OVERALL: BLOCKED
+```
+
+Traced: `coordinator.runRound → round.execute → expandCandidates → evaluateExact → plan build →
+planBuilder.hopsForSequence → routing/cellPairCache.hopsFor → deps.route`. `cellPairCache.read()`
+is explicit: *"if `typeof source.route !== 'function'` return `{ ok: false, reason: 'no router is
+available and the entry is not cached' }"*.
+
+**No engine was invented.** `DEGRADED_ROUTING` (§18.5) is not an escape: it is the mode entered
+when a Routing Service that *exists* is failing, and its `uniformDegradedEstimation` still needs
+D3's speed model.
+
+**Is any Phase-15-owned defect hidden behind B1?** This pass looked, and the answer is no for the
+coordinator specifically — but it is worth recording *how* that question was answered wrongly
+before. Pass 2 concluded "in-repository: none remaining" partly because B1 dominates the picture,
+and six in-repository defects were sitting in modules B1 does not touch: the release authority, the
+rollback publisher's composition, the model checker, and two runbooks. **B1 blocks the cutover; it
+does not block auditing everything the cutover would run through.**
+
+---
+
+## 13. Performance — §20.1
+
+**Not re-profiled by this pass, and no claim is made that it was.** The distinctions the mandate
+asks for, kept apart:
+
+| | State |
 |---|---|
-| `Backend/server.js` | the promotion hook; migration-driven session invalidation; lifecycle shutdown before leadership release |
-| `Backend/src/engine/cutover/stage.js` | `PURPOSE`, `REHEARSAL_EXCLUDED_GATES`, two refusals, `purpose`/`environment`/`gatesSetAside` on the action |
-| `Backend/src/engine/cutover/evidence.js` | the rehearsal-record contract; `REHEARSAL_STEPS`; five refusal codes |
-| `Backend/src/engine/cutover/gates.js` | `rollback_rehearsed` flagged `rehearsal: true` |
-| `Backend/src/workers/registry.js` | `shadow`'s `blockedBy` restated with the real, external owner |
-| `Backend/src/sockets/handlers/{command,offer,robot,telemetry,dtaro}.handler.js` | all six call sites converted to the conjunction; AUTH binding and heartbeat refresh |
-| `Backend/src/sockets/socket.server.js` | `processEnabled()`; `appLocals` threaded to two handlers |
-| `Backend/tools/gates/checkCompositionRoot.js` | resolution-based reachability; two new finding kinds; blocker/owner/external reporting |
-| `Backend/tests/engine/cutoverSwitchConjunction.test.js` | **replaced** — the pinned defect became the pinned fix |
-| `Backend/tests/engine/cutoverEvidence.test.js` | D-7 resolution and its 20 attacks; helper builds admissible rehearsal evidence |
-| `Backend/tests/engine/cutoverStaging.test.js` | `allGreen()` builds a rehearsal record — strictly more work |
-| `Backend/tests/gates/checkCompositionRoot.test.js` | rewritten for the sharper findings; adds the relative-require regression |
-| `Backend/tests/engine/{phase0Scaffold,phase14Remediation}.test.js`, `supervisionWorkers.test.js` | text proxies updated and strengthened |
-| `docs/runbooks/rollback.md` | the ⚠ OPEN FINDING replaced by the resolved procedure and the record's field table |
-| `docs/adr/README.md` | ADR-34 registered |
+| solver benchmark | Phase 10's, not re-run here |
+| build+solve benchmark | not re-run here |
+| **whole-round benchmark (§20.1)** | **NOT genuinely measured.** No whole-round p99 against §20.1's table exists. |
+| p99 target | stated in §20.1, which calls the table *"requirements for the release gate, not aspirations"* |
+| representative hardware | a workstation; not a representative deployment |
+| production fleet | **none exists** |
 
-**Deleted:** none. **Migrations:** none. **API changes:** none. **Socket contract:** unchanged
-— no event added, removed or renamed; three write paths gained a refusal.
+`scale_targets`, `locality` and `overload_admission_control` are GREEN as **SUITE** evidence — they
+are the `test:scale` lane's own measurements, executed by the collector on this machine. That is
+what those three gates are; it is **not** a whole-round measurement on representative hardware, and
+a solver-only or lane-only measurement is not promoted into one here.
+
+This pass's changes cannot have moved any of it: nothing was touched on the decision or telemetry
+paths. The three modules changed under `src/` are the release authority, the guardrail assessor and
+the rollback publisher, none of which executes during a round.
 
 ---
 
-## 17. Test results
+## 14. Formal verification — the exact state, and a blocker this pass discovered
 
-| | Suites | Tests | Failures |
-|---|---|---|---|
-| Baseline | 154 | 6 792 | 0 |
-| After this remediation | **155** | **6 850** | **0** |
+**No TLC run was performed by this pass.** TLC is not in this closure's command set, and nothing
+below is manufactured.
 
-One new suite (16 tests) and 42 tests added to existing suites. **No test was deleted,
-skipped, weakened or threshold-relaxed.** One test file was *replaced* — the D-6 pinned-defect
-suite, which its own header required be deleted rather than edited when the conversion landed.
-Three earlier-phase source-text proxies were updated and made strictly stronger (§11).
+| Module | Checker | State |
+|---|---|---|
+| `commitment.tla` | TLC | `commitment_c1.cfg` **complete state graph** (17 991 520 states, 2 375 660 distinct, diameter 21, no error). A **reduced** capacity-2 configuration also closed. `commitment_c2.cfg` as checked in and capacity 3: **not completed** — >1 h, 11 GB queue still growing. |
+| `lifecycle.tla` | TLC | **never run.** |
+| commitment | executable (`commitmentModel.js`) | capacity 1 closes at depth 21; capacities 2 and 3 assert **truncation** explicitly |
+| lifecycle | executable (`lifecycleModel.js`) | **truncated at all three shipped capacities** — see below |
 
----
+### The blocker: `model_check_capacity_1_2_3` is GREEN and NOT PROVEN
 
-## 18. Every finding
+The gate's statement is that the commitment protocol **and the lifecycle** are model-checked
+**exhaustively** at capacity 1, 2 and 3. Its evidence is the exit code of
+`npm run test:engine -- ModelCheck`, which is 0.
 
-| ID | Severity | Owner | Status |
-|---|---|---|---|
-| **D-4** shadow composition | Blocking | **B1 — Ops + Commercial, Product + Fleet Eng, Ops** | **EXTERNALLY BLOCKED** — reclassified; not fixable here |
-| **D-5** Tier 0 decision path | Blocking | split | **PARTIALLY FIXED** — outbox + reconciler wired; coordinator **external** (B1), timer **in-repo** (D-9) |
-| **D-6** socket shard staging | Blocking | Phase 15 | **FIXED** — root cause, adversarial + live-DB verified, mutation-tested |
-| **D-7** rehearsal circularity | Blocking | Phase 15 | **FIXED** — ADR-34; no gate weakened |
-| **D-8** `SHARD_MIGRATE` undelivered | High | Phase 15 | **FIXED** by the D-5 wiring |
-| **D-9** timer handler map absent | Blocking | **Phase 5 (in repository)** | **REPORTED** — 16 expiry semantics unimplemented |
-| **D-10** composition gate path proxy | High | Phase 15 | **FIXED** — gate strengthened |
-| **D-11** duplicate-writer test could not fail | High | this work | **FIXED** — found by the §19 hostile pass |
-| **D-12** 100/279 modules unreachable | Informational | — | **MEASURED** — reframes D-4/D-5 |
-| **D-13** fail-open in the D-6 gate | **Blocking (had it shipped)** | this work | **FIXED** — found by the §19 hostile pass |
+That command **cannot establish the statement**, and after P15-E5 the suite says so in its own
+assertions rather than in a flag that could not move:
 
-Each carries its reproduction, root cause, fix, regression test, adversarial test and live
-verification in the section above.
+- the lifecycle checker is depth-truncated at capacity 1, 2 **and** 3 within a test lane's budget;
+- `lifecycle.tla` has never been run under TLC;
+- the commitment checker closes only at capacity 1, and `formal/README.md` already recorded that
+  capacity 2 (as checked in) and capacity 3 remain open under TLC.
 
----
+So **no exhaustive check of the lifecycle exists at any capacity, by either checker**, and the
+commitment half is exhaustive only at capacity 1.
 
-## 19. Remaining blockers
+**This gate was not flipped to RED by this pass, and that is a decision, not an oversight.** What is
+missing is **compute** — `formal/README.md`'s own words, *"Both need more compute than a workstation
+session, not a different specification"* — which is an evidence dependency of exactly the class the
+mandate says to classify rather than code around. Making the suite exit 1 would manufacture a
+permanent red for a fact about available hardware, and the mandate is explicit: *do not keep
+modifying code simply because external evidence is missing.*
 
-**In-repository, not fixed:**
-
-1. **D-9** — the timer worker's sixteen §4.3/§4.2 expiry handlers. Phase 5-owned. Blocks
-   `engine_decision_path_wired` and, transitively, durable timer supervision.
-
-**Externally blocked — no commit in this repository closes these:**
-
-2. **D-5 (remainder) / D-4** — the Tier 0 decision path and the shadow worker both require a
-   routing engine. **B1 has selected none**, blocked on D1, D3 and D8.
-3. **B8 calibration** — 39 Safety-class values.
-4. **Production observation windows** — shadow agreement (14 days), soak (72 h), simulator
-   fidelity, §26 invariants.
-5. **TLC at capacity 3** and at checked-in capacity 2.
+**It is therefore recorded as a blocker (§22, B-M) and in §21's NOT PROVEN list, and the gate's row
+is flagged for the release owner rather than silently redefined.** Before this pass the gap was
+invisible: the flag could not be false, the suite asserted it, and the gate was green. It is now
+visible in the repository, in the suite's assertions, in `formal/README.md`, and here.
 
 ---
 
-## 20. Final verdict
+## 15. Live PostgreSQL verification — 288 checks
 
-### PHASE 15 — BLOCKED. PHASE 16 — NOT READY.
+Disposable **PostgreSQL 18.3** cluster on port **55439**, built from the installed binaries into
+the scratchpad. **Never Neon, never the user's 5432 cluster** — every harness refuses both by name.
 
-**Outcome B.** Not because a test failed, and not because a gate is arithmetically short. The
-substantive reason:
+```
+tables before: 0
+APPLIED 27 migrations from empty   FAILED: (none)
+tables after: 74
+AuditEvent_event_type_known → CHECK ("eventType" = ANY (ARRAY[…, 'CUTOVER_SHARD_ENABLED', 'CUTOVER_SHARD_ROLLED_BACK']))
+```
 
-> The real RobotX engine **cannot be composed**. Its decision path terminates in a routing
-> engine that has not been selected, and selecting one is an Operations, Product and
-> Commercial decision that Phase 15 does not own. A worker exists for every stage of that
-> path; a producer exists for almost none of the leaves.
-
-Against §24's success criterion, honestly:
-
-| Criterion | Status |
+| Harness | Checks |
 |---|---|
-| composed | ❌ — externally blocked (B1/D1/D3/D8), plus D-9 in repository |
-| safely enabled | ✅ — every refusal verified by attack; the gate set is now satisfiable in principle (D-7) |
-| correctly staged per shard | ✅ — **D-6 fixed**, adversarially and live-DB verified |
-| observed | ⚠ — the invariant worker runs; production traffic is external |
-| shadowed | ❌ — cannot start the clock (D-4) |
-| rolled back | ✅ — the rehearsal is now performable and its evidence checkable (D-7) |
-| audited | ✅ — purpose, environment and set-aside gates on every action |
+| `tools/verify/phase15VersionInForce.js` — **NEW** | **19 / 19** |
+| `tools/verify/phase15EvidenceBinding.js` (pass 2) | 17 / 17 |
+| `tools/verify/phase15CurrentTree.js` (pass 1) | 32 / 32 |
+| `tools/verify/phase15LiveDatabase.js` | 12 / 12 |
+| `tools/verify/phase5ExpirySemantics.js` | 102 / 102 |
+| `tools/verify/phase5LiveDatabase.js` | 106 / 106 |
+| **total** | **288 / 288** |
 
-**Does the Phase 15 plan permit closure with these external dependencies?** No. The completion
-criteria are "**every** §24 gate green" and "every §26 invariant `ENFORCED` in nominal
-operation". `engine_decision_path_wired` is red, four PRODUCTION gates and two ORGANISATIONAL
-gates are `NOT_EVALUATED`, and none can be closed by a build. The criteria were not
-reinterpreted to reach a different answer.
+### The new harness, group by group
 
-**What changed that matters.** D-6 and D-7 are genuinely closed at the root. D-8 was a live
-defect nobody had found. And the largest remaining blocker moved from a task list to a
-dependency register — which is worse news, arrived at honestly, and is the difference between
-a phase that is behind and a phase that is waiting on someone else.
+| Group | Checks | What it establishes |
+|---|---|---|
+| A — P15-E2 | 9 | the divergent fixture is built for real (v_n pinned, v_n+1 unpinned); the shipped reader returns the **pinned** payload; **the pre-fix producer returns the candidate, reproduced against the same database**; the rollback refuses rather than superseding; nothing was published or promoted by the refused pass; once an operator resolves the candidate the rollback fires and carries the in-force set forward; a bare payload and an unpinned nothing each refuse by their own code |
+| B — P15-E1 / P15-E4 | 7 | the honest fixture authorises, so every refusal is about the window; NaN, Infinity, string endpoints and a not-yet-closed window each refuse **all four** PRODUCTION gates by name; the honest short window still refuses for *its own* reason |
+| C — P15-E3 | 3 | a NaN window is refused; the pre-declaration ordering refusal still fires on a real window; a healthy window still PROCEEDs |
+
+### Constraints and triggers made to fire
+
+Judged on SQLSTATE and on the row being absent afterwards, never on message text — Prisma embeds
+the calling file's own source in its errors, and a text match reports PASS for a probe that never
+reached the database.
+
+Carried and re-run: `ShardMembership_one_current_per_agent` (23505),
+`ShardMembership_migration_advances_epoch` (23514), `ShardMembership_move_changes_shard` (23514),
+`Shard_regionId_key` (23505), `Outbox_idempotencyKey_key` (23505), `Outbox_fence_scope_columns`
+(23514), `AuditEvent_event_type_known` (raw insert of an undeclared type still refused).
+
+**Fired by this pass, unplanned:** `ConfigVersion is immutable once published (§22.1 rule 3)` —
+a `P0001` from the row-level trigger, raised when this pass's first reproduction script tried to
+`DELETE` a published configuration version to build a clean fixture. The fixture was rewritten to
+build forward instead, which is the discipline §22.1 rule 3 exists to impose. A Phase-1 protection
+doing its job against a Phase-15 tool.
+
+Also exercised through the shipped modules rather than by probe: `checkSafetyApproval`'s **S2**
+(two distinct approver identities) and **S3** (every approval records an identity and a time), and
+the publish validator's **V9** (combined degraded energy conservatism against
+`energy.max_combined_conservatism`) — all three refused this pass's fixtures until they were made
+admissible, which is §22.1 rule 5 rejecting invalid configuration at publish rather than at
+decision time.
+
+### What live execution found that a green suite did not
+
+**P15-E2 could not have been found any other way.** Its two candidate rows differ only in *which
+row a query selects*, and telling one row from another requires both to exist in a database. 7 001
+tests were green over a composition root that handed the one automated writer in the system the
+wrong configuration version — and would have pinned it.
+
+That is the **seventh consecutive phase** in which live execution found what the store model could
+not.
+
+---
+
+## 16. Mutation results — 10 / 12 caught, 2 survivors proven benign
+
+Each protection was removed from the source, the tests that guard it were required to **fail**, the
+file was restored byte-for-byte, and they were required to pass again.
+
+| | Protection removed | Verdict |
+|---|---|---|
+| M1 | the PRODUCTION window endpoints must be finite (P15-E1) | **CAUGHT** |
+| M2 | a PRODUCTION window may not close in the future (P15-E1) | **CAUGHT** |
+| M3 | the minimum-duration bound itself | **CAUGHT** |
+| M4 | `guardrails.assess()` requires finite endpoints (P15-E3) | **CAUGHT** |
+| M5 | the `versionInForce` reading must say which version it is (P15-E2) | **CAUGHT** |
+| M6 | a rollback may not supersede an unpinned version (P15-E2) | **CAUGHT** |
+| M7 | `versionInForceReader` resolves the **pin**, not the highest version (P15-E2) | **CAUGHT** |
+| M8 | the age bound is mandatory — pass 2's P15-C1, re-checked after this pass edited the file | **CAUGHT** |
+| M9 | the source-digest binding is mandatory | **survived — benign, proven** |
+| M10 | a minimum-observation bound must be a positive duration (P15-E4) | **CAUGHT** |
+| M11 | the duration comparison rejects a non-finite bound (P15-E4) | **survived — benign, proven** |
+| M12 | `resolveMinObservationMs` omits a non-positive register value (P15-E4) | **CAUGHT** |
+
+**No surviving mutation without a documented explanation, and both explanations are measured
+rather than argued.**
+
+**M9.** Removing `if (!nonEmpty(at.sourceDigest))` does not open a hole; it changes a refusal
+*code*. With the guard removed the record is still refused, by the comparison two lines down:
+
+```
+[M9 APPLIED] digest omitted           refused [SOURCE_DIGEST_MISMATCH]
+[M9 APPLIED] no build digest either   refused [SOURCE_DIGEST_MISMATCH]
+```
+
+The guard is a diagnostic refinement over a comparison that already fails closed — and
+`stage.authoriseEnable()` refuses a missing digest up front with `EVIDENCE_CONTEXT_INCOMPLETE`, so
+it is covered three ways.
+
+**M11.** Reverting the comparison's `Number.isFinite` to `typeof` is behaviour-preserving because
+**M10's guard already refuses a non-finite bound** for every gate the register bounds:
+
+```
+[M11 APPLIED] soak, NaN bound          refused [OBSERVATION_WINDOW_REQUIRED]
+[M11 APPLIED] soak, 0 bound            refused [OBSERVATION_WINDOW_REQUIRED]
+[M11 APPLIED] shadow, NaN bound        refused [OBSERVATION_WINDOW_REQUIRED]
+[M11 APPLIED] invariants, NaN bound    admitted   ← identical unmutated: that gate has no bound
+```
+
+The only difference it can make is to a caller's *optional extra strictness* on a gate the register
+does not bound — a direction that cannot weaken any declared requirement.
+
+Every mutation was applied to a real file and restored from an in-memory copy; the tree was verified
+clean afterwards and the baseline re-run green.
+
+---
+
+## 17. Test integrity
+
+**No test was deleted, skipped, weakened, retargeted or threshold-relaxed.** Two suites were
+changed and both are named individually and are strictly stronger.
+
+### `lifecycleModelCheck.test.js` — CORRECTED AT ITS SOURCE
+
+**What it did.** `expect({ capacity, exhaustive: result.exhaustive }).toEqual({ capacity, exhaustive: true })`
+at all three capacities, under a header stating depth was chosen "to keep every run exhaustive".
+
+**Why that was wrong.** The flag could not be false: it was set by the state cap alone, and the
+depth bound was what actually stopped every run. The assertion was structurally incapable of
+failing — the D-11 shape, on a blocking §24 gate.
+
+**How the replacement is stronger.** It asserts what the run establishes — `depthTruncated: true`,
+`stateCapExceeded: false`, `maxDepthReached === depth`, no violation, the state floors — and adds
+three tests that could not exist before: one proving each completeness flag can independently be
+false and that `exhaustive: true` is reachable at all (it is, since `MAX_VERSION`); one pinning the
+version bound's soundness and that the shipped numbers are unchanged by it; and one pinning, in the
+repository rather than only in a closure document, that **no exhaustive lifecycle check exists at
+any shipped capacity**. If a future change ever closes one of these searches, the suite **fails** —
+a stronger result must be re-declared deliberately rather than absorbed silently.
+
+### `phase15CurrentTreeRemediation.test.js` — fixture updated to a stricter contract
+
+Pass 1's `publisher()` helper returned a bare payload for `versionInForce`. Under P15-E2's contract
+that is now refused, so the fixture states which version it describes. **A field was added; no
+assertion was relaxed.** Its "with no version in force it refuses" test is unchanged and still
+passes.
+
+### `tools/verify/phase15CurrentTree.js` — fixture strengthened
+
+Group B's publisher fixture copied `findFirst({ orderBy: { version: "desc" } })` **from the
+composition root** — so it reproduced the defect rather than catching it, which is exactly why a
+32/32 harness could be green over P15-E2. It now calls the shipped
+`rollbackPublisher.versionInForceReader`, which makes the check about production rather than about a
+fixture. Group B6's fixture was made well-formed as a *reading* so that its refusal is about the
+action being an ENABLE, not about the reading — a fixture refused for the wrong reason proves
+nothing about the rule under test.
+
+### The new suite
+
+`tests/engine/phase15ObservationWindowRemediation.test.js` — **52 tests**: 18 for P15-E1, 14 for P15-E2, 12 for P15-E4, 8 for P15-E3.
+
+---
+
+## 18. Cross-phase integrity
+
+**Phase 0–5 core modules and the schema: untouched.**
+
+```
+$ git status --porcelain -- Backend/src/db Backend/src/engine/{commitment,dispatch,domain,shard} \
+                            Backend/prisma/schema.prisma
+(empty)
+```
+
+**Every file this pass changed, with its owner:**
+
+| File | Owner | Change |
+|---|---|---|
+| `src/engine/cutover/evidence.js` | Phase 15 | P15-E1, P15-E4 |
+| `src/engine/cutover/guardrails.js` | Phase 15 | P15-E3 |
+| `src/engine/cutover/rollbackPublisher.js` | Phase 15 | P15-E2 — the production reader, two refusals |
+| `server.js` | Phase 15 (composition root) | P15-E2 — reads the version in force |
+| `tests/engine/helpers/lifecycleModel.js` | **Phase 15** (`formal/README.md` names the owner) | P15-E5 — completeness reporting + `MAX_VERSION` |
+| `tests/engine/lifecycleModelCheck.test.js` | Phase 15 | P15-E5 — corrected at its source |
+| `tests/engine/phase15CurrentTreeRemediation.test.js` | Phase 15 | fixture updated to the stricter contract |
+| `tools/verify/phase15CurrentTree.js` | Phase 15 | fixture calls the shipped reader |
+| `tests/engine/phase15ObservationWindowRemediation.test.js` | Phase 15 | **NEW** — **52** tests (this row said 40; §17 said 52; the measured count is 52 — §23) |
+| `tools/verify/phase15VersionInForce.js` | Phase 15 | **NEW** — 19 live checks |
+| `docs/runbooks/rollback.md` | Phase 15 | P15-E2 — the new refusal and its remedy |
+| `docs/runbooks/cutover.md` | Phase 15 | P15-E6 — two false claims corrected |
+| `formal/README.md` | Phase 15 (its own note names Phase 15) | P15-E5 recorded at its source |
+
+**No file owned by Phases 0–14 was modified by this pass.** No migration was added or edited. No
+gate was weakened, no threshold moved, no tolerance widened, no `NOT_EVALUATED` converted to `PASS`.
+
+**Carried from pass 2, unchanged and not touched here:** `src/engine/cutover/{stage,gates,store}.js`,
+`src/controllers/health.controller.js`, `tools/release/verdict.js`,
+`src/engine/observability/auditStream.js` (Phase 12, +30/−0, justified in pass 2 §16), the
+`20260823120000_audit_stream_admits_the_cutover_events` migration, `tests/engine/observabilitySchema.test.js`,
+`tests/gates/checkCalibration.test.js`, `tools/verify/phase15EvidenceBinding.js`,
+`tests/engine/phase15EvidenceBindingRemediation.test.js`.
+
+`Backend/prisma/seed.js` and `Backend/docs/release-evidence.json` show as modified. Both were
+already modified when this pass began and neither was touched by it.
+
+**Phase 5's contracts** — `timers.register`, `timers.resolve`, `transitions.apply`,
+`expiryActions.handlers` — unchanged, and its two harnesses pass 102/102 and 106/106 against a fresh
+database. **Phase 12's audit contract, Phase 13's leadership/fencing and Phase 14's
+security/privacy** were not modified; their suites pass.
+
+**Phase 16 contamination: CLEAN.** No Tier 2 mechanism enabled; `tierTwoAtShipState` refuses a
+cutover with any Tier 2 mechanism live, including under `PURPOSE.REHEARSAL`.
+
+---
+
+## 19. Final measured results
+
+**Pass 3 left this section as a placeholder and closed on it.** Every number below was
+measured by the verification pass (§23–§26) on the settled tree, on a disposable
+PostgreSQL 18.3 cluster built from empty. Nothing here is inherited from a report and
+nothing is predicted.
+
+### 19.1 Tests
+
+```
+$ npx jest --runInBand --forceExit          # re-run after the last source change, on digest 801ed1df
+Test Suites: 159 passed, 159 total
+Tests:       7061 passed, 7061 total
+Snapshots:   0 total
+Time:        323.961 s
+exit 0
+```
+
+| | Pass-3 arrival baseline | Measured now |
+|---|---:|---:|
+| Test suites | 158 | **159** |
+| Tests | 7 001 | **7 061** |
+| Failures | 0 | **0** |
+| Skips | 0 | **0** |
+
+The delta is +1 suite / +60 tests: `phase15ObservationWindowRemediation.test.js` (**52**,
+pass 3's) and **5** added by the verification pass for blocker B-M, plus 3 net from pass 3's
+rewrite of `lifecycleModelCheck.test.js`.
+
+### 19.2 Build gates
+
+```
+$ npm run gates                                              exit 1
+gate: tier-dependencies          PASS — 285 modules, 422 governed import edges
+gate: parameter-register         PASS — 189 engine modules against 242 registered parameters
+gate: tenets                     PASS — 282 modules
+gate: identity-isolation         PASS — 16 modules in the cost/decision-record scopes
+gate: reconstruction-equivalence PASS — 3 corpus decisions, byte for byte
+gate: legacy-retirement          PASS — 4 retired modules absent, 340 files
+gate: column-generation          PASS — NOT_REQUIRED
+gate: composition-root           FAIL — 1 violation across 18 registered workers:
+                                        coordinator [LEADER_ONLY_NOT_COMPOSABLE] — B1, EXTERNAL
+```
+
+**7 PASS, 1 FAIL.** The one failure is B1 and no commit in this repository closes it.
+
+### 19.3 Standing gates — re-run, nothing manufactured
+
+```
+$ node tools/gates/checkCalibration.js                       exit 1
+FAIL — 39 blocking finding(s).
+242 entries: 52 DERIVED, 152 PROVISIONAL, 38 UNCALIBRATED. 54 are Safety-class.
+
+$ node tools/simFidelity/validate.js                         exit 1
+7 models NOT_MEASURED, 6 safety-relevant. No study was supplied.
+
+$ node tools/routing/b1Readiness.js                          OVERALL: BLOCKED
+steps 1, 3, 4, 5 blocked by D1, D3, D8. No engine selected, ranked or recommended.
+```
+
+All three are **identical to arrival**. No value was manufactured, promoted or defaulted.
+
+### 19.4 Live PostgreSQL — 288 checks
+
+Disposable **PostgreSQL 18.3**, port **55441**, built from the installed binaries into the
+scratchpad and destroyed afterwards. Never Neon, never the user's 5432 cluster; every harness
+refuses both by name.
+
+```
+tables before: 0
+APPLIED 27 migrations from empty      FAILED: (none)
+tables after: 75  (74 application tables + _prisma_migrations)
+AuditEvent_event_type_known admits CUTOVER_SHARD_ENABLED and CUTOVER_SHARD_ROLLED_BACK
+```
+
+| Harness | Checks |
+|---|---|
+| `tools/verify/phase15VersionInForce.js` | **19 / 19** |
+| `tools/verify/phase15EvidenceBinding.js` | **17 / 17** |
+| `tools/verify/phase15CurrentTree.js` | **32 / 32** |
+| `tools/verify/phase15LiveDatabase.js` | **12 / 12** |
+| `tools/verify/phase5ExpirySemantics.js` | **102 / 102** |
+| `tools/verify/phase5LiveDatabase.js` | **106 / 106** |
+| **total** | **288 / 288** |
+
+*(Pass 3 reported "74 tables". The measured count is 75 including `_prisma_migrations`;
+the two reconcile and neither is wrong — the unit is now stated.)*
+
+### 19.5 The §24 release table — collected on this tree
+
+```
+$ npm run release:gates                                      exit 1
+source digest 801ed1df30791c13…   evidence: docs/release-evidence.json   attestations: (none)
+16 green, 1 red, 7 not evaluated
+
+RED            engine_decision_path_wired          BUILD           execution plan, Phase 15   [B1]
+
+NOT_EVALUATED  calibration_safety_derived          ORGANISATIONAL  §22.4     [B8]
+NOT_EVALUATED  invariants_enforced                 PRODUCTION      §26       [B-P]
+NOT_EVALUATED  simulator_fidelity                  PRODUCTION      §24.4     [B-P]
+NOT_EVALUATED  soak                                PRODUCTION      §24.6     [B-P]
+NOT_EVALUATED  shadow_agreement                    PRODUCTION      §21.6     [B-P]
+NOT_EVALUATED  safety_case_assembled               ORGANISATIONAL  §24.7     [B-O]
+NOT_EVALUATED  rollback_rehearsed                  ORGANISATIONAL  exec plan [B-O]
+
+GREEN          model_check_capacity_1_2_3          SUITE           §24.2
+  [NOT PROVEN] the discharging suite asserts `exhaustive: false` for the lifecycle at
+  capacities 1, 2 and 3, and `lifecycle.tla` has never been run under TLC; the commitment
+  half is exhaustive only at capacity 1. A passing exit code from this command therefore
+  does not establish the gate's statement.
+
+RELEASE: BLOCKED — 8 blocking gate(s) are not green.
+```
+
+**16 / 1 / 7 — identical to the arrival baseline**, on a freshly collected evidence set bound
+to this tree's digest. The one change is the `[NOT PROVEN]` line, which is new this pass
+(§24, P15-F2) and is the first time the release table has said out loud that one of its green
+rows is not a proof.
+
+*(An earlier collection during this pass returned 0 green / 17 red / 7 not evaluated. That was
+not a regression: the tree was edited while the collector was running, and every record was
+correctly voided with `SOURCE_DIGEST_MISMATCH`. The digest binding doing its job, observed by
+accident.)*
+
+### 19.6 Source digest
+
+```
+$ node tools/release/sourceDigest.js
+at pass-3 arrival   134ebc0d1d6cd047b5ebb62de9808489274520c9c9607795a9ef0d9e43373a2c  (562 files)
+after pass 3        4b45415aab0d78505603b86c9344cd32b0845592c9a55ff24f887df0174cf412  (564 files)
+at closure          see §26.5
+```
+
+---
+
+## 20. Remaining blockers
+
+| ID | Description | Owner | Class | Why no commit here closes it | What is required |
+|---|---|---|---|---|---|
+| **B1** | No routing engine selected | Ops + Commercial (D1), Product + Fleet Eng (D3), Ops (D8) | **EXTERNAL** | Selecting an engine is an Operations, Product and Commercial decision. `coordinator` and `shadow` cannot compose; `gate:composition` and `engine_decision_path_wired` stay red. | An authoritative operating region as GeoJSON; a real fleet speed model over roadClass/gradient/surface/payload/congestion/weather; an extract vintage, cadence and re-contraction budget. Then B1 steps 1, 3, 4 and the Step 5 ADR. |
+| **B8** | 39 Safety-class parameters not `DERIVED` | §22.4's calibration owner | **EXTERNAL** | Requires measurement, certification and named-owner attestation. §22.4 itself: values that *"require data the fleet does not yet produce and cannot produce before it operates."* | Per-class rated-mass certification; the operated CA's revocation latency; measured p99 to the consensus store; a safety decision per degraded mode; and 35 more, each named in the gate output. |
+| **B-P** | 4 PRODUCTION gates `NOT_EVALUATED` — `invariants_enforced`, `simulator_fidelity`, `soak`, `shadow_agreement` | — | **OBSERVATION** | Require a fleet that has operated. The 14-day shadow window cannot *begin* until B1. | Production traffic; a 72 h soak; a one-sided fidelity study against realised distributions; a zero-violation invariant SLI over a window. |
+| **B-O** | 3 ORGANISATIONAL gates `NOT_EVALUATED` — `calibration_safety_derived`, `safety_case_assembled`, `rollback_rehearsed` | named humans | **EVIDENCE** | Require named people to have acted, with a corroborating run that exited 0 where the gate declares one. `gate:calibration` exits 1. | Two distinct signatures per gate; a real rehearsal record carrying all six §5 steps and `automaticRollbackFired`. |
+| **B-M** *(sharpened in §24: the gate is not merely unproven — its own discharging suite asserts the negation of its statement. Repository half closed there; compute half stands.)* | **`model_check_capacity_1_2_3` is GREEN and NOT PROVEN** — no exhaustive lifecycle check exists at any capacity, by either checker; commitment is exhaustive only at capacity 1 | Release owner + compute | **EVIDENCE (compute)** · **found by this pass** | A completed TLC run on `lifecycle.tla`, and on `commitment.tla` at capacities 2 and 3, needs more compute than a workstation session. Not a different specification and not more code. | Either the compute to close those runs, or an explicit decision by the release owner about what this gate's statement means given a bounded executable checker. |
+| **X3** | No `TASK` timer producer; §4.2's half of §4.5 unreachable | — | **SPECIFICATION** | §4.2 contains no Task transition table. Inventing one is not remediation. | A §4.2 transition table in the frozen specification, or an explicit decision to scope the gate to §4.3. |
+| **X1** | §17.4 escalation ladder unimplemented | REMEDIAL PHASE T1-04 | **FUTURE PHASE** | Not Phase 15's deliverable. | T1-04. |
+
+### Blocker taxonomy
+
+| Class | Items |
+|---|---|
+| **In-repository, Phase-15-owned** | ~~**none remaining**~~ — **this claim was false when pass 3 made it.** The verification pass found **P15-F1** (open), **P15-F2/B-M's repository half** (closed) and **P15-F3** (closed). See §24. The claim has now been made and falsified in three consecutive passes. |
+| **In-repository, reported not fixed** | `app.locals.releaseEvidence` has no producer (P15-E6, fails closed, §3); `blockers()` ignores `unknownEvidence` (§7, not permissive); pass 2's **X-C1** (Phase 12) and **X-C2** (unreachable) |
+| **External** | B1, B8 |
+| **Observation** | B-P — 4 PRODUCTION gates |
+| **Evidence** | B-O — 3 ORGANISATIONAL gates; **B-M — model checking compute** |
+| **Specification** | X3 |
+| **Future-phase** | X1 (T1-04); Tier 2 enablement (Phase 16) |
+
+---
+
+## 21. Explicitly NOT PROVEN
+
+Stated plainly, because a closure that omits this section is not one.
+
+1. **No shard has ever been taken live by this machinery.** What is proven is that the authority
+   refuses every incomplete, stale, malformed or unbounded request put to it, and that a complete
+   one produces an audit event a real database accepts and a real controller acts on.
+2. **The automatic rollback has never fired in production.** It is proven end to end against a live
+   database — a real breach, a real `declarationFor` read, a real published binding — and that is a
+   harness, not a fleet. **New this pass:** it is also proven that it now refuses to fire in a state
+   where firing would put an unapproved configuration into force, and that refusal leaves the shard
+   live until a human acts.
+3. **The lifecycle has never been model-checked exhaustively, at any capacity, by any checker** —
+   and until this pass it reported that it had. The commitment protocol is exhaustive at capacity 1
+   only. **`model_check_capacity_1_2_3` is GREEN and its statement is not established** (§14, B-M).
+4. **§20.1 has not been measured as a whole-round p99 on representative hardware.** The three scale
+   gates are the `test:scale` lane's own measurements on a workstation; that is what those gates
+   are, and it is not the same claim.
+5. **No TLC run was performed by this pass.** `lifecycle.tla` has never been run under TLC at all.
+6. **The seven `TASK` expiry handlers have never fired and cannot** (X3). TASK-entity timers in the
+   live store after a full harness run: **0**.
+7. **`ESCALATION_LADDER` has never relaxed anything** (X1, T1-04).
+8. **No production observation exists for any of the 4 PRODUCTION gates.** The 14-day shadow window
+   has not begun and cannot begin until B1.
+9. **The 39 Safety-class calibration findings are unchanged and no value was manufactured,
+   promoted or defaulted.**
+10. **Nothing here proves the engine assigns work.** `coordinator.worker` remains uncomposable. A
+    shard with `ENGINE_ENABLED=true` today would supervise deadlines correctly on Legs that nothing
+    creates.
+11. **`GET /api/health/cutover` reports an empty release table and always will** until
+    `app.locals.releaseEvidence` has a producer (P15-E6). It fails closed.
+12. **No production environment was used.** All evidence is from a disposable local PostgreSQL 18.3
+    instance. No soak, no multi-shard run, no real fleet.
+13. **X-C1 is reported, not fixed** (Phase 12 — `auditStream.link()` turns an absent instant into an
+    Invalid Date). **X-C2 is reported, not fixed** (unreachable after P15-C2).
+14. **`prisma migrate diff` still reports the Phase 1 drift.** Not re-investigated here.
+15. **The 24-gate table has never been green**, and 7 of its rows cannot be closed by any commit in
+    this repository — plus one row (B-M) that is green and should not be read as proven.
+
+---
+
+## 22. Closure decision
+
+# PHASE 15 — BLOCKED
+
+**Outcome B.** Every Phase-15-owned, in-repository blocker this pass could find is closed. Six were
+found on a tree the previous pass had declared free of them, and six are fixed — each reproduced
+before the fix, attacked after it, mutation-tested, and, where the defect lived in a row rather than
+a branch, verified against a real PostgreSQL instance driving the shipped composition.
+
+Phase 15 is **not** closed, and repository-completeness is not closure:
+
+| Blocker | Class |
+|---|---|
+| **B1** — no routing engine selected | EXTERNAL |
+| **B8** — 39 Safety-class parameters not DERIVED | EXTERNAL |
+| **B-P** — 4 PRODUCTION gates | OBSERVATION |
+| **B-O** — 3 ORGANISATIONAL gates | EVIDENCE |
+| **B-M** — no exhaustive state-machine check exists | EVIDENCE (compute) — *new* |
+| **X3** — §4.2 has no transition table | SPECIFICATION |
+
+**Nothing was invented.** No calibration value, no routing engine, no observation window, no
+attestation, no TASK timer semantics, no formal-verification evidence. No gate was weakened and no
+threshold moved.
+
+### Phase 16 — NOT READY, and no limited mode is available
+
+§1.8 rule 3 enables Tier 2 mechanisms one at a time **after** the cutover. There has been no
+cutover, and there cannot be one while `coordinator` is uncomposable. There is no limited mode in
+which Phase 16 can safely proceed: every Tier 2 mechanism it would enable sits downstream of the
+decision path B1 blocks, and `tierTwoAtShipState` refuses a cutover with any of them live —
+by test, not by assumption.
+
+### Recommendation
+
+1. **B1 and B8 remain the whole of the critical path.** Both are decisions, not code.
+2. **B-M is new and is the cheapest of the remaining blockers to move** — it needs compute, not
+   decisions. A completed TLC run on `lifecycle.tla` would close the half of
+   `model_check_capacity_1_2_3` that has never been checked at all.
+3. **T1-04** (§17.4's escalation ladder) is the next *remedial* phase and is independent of both.
+4. **X-C1** should be routed to Phase 12's owner.
+5. **On whether a fourth pass is worthwhile.** Pass 2 recommended against a third, on the grounds
+   that "the marginal finding is getting deeper and rarer". This pass found six, two of them
+   blocking-permissive at the release authority and one that made a green §24 gate's central claim
+   unachievable. The marginal finding was neither rare nor deep — **P15-E1 and P15-E3 were one
+   `grep` for the pattern pass 2 had itself written down**, and P15-E5 was sitting in a file
+   `formal/README.md` had explicitly assigned to Phase 15 and named the defect in.
+
+   So the recommendation is not "audit Phase 15 again". It is: **when a pass names a defect shape,
+   sweep the tree for that shape before closing.** Pass 2's two sentences — the `typeof` off switch,
+   and producer/consumer agreement not being evidence — are each a mechanical search, and each of
+   them was still finding defects in Phase 15's own files a day later. The same two searches across
+   the other phases' fail-closed paths is worth more than a fourth pass here.
+
+---
+
+# PART II — INDEPENDENT VERIFICATION OF PASS 3
+
+**Date:** 2026-08-25 · **Mandate:** zero-trust re-derivation — *"Do NOT trust any previous
+verdict. Re-derive it from the current tree."*
+
+Everything above this line is pass 3's own account of its work. Everything below is a
+separate exercise that trusted none of it, re-measured every claim, re-attacked every fix
+with probes written for this purpose rather than borrowed from pass 3's suites, and looked
+for what pass 3 missed.
+
+---
+
+## 23. Pass 3's claims, re-derived
+
+### 23.1 The six fixes are real, and they are at the authority boundary
+
+Each was located in the shipped module, not in a test, and then attacked independently. The
+probe used for E1/E3/E4 is 119 admissions built from the mandate's own malformed-value matrix
+(§4, §6, §7) and shares no code with `phase15ObservationWindowRemediation.test.js`.
+
+**The probe was made to fail first.** Its first run refused all 119 probes *including the
+honest controls*, which proves nothing — a fixture refused for the wrong reason is not
+evidence. The cause was a missing `producer` field (`SELF_ASSERTED`). Only once the honest
+controls were admitted did the refusals below mean anything.
+
+| | Verified how | Result |
+|---|---|---|
+| **E1** | 84 malformed endpoint shapes × 4 PRODUCTION gates: `NaN`, `±Infinity`, `undefined`, `null`, empty string, whitespace, numeric string, boolean, object, array, `MAX_VALUE`, `MIN_VALUE`, unsafe integers, negative and zero spans, fractional endpoints, a window wholly in the future, a window ending in the future, an absent `observation`, an absent `source` | **all 84 refused** |
+| **E1 controls** | honest 100-day and 73 h soak; honest 15-day shadow | **admitted** — and honest 71 h soak / 13-day shadow refused `OBSERVATION_WINDOW_TOO_SHORT`. The fix does not over-refuse. |
+| **E2** | live, 19/19, on a database built from empty — including the **pre-fix producer reproduced against the same rows** and the rollback firing correctly once the candidate is resolved | **holds** |
+| **E3** | honest 2 h window → `PROCEED`; 11 malformed endpoints → 8 throw, 3 `HOLD`; the pre-declaration and window-length rules still fire on real windows | **holds** |
+| **E4** | 12 caller-supplied bound shapes × 2 register-bounded gates | **11 of 12 refused — see P15-F1** |
+| **E5** | `MAX_VERSION` present and bounding; `check()` reports `exhaustive`, `depthTruncated`, `stateCapExceeded`, `maxDepthReached` separately; the shipped capacity-1 shape measured `exhaustive:false, depthTruncated:true` | **holds** |
+| **E6** | `grep` over `src/`, `server.js`, `tools/`: `app.locals.releaseEvidence` has **three readers** (`health.controller.js:319, 320, 341`) and **no producer anywhere** | **confirmed** |
+
+### 23.2 Three of pass 3's own numbers were wrong, and it could not have known
+
+Pass 3 wrote §19 as a placeholder — *"(filled in from the final run)"* — and closed without
+ever running it. Its narrative numbers were therefore never checked against a measurement.
+
+| Pass 3 said | Measured | Disposition |
+|---|---|---|
+| "158 → **160** suites" (§0) | **159** | corrected in §0; one suite file was added, not two |
+| new suite is "**40** tests" (§18) vs "**52** tests" (§17) | **52** | §18 corrected; §17 was right |
+| "**74** tables" (§15) | **75** incl. `_prisma_migrations` | reconciled, unit stated |
+
+None of these changes a verdict. They are recorded because a closure document whose numbers
+were never measured is the same class of defect this programme has spent four passes finding:
+**a claim that could not be false.**
+
+---
+
+## 24. New findings
+
+### P15-F1 — a caller may still weaken a release requirement, by stating a smaller number · **BLOCKING (permissive)** · **REPORTED, NOT FIXED**
+
+**P15-E4 closed the degenerate values and left the class open.** It refuses a bound of `0`,
+`NaN`, `±Infinity`, a string, `null` or `true`. It admits **any positive finite number**,
+however small, because nothing at the authority compares the caller's bound against the
+register's.
+
+Measured, against the shipped module:
+
+```
+register (authoritative):  release.soak_duration = 72 hours
+                           cutover.shadow_agreement_window = 14 days
+
+*** ADMITTED+PASS ***  soak: window = 2 000 ms, caller bound = 1 000 ms
+*** ADMITTED+PASS ***  soak: window = 1 ms,     caller bound = 0.5 ms
+*** ADMITTED+PASS ***  shadow_agreement: window = 1 000 ms, caller bound = 1 000 ms
+```
+
+A gate whose entire content is *"72 hours of production soak"* is discharged by a
+**one-second** window, by supplying `{ soak: 1000 }` in the request object.
+
+**This is not hypothetical — the repository already does it.** `tools/verify/phase15EvidenceBinding.js:162`
+supplies `soak: DAY` — **24 hours against a register value of 72** — and its 17/17 green
+includes a soak gate discharged against a bound a third of the required one. Nothing refuses
+it, because nothing compares it to anything.
+
+**Why P15-E4's own reasoning demands this too.** Pass 3 wrote that the bound *"is
+caller-supplied — `stage.authoriseEnable()` passes `request.minObservationMs` straight
+through — so the attack is a field in the request object."* That is exactly as true of `1000`
+as of `0`. The lesson pass 3 wrote for itself applies to its own fix: **a pass that names a
+defect shape and does not sweep for it has found one instance, not the class.**
+
+Traced to the authority: `stage.js:348` — `minObservationMs: source.minObservationMs` — with
+`stage.js:345` stating the intended contract in a comment, *"Resolved by the caller from the
+register"*, and nothing enforcing it. `tools/release/verdict.js:127` **does** resolve from the
+register, which is why the release table is not affected; the cutover authority is.
+
+**Reachability: latent.** `stage.authoriseEnable()` has **no production call site** — only
+`tools/verify/*` and tests. Same standing as P15-E3, which pass 3 fixed anyway on the
+principle *"a fail-open on a path nobody reaches today is a fail-open waiting for the caller
+that does."*
+
+**Why this pass reports rather than fixes it.** The correct fix removes the number from the
+caller: `authoriseEnable` should take the register accessor and call
+`evidence.resolveMinObservationMs()` itself, so the bound cannot be stated in a request at
+all. That changes the authority's request contract and touches six fixture builders across
+tests and harnesses. This pass had already measured what a contract change at this exact
+point costs (§24, P15-F2: 29 tests failing at their fixtures rather than on their subject),
+and a second such change, made late in a verification pass and verified only by the pass that
+made it, is how a remediation becomes the next pass's defect. **It is recorded with its
+reproduction, its owner and its patch rather than attempted in haste.**
+
+**Exact discharge.** In `stage.authoriseEnable()`, replace the pass-through with
+`evidence.resolveMinObservationMs(source.parameterValues)`, make `parameterValues` a required
+dependency (absent ⇒ `{}` ⇒ the two windowed gates refuse, which is the fail-closed
+direction), and update the six fixture builders to inject `service.loadRegister()`. Then
+mutation-test it by substituting a caller-supplied bound for the register's and requiring the
+suite to fail.
+
+---
+
+### P15-F2 / blocker B-M — a GREEN gate whose own evidence refutes it · **Repository-owned (evidence mapping)** · **ANNOTATED; algebra deliberately unchanged**
+
+The mandate asked whether B-M is *"a repository-owned implementation/evidence defect or a
+genuinely external computation/evidence dependency."* **It is both, and the halves have
+different owners.**
+
+`model_check_capacity_1_2_3` is a blocking §24.2 gate. Its statement:
+
+> The commitment protocol **and the lifecycle** are model-checked **exhaustively** at capacity
+> 1, 2 and 3 for every §24.2 safety and liveness property.
+
+Its evidence is the exit code of `npm run test:engine -- ModelCheck`. Measured: **exit 0, 2
+suites, 46 tests** — so the gate reads GREEN.
+
+**After P15-E5, that command asserts the negation of the gate's statement.** Measured in the
+discharging suite itself:
+
+```
+lifecycleModelCheck.test.js:101
+  expect({ capacity, exhaustive: result.exhaustive })
+    .toEqual({ capacity, exhaustive: false });          // capacities 1, 2 and 3
+
+lifecycleModelCheck.test.js:163
+  test("no exhaustive lifecycle model check exists at any shipped capacity — pinned, not implied")
+```
+
+and the suite's own header says it outright: *"This suite exits 0 and cannot establish that."*
+
+So this is **stronger than "GREEN and not established"**, which is how pass 3 recorded it. The
+repository holds, in writing and in passing assertions, the proof that the gate's central
+claim is false for the lifecycle at every shipped capacity — and the gate is green because the
+run that proves it exits 0. **A green gate whose own evidence refutes it is a failed safety
+mechanism, not a passing one.** That half is repository-owned and nothing external is needed
+to see it.
+
+**What was implemented, measured, and then not kept.** Suppressing the promotion to GREEN —
+the mandate's §8 option C, `NOT_EVALUATED` until an actual model check exists — was
+implemented first and measured:
+
+```
+passing run (exit 0)  -> NOT_EVALUATED  [promotion suppressed]
+failing run (exit 1)  -> RED            [refusals never suppressed]
+control gate, exit 0  -> GREEN          [no other gate affected]
+
+$ npx jest --selectProjects engine gates
+Test Suites: 5 failed, 131 passed      Tests: 29 failed, 6834 passed
+```
+
+Those 29 failures are **not** the change working as intended. They are fixtures: five suites
+build a hypothetical all-green table in order to verify *other* refusals — the guardrail
+declaration (P15-C2), the five refusals, ADR-34's purpose handling, the staging order — and a
+gate that can never be green makes the cutover authority permanently unexercisable, so they
+fail at their fixture rather than on their subject. The trade was **a status change on a
+cutover that B1 already blocks absolutely, paid for with the loss of verification of every
+other refusal the authority makes.** That is a worse system, not a more honest one.
+
+**What was kept.** The fact is now machine-readable on the gate row
+(`establishedByCommand: false` + `notEstablishedReason`), surfaced by `gates.evaluate()` as
+`notEstablished`, and printed by `verdict.js` against the row as `[NOT PROVEN] …`. The gate
+algebra is untouched, and the reason it is untouched is recorded in the code at the point of
+the decision rather than only here. **Five regression tests** pin it, including one asserting
+that no other gate carries the flag and one that re-derives the contradiction from the checker
+itself. Mutation **MA** (remove the flag) is caught.
+
+**Ownership, as the mandate asked:**
+
+| Half | Class | Owner | Discharge |
+|---|---|---|---|
+| The gate reported GREEN with no indication its command cannot establish it | **B — repository-owned evidence defect** | Phase 15 | **Done this pass** (annotation + 5 tests) |
+| No exhaustive model check exists for the lifecycle at any capacity | **G — formal/model-checking computation dependency** | Release owner + compute | A completed TLC run |
+
+**Can TLC be run here? No, and this was checked rather than assumed.** Java 20 is present.
+`lifecycle.tla` and `lifecycle_c{1,2,3}.cfg` are checked in and complete. **`tla2tools.jar` is
+not in the tree** — no `.jar` exists anywhere under the repository. `formal/README.md` records
+that Phase 3 *fetched* it from the network in 2026-08-15 and ran it against `commitment.tla`.
+Fetching a toolchain from an external host is not something this pass did on its own
+initiative, and **no TLC run was performed.** The exact discharge command is already recorded
+in `formal/README.md`:
+
+```
+java -jar tla2tools.jar -config lifecycle_c1.cfg -workers auto lifecycle.tla
+```
+
+**No result was fabricated, and the gate was not weakened, reddened or bypassed.**
+
+---
+
+### P15-F3 — every malformed `--max-age-hours` was refused except the one a shell produces · **Low** · **FIXED**
+
+`verdict.js` validated the age bound carefully and never saw the empty string. Line 198 read
+`argv[index + 1] ? argv[index + 1] : undefined` — a **truthiness** test that ran *before* the
+validator, so an empty value made the flag read as **absent** and the run silently took
+`DEFAULT_MAX_AGE_HOURS = 24`.
+
+Measured before:
+
+```
+--max-age-hours NaN       exit 2      --max-age-hours -1     exit 2
+--max-age-hours Infinity  exit 2      --max-age-hours 0      exit 1  (bound 0 — strict, correct)
+--max-age-hours banana    exit 2      --max-age-hours ""     exit 1  ← silently defaulted
+```
+
+The realistic producer is not a typo but a shell: `--max-age-hours "$MAX_AGE"` with `MAX_AGE`
+unset expands to exactly this, and an operator who intended a **stricter** bound gets 24 hours
+with no message. The distinction that matters is *"the flag is absent"* versus *"the flag was
+given a value I cannot use"*, and only the first may fall back to a default.
+
+**Fixed.** After: `""` and `"   "` and a trailing `--max-age-hours` with no value all exit 2;
+an absent flag still defaults; `0` and `720` still behave exactly as before.
+
+---
+
+## 25. Mutation results — 6 / 6 caught
+
+Each protection was removed from the shipped source, the guard that covers it was required to
+**fail**, the file was restored and byte-compared against an in-memory copy, and the guard was
+required to pass again. These are the verification pass's own mutations, run against the
+current tree.
+
+| | Protection removed | Guard | Verdict |
+|---|---|---|---|
+| **MA** | `establishedByCommand: false` — the B-M annotation (P15-F2) | `cutoverEvidence.test.js -t 'B-M'` | **CAUGHT** |
+| **MB** | PRODUCTION window endpoints must be finite (P15-E1) — reverted to `typeof` | `phase15ObservationWindowRemediation` | **CAUGHT** |
+| **MC** | the minimum-observation bound must be positive (P15-E4) — reverted to `typeof` | `phase15ObservationWindowRemediation` | **CAUGHT** |
+| **MD** | `guardrails.assess()` requires finite endpoints (P15-E3) — reverted to `typeof` | `phase15ObservationWindowRemediation` | **CAUGHT** |
+| **ME** | `versionInForceReader` resolves the **pin** (P15-E2) — substituted "latest published" for "in force" | `phase15VersionInForce.js`, **live DB** | **CAUGHT** |
+| **MF** | a rollback may not supersede an unpinned version (P15-E2) | `phase15VersionInForce.js`, **live DB** | **CAUGHT** |
+
+**No mutation survived.** ME and MF are the two the mandate asked for by name — *"mutate the
+lookup so that 'latest published' is deliberately substituted for 'in force' and prove the
+tests/gates catch it"* — and both were run against real rows in a real database, because that
+is the only place the two versions differ.
+
+All six guards were confirmed restored to their fixed form by content match after the run.
+
+---
+
+## 26. Final verification, and the closure decision
+
+### 26.1 Measured on the settled tree
+
+Everything in §19 was measured after all changes below were complete. Headline:
+
+```
+npx jest --runInBand --forceExit    159 suites, 7 061 tests, 0 failures, 0 skips, exit 0
+npm run gates                       7 PASS, 1 FAIL (composition-root — coordinator, B1)
+node tools/gates/checkCalibration.js   exit 1 — 39 findings, unchanged
+node tools/simFidelity/validate.js     exit 1 — 7 NOT_MEASURED, unchanged
+node tools/routing/b1Readiness.js      OVERALL: BLOCKED, unchanged
+live PostgreSQL 18.3                288 / 288 checks, 27 migrations from empty, 0 failures
+mutations                           6 / 6 caught, 0 survivors
+```
+
+### 26.2 What this pass changed
+
+| File | Owner | Change |
+|---|---|---|
+| `src/engine/cutover/gates.js` | Phase 15 | P15-F2 — the `[NOT PROVEN]` annotation, its reason, and the recorded decision not to change the algebra |
+| `tools/release/verdict.js` | Phase 15 | P15-F2 — prints the annotation; **P15-F3** — an empty flag value is refused |
+| `tests/engine/cutoverEvidence.test.js` | Phase 15 | **+5 tests** pinning P15-F2 |
+
+**No file owned by Phases 0–14 was modified. No migration was added or edited. No test was
+deleted, skipped, weakened or retargeted. No gate was weakened, no threshold moved, no
+`NOT_EVALUATED` converted to `PASS`.** The three source files pass 3 changed under `src/`
+(`evidence.js`, `guardrails.js`, `rollbackPublisher.js`) were mutated and restored, and were
+confirmed byte-identical to their pre-mutation state.
+
+### 26.3 Cross-phase integrity
+
+`Backend/src/db`, `src/engine/{commitment,dispatch,domain,shard}` and `prisma/schema.prisma`
+are untouched. Phase 5's two harnesses pass **102/102** and **106/106** against a database
+built from empty. Phase 12's audit contract, Phase 13's leadership/fencing and Phase 14's
+security/privacy were not modified and their suites pass. **Phase 16 contamination: clean.**
+
+### 26.4 Remaining blockers — unchanged in substance, one sharpened
+
+| ID | Class | Owner | Blocks Phase 16? |
+|---|---|---|---|
+| **B1** — no routing engine selected | EXTERNAL | Ops + Commercial (D1), Product + Fleet Eng (D3), Ops (D8) | **Yes, absolutely** |
+| **B8** — 39 Safety-class parameters not DERIVED | EXTERNAL | §22.4's calibration owner | Yes |
+| **B-P** — 4 PRODUCTION gates NOT_EVALUATED | OBSERVATION | needs an operating fleet | Yes |
+| **B-O** — 3 ORGANISATIONAL gates NOT_EVALUATED | EVIDENCE | named humans | Yes |
+| **B-M** — no exhaustive model check exists | **split: repository half CLOSED this pass; compute half EVIDENCE** | Release owner + compute | Yes |
+| **X3** — §4.2 has no transition table | SPECIFICATION | frozen-spec owner | No |
+| **P15-F1** — caller may state a weaker observation bound | ~~**IN-REPOSITORY, Phase-15-owned, OPEN**~~ → **CLOSED 2026-08-25, see Part III (§28–§35)** | Phase 15 | No (latent; no production caller) |
+
+**Is controlled or shadow execution still safe?** Shadow execution cannot start — the shadow
+worker cannot compose, for the same reason the coordinator cannot (B1). Controlled execution
+is refused by the authority itself while any blocking gate is not GREEN, and seventeen are
+not. **Nothing this pass found makes the current state less safe; P15-F1 is the one item that
+would become live the moment a production caller of `authoriseEnable` is written, and it must
+be closed before that caller exists.**
+
+### 26.5 Final source digest
+
+```
+$ node tools/release/sourceDigest.js
+801ed1df30791c13d697fca3892af220c2f4e666a402a2903329bf6d9143676c  (564 files)
+```
+
+---
+
+## 27. Closure decision
+
+# PHASE 15 — BLOCKED. PHASE 16 — NOT READY.
+
+The verdict is unchanged from four passes, and it is unchanged for the same reason: **the
+decision path terminates in a routing engine that B1 has not selected**, and selecting one is
+an Operations, Product and Commercial decision that no commit in this repository makes.
+
+What this pass adds is not a different verdict but a more honest basis for it:
+
+1. **Pass 3's six fixes are real.** Five were verified at the authority boundary against
+   probes that share no code with pass 3's tests; the sixth (E2) was verified live, and both
+   of its mutations were caught against real rows.
+2. **Pass 3 closed on an unmeasured §19.** It has now been measured, and three of its
+   narrative numbers were wrong. None changed a verdict; all are corrected in place with the
+   correction marked rather than silently applied.
+3. **Two new Phase-15-owned findings.** P15-F3 is fixed. **P15-F1 is open, and is stated as
+   open rather than deferred into a sentence that reads like closure** — the failure mode this
+   programme has now recorded in four separate passes. *(P15-F1 was subsequently closed on
+   2026-08-25 — see Part III, §28–§35. This paragraph is left as it was written.)*
+4. **B-M is answered.** Its repository-owned half — a green gate whose own discharging suite
+   asserts the negation of its statement — is closed by annotation, five regression tests and
+   a caught mutation. Its remaining half needs a completed TLC run, the command for which is
+   recorded. **No TLC evidence was manufactured and the gate was not weakened.**
+
+**"In-repository: none remaining" is not claimed by this pass, and that is deliberate.** Pass
+2 claimed it and pass 3 found six. Pass 3 claimed it and this pass found three. The claim
+itself has been wrong every time it has been made, and P15-F1 is left standing in the blocker
+table as the honest form of it.
+
+**Nothing was invented.** No calibration value, no routing engine, no observation window, no
+attestation, no TASK timer semantics, no formal-verification evidence, no TLC run.
+
+---
 
 **TRUTH > GREEN.**
 
+# PHASE 15 — BLOCKED
+
 ---
 
-## 21. Reproducing this report
+# PART III — P15-F1: ADVERSARIAL REMEDIATION, RE-VERIFICATION AND CLOSURE
+
+**Date:** 2026-08-25 · **Branch:** `feature/dashboard` · **Scope:** close **P15-F1** and nothing
+else. This is not a fourth Phase-15 audit; it is the discharge of the one in-repository,
+Phase-15-owned blocker Part II left open, together with the verification that closing it moved
+nothing else.
+
+**Digest at arrival:** `801ed1df30791c13d697fca3892af220c2f4e666a402a2903329bf6d9143676c` (564 files)
+**Digest at closure:** `72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81` (565 files)
+
+---
+
+## 28. Root cause — exactly
+
+### 28.1 What the defect was
+
+`stage.authoriseEnable()` took the minimum observation window **from the request**:
+
+```js
+// Backend/src/engine/cutover/stage.js:348, before
+const blocking = gates.blockers(source.releaseEvidence, {
+  nowMs: source.requestedAtMs,
+  maxAgeMs: source.evidenceMaxAgeMs,
+  sourceDigest: source.sourceDigest,
+  // Resolved by the caller from the register (`evidence.resolveMinObservationMs`). …
+  minObservationMs: source.minObservationMs,
+});
+```
+
+The comment on line 345 stated the contract — *"Resolved by the caller from the register"* — and
+**nothing enforced it**. That is the whole root cause in one sentence: *a contract stated in a
+comment and enforced nowhere is not a contract, and the field it describes is an override with the
+register's name on it.*
+
+The authoritative register says:
+
+| Parameter | Registered value | Gate it bounds |
+|---|---|---|
+| `release.soak_duration` | **72** hours (`§24.6`, PROVISIONAL) | `soak` |
+| `cutover.shadow_agreement_window` | **14** days (`§21.6`, DERIVED) | `shadow_agreement` |
+
+Neither number reached the decision. Whatever the request said did.
+
+### 28.2 Why P15-E4 did not close it
+
+P15-E4 added a guard **in the adjudicator** (`evidence.admit()`) requiring the resolved bound to be
+a finite positive number. That refuses `0`, `NaN`, `±Infinity`, a string and `null` — and admits
+**any positive finite number, however small**, because `admit()` can only ask whether a bound is
+*usable*. It cannot ask whether it is *the* bound: §22.1 keeps the number out of that module
+deliberately, and `MIN_OBSERVATION_PARAMETER` holds gate → parameter names and no values.
+
+So the fix had to be at the **authority**, not the adjudicator. Part II reported this and did not
+attempt it; this pass performed it.
+
+### 28.3 Reproduced before the fix — measured, not argued
+
+The pre-fix source was restored by mutation **MU3** (§31) and the attack run against the shipped
+modules with the real register loaded:
 
 ```
-cd Backend
-npm test                     # 155 suites, 6 850 tests, 0 failures        (~3.5 min)
-npm run gates                # exit 1 — gate:composition, 2 named findings
-node tools/gates/checkCompositionRoot.js   # the two blockers, with owners
-npm run gate:calibration     # exit 1 — 39 Safety-class parameters (B8)
-npm run sim:fidelity         # exit 1 — 5 safety-relevant models NOT_MEASURED
-npm run routing:readiness    # BLOCKED — D1, D3, D8; no engine selected
-npm run release:gates        # the whole table, judged                    (~25 min)
+register: soak=72h  shadow_agreement=14d
 
-# live PostgreSQL (disposable cluster only — never Neon, never 5432)
-DATABASE_URL=postgresql://pgverify@127.0.0.1:55434/robotx_p15 \
-  node tools/verify/phase15LiveDatabase.js    # 12/12, exit 0
+*** AUTHORISED ***  soak: window 2 000 ms, caller bound 1 000 ms
+*** AUTHORISED ***  soak: window 1 ms,     caller bound 0.5 ms
+*** AUTHORISED ***  shadow_agreement: window 1 000 ms, caller bound 1 000 ms
+*** AUTHORISED ***  soak: window 25 h, caller bound 24 h   ← the shipped harness's own value
+FAIL-OPEN x4
 ```
 
-**Do not edit the tree while `release:gates` runs** — the collection is voided if the source
-digest moves between the first gate and the last, and it will say so.
+Every one of those four is a **complete authorisation to take a shard live**: `authorised: true`,
+with `binding { level: "region", name: "cutover.engine_enabled", value: true }`.
+
+The fourth line is not a hypothetical. `tools/verify/phase15EvidenceBinding.js:162` supplied
+`minObservationMs: { shadow_agreement: 14 * DAY, soak: DAY }` — **24 hours against a registered
+72** — and that harness's 17/17 green included a soak gate judged against a third of the required
+duration. Nothing refused it because nothing compared it to anything.
+
+---
+
+## 29. The authority boundary, exactly
+
+```
+authoriseEnable(request)
+    │
+    ├─ request.minObservationMs present?  → REFUSE  [OBSERVATION_BOUND_NOT_THE_CALLERS]
+    │                                        (whatever it says, in either direction)
+    ├─ request.parameterValues absent /
+    │  not `{ get(name) }`?               → REFUSE  [EVIDENCE_CONTEXT_INCOMPLETE]
+    │
+    ├─ evidence.resolveMinObservationMs(request.parameterValues)
+    │        └─ accessor throws           → REFUSE  [PARAMETER_REGISTER_UNREADABLE]
+    │
+    ├─ gates.blockers(evidence, { nowMs, maxAgeMs, sourceDigest, minObservationMs })
+    │        └─ evidence.admit(...)
+    │              └─ bound absent / not finite-positive
+    │                                     → that gate RED [OBSERVATION_WINDOW_REQUIRED]
+    │              └─ window < bound       → that gate RED [OBSERVATION_WINDOW_TOO_SHORT]
+    └─ release decision
+```
+
+**What sits on each side of the boundary:**
+
+| | Owner |
+|---|---|
+| *What the requirement is* (72 h, 14 days) | the **register**, resolved by the **authority** |
+| *Which parameter bounds which gate* | `evidence.MIN_OBSERVATION_PARAMETER` (names only, no values — §22.1) |
+| *Whether a resolved bound is usable* | the **adjudicator** (`evidence.admit`, P15-E4's guard, unchanged) |
+| *Which register to read* | the **caller**, by injection — see the limit stated in §33.2 |
+| *What the bound is* | **nobody but the register** |
+
+### The four states the mandate asks to be kept apart, kept apart
+
+| State | Outcome | Code |
+|---|---|---|
+| **malformed caller input** — the request states a bound at all | whole request refused | `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| **absent** parameter source | whole request refused, naming the missing dependency | `EVIDENCE_CONTEXT_INCOMPLETE` |
+| **absent parameter** in a readable register | that gate inadmissible; the rest of the table still judged | `OBSERVATION_WINDOW_REQUIRED` |
+| **invalid parameter** (`0`, `NaN`, `−1`, `Infinity`, `"72"`, `null`, `true`, an object) | that gate inadmissible | `OBSERVATION_WINDOW_REQUIRED` |
+| **valid authoritative parameter** | it, and only it, is the requirement | — |
+
+Nothing invents a default, reads a missing value as zero, or reads one as unlimited. A register
+that lost `release.soak_duration` **reddens** the soak gate and leaves `shadow_agreement` green —
+pinned by a test (§30, "one parameter present and the other absent").
+
+### Why a caller-supplied *larger* bound is refused too
+
+Requirement 8 taken literally: *the authority owns the requirement.* A bound that happens to agree
+with the register today is still a bound the request declared. An authority that accepts an
+agreeing one has conceded that the number is the caller's — the next caller states a smaller one,
+and a register moving from 72 h to 96 h silently stops applying to every request that hard-coded
+72. The mandate's case D says such a request *"MAY PASS"*; it does not pass here, which is
+stricter and not looser. The half of case D that matters is pinned separately: **the identical
+request with the field removed is authorised**, so nothing about a genuine 72-hour soak was made
+unpassable.
+
+---
+
+## 30. Files changed
+
+| File | Owner | Change |
+|---|---|---|
+| `Backend/src/engine/cutover/stage.js` | Phase 15 | **the fix.** Requires `parameterValues`; refuses `minObservationMs`; resolves the bound through `evidence.resolveMinObservationMs`; two new refusal codes; `require("./evidence")` added |
+| `Backend/src/engine/cutover/evidence.js` | Phase 15 | **comment only.** The P15-E4 block said the bound "is caller-supplied"; corrected at its source and the P15-F1 half recorded there. No executable line changed |
+| `Backend/tests/engine/phase15ObservationAuthority.test.js` | Phase 15 | **NEW — 50 tests.** The adversarial suite, cases A … M |
+| `Backend/tests/engine/phase15ObservationWindowRemediation.test.js` | Phase 15 | fixture supplies `parameterValues`; P15-E4's authority test split in two (§30.1) |
+| `Backend/tests/engine/phase15EvidenceBindingRemediation.test.js` | Phase 15 | fixture: `soak: DAY` → the register |
+| `Backend/tests/engine/cutoverEvidence.test.js` | Phase 15 | fixture: request context separated from adjudicator context |
+| `Backend/tests/engine/cutoverStaging.test.js` | Phase 15 | fixture: `evidenceContext()` supplies the register |
+| `Backend/tests/gates/checkCalibration.test.js` | Phase 15 | fixture: `soak: day` → the register |
+| `Backend/tools/verify/phase15EvidenceBinding.js` | Phase 15 | **the 24 h-against-72 fixture**, corrected |
+| `Backend/tools/verify/phase15VersionInForce.js` | Phase 15 | fixture supplies the register |
+
+**Six fixture/builders were named in the mandate; the sweep found eight call sites and all eight
+were updated.** The ninth (`tools/verify/phase15CurrentTree.js` F5) passes a deliberately
+incomplete request that is refused before the bound is reached, and was left alone.
+
+Every fixture now injects **`service.loadRegister()`**, not a stub. A hand-rolled accessor would
+be a caller-supplied bound with an extra function call in front of it — the defect wearing the
+fix's clothes.
+
+### 30.1 Test integrity
+
+**No test was deleted, skipped, weakened, retargeted or threshold-relaxed.** One test changed its
+assertion and it is named here in full:
+
+`phase15ObservationWindowRemediation.test.js` — *"the defect, at the authority: a request cannot
+bring its own zero bound"* asserted `RELEASE_GATE_NOT_GREEN` for a request carrying
+`{ soak: 0, shadow_agreement: 0 }`. Under the new contract that request is refused **earlier** and
+by name (`OBSERVATION_BOUND_NOT_THE_CALLERS`), so the assertion was updated — and the original
+claim it was making (*a one-millisecond window discharges neither windowed gate*) was **not**
+dropped: it is now a second test immediately below, made against the **register's** bound instead
+of the caller's, which is a strictly stronger statement than the one it replaces. Net +1 test.
+
+Two fixtures were made **stricter**, not looser: `phase15EvidenceBinding.js` and
+`checkCalibration.test.js` each judged `soak` against 24 h and now judge it against 72 h. Their
+observation windows (40 days and 40 days) clear both, so no assertion moved.
+
+---
+
+## 31. Attack cases — the mandate's A … M
+
+Run by `tests/engine/phase15ObservationAuthority.test.js` (50 tests, all passing), plus an
+independent probe sharing no code with it.
+
+### Controls first — a refusal from an unauthorisable fixture proves nothing
+
+| | Result |
+|---|---|
+| the register is measured, not assumed | `release.soak_duration` = **72** `hours`; `cutover.shadow_agreement_window` = **14** `days`; resolved = 72 h / 14 d |
+| the gates the register bounds | exactly `soak` and `shadow_agreement` |
+| a complete honest request | **AUTHORISED** |
+| 73 h soak + 15-day shadow | **AUTHORISED** — the fix does not over-refuse |
+
+### The attacks
+
+| Case | Attack | Required | Result |
+|---|---|---|---|
+| **A** | authoritative soak 72 h, caller **1 ms** | REFUSE | **REFUSED** `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| **B** | caller **1 000 ms** | REFUSE | **REFUSED**, same code |
+| **C** | caller **24 h** | REFUSE | **REFUSED**, same code |
+| **D** | caller **72 h** (equal to authoritative) | *may* pass | **REFUSED** — the authority owns the requirement (§29). The same request with the field removed is **AUTHORISED**, pinned separately |
+| **D′** | caller **100 days** (larger) | must not replace | **REFUSED**, same code |
+| **E** | authoritative shadow 14 d, caller **1 ms** | REFUSE | **REFUSED**, same code |
+| **F** | caller **omits** the bound | must still evaluate the register | **the register is evaluated**: 71 h soak → RED `OBSERVATION_WINDOW_TOO_SHORT`, *"requires 72h"*; 73 h → GREEN; 13-day shadow → RED; 15-day → GREEN |
+| **G** | caller supplies **0** | must not weaken | **REFUSED**, same code |
+| **H** | caller supplies **NaN** | must not weaken | **REFUSED**, same code |
+| **I** | caller supplies **±Infinity** | must not weaken | **REFUSED**, same code |
+| **J** | caller supplies **negative** | must not weaken | **REFUSED**, same code |
+| **K** | authoritative parameter **missing** | FAIL CLOSED | source absent / `null` / `{}` / no `get` / string / number → `EVIDENCE_CONTEXT_INCOMPLETE`. Source readable but answers nothing → both windowed gates RED `OBSERVATION_WINDOW_REQUIRED`, a 60-day window notwithstanding |
+| **L** | authoritative parameter **invalid** | FAIL CLOSED | `0`, `−1`, `NaN`, `Infinity`, `"72"`, `null`, `true`, `{hours:72}` → both windowed gates RED `OBSERVATION_WINDOW_REQUIRED` |
+| **M** | substitute the caller's value for the register's | the test MUST catch it | **caught by MU1 and MU3** (§32) |
+
+Additional cases this pass added because the sweep found them:
+
+| Attack | Result |
+|---|---|
+| `minObservationMs: undefined` — the spread-from-a-context producer | **REFUSED**. Presence is the test, not `typeof` — the off-switch shape P15-C1/E1/E3/E4 were each an instance of |
+| `minObservationMs: {}` — present and saying nothing | **REFUSED** |
+| the parameter accessor **throws** | **REFUSED** `PARAMETER_REGISTER_UNREADABLE` — not a half-judged table |
+| one parameter present, the other absent | exactly **one** gate red; no default invented for the other |
+| a **REHEARSAL** carrying a 1-second soak window | **REFUSED**. ADR-34 excludes exactly `rollback_rehearsed`; neither windowed gate is in the exclusion set |
+| a **REHEARSAL** stating its own bound | **REFUSED** `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| `invariants_enforced` / `simulator_fidelity` with 1-second windows | **AUTHORISED** — correct. Those two have no registered duration and none was invented for them |
+
+Each refusal was additionally checked *not* to be `SHARD_NOT_ELIGIBLE`, `NO_REASON_GIVEN` or
+`EVIDENCE_CONTEXT_INCOMPLETE`, so no case above is a refusal for an unrelated reason.
+
+---
+
+## 32. Mutation results — 4 / 4 caught, 0 survivors
+
+Each protection was removed from the shipped `stage.js`, the suite was required to **fail**, the
+file was restored from an in-memory copy and **byte-compared**, and the suite was required to pass
+again. The baseline was proven green before any mutation and again after all of them.
+
+| | Protection removed | Failures | Verdict |
+|---|---|---|---|
+| **MU1** | the authoritative resolution — `minObservationMs` in the `blockers()` context replaced by `source.minObservationMs` (the guard left in place) | **11 / 50**, including both controls and every case-F test | **CAUGHT** |
+| **MU2** | the guard refusing a caller-stated bound (`Object.hasOwn`) | **19 / 50** — cases A–J | **CAUGHT** |
+| **MU3** | **both — the exact pre-P15-F1 source** | **27 / 50** | **CAUGHT** |
+| **MU4** | the `parameterValues` requirement in the evidence-context check | **7 / 50** — case K | **CAUGHT** |
+
+**MU3 is the mutation the mandate asks for by name**, and it is the one that demonstrates a hole
+rather than a diagnostic difference. Under it the independent probe reports:
+
+```
+[MU3 APPLIED]  *** AUTHORISED ***  soak: window 2 000 ms, caller bound 1 000 ms
+[MU3 APPLIED]  *** AUTHORISED ***  soak: window 1 ms,     caller bound 0.5 ms
+[MU3 APPLIED]  *** AUTHORISED ***  shadow_agreement: window 1 000 ms, caller bound 1 000 ms
+[MU3 APPLIED]  *** AUTHORISED ***  soak: window 25 h, caller bound 24 h
+               FAIL-OPEN x4
+
+[restored]     refused [OBSERVATION_BOUND_NOT_THE_CALLERS]  × 4
+               NO FAIL-OPEN: every attack refused
+```
+
+**Stated plainly, because the mandate asks that a mutation not be accepted for the wrong reason:**
+
+- **MU1 and MU3 demonstrate the intended protection.** Under MU1 the register's 72 h stops being
+  what is applied, and the tests that fail are precisely the ones that assert *"71 h is refused
+  **as TOO_SHORT, naming 72h**"* and *"73 h passes"*. That distinction is load-bearing: under MU1
+  a 71-hour window is still refused — as `OBSERVATION_WINDOW_REQUIRED`, because the caller states
+  nothing and the bound resolves to nothing. **"Refused" is not evidence that the register was
+  consulted; "refused for being 71 hours against 72" is**, and only the latter is asserted.
+- **MU2 and MU4 are honestly weaker, and are reported as such.** Removing either leaves the system
+  **fail-closed**: under MU2 a stated bound is ignored rather than honoured (the register still
+  decides), and under MU4 an absent register yields no bound and the two windowed gates go red.
+  What each removal loses is a *refusal that names the right thing* — the P15-C1 argument, which
+  this module already makes for `requestedAtMs`: an operator told *"soak and shadow_agreement are
+  not green"* goes to look at the release, when the defect is in their request. They are caught
+  because the tests assert the code, and that is what those guards are for. Neither is claimed as
+  the load-bearing protection; **MU3 is.**
+
+---
+
+## 33. Verification
+
+### 33.1 Measured on the settled tree
+
+```
+$ npx jest --runInBand --forceExit                    (= npm test)
+Test Suites: 160 passed, 160 total
+Tests:       7112 passed, 7112 total
+Snapshots:   0 total          Time: 317.261 s         exit 0
+
+$ npm run gates                                                      exit 1
+gate: tier-dependencies          PASS — 285 modules, 423 governed import edges
+gate: parameter-register         PASS — 189 engine modules / 242 registered parameters
+gate: tenets                     PASS — 282 modules
+gate: identity-isolation         PASS — 16 modules
+gate: reconstruction-equivalence PASS — 3 corpus decisions, byte for byte
+gate: legacy-retirement          PASS — 4 retired modules absent, 340 files
+gate: column-generation          PASS — NOT_REQUIRED
+gate: composition-root           FAIL — 1: coordinator [LEADER_ONLY_NOT_COMPOSABLE, EXTERNAL, B1]
+
+$ npm run release:gates                                              exit 1
+source digest 72f943df83416c73…    16 green, 1 red, 7 not evaluated
+RED            engine_decision_path_wired      BUILD           [B1]
+NOT_EVALUATED  calibration_safety_derived      ORGANISATIONAL  [B8]
+NOT_EVALUATED  invariants_enforced             PRODUCTION      [B-P]
+NOT_EVALUATED  simulator_fidelity              PRODUCTION      [B-P]
+NOT_EVALUATED  soak                            PRODUCTION      [B-P]
+NOT_EVALUATED  shadow_agreement                PRODUCTION      [B-P]
+NOT_EVALUATED  safety_case_assembled           ORGANISATIONAL  [B-O]
+NOT_EVALUATED  rollback_rehearsed              ORGANISATIONAL  [B-O]
+GREEN          model_check_capacity_1_2_3      SUITE   [NOT PROVEN — unchanged, B-M]
+RELEASE: BLOCKED — 8 blocking gate(s) are not green.
+
+$ node tools/gates/checkCalibration.js                               exit 1
+FAIL — 39 blocking findings. 242 entries: 52 DERIVED, 152 PROVISIONAL, 38 UNCALIBRATED.
+54 Safety-class.
+
+$ node tools/simFidelity/validate.js                                 exit 1
+7 models NOT_MEASURED, 6 safety-relevant. No study was supplied.
+
+$ node tools/routing/b1Readiness.js                       OVERALL: BLOCKED (D1, D3, D8)
+```
+
+| | Part II baseline | Now | |
+|---|---:|---:|---|
+| Test suites / tests | 159 / 7 061 | **160 / 7 112** | +1 suite, +51 tests |
+| Failures / skips | 0 / 0 | **0 / 0** | |
+| Build gates | 7 PASS, 1 FAIL | **7 PASS, 1 FAIL** | identical; the one FAIL is B1 |
+| Governed import edges | 422 | **423** | the one new edge is `cutover/stage → cutover/evidence`, same tier |
+| `release:gates` | 16 / 1 / 7 | **16 / 1 / 7** | identical |
+| `gate:calibration` | 39 findings | **39 findings** | identical |
+| `sim:fidelity` | 7 NOT_MEASURED | **7 NOT_MEASURED** | identical |
+| `routing:readiness` | BLOCKED | **BLOCKED** | identical |
+| Live-PostgreSQL checks | 288 | **288** | identical |
+| Source digest | `801ed1df…` (564) | `72f943df…` (565) | +1 file: the new suite |
+
+### 33.2 Live PostgreSQL
+
+Disposable **PostgreSQL 18.3**, port **55443**, `initdb` into the scratchpad from the installed
+binaries. **Never Neon, never the user's 5432 cluster** — every harness refuses both by name, and
+the cluster was created for this pass and destroyed after it. No production data was read or
+written.
+
+```
+tables before: 0
+APPLIED 27 migrations from empty      FAILED: (none)
+tables after: 75  (74 application tables + _prisma_migrations)
+```
+
+| Harness | Checks |
+|---|---|
+| `tools/verify/phase15VersionInForce.js` | **19 / 19** |
+| `tools/verify/phase15EvidenceBinding.js` — *fixture corrected this pass* | **17 / 17** |
+| `tools/verify/phase15CurrentTree.js` | **32 / 32** |
+| `tools/verify/phase15LiveDatabase.js` | **12 / 12** |
+| `tools/verify/phase5ExpirySemantics.js` | **102 / 102** |
+| `tools/verify/phase5LiveDatabase.js` | **106 / 106** |
+| **total** | **288 / 288** |
+
+`phase15EvidenceBinding.js` is the harness that carried the defect (`soak: DAY` against a
+registered 72 h). It is 17/17 **against the register's real bound**, which is a stricter run than
+its previous 17/17, not the same one.
+
+**Does this path touch persistence?** `stage.authoriseEnable()` writes nothing — it returns an
+authorisation. It reaches the database only through the audit event its action produces, and that
+path was re-verified live: `phase15EvidenceBinding` (producer → `EVENT_TYPE` → the
+`AuditEvent_event_type_known` CHECK constraint → persistence → readback → the staged controller)
+and `phase15VersionInForce` group B (the observation window judged by `authoriseEnable` against
+real rows) both drive the changed request contract.
+
+### 33.3 The limit of the fix, stated rather than implied
+
+**The register accessor is injected, and injection is a trust boundary this fix does not close.**
+`evidence.js`'s own header gives the reason: *"no `src/engine/**` module reads the Config Service
+directly, and this one must not become the first."* So a caller can still hand the authority an
+accessor that answers `1` for `release.soak_duration` — and `1 hour` would then be the bound.
+
+That is a **smaller and different** hole than the one closed, and the difference matters:
+
+- the bound is no longer a number in a request; it is the answer the *configuration system* gives
+  for a *registered parameter*, at the same trust level as `killSwitchState` and `releaseEvidence`;
+- it is the identical boundary `tools/release/verdict.js:127` already uses, which Part II named as
+  the reason *"the release table is not affected"*;
+- a weakened accessor is a lie about the configuration, not an extra field — it would have to be
+  written deliberately, and every fixture in the tree now injects `service.loadRegister()`, pinned
+  by a test that the resolved values equal the register's own defaults.
+
+Closing it completely would mean the engine module reading the Config Service, which §22 forbids,
+or the register being compiled into `evidence.js`, which §22.1 forbids. **It is recorded as a
+limit, not fixed, and it is not a permissive path any caller reaches today.**
+
+---
+
+## 34. What was NOT done
+
+**No gate was weakened. No threshold moved. No `NOT_EVALUATED` was converted to `PASS`. No
+external evidence was fabricated.**
+
+Asserted, not promised: a test in the new suite pins that the bound the fix applies is exactly
+`release.soak_duration × 1 h` and `cutover.shadow_agreement_window × 1 day` as the register holds
+them, so a future change to either number fails the suite rather than passing silently.
+
+### The other blockers were not artificially closed — explicitly
+
+| | State after this pass | What this pass did to it |
+|---|---|---|
+| **B1** — no routing engine selected | **OPEN, EXTERNAL.** `gate:composition` FAIL, `engine_decision_path_wired` RED, `routing:readiness` BLOCKED | **Nothing.** No engine invented, selected, ranked or recommended |
+| **B8** — 39 Safety-class parameters not DERIVED | **OPEN, EXTERNAL.** `gate:calibration` exit 1, 39 findings, byte-identical to arrival | **Nothing.** No value manufactured, promoted or defaulted. `release.soak_duration` is still **PROVISIONAL** and this pass did not promote it — it made the system *use* it, which is a different act |
+| **B-P** — 4 PRODUCTION gates | **OPEN, OBSERVATION.** All four still `NOT_EVALUATED` | **Nothing.** No observation window was manufactured. The 14-day shadow window still cannot begin, because the shadow worker cannot compose (B1) |
+| **B-O** — 3 ORGANISATIONAL gates | **OPEN, EVIDENCE.** All three still `NOT_EVALUATED` | **Nothing.** No attestation filed, no rehearsal recorded |
+| **B-M** — `model_check_capacity_1_2_3` GREEN and NOT PROVEN | **OPEN (compute half).** The `[NOT PROVEN]` annotation is unchanged and still prints | **Nothing.** No TLC run was performed; `tla2tools.jar` is still not in the tree; the gate algebra is untouched |
+| **X3** — no `TASK` timer producer | **OPEN, SPECIFICATION.** `phase15CurrentTree` G1 still reports **0** TASK-entity timers | **Nothing.** No §4.2 transition table invented |
+| **B-P/B-O evidence** | — | Nothing in `docs/release-evidence.json` was edited by this pass |
+
+**Cross-phase integrity.** `Backend/src/db`, `src/engine/{commitment,dispatch,domain,shard}` and
+`prisma/schema.prisma` are untouched; `git status --porcelain` over them is empty. No migration was
+added or edited. Phase 5's two harnesses pass 102/102 and 106/106 against a database built from
+empty. Phases 0–14 own none of the ten files changed. **Phase 16 contamination: clean** —
+`killSwitches.defaultState()` has **0** Tier 2 mechanisms live, `tierTwoAtShipState` returns
+`{ ok: true, enabled: [] }`, and it still refuses a cutover with any Tier 2 mechanism live
+including under `PURPOSE.REHEARSAL`, by test.
+
+**Reachability, restated.** `stage.authoriseEnable()` still has **no production call site** —
+re-derived by grep over `src/` and `server.js`, where every occurrence of the name is a comment.
+P15-F1 was **latent**, exactly as Part II classified it, and it is closed on the principle pass 3
+applied to P15-E3: *a fail-open on a path nobody reaches today is a fail-open waiting for the
+caller that does.*
+
+---
+
+## 35. Closure
+
+# P15-F1: **CLOSED**
+
+Against the mandate's criteria, each answered:
+
+| Criterion | |
+|---|---|
+| caller cannot weaken the authoritative observation requirement | **yes** — the field is refused outright; the bound is resolved from the register by the authority |
+| missing/invalid authoritative data fails closed | **yes** — absent source → request refused by name; absent/invalid parameter → that gate inadmissible. No default, no zero, no unlimited |
+| adversarial positive-small-value attacks fail | **yes** — 1 ms, 1 000 ms, 24 h, 72 h and 100 days all refused |
+| mutation attack fails | **yes** — 4 / 4 caught, 0 survivors; MU3 restores the pre-fix source and the probe shows the fail-open return and then vanish |
+| full suite passes | **yes** — 160 suites / 7 112 tests / 0 failures / 0 skips |
+| existing release gates not weakened | **yes** — `release:gates` 16 / 1 / 7, identical to arrival; `gates` 7 PASS / 1 FAIL, identical |
+| no threshold changed | **yes** — pinned by test against the register's own defaults |
+| no `NOT_EVALUATED` converted to `PASS` | **yes** — all seven still `NOT_EVALUATED` |
+| no external evidence fabricated | **yes** — no calibration value, no observation window, no attestation, no TLC run, no routing engine |
+
+### Phase 15 is not closed. P15-F1 being closed does not close it.
+
+# PHASE 15 — BLOCKED. PHASE 16 — NOT READY.
+
+**Remaining blockers, precisely:**
+
+| ID | Description | Class | Owner | Blocks Phase 16? |
+|---|---|---|---|---|
+| **B1** | No routing engine selected. `coordinator` and `shadow` cannot compose; `gate:composition` FAIL; `engine_decision_path_wired` RED | **EXTERNAL** | Ops + Commercial (D1), Product + Fleet Eng (D3), Ops (D8) | **Yes, absolutely** |
+| **B8** | 39 Safety-class parameters not `DERIVED`; `gate:calibration` exit 1 | **EXTERNAL** | §22.4's calibration owner | Yes |
+| **B-P** | 4 PRODUCTION gates `NOT_EVALUATED` — `invariants_enforced`, `simulator_fidelity`, `soak`, `shadow_agreement`. The 14-day shadow window cannot *begin* until B1 | **OBSERVATION** | needs an operating fleet | Yes |
+| **B-O** | 3 ORGANISATIONAL gates `NOT_EVALUATED` — `calibration_safety_derived`, `safety_case_assembled`, `rollback_rehearsed` | **EVIDENCE** | named humans | Yes |
+| **B-M** | `model_check_capacity_1_2_3` GREEN and NOT PROVEN — no exhaustive lifecycle check exists at any capacity, by either checker. Repository half closed in Part II; **compute half open** | **EVIDENCE (compute)** | Release owner + compute | Yes |
+| **X3** | No `TASK` timer producer; §4.2 has no transition table | **SPECIFICATION** | frozen-spec owner | No |
+| **X1** | §17.4 escalation ladder unimplemented | **FUTURE PHASE** | REMEDIAL PHASE T1-04 | No |
+
+**In-repository, reported and not fixed** (carried forward unchanged, none permissive):
+`app.locals.releaseEvidence` has no producer (P15-E6, fails closed); `blockers()` ignores
+`unknownEvidence` (§7); pass 2's **X-C1** (Phase 12) and **X-C2** (unreachable);
+and, new this pass, **the register accessor is injected** (§33.2).
+
+**"In-repository: none remaining" is not claimed.** Pass 2 claimed it and pass 3 found six. Pass 3
+claimed it and Part II found three. This pass closed the one item Part II left open and does not
+extend that to a claim about the class — the claim has been wrong every time it has been made, and
+the one honest thing to say is: *P15-F1 is closed; nothing here searched for its successor.*
+
+---
+
+**TRUTH > GREEN.**
+
+# P15-F1 — CLOSED.  PHASE 15 — BLOCKED.

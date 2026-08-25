@@ -65,20 +65,52 @@ import {
 // ── The dataset ──────────────────────────────────────────────────────────────
 
 /**
- * Identifies the artefact these features came from. Copied onto every feature's
- * `source` string, so a feature separated from its collection still says where
- * it came from.
+ * What is TRUE OF EVERY OVERPASS EXTRACT, whichever campus it describes.
+ *
+ * The origin, the licence and the coordinate system are properties of the
+ * SOURCE KIND, not of a campus. The one thing that varies per campus is which
+ * file the features were read out of, so that is the only thing `osmDataset`
+ * takes — and it is supplied by the registry entry, never by this module.
+ *
+ * Before this was parameterised, `OSM_DATASET.file` named RNSIT's export as a
+ * module constant, which meant the shared importer knew the name of one
+ * campus's artefact. A second campus importing through it would have carried
+ * RNSIT's filename in its provenance string: the first thing that quietly stops
+ * being true when a single-campus map becomes a multi-campus one (§34).
  */
-export const OSM_DATASET = Object.freeze({
-  file: 'rnsit-campus-osm.geojson',
-  origin: 'OpenStreetMap, exported via Overpass Turbo',
-  licence: '© OpenStreetMap contributors, ODbL',
-  crs: 'WGS84 (EPSG:4326), lon/lat order — GeoJSON default, verified against the export',
-});
+export const OSM_DATASET_ORIGIN = 'OpenStreetMap, exported via Overpass Turbo';
+export const OSM_DATASET_LICENCE = '© OpenStreetMap contributors, ODbL';
+export const OSM_DATASET_CRS =
+  'WGS84 (EPSG:4326), lon/lat order — GeoJSON default, verified against the export';
+
+/**
+ * Identifies the artefact a campus's features came from. Copied onto every
+ * feature's `source` string, so a feature separated from its collection still
+ * says which file, of which campus, it was read out of.
+ *
+ * @param {string|null} file  the campus's own export, e.g. `rnsit-campus-osm.geojson`
+ */
+export function osmDataset(file) {
+  return Object.freeze({
+    file: typeof file === 'string' && file.trim() ? file.trim() : null,
+    origin: OSM_DATASET_ORIGIN,
+    licence: OSM_DATASET_LICENCE,
+    crs: OSM_DATASET_CRS,
+  });
+}
+
+/**
+ * The generic descriptor: a real OpenStreetMap extract that has not said which
+ * file it is. Used when a caller imports a collection directly (a test, a
+ * one-off inspection) rather than through a registered campus.
+ */
+export const OSM_DATASET = osmDataset(null);
 
 /** The `source` string every imported feature carries. */
-export function osmSourceString(osmId) {
-  return `${OSM_DATASET.origin} — ${OSM_DATASET.file} (${osmId}). ${OSM_DATASET.licence}. Not a survey.`;
+export function osmSourceString(osmId, dataset = OSM_DATASET) {
+  const ds = dataset || OSM_DATASET;
+  const file = ds.file ? ` — ${ds.file}` : '';
+  return `${ds.origin}${file} (${osmId}). ${ds.licence}. Not a survey.`;
 }
 
 // ── Render-height policy (§8, §38, §39) ──────────────────────────────────────
@@ -162,6 +194,36 @@ const LEISURE_RULES = Object.freeze({
   track: { kind: CAMPUS_FEATURE_KIND.FACILITY, category: CAMPUS_CATEGORY.SPORTS, major: true },
   garden: { kind: CAMPUS_FEATURE_KIND.FACILITY, category: CAMPUS_CATEGORY.UNCLASSIFIED, major: false },
   park: { kind: CAMPUS_FEATURE_KIND.FACILITY, category: CAMPUS_CATEGORY.UNCLASSIFIED, major: false },
+});
+
+/**
+ * `landuse=<value>` values that describe a usable campus AREA.
+ *
+ * Deliberately short. `landuse` is OSM's broadest tag and most of its values
+ * describe the surroundings rather than a place on a campus — `forest`,
+ * `residential`, `industrial` and the rest are NOT here, so JSSATE's
+ * neighbouring Turahalli reserve forest stays excluded and reported rather than
+ * being drawn as a campus facility.
+ *
+ * `recreation_ground` is here because it is the tag OSM uses for exactly the
+ * thing §"campus features" asks for — a playground / recreation ground — and
+ * because the alternative was leaving a named, mapped, in-boundary campus
+ * ground off the map entirely.
+ */
+const LANDUSE_RULES = Object.freeze({
+  recreation_ground: { kind: CAMPUS_FEATURE_KIND.FACILITY, category: CAMPUS_CATEGORY.SPORTS, major: true },
+});
+
+/**
+ * `natural=<value>` values that are places on a campus rather than terrain.
+ *
+ * A campus lake is something an operator navigates by and a robot must not
+ * drive into, so it is a LANDMARK. It carries no category of its own — the
+ * palette has no "water" colour and inventing one would be a rendering claim,
+ * not a data one — so it draws in the neutral unclassified fill (§11).
+ */
+const NATURAL_RULES = Object.freeze({
+  water: { kind: CAMPUS_FEATURE_KIND.LANDMARK, category: CAMPUS_CATEGORY.UNCLASSIFIED, major: false },
 });
 
 /** `building=<value>` → category, where the value itself carries a use. */
@@ -360,6 +422,55 @@ export function pointInPolygon(point, geometry) {
     if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
   }
   return inside;
+}
+
+/** Every position in a geometry, flattened. Read-only — nothing is copied back. */
+function everyPosition(geometry) {
+  const out = [];
+  const walk = (c) => {
+    if (!Array.isArray(c)) return;
+    if (typeof c[0] === 'number') out.push(c);
+    else c.forEach(walk);
+  };
+  walk(geometry?.coordinates);
+  return out;
+}
+
+/**
+ * Is this feature ON the campus the boundary describes?
+ *
+ * The test differs by geometry, because "where is it" means different things
+ * for a line and for an area, and using one rule for both gets one of them
+ * wrong in a way that matters:
+ *
+ *   LINES     any vertex inside. A service road that runs along the perimeter
+ *             is genuinely a campus road even though the middle of the line
+ *             falls a few metres outside the fence. Judging a road by its
+ *             midpoint reported three of RNSIT's own roads as somewhere else.
+ *
+ *   AREAS AND POINTS  the anchor — a polygon's centroid, a point itself.
+ *             An area is where its middle is. JSSATE's extract contains a
+ *             temple compound that SHARES A BORDER with the campus, so "any
+ *             vertex inside" would have called it a campus building; its
+ *             centroid is several hundred metres down the hill, which is the
+ *             fact worth reporting.
+ *
+ * Neither answer moves, hides or deletes anything. It decides which sentence
+ * the map says about a feature it draws either way (§49).
+ */
+export function touchesPolygon(geometry, polygon) {
+  if (!geometry || !polygon) return false;
+
+  const type = geometry.type;
+  if (type === 'LineString' || type === 'MultiLineString') {
+    for (const position of everyPosition(geometry)) {
+      if (pointInPolygon(position, polygon)) return true;
+    }
+    return false;
+  }
+
+  const anchor = anchorOf(geometry);
+  return anchor ? pointInPolygon(anchor, polygon) : false;
 }
 
 /** Planar distance in metres between two lon/lat positions, at campus scale. */
@@ -620,6 +731,42 @@ export function classifyOsmFeature(sourceFeature) {
     };
   }
 
+  // ── Usable campus areas and natural features ─────────────────────────────
+  const landuse = tagString(tags, 'landuse');
+  if (landuse && LANDUSE_RULES[landuse]) {
+    if (!isPolygon) return { excluded: EXCLUSION_REASON.GEOMETRY_MISMATCH, detail: `landuse=${landuse} on ${type}` };
+    const rule = LANDUSE_RULES[landuse];
+    return {
+      kind: rule.kind,
+      category: rule.category,
+      categoryBasis: CATEGORY_BASIS.OSM_TAG,
+      categoryFrom: `landuse=${landuse}`,
+      extrude: false,
+      major: rule.major,
+      descriptiveName: name || humanise(landuse),
+      conflict: null,
+    };
+  }
+
+  const natural = tagString(tags, 'natural');
+  if (natural && NATURAL_RULES[natural]) {
+    if (!isPolygon && !isPoint) {
+      return { excluded: EXCLUSION_REASON.GEOMETRY_MISMATCH, detail: `natural=${natural} on ${type}` };
+    }
+    const rule = NATURAL_RULES[natural];
+    const water = tagString(tags, 'water');
+    return {
+      kind: rule.kind,
+      category: rule.category,
+      categoryBasis: CATEGORY_BASIS.OSM_TAG,
+      categoryFrom: water ? `natural=${natural}, water=${water}` : `natural=${natural}`,
+      extrude: false,
+      major: rule.major,
+      descriptiveName: name || humanise(water || natural),
+      conflict: null,
+    };
+  }
+
   const historic = tagString(tags, 'historic');
   if (historic && HISTORIC_RULES[historic]) {
     const rule = HISTORIC_RULES[historic];
@@ -727,7 +874,7 @@ function idFor(osmId) {
 }
 
 /** Tags that are noise in a details card — ids, transliterations, brand metadata. */
-const METADATA_TAG_DENYLIST = /^(@id|name|name:|alt_name|brand:|wikidata|wikipedia|source|addr:|contact:|building$|highway$|amenity$|leisure$|historic$)/;
+const METADATA_TAG_DENYLIST = /^(@id|name|name:|alt_name|brand:|wikidata|wikipedia|source|addr:|contact:|building$|highway$|amenity$|leisure$|historic$|landuse$|natural$)/;
 
 function interestingTags(tags) {
   const out = {};
@@ -748,15 +895,18 @@ function interestingTags(tags) {
  * wrong in exactly the same way, and says where it came from.
  *
  * @param {object} collection  a GeoJSON FeatureCollection of OSM features
+ * @param {object} [options]
+ * @param {object} [options.dataset]  which artefact this collection is, from `osmDataset()`
  * @returns {{
  *   features: object[],
  *   excluded: Array<{ osmId: string, name: string|null, reason: string, detail: string }>,
  *   unlabelled: Array<{ osmId: string, name: string, reason: string }>,
  *   conflicts: Array<{ osmId: string, name: string, conflict: string }>,
+ *   outsideBoundary: Array<{ osmId: string, name: string, kind: string }>,
  *   boundary: object|null,
  * }}
  */
-export function importOsmCampus(collection) {
+export function importOsmCampus(collection, { dataset = OSM_DATASET } = {}) {
   const source = Array.isArray(collection?.features) ? collection.features : [];
 
   const excluded = [];
@@ -887,7 +1037,7 @@ export function importOsmCampus(collection) {
       provenance: PROVENANCE.OPEN_DATA_IMPORT,
       verification: VERIFICATION.NOT_VERIFIED,
       verifiedOn: null,
-      source: osmSourceString(osmId),
+      source: osmSourceString(osmId, dataset),
       sourceId: osmId,
       sourceTags: Object.freeze({ ...tags }),
 
@@ -951,7 +1101,35 @@ export function importOsmCampus(collection) {
 
   const boundary = features.find((f) => f.kind === CAMPUS_FEATURE_KIND.BOUNDARY) || null;
 
-  return { features, excluded, unlabelled, conflicts, boundary };
+  // ── Pass 6: what the extract reached past the campus (§46, §49) ──────────
+  //
+  // An Overpass query is a BOUNDING BOX, not a campus. RNSIT's export happened
+  // to be drawn tight around the site; JSSATE's returns a neighbouring reserve
+  // forest, two city postal-code relations and a temple down the hill. Most of
+  // those carry no tag this map understands and are already excluded — but some
+  // do, and drawing them silently would put another institution's buildings
+  // inside "the JSSATE campus".
+  //
+  // Neither dropped nor hidden. They are real, correctly-attributed OSM
+  // geometry, so they are imported and rendered; what is added here is the
+  // STATEMENT that they lie outside the boundary, on the same principle the
+  // supplemental importer already applies to its own points — reported, never
+  // corrected (§49). A campus with no boundary reports nothing, because with
+  // nothing to be outside of there is no claim to make.
+  const outsideBoundary = [];
+  if (boundary) {
+    for (const f of features) {
+      if (f.kind === CAMPUS_FEATURE_KIND.BOUNDARY) continue;
+      if (touchesPolygon(f.geometry, boundary.geometry)) continue;
+      outsideBoundary.push({ osmId: f.sourceId, name: f.name, kind: f.kind });
+      f.metadata = {
+        ...f.metadata,
+        'Campus boundary': 'Outside — this feature is in the extract but not inside the campus boundary',
+      };
+    }
+  }
+
+  return { features, excluded, unlabelled, conflicts, outsideBoundary, boundary };
 }
 
 function buildMetadata({ classification, tags, sourceName, height }) {
@@ -990,8 +1168,8 @@ function buildMetadata({ classification, tags, sourceName, height }) {
  * Summarise a raw OSM collection and the import of it.
  * Consumed by the architecture tests and by the implementation report.
  */
-export function describeOsmImport(collection) {
-  const result = importOsmCampus(collection);
+export function describeOsmImport(collection, { dataset = OSM_DATASET } = {}) {
+  const result = importOsmCampus(collection, { dataset });
   const source = Array.isArray(collection?.features) ? collection.features : [];
 
   const count = (pred) => result.features.filter(pred).length;
@@ -1022,6 +1200,7 @@ export function describeOsmImport(collection) {
     labelled: count((f) => f.labelled),
     labelSuppressed: result.unlabelled.length,
     tagConflicts: result.conflicts.length,
+    outsideBoundary: result.outsideBoundary.length,
     namedFeatures: result.features.filter((f) => !f.nameIsDescriptive).map((f) => f.name).sort(),
   };
 }

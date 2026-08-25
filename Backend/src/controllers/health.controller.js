@@ -296,13 +296,28 @@ const cutover = asyncHandler(async (req, res) => {
   // ── This view is advisory, and says so ────────────────────────────────────
   // `docs/runbooks/cutover.md` prerequisite 2 points an operator here, so the one thing
   // this endpoint must never do is disagree with the authorisation it is standing in for.
-  // It evaluates **without** the binding context `stage.authoriseEnable()` supplies — no
-  // source digest, no age bound — because a request handler holds neither. Omitting them
-  // can only make this view *more* permissive than the real decision, never less, so the
-  // response carries `authoritative: false` and names what was not checked. An operator
-  // reading green here and refused at the cutover must be able to see why without guessing.
+  //
+  // PHASE 15 remediation (P15-C1). This call used to pass **no context at all**, and the
+  // comment here justified it: "a request handler holds neither [a source digest nor an age
+  // bound] … omitting them can only make this view more permissive than the real decision,
+  // never less."
+  //
+  // Half of that was wrong in each direction. A request handler does hold a clock and does
+  // know the bound the release tooling uses, so two of the three were always available; and
+  // omitting the source digest makes BUILD/SUITE records *inadmissible*, which is less
+  // permissive, not more. What made the sentence worth re-reading is that this endpoint had
+  // already named `"evidence age bound"` as one of the two things that make an evaluation
+  // authoritative — while `evidence.admit()` enforced only the other one. The advisory view
+  // named the gap that the authoritative path had.
+  //
+  // The correction is therefore in the honest direction rather than the convenient one:
+  // `admit()` now refuses a record it cannot age, so an evidence-bearing call here renders
+  // `RED [AGE_BOUND_REQUIRED]` instead of a silently unbounded `GREEN`. This view still does
+  // not invent an age bound — how stale a soak may be is the release tooling's decision and
+  // a register question, not a request handler's — and it still names what it did not check.
+  // What has changed is that not checking it can no longer look like having checked it.
   const releaseEvidence = req.app?.locals?.releaseEvidence || {};
-  const gateResult = cutoverGates.evaluate(releaseEvidence);
+  const gateResult = cutoverGates.evaluate(releaseEvidence, { nowMs: Date.now() });
 
   return res.json({
     section: "execution plan, Phase 15",
@@ -321,7 +336,9 @@ const cutover = asyncHandler(async (req, res) => {
       authoritative: false,
       notCheckedHere: ["sourceDigest binding", "evidence age bound"],
       counts: gateResult.counts,
-      blocking: cutoverGates.blockers(releaseEvidence).map((gate) => ({
+      // The same context as the count above. Evaluating the table twice under two different
+      // contexts would let `counts` and `blocking` disagree about the same evidence.
+      blocking: cutoverGates.blockers(releaseEvidence, { nowMs: Date.now() }).map((gate) => ({
         id: gate.id,
         status: gate.status,
         section: gate.section,

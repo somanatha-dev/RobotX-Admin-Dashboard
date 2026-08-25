@@ -56,6 +56,19 @@
  *     configuration version is a complete set and publishing a partial one would silently
  *     revert every other parameter to its register default.
  *
+ * ── "The version in force" is the pinned one, and that was not what it read (P15-E2) ──
+ * The sentence above was true of this module and false of the deployment. The composition
+ * root supplied the *latest published* version, which is the version in force only while
+ * nobody has published one without pinning it — and publishing without pinning is what
+ * `config.controller.publishVersion` does for `{ pin: false }`, which is how a candidate is
+ * put up for review. Measured live: with v10 pinned and v11 published-unpinned, one
+ * automatic rollback published v12 **from v11** and pinned it, putting an unreviewed
+ * configuration into force across the fleet as a side effect of disabling one shard.
+ *
+ * `versionInForceReader()` below is now the single implementation of that read, and it
+ * reports the two version numbers as well as the payload so that the case the defect lived
+ * in — the two disagreeing — is a refusal rather than something nothing could see.
+ *
  * ── Publish and pin, or neither ────────────────────────────────────────────
  * `service.publish()` creates a version; `service.pinVersion()` is what makes a version the
  * one processes observe. Publishing without pinning would produce a durable record of a
@@ -82,10 +95,116 @@ const REFUSAL = Object.freeze({
   BINDING_NOT_A_DISABLE: "BINDING_NOT_A_DISABLE",
   /** No configuration version is in force, so there is no complete set to carry forward. */
   NO_VERSION_IN_FORCE: "NO_VERSION_IN_FORCE",
+  /**
+   * The reading of "which version is in force" was not one this module can act on.
+   *
+   * Kept apart from `NO_VERSION_IN_FORCE`, which is a fact about the deployment. This one is
+   * a fact about the *dependency*: a `versionInForce` that returned something of an
+   * unrecognised shape is a composition defect, and P15-E2 is precisely what happens when
+   * that goes unnoticed — the previous producer returned a bare payload of the wrong version
+   * and nothing could tell.
+   */
+  VERSION_IN_FORCE_UNREADABLE: "VERSION_IN_FORCE_UNREADABLE",
+  /**
+   * A version has been published and not pinned, so the version in force is not the latest.
+   *
+   * `ConfigVersion` numbering is linear: any version this module publishes is `latest + 1`
+   * and therefore **supersedes** the unpinned one. There is no third option — publishing the
+   * in-force set reverts the candidate's content, and publishing the candidate's set promotes
+   * a configuration nobody put in force — and both are decisions *about the candidate*, which
+   * an automatic, one-directional control may not take. §22.3's rule for the second is
+   * absolute: "No automated tuner may modify a Safety-class parameter."
+   *
+   * So it refuses and names the remedy. The shard stays live, which is the cost, and the
+   * refusal says so — an operator resolves the candidate (pin it or supersede it) or takes
+   * `docs/runbooks/rollback.md`'s Action A by hand, which is an operator publish and is not
+   * subject to this rule.
+   */
+  SUPERSEDES_AN_UNPINNED_VERSION: "SUPERSEDES_AN_UNPINNED_VERSION",
 });
 
 /** The identity this module publishes under, so the audit names the mechanism. */
 const PUBLISHER = "cutover.guardrail-controller (automatic rollback, §22.4 item 4)";
+
+/**
+ * The singleton row that holds which version is **in force**.
+ *
+ * `config/service.js` writes it in `pinVersion()` and reads it in `loadPinnedSnapshot()`;
+ * it is the pointer every running process resolves its configuration through. Named here
+ * because `versionInForce` below is the one dependency whose *identity* — not merely whose
+ * shape — is part of this module's safety argument.
+ *
+ * @structural the config pin's singleton key, mirrored from `config/service.js`
+ */
+const ACTIVE_VERSION_ID = "singleton";
+
+/**
+ * The production reader for `versionInForce` — **the version in force, not the latest**.
+ *
+ * ── The defect this function exists to close (P15-E1/E2) ───────────────────
+ * `create()` documents its dependency as *"the payload of the currently **pinned**
+ * configuration version"*, this module's header says *"every other binding, kill-switch
+ * state, regime, spatial declaration and shard definition of **the version in force** is
+ * carried forward unchanged"*, and `docs/runbooks/rollback.md` §4 says the same. The
+ * composition root supplied something else:
+ *
+ *     const latest = await prisma.configVersion.findFirst({ orderBy: { version: "desc" } });
+ *
+ * That is the **highest-numbered published** version. It is the version in force only while
+ * nobody has published one without pinning it — and publishing without pinning is a shipped,
+ * supported operation: `config.controller.publishVersion` pins only `if (body.pin !== false)`,
+ * which is what an operator does to put a candidate up for review.
+ *
+ * Measured against a real PostgreSQL instance driving the shipped modules: with v6 pinned
+ * (`sla.assignment_deadline = 300`) and v7 published-but-unpinned (`= 900`), one automatic
+ * rollback published v8 from **v7's** payload and pinned it. A control whose entire licence
+ * to run without a human is that it may only ever disable one shard put an unreviewed
+ * candidate configuration into force across the whole fleet.
+ *
+ * There is a second, sharper consequence, and it is structural rather than incidental.
+ * `service.publish()` computes `safetyClassChanges` by diffing the candidate against the
+ * **latest** version's values, and `checkSafetyApproval` refuses an `automated: true` publish
+ * that changes any Safety-class parameter (finding S1 — §22.3's absolute rule, *"No
+ * automated tuner may modify a Safety-class parameter"*). When the base set **is** the latest
+ * version, that diff cannot contain anything the base did not already contain, so S1 is
+ * structurally unable to fire. Reading the pinned version instead restores the check: a
+ * divergence in a Safety-class parameter now shows up as a change, and the automatic publish
+ * is refused rather than performed. That refusal is loud — `server.js` raises it and the
+ * controller reports it every pass — which is the correct direction for a state in which an
+ * unpinned Safety-class candidate and a breaching shard exist at the same time.
+ *
+ * Lives here rather than in the composition root because the previous arrangement is exactly
+ * what a source-text test cannot pin: `server.js` held the only implementation, and its
+ * disagreement with this module's stated contract was invisible to 7 001 tests. One
+ * implementation, in the module that states the requirement, exercised against a real
+ * database by `tools/verify/phase15VersionInForce.js`.
+ *
+ * Returns `null` when nothing is pinned, which `publishRollback` refuses by name
+ * (`NO_VERSION_IN_FORCE`) — a shard cannot be live without a version in force, so that state
+ * is not one a rollback is the repair for.
+ *
+ * ── Why it reports the latest version as well as the one in force ──────────
+ * Not for information. `publishRollback` **requires** both and refuses without them, because
+ * a rollback published while the two differ necessarily supersedes a version nobody put in
+ * force — see `REFUSAL.SUPERSEDES_AN_UNPINNED_VERSION`. Returning the pair from one read is
+ * what makes that rule unconditional: a check that ran only when the caller happened to
+ * supply the second number would be a check with an off switch, and "omit the argument" is
+ * how the previous pass's four findings were all reached.
+ *
+ * @param {{ prisma: object }} deps
+ * @returns {Promise<{ version: number, latestVersion: number, payload: object }|null>}
+ */
+async function versionInForceReader(deps) {
+  const { prisma } = deps || {};
+  const pin = await prisma.configActiveVersion.findUnique({ where: { id: ACTIVE_VERSION_ID } });
+  if (!pin) return null;
+  const [row, latest] = await Promise.all([
+    prisma.configVersion.findUnique({ where: { version: pin.version }, select: { payload: true } }),
+    prisma.configVersion.findFirst({ orderBy: { version: "desc" }, select: { version: true } }),
+  ]);
+  if (!row || !row.payload || !latest) return null;
+  return { version: pin.version, latestVersion: latest.version, payload: row.payload };
+}
 
 function refuse(code, message) {
   return { published: false, refusal: { code, message }, version: null, pinned: false };
@@ -172,9 +291,12 @@ function bindingsWithRegionDisabled(bindings, regionId) {
  * Build the publisher the cutover worker's `publish` dependency expects.
  *
  * @param {object} deps
- * @param {() => Promise<object|null>} deps.versionInForce resolves the payload of the
- *   currently pinned configuration version — `{ bindings, killSwitchState, regimes,
- *   spatial, shards }` — or `null` when nothing is published.
+ * @param {() => Promise<{ version: number, latestVersion: number, payload: object }|null>}
+ *   deps.versionInForce resolves the **pinned** configuration version — its number, the
+ *   latest published version's number, and the pinned version's payload
+ *   (`{ bindings, killSwitchState, regimes, spatial, shards }`) — or `null` when nothing is
+ *   pinned. `versionInForceReader` above is the production implementation; a reading of any
+ *   other shape is refused (`VERSION_IN_FORCE_UNREADABLE`) rather than treated as a payload.
  * @param {(request: object) => Promise<{ version: number }>} deps.publish `config/service.publish`
  * @param {(version: number, publishedBy: string) => Promise<*>} deps.pin `config/service.pinVersion`
  * @param {(event: string, detail: object) => void} [deps.record]
@@ -196,8 +318,8 @@ function create(deps) {
       const admissible = assertDisableOnly(action);
       if (!admissible.ok) return refuse(admissible.code, admissible.message);
 
-      const inForce = await dependencies.versionInForce();
-      if (!inForce) {
+      const reading = await dependencies.versionInForce();
+      if (!reading) {
         // There is no complete set to carry forward, and inventing one from register
         // defaults would publish a configuration nobody authored in order to disable one
         // shard. A shard cannot be live without a published version in the first place, so
@@ -209,6 +331,47 @@ function create(deps) {
             "change every other parameter at the same time.",
         );
       }
+
+      /**
+       * PHASE 15 remediation (P15-E2) — the reading is a version, not a bag of bindings.
+       *
+       * This dependency used to be documented as returning "the payload of the currently
+       * pinned configuration version" and the composition root returned the payload of the
+       * *latest* one. A payload alone cannot tell the two apart, which is why nothing did
+       * for the whole life of this module. It now carries which version it is and which one
+       * is latest, and an answer that does not is refused rather than read as a payload.
+       */
+      if (
+        !Number.isInteger(reading.version) ||
+        !Number.isInteger(reading.latestVersion) ||
+        !reading.payload ||
+        typeof reading.payload !== "object"
+      ) {
+        return refuse(
+          REFUSAL.VERSION_IN_FORCE_UNREADABLE,
+          "`versionInForce` must report which version is in force, which version is latest, and that " +
+            "version's payload (`{ version, latestVersion, payload }`). It returned " +
+            `${JSON.stringify(Object.keys(reading))}. A payload on its own cannot say which version it is, ` +
+            "and a composition root that returned the wrong one was invisible for exactly that reason.",
+        );
+      }
+
+      if (reading.version !== reading.latestVersion) {
+        return refuse(
+          REFUSAL.SUPERSEDES_AN_UNPINNED_VERSION,
+          `configuration v${reading.version} is in force but v${reading.latestVersion} is the latest published, ` +
+            `so it was published without being pinned. Any version this control publishes is ` +
+            `v${reading.latestVersion + 1} and therefore supersedes it: carrying the in-force set forward ` +
+            "reverts that candidate's content, and carrying the candidate's set forward puts a configuration " +
+            "nobody approved into force — §22.3 forbids the second absolutely (\"No automated tuner may modify " +
+            "a Safety-class parameter\") and neither is a decision an automatic, one-directional control may " +
+            `take. Resolve v${reading.latestVersion} first — pin it or supersede it — or take Action A of ` +
+            "docs/runbooks/rollback.md by hand, which is an operator publish and is not subject to this rule. " +
+            "THE SHARD REMAINS LIVE UNTIL ONE OF THOSE HAPPENS.",
+        );
+      }
+
+      const inForce = reading.payload;
 
       const published = await dependencies.publish({
         publishedBy: PUBLISHER,
@@ -246,4 +409,12 @@ function create(deps) {
   };
 }
 
-module.exports = { REFUSAL, PUBLISHER, assertDisableOnly, bindingsWithRegionDisabled, create };
+module.exports = {
+  REFUSAL,
+  PUBLISHER,
+  ACTIVE_VERSION_ID,
+  versionInForceReader,
+  assertDisableOnly,
+  bindingsWithRegionDisabled,
+  create,
+};

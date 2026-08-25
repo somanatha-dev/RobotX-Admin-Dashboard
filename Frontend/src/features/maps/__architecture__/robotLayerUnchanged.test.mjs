@@ -118,10 +118,77 @@ test('robot state still produces the same world anchor it always did', () => {
   assert.deepEqual(visual.anchor, anchor);
 });
 
+test('the pure operational and camera modules stay pure', () => {
+  // §Q: the seam is agnostic because `world/`, `operational/` and `camera/` are
+  // pure modules with no rendering dependency — so a future 3D renderer on a
+  // different stack can consume them verbatim. This phase added four of them,
+  // and each one is exactly where a `mapbox-gl` import would be convenient.
+  for (const name of [
+    '../operational/routeGeometry.js',
+    '../operational/routeValidation.js',
+    '../camera/followCamera.js',
+    '../campus/semantics/campusOperational.js',
+    '../campus/verification/campusVerification.js',
+  ]) {
+    const source = stripComments(read(name));
+    assert.equal(/from ['"]mapbox-gl['"]/.test(source), false, `${name} must not import mapbox-gl`);
+    assert.equal(/from ['"]react['"]/.test(source), false, `${name} must not import react`);
+    assert.equal(/from ['"]@\//.test(source), false, `${name} must not use the bundler alias`);
+    assert.equal(source.includes('document.'), false, `${name} must not touch the DOM`);
+  }
+});
+
+test('route validation reports and never repairs — structurally', () => {
+  // §3D turns on this: a route that contradicts the campus geometry is reported
+  // in words, never nudged, snapped or hidden. A validator that could write to
+  // a map or a source is a validator that will eventually be asked to "just
+  // fix" the line.
+  const source = stripComments(read('../operational/routeValidation.js'));
+  for (const forbidden of ['setData', 'setPaintProperty', 'addLayer', 'removeLayer', 'map.']) {
+    assert.equal(source.includes(forbidden), false, `route validation must not reference "${forbidden}"`);
+  }
+});
+
+test('the follow camera is driven by frames, not by telemetry', () => {
+  // The defect this replaces: `easeTo` on every `robot:update`. If a camera
+  // command ever reappears in the telemetry path, the interrupted-tween stutter
+  // comes back with it, and it is invisible in a screenshot.
+  const handler = ROBOT_STREAM.slice(ROBOT_STREAM.indexOf('const upsertMarker'), ROBOT_STREAM.indexOf('const syncMarkersToRobots'));
+  assert.ok(handler.length > 0, 'could not delimit upsertMarker');
+  assert.equal(handler.includes('easeTo'), false, 'a telemetry tick must not issue a camera command');
+  assert.equal(handler.includes('flyTo'), false);
+  assert.equal(handler.includes('jumpTo'), false);
+  assert.ok(handler.includes('followTargetRef'), 'a telemetry tick updates a target');
+
+  // And the loop itself exists and uses the tested pure step function.
+  assert.ok(ROBOT_STREAM.includes('stepFollowCamera'), 'the follow loop must use the tested smoothing');
+  assert.ok(ROBOT_STREAM.includes('requestAnimationFrame'), 'the follow loop must be frame-driven');
+});
+
+test('a telemetry payload with no task can no longer delete a route', () => {
+  // The defect: `upsertRoutes` read the task off whatever payload triggered it.
+  // `robot:update` carries none, so every tick was read as "this robot has no
+  // task" and removed the route that had just been drawn. The task now lives in
+  // a record, and only two things clear it.
+  assert.ok(ROBOT_STREAM.includes('robotTasksRef'), 'the task record must exist');
+
+  // Delimited by CODE, not by a comment — `ROBOT_STREAM` has had its comments
+  // stripped, so a comment marker silently returns -1 and slices to the end of
+  // the file, which would make the assertion below read `upsertMarker` too.
+  const start = ROBOT_STREAM.indexOf('const upsertRoutes');
+  const end = ROBOT_STREAM.indexOf('removeRouteForRobot, themeRef, publishFindings]', start);
+  assert.ok(start > 0 && end > start, 'could not delimit upsertRoutes');
+  const body = ROBOT_STREAM.slice(start, end);
+
+  // It reads the record, not the payload.
+  assert.ok(body.includes('robotTasksRef.current.get(robotId)'));
+  assert.equal(/robot\?\.task/.test(body), false, 'upsertRoutes must not read a task off a robot payload');
+});
+
 test('the theme decides route colour, never route geometry', () => {
-  // Route progress is derived from `pathIndex` against real path geometry. If
-  // a theme could reach that, a colour change could redraw where a unit has
-  // been.
+  // Route progress is derived from the unit's position against real path
+  // geometry. If a theme could reach that, a colour change could redraw where a
+  // unit has been.
   const start = ROBOT_STREAM.indexOf('function applyThemeToRouteLayers');
   assert.ok(start > 0, 'applyThemeToRouteLayers must exist — it is the whole theme→route path');
 

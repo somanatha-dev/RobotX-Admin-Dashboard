@@ -123,6 +123,43 @@ const OBSTRUCTION_CLASSES = Object.freeze(["CLEAR", "RESTRICTIVE", "BLOCKING_CRI
 const MAX_FENCE = 8;
 
 /**
+ * How many times a Leg's version may advance — **and why this bound has to exist** (P15-E5).
+ *
+ * `MAX_FENCE` above bounds the fence "bounding the space", in its own words. `leg.version`
+ * was not bounded, and it is part of `key()`. Every applied transition advances it, so every
+ * state was distinguishable from every earlier state by a counter that only ever grew: **the
+ * state space was infinite**, and no search of it could ever close. Measured on the smallest
+ * possible shape (capacity 1, one Leg), the state count grew perfectly linearly with the
+ * depth bound and showed no sign of converging:
+ *
+ * ```
+ * depth   10   20    40    80   160    320    640
+ * states 124  334   754  1594  3274   6634  13354
+ * ```
+ *
+ * So `exhaustive` was not merely unproven for the shipped configurations — it was
+ * **unachievable for any configuration**, and the depth bound was silently doing all the
+ * work of terminating a search that had no other way to stop. With the bound applied, the
+ * same shape closes at depth 40 with 166 states and no violation.
+ *
+ * ── Why bounding it loses nothing ──────────────────────────────────────────
+ * The version has exactly one behavioural use: it is handed to the shipped guard as
+ * `expectedVersion: target.version` — always the **current** value, so the CAS always
+ * matches and the version can never make a guard fail in this model. Its only other role is
+ * in `key()`, where it distinguishes *histories* rather than *behaviours*. Collapsing two
+ * states that differ only in a counter past this bound is therefore a sound abstraction, not
+ * a weakened check, and the Leg states themselves are finite with absorbing terminals.
+ *
+ * ── It does not move any shipped configuration ─────────────────────────────
+ * At the depths the suite runs (12 / 9 / 7) no Leg reaches this bound, so the state counts
+ * are identical with and without it: 5 750 at capacity 1 and 30 531 at capacity 2, before
+ * and after. The bound changes what is *reachable in principle*, not what is measured today.
+ *
+ * @structural how many times a Leg's version may advance, bounding the space
+ */
+const MAX_VERSION = 12;
+
+/**
  * The initial state: every Leg queued, no custody, no commitment, Task waiting.
  *
  * @param {{ legs: number }} shape
@@ -216,7 +253,10 @@ function applyEffects(leg, target, row) {
   leg.state = target;
   // §4.1 rule 2: every write is conditional on the version, and every applied transition
   // advances it. This is what makes two concurrent transitions on one Leg distinguishable.
-  leg.version += 1;
+  //
+  // Bounded by `MAX_VERSION` for the reason `MAX_FENCE` is bounded, and because without the
+  // bound this line alone made the state space infinite — see `MAX_VERSION`'s header (P15-E5).
+  if (leg.version < MAX_VERSION) leg.version += 1;
 
   // Custody follows the state, per §4.3's table.
   if (target === "LOADED" && previous === "AT_PICKUP") {
@@ -450,10 +490,47 @@ function checkNoDeadEnds(state, shape) {
 }
 
 /**
- * Explore the state space exhaustively to a bounded depth.
+ * Explore the state space to a bounded depth, and say honestly whether it closed.
+ *
+ * ── The defect this reporting exists to close (P15-E5) ─────────────────────
+ * A search stops for exactly three reasons and they are not the same claim:
+ *
+ *   1. **The frontier emptied.** Every reachable state was visited. The result is a
+ *      statement about the lifecycle.
+ *   2. **The depth bound was hit** while an unvisited successor existed beyond it. The
+ *      result is a statement about the lifecycle *within N actions* — strictly weaker, and
+ *      a reader must be told.
+ *   3. **The state cap was hit.** Likewise.
+ *
+ * This function set a single `exhaustive` flag from condition 3 alone. The depth bound —
+ * which every caller set, and which every caller hit — moved it not at all. Measured on the
+ * shipped shapes before the fix:
+ *
+ * ```
+ * capacity 1 (legs 2, depth 12)  exhaustive=true   1 350 nodes stopped at the bound
+ * capacity 2 (legs 3, depth  9)  exhaustive=true  12 237 nodes stopped at the bound
+ * capacity 3 (legs 4, depth  7)  exhaustive=true  37 880 nodes stopped at the bound
+ * ```
+ *
+ * At capacity 3 the unexplored frontier was larger than the explored state space, and the
+ * run reported itself exhaustive. `lifecycleModelCheck.test.js` asserted that flag, and its
+ * result discharges **`model_check_capacity_1_2_3`** — a blocking §24 release gate whose
+ * statement is that the lifecycle is model-checked *exhaustively* at capacity 1, 2 and 3.
+ * A green gate rested on a claim of proof for a search that did not perform one.
+ *
+ * `commitmentModel.js` had the identical defect and was corrected during the Phase 3
+ * re-verification; `formal/README.md` records that this module still carried it and names
+ * Phase 15 as its owner. This is that correction, deliberately written to match its sibling
+ * line for line — two checkers that report their own completeness differently are two
+ * checkers a reader has to compare by hand.
+ *
+ * Detecting condition 2 precisely costs one extra expansion per node at the bound: a node
+ * whose successors have all been seen already truncates nothing, and reporting it as
+ * truncation would understate what was proven.
  *
  * @param {{ capacity: number, legs: number, depth: number, maxStates?: number }} shape
- * @returns {{ exhaustive: boolean, states: number, transitions: number, violations: object[],
+ * @returns {{ exhaustive: boolean, depthTruncated: boolean, stateCapExceeded: boolean,
+ *   maxDepthReached: number, states: number, transitions: number, violations: object[],
  *   reachedStates: Set<string>, terminalReached: number }}
  */
 function check(shape) {
@@ -465,7 +542,9 @@ function check(shape) {
   const violations = [];
   const reachedStates = new Set();
   let transitionCount = 0;
-  let exhaustive = true;
+  let depthTruncated = false;
+  let stateCapExceeded = false;
+  let maxDepthReached = 0;
   let terminalReached = 0;
 
   // Checked once: it is a property of a total function, not of a trace.
@@ -473,6 +552,7 @@ function check(shape) {
 
   while (frontier.length > 0) {
     const node = frontier.pop();
+    if (node.depth > maxDepthReached) maxDepthReached = node.depth;
 
     for (const leg of node.state.legs) {
       reachedStates.add(leg.state);
@@ -487,14 +567,24 @@ function check(shape) {
       if (violations.length > 3) break;
     }
 
-    if (node.depth >= settings.depth) continue;
+    // A node at the bound is still expanded, and the expansion is what decides whether the
+    // bound truncated anything. Skipping it here — which is what this function used to do —
+    // is precisely why the depth bound could never move the completeness flag.
+    const atBound = node.depth >= settings.depth;
 
     for (const successor of successors(node.state, settings)) {
       transitionCount += 1;
       const successorKey = key(successor.state);
       if (seen.has(successorKey)) continue;
+
+      // An unvisited state exists one action past the bound: the search is truncated by
+      // depth, and says so rather than reporting itself exhaustive.
+      if (atBound) {
+        depthTruncated = true;
+        continue;
+      }
       if (seen.size >= settings.maxStates) {
-        exhaustive = false;
+        stateCapExceeded = true;
         continue;
       }
       seen.add(successorKey);
@@ -502,7 +592,17 @@ function check(shape) {
     }
   }
 
-  return { exhaustive, states: seen.size, transitions: transitionCount, violations, reachedStates, terminalReached };
+  return {
+    exhaustive: !depthTruncated && !stateCapExceeded,
+    depthTruncated,
+    stateCapExceeded,
+    maxDepthReached,
+    states: seen.size,
+    transitions: transitionCount,
+    violations,
+    reachedStates,
+    terminalReached,
+  };
 }
 
 module.exports = {

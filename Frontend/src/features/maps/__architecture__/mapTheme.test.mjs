@@ -113,6 +113,107 @@ test('every theme supplies the vendor colour knobs the campus basemap is styled 
   }
 });
 
+// ── The campus road must be VISIBLE, in every theme ─────────────────────────
+
+const luma = (hex) => {
+  const [r, g, b] = hexToRgb(hex);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+
+test('a campus road separates from the ground it crosses, in every theme', () => {
+  // The defect this pins: Day and Evening painted the campus carriageway white
+  // and near-white, ON a pale campus apron. The road and the ground it ran over
+  // sat within a few percent of each other in luminance, so the network the
+  // fleet actually drives was invisible — and the legend's white "campus road"
+  // swatch was describing something nobody could see.
+  //
+  // A minimum separation is the property that cannot be satisfied by accident.
+  // Which SIDE the road is on is left to the theme: dark-on-light by day,
+  // lit-on-dark at night. Both are correct; sitting in the middle is not.
+  for (const theme of ALL) {
+    const road = luma(theme.roads.main.color);
+    const ground = luma(theme.campus.ground.OTHER);
+    assert.ok(
+      Math.abs(road - ground) > 60,
+      `${theme.id}: campus road (${theme.roads.main.color}) does not separate from campus ground (${theme.campus.ground.OTHER})`
+    );
+
+    // And the casing has to separate from its own carriageway, because the
+    // casing is what draws the road's edge in both directions.
+    assert.ok(
+      Math.abs(road - luma(theme.roads.main.casing)) > 60,
+      `${theme.id}: road casing does not separate from the carriageway`
+    );
+  }
+});
+
+test('the road inverts between day and night, deliberately', () => {
+  // Day and Evening: a dark carriageway inside a bright casing.
+  // Night: an illuminated carriageway inside a dark casing.
+  for (const id of ['DAY', 'EVENING']) {
+    const t = MAP_THEMES[id];
+    assert.ok(luma(t.roads.main.color) < luma(t.roads.main.casing), `${id}: road should be darker than its casing`);
+  }
+  const night = MAP_THEMES.NIGHT;
+  assert.ok(luma(night.roads.main.color) > luma(night.roads.main.casing), 'NIGHT: road should be brighter than its casing');
+  // Night's road is the brightest of the three — it is the one that is lit.
+  assert.ok(luma(night.roads.main.color) > luma(MAP_THEMES.DAY.roads.main.color));
+  assert.ok(luma(night.roads.main.color) > luma(MAP_THEMES.EVENING.roads.main.color));
+});
+
+test('every theme states how much of each layer is self-lit (§59)', () => {
+  // Standard is a LIT style: `line/fill/circle-emissive-strength` default to 0,
+  // so a colour chosen here is multiplied by the scene's light before it is
+  // drawn. Leaving the default is not "no opinion", it is "fully dimmed by the
+  // night lighting" — which is what made the night road grey. A theme that
+  // omits one of these silently reintroduces that.
+  for (const theme of ALL) {
+    for (const key of ['buildingEmissive', 'groundEmissive', 'pointEmissive']) {
+      assert.equal(typeof theme.campus[key], 'number', `${theme.id} is missing campus.${key}`);
+    }
+    for (const cls of ['main', 'secondary', 'service', 'path', 'steps']) {
+      assert.equal(typeof theme.roads[cls].emissive, 'number', `${theme.id} is missing roads.${cls}.emissive`);
+    }
+  }
+
+  // A lit night road is the whole point of declaring these at all.
+  assert.ok(MAP_THEMES.NIGHT.roads.main.emissive > MAP_THEMES.DAY.roads.main.emissive);
+  assert.ok(MAP_THEMES.NIGHT.campus.pointEmissive > MAP_THEMES.DAY.campus.pointEmissive);
+});
+
+test('contact shading lengthens as the sun drops (§26)', () => {
+  // The ground radius is how far a building's occlusion reaches away from its
+  // wall — the honest lever for "longer shadows at a low sun". Evening's sun is
+  // the lowest of the three, so its shading must reach furthest.
+  const ground = (id) => MAP_THEMES[id].campus.buildingAoGroundRadius;
+  assert.ok(ground('EVENING') > ground('DAY'), 'Evening must throw longer shading than Day');
+  assert.ok(ground('EVENING') > ground('NIGHT'), 'Evening must throw longer shading than Night');
+  assert.ok(MAP_THEMES.EVENING.campus.buildingAoIntensity > MAP_THEMES.DAY.campus.buildingAoIntensity);
+});
+
+test('every theme carries a complete colour grade (§60)', () => {
+  // The grade is what gives Evening its dusk without the `dusk` preset that was
+  // measured to kill the labels. A theme missing it renders no grade at all,
+  // and the cross-fade would fade to nothing rather than to that theme's frame.
+  for (const theme of ALL) {
+    assert.ok(theme.grade, `${theme.id} is missing its grade`);
+    assert.match(theme.grade.vignette, /^#[0-9a-f]{6}$/i, `${theme.id}/grade.vignette`);
+    assert.match(theme.grade.skyTint, /^#[0-9a-f]{6}$/i, `${theme.id}/grade.skyTint`);
+    for (const key of ['vignetteOpacity', 'skyTintOpacity']) {
+      const value = theme.grade[key];
+      assert.equal(typeof value, 'number', `${theme.id}/grade.${key}`);
+      // A grade is atmosphere over an operations map, never a curtain over one:
+      // past roughly half opacity it stops being a vignette and starts hiding
+      // the city context the campus is read against (§24).
+      assert.ok(value >= 0 && value <= 0.6, `${theme.id}/grade.${key} is out of range`);
+    }
+  }
+
+  // Evening is the darkest grade — that is how it gets to be dusk while its
+  // vendor preset stays `dawn` for the labels' sake.
+  assert.ok(MAP_THEMES.EVENING.grade.vignetteOpacity > MAP_THEMES.DAY.grade.vignetteOpacity);
+});
+
 test('the road hierarchy is a hierarchy in every theme', () => {
   // main > secondary > service > path, by width. If two classes ever collapse
   // to the same width the hierarchy stops communicating anything.
@@ -267,6 +368,76 @@ test('the arrival reveal scales opacity and nothing else', () => {
     hidden[CAMPUS_LAYER.ROAD_MAIN].paint['line-width'],
     full[CAMPUS_LAYER.ROAD_MAIN].paint['line-width']
   );
+});
+
+test('Day → Evening → Night → Day returns the map to exactly where it started', () => {
+  // §3L: the three themes stay, transitions are smooth, and cycling through
+  // them must not leave residue. Because a theme is a VALUE and a transition is
+  // an interpolation between two values, a full cycle is the identity — there
+  // is no accumulated state to drift. This asserts that structurally.
+  const cycle = [MAP_THEMES.DAY, MAP_THEMES.EVENING, MAP_THEMES.NIGHT, MAP_THEMES.DAY];
+  for (let i = 0; i < cycle.length - 1; i += 1) {
+    assert.equal(interpolateThemes(cycle[i], cycle[i + 1], 1), cycle[i + 1]);
+  }
+  assert.deepEqual(campusStyleForTheme(cycle[3]), campusStyleForTheme(cycle[0]));
+
+  // Each hop genuinely changes the picture — a "transition" between two themes
+  // that render identically would pass every other test in this file.
+  for (let i = 0; i < cycle.length - 1; i += 1) {
+    const from = campusStyleForTheme(cycle[i]);
+    const to = campusStyleForTheme(cycle[i + 1]);
+    assert.notDeepEqual(
+      from[CAMPUS_LAYER.ROAD_MAIN].paint['line-color'],
+      to[CAMPUS_LAYER.ROAD_MAIN].paint['line-color'],
+      `${cycle[i].id} → ${cycle[i + 1].id} left the campus road unchanged`
+    );
+  }
+});
+
+test('Operations mode changes emphasis and nothing an operator navigates by (§3H)', () => {
+  const normal = campusStyleForTheme(MAP_THEMES.DAY, 1, 0);
+  const ops = campusStyleForTheme(MAP_THEMES.DAY, 1, 1);
+
+  // The campus must NOT be hidden — §3H says so twice. Buildings and ground
+  // step back by one notch; they do not disappear.
+  const buildingOpacity = (s) => s[CAMPUS_LAYER.BUILDINGS].paint['fill-extrusion-opacity'];
+  assert.ok(buildingOpacity(ops) < buildingOpacity(normal), 'buildings must recede in Operations');
+  assert.ok(buildingOpacity(ops) > 0.7, 'buildings must remain clearly visible');
+
+  // The roads are how an operator reads where a unit can go. They are left
+  // completely alone.
+  assert.deepEqual(ops[CAMPUS_LAYER.ROAD_MAIN].paint, normal[CAMPUS_LAYER.ROAD_MAIN].paint);
+  assert.deepEqual(ops[CAMPUS_LAYER.PATH].paint, normal[CAMPUS_LAYER.PATH].paint);
+  assert.deepEqual(ops[CAMPUS_LAYER.STEPS].paint, normal[CAMPUS_LAYER.STEPS].paint);
+
+  // Colour is emphasis-independent: Operations changes what is prominent, never
+  // what anything IS. A category that changed hue between modes would break the
+  // legend's "colour = type" claim.
+  assert.deepEqual(
+    ops[CAMPUS_LAYER.BUILDINGS].paint['fill-extrusion-color'],
+    normal[CAMPUS_LAYER.BUILDINGS].paint['fill-extrusion-color']
+  );
+  assert.deepEqual(ops[CAMPUS_LAYER.BUILDINGS].paint['fill-extrusion-height'], normal[CAMPUS_LAYER.BUILDINGS].paint['fill-extrusion-height']);
+
+  // Nothing is hidden by geometry either: no layer gains a visibility switch.
+  for (const [layerId, spec] of Object.entries(ops)) {
+    assert.equal(spec.layout?.visibility, undefined, `${layerId} must not be hidden by Operations mode`);
+  }
+});
+
+test('the emphasis ramp is monotonic, so the transition cannot flicker', () => {
+  const opacity = (e) => campusStyleForTheme(MAP_THEMES.NIGHT, 1, e)[CAMPUS_LAYER.BUILDINGS].paint['fill-extrusion-opacity'];
+  let previous = Infinity;
+  for (const e of [0, 0.2, 0.4, 0.6, 0.8, 1]) {
+    const value = opacity(e);
+    assert.ok(value <= previous, `emphasis ${e} reversed direction`);
+    previous = value;
+  }
+  // Out-of-range input is clamped rather than extrapolated into a negative
+  // opacity, which Mapbox accepts and renders as nothing at all.
+  assert.equal(opacity(-1), opacity(0));
+  assert.equal(opacity(5), opacity(1));
+  assert.equal(opacity('nonsense'), opacity(0));
 });
 
 test('the transition is long enough to read as time passing, short enough to work through', () => {

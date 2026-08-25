@@ -89,10 +89,29 @@ each of the twenty-three gates authorised a cutover. Evidence is now produced by
 `npm run release:evidence` — which runs the gates and records their exit codes — and judged
 by `npm run release:gates`, whose exit code **is** the release decision.
 
-> **`GET /api/health/cutover` is advisory.** It evaluates the same table but without the
-> source-digest binding and age bound that a request handler cannot supply, so it can only
-> ever be more permissive than the authorisation. Its response says so
-> (`releaseGates.authoritative: false`). The decision is `authoriseEnable()`'s.
+> **`GET /api/health/cutover` is advisory, and prerequisite 2 above cannot currently be
+> discharged by it.** *(Corrected by the Phase 15 third-pass audit, P15-E6.)*
+>
+> Two things this note used to say are false and are replaced rather than softened.
+>
+> **It is not "only ever more permissive".** That claim was corrected in
+> `health.controller.js` by the second-pass remediation and left standing here. Omitting the
+> source digest makes every `BUILD`/`SUITE` record **inadmissible**, which is *less*
+> permissive; and since `evidence.admit()` now refuses a record it cannot age, an
+> evidence-bearing call renders `RED [AGE_BOUND_REQUIRED]` rather than a silently unbounded
+> `GREEN`. The view errs strictly toward refusing.
+>
+> **`releaseGates.blocking` is never empty, so the check named in row 2 cannot pass.** The
+> view reads `app.locals.releaseEvidence`, and **nothing in this repository assigns it** —
+> the field has three readers and no producer. Every one of the twenty-four gates is
+> therefore reported `NOT_EVALUATED`, always, whatever the real release state is. It fails
+> closed, which is why this is a broken procedure rather than an unsafe one, but an operator
+> following row 2 literally will never see it satisfied.
+>
+> **Until it has a producer, discharge row 2 with `npm run release:gates`**, which is the
+> tool that collects the evidence, judges the whole table under a source digest and an age
+> bound, and exits non-zero unless every blocking gate is GREEN. The decision remains
+> `authoriseEnable()`'s.
 
 > **Item 3 is the one that is currently red.** 39 Safety-class parameters are `PROVISIONAL`
 > or `UNCALIBRATED`. This is execution-plan blocking pre-work item **B8**, not a code

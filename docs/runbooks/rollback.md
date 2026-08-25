@@ -109,6 +109,27 @@ not a disable of that parameter at region scope, and carries every other binding
 regime, spatial declaration and shard definition of the version in force forward unchanged — a
 per-shard control must not make a fleet-wide change.
 
+**It refuses while a version is published but not pinned.** *(Phase 15 third-pass
+remediation, P15-E2.)* "The version in force" means the **pinned** one. Until this
+remediation the composition root handed the publisher the *latest published* version instead,
+and those differ exactly when someone has published with `{ "pin": false }` — which is how a
+candidate configuration is put up for review. Measured on a real database: with v10 pinned
+and v11 published-unpinned, one automatic rollback published v12 **from v11** and pinned it,
+putting an unreviewed configuration into force across the fleet as a side effect of disabling
+one shard.
+
+The publisher now reads the pin, and in that divergent state it **refuses** with
+`SUPERSEDES_AN_UNPINNED_VERSION` rather than choosing for you. Version numbering is linear, so
+anything it publishes is `latest + 1` and supersedes the candidate either way: carrying the
+in-force set forward reverts the candidate's content, and carrying the candidate's set forward
+puts a configuration nobody approved into force — and §22.3 forbids the second absolutely.
+Neither is a decision an automatic, one-directional control may take.
+
+> **What to do when you see it.** The refusal names both versions. **The shard stays live
+> until you act.** Either resolve the candidate — pin it, or supersede it with a version you
+> do want in force — or take **Action A** below by hand. An operator publish is not subject
+> to this rule, and it is the faster of the two when a shard is actively breaching.
+
 **Propagation is not instant.** Processes adopt the pinned version on the configuration pull,
 at `cutover.guardrail_check_interval`. Confirm with `GET /api/health/cutover` that the shard
 reads `NONE` before you treat the harm as stopped. *Before the Phase 15 current-tree
