@@ -12,7 +12,7 @@ none of them to find out how RobotX works today.
 | **The architecture** (frozen) | [`../../NEXT_GENERATION_ASSIGNMENT_ENGINE.md`](../../NEXT_GENERATION_ASSIGNMENT_ENGINE.md) |
 | **Architectural decisions** | [`../adr/`](../adr/) |
 | **The plan of record** | [`../../IMPLEMENTATION_EXECUTION_PLAN.md`](../../IMPLEMENTATION_EXECUTION_PLAN.md) |
-| **Current programme status** | [`../../PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md`](../../PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md) |
+| **Current programme status** | [`../phase15/PHASE_15_MASTER.md`](../phase15/PHASE_15_MASTER.md) |
 
 ---
 
@@ -31,10 +31,18 @@ Three reasons, and none of them is sentiment:
 
 ## What is NOT here
 
-**`PHASE_*` reports stay at the repository root.** All 37 of them — the implementation reports, the
-independent verification reports, the Phase 10 cost-scaling pair, and the five Phase 15 specialist
-reports — are **current historical engineering evidence**, not superseded documentation. They were
+**`PHASE_*` reports for Phases 0–14 stay at the repository root.** The implementation reports, the
+independent verification reports, the remediation-and-closure reports and the Phase 10 cost-scaling
+pair are **current historical engineering evidence**, not superseded documentation. They were
 deliberately not archived, merged, or renamed.
+
+**Phase 15 is the exception, and it is not archived *here*.** On 2026-08-29 its fifteen reports —
+which by then contradicted one another about the current state of the tree — were consolidated into
+five canonical documents at [`../phase15/`](../phase15/), with all fifteen originals preserved
+byte-for-byte at [`../phase15/archive/`](../phase15/archive/). That archive is separate from this
+one on purpose: **this directory holds documentation of *deleted systems*, whereas the Phase 15
+archive holds superseded reports about a system that very much still exists.** Start at
+[`../phase15/PHASE_15_MASTER.md`](../phase15/PHASE_15_MASTER.md).
 
 ---
 

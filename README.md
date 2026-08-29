@@ -41,13 +41,13 @@ Read these in this order depending on what you need.
 |---|---|
 | **[`ARCHITECTURE.md`](ARCHITECTURE.md)** | **Start here.** What RobotX is *today* — the live host platform, the engine's real status, known gaps, and a source-of-truth map |
 | [`NEXT_GENERATION_ASSIGNMENT_ENGINE.md`](NEXT_GENERATION_ASSIGNMENT_ENGINE.md) | **The frozen architecture.** Architectural authority. Where anything disagrees with it, the other thing is defective |
-| [`docs/adr/`](docs/adr/) | 38 architecture decision records — each fixing one decision's identity **and its rejected alternative** |
+| [`docs/adr/`](docs/adr/) | **40 architecture decision records** — the 38 frozen Appendix C decisions, plus **ADR-33** and **ADR-34**, integration decisions numbered from 33 upward. Each fixes one decision's identity **and its rejected alternative** |
 | [`IMPLEMENTATION_EXECUTION_PLAN.md`](IMPLEMENTATION_EXECUTION_PLAN.md) | The plan of record: 16 phases, capability inventory, blocking decisions, release gates |
-| [`PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md`](PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md) | **Current programme status.** Living, append-only register of what is blocked and why |
+| **[`docs/phase15/PHASE_15_MASTER.md`](docs/phase15/PHASE_15_MASTER.md)** | **Current Phase 15 status — the source of truth.** What is implemented, what is verified, what is blocked and why. Superseded Phase 15 reports are in [`docs/phase15/archive/`](docs/phase15/archive/) and are historical evidence only |
 | [`docs/runbooks/`](docs/runbooks/) | [`cutover.md`](docs/runbooks/cutover.md) and [`rollback.md`](docs/runbooks/rollback.md). **Read rollback first** |
 | [`docs/safety-case/SAFETY_CASE.md`](docs/safety-case/SAFETY_CASE.md) | Generated safety case — `npm run safety:case`. Do not hand-edit |
 | [`Backend/src/engine/ARCHITECTURE.md`](Backend/src/engine/ARCHITECTURE.md) · [`TIERS.md`](Backend/src/engine/TIERS.md) | Engine module map and obligation tiers |
-| `PHASE_*_IMPLEMENTATION_REPORT.md` · `PHASE_*_INDEPENDENT_VERIFICATION.md` | Historical engineering evidence, one pair per phase — **except Phase 0, which has an implementation report but was never independently verified** (see note below) |
+| `PHASE_*_IMPLEMENTATION_REPORT.md` · `PHASE_*_INDEPENDENT_VERIFICATION.md` | Historical engineering evidence, one pair per phase — **except Phase 0, which has an implementation report but was never independently verified** (see note below). **Phase 15's reports are not at the root**: they were consolidated into [`docs/phase15/`](docs/phase15/) on 2026-08-29 |
 | [`docs/history/`](docs/history/) | **Superseded documentation.** Describes deleted systems — not current authority |
 
 > **Two of these are build dependencies.** Four tests read `NEXT_GENERATION_ASSIGNMENT_ENGINE.md`
@@ -185,18 +185,19 @@ tests makes acceptable.
 ```bash
 cd Backend
 
-npm run gates          # all seven build gates
-npm test               # full suite — 145 suites, 6287 tests
+npm run gates          # all eight build gates — EXITS 1 today, see the note below
+npm test               # full suite
 npm run verify         # gates + tests
 
 # Individual gates
-npm run gate:tiers     # §1.8 rule 2 — no Tier 0/1 module may depend on a Tier 2 mechanism
-npm run gate:params    # §22 — no behavioural constant outside the parameter register
-npm run gate:tenets    # T1 type separation, T6 no wall-clock read in the decision path
-npm run gate:privacy   # §23.7 — identity isolation
-npm run gate:erasure   # replay equivalence over an erased corpus
-npm run gate:legacy    # the four retired modules stay retired
-npm run gate:columngen # §21.6 — a column-generation change must carry an evaluator run
+npm run gate:tiers       # §1.8 rule 2 — no Tier 0/1 module may depend on a Tier 2 mechanism
+npm run gate:params      # §22 — no behavioural constant outside the parameter register
+npm run gate:tenets      # T1 type separation, T6 no wall-clock read in the decision path
+npm run gate:privacy     # §23.7 — identity isolation
+npm run gate:erasure     # replay equivalence over an erased corpus
+npm run gate:legacy      # the four retired modules stay retired
+npm run gate:columngen   # §21.6 — a column-generation change must carry an evaluator run
+npm run gate:composition # Phase 15 — every registered worker reaches production scheduling
 
 # Test projects
 npm run test:engine
@@ -205,9 +206,19 @@ npm run test:chaos
 npm run test:scale
 
 # Tooling
-npm run routing:readiness   # B1 readiness gate — currently reports BLOCKED
+npm run routing:readiness   # B1 readiness gate — reports BLOCKED, and EXITS 0 by design
+npm run release:verdict     # the §24 release-gate table — currently BLOCKED, exits 1
+npm run gate:calibration    # §22.4 — currently FAIL at 39 Safety-class findings
+npm run sim:fidelity        # §24.4 — currently 7 models NOT_MEASURED, exits 1
 npm run safety:case         # regenerate docs/safety-case/SAFETY_CASE.md
 ```
+
+> **`npm run gates` and `npm run verify` exit 1 on the current tree, and that is the correct
+> result.** Seven build gates pass; the eighth, `gate:composition`, fails because no routing engine
+> has been selected — execution-plan item **B1**, an external decision no commit here closes. CI
+> does **not** run `gate:composition`, so CI is green while this gate is RED. Do not read a green
+> CI as a green build-gate set, and do not "fix" the gate. Current state, blockers and the exact
+> next action: **[`docs/phase15/PHASE_15_MASTER.md`](docs/phase15/PHASE_15_MASTER.md)**.
 
 Frontend:
 

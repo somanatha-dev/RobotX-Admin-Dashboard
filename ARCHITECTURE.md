@@ -9,8 +9,15 @@
 >
 > **Verified against:** branch `feature/dashboard`, commit `cbe540e`, plus the uncommitted Phase 15
 > routing-prerequisite working tree, plus the pre-Phase-16 ownership reconciliation. Baseline at
-> time of writing: **7 build gates PASS · 145 test suites · 6 287 tests · 0 failures**; measured,
-> not quoted. `gate:calibration` is **FAIL at 39** and is a release gate, not a build gate.
+> time of writing — **historical, do not quote as current**: 7 build gates PASS · 145 test suites ·
+> 6 287 tests · 0 failures; measured, not quoted. `gate:calibration` is **FAIL at 39** and is a
+> release gate, not a build gate.
+>
+> **Current, re-measured 2026-08-29 at digest `431010ace1…` (565 files), HEAD `b68dc5d`:**
+> `npm run gates` now runs **eight** gates and **exits 1** — seven PASS and `gate:composition`
+> FAILs on B1. `gate:calibration` is still FAIL at 39. For anything Phase-15-related, the current
+> source of truth is [`docs/phase15/PHASE_15_MASTER.md`](docs/phase15/PHASE_15_MASTER.md); numbers
+> elsewhere in this file are dated where they are known to have drifted.
 
 ---
 
@@ -61,8 +68,9 @@ Phase 15 deleted four modules outright:
 - `taskRecovery.service.js`
 
 `Backend/tools/gates/checkLegacyRetirement.js` **fails the build** if any of them returns. The gate
-currently reports: *"4 retired module(s) absent from the build and unimported; no retired symbol
-redefined across 301 file(s)."*
+reports, re-measured 2026-08-29: *"4 retired module(s) absent from the build and unimported; no
+retired symbol redefined across 340 file(s)."* (It said 301 files when this section was written;
+the file count grows with the tree — the load-bearing number is **4 absent**, not the corpus size.)
 
 `task.service.js` retains **no** selection path, no `setImmediate` detachment, and no
 `robotReserve:*` retry loop. It kept exactly one legacy surface deliberately — `rerouteTask` and
@@ -73,10 +81,10 @@ assignment decision, and deleting it would strand in-flight missions across the 
 
 | Fact | Evidence |
 |---|---|
-| 185 engine modules, 19 workers, 38 feasibility predicates, 242 registered parameters | `Backend/src/engine/**`, `Backend/src/workers/**` |
+| ~185 engine modules, **18 registered workers**, 38 feasibility predicates, 242 registered parameters | `Backend/src/engine/**`, `Backend/src/workers/**`. *(Worker count re-derived 2026-08-29: `registry.js` registers 18; `src/workers/` holds 20 `.js` files — 18 `*.worker.js` plus `registry.js` and `leaderWorkers.js`. "19 workers" was wrong under every reading. The engine-module count is approximate and each gate scopes its own: `gate:tiers` governs 285, `gate:params` scans 189 — quote a gate's number with the gate's name attached.)* |
 | `ENGINE_ENABLED` defaults to **false** | `Backend/src/engine/cutover/enabled.js` |
 | Liveness is a **conjunction**: process `ENGINE_ENABLED` **AND** the shard's `cutover.engine_enabled` binding | `cutover/enabled.js` |
-| **No production composition root exists.** Nothing in the repository constructs a real solve path outside a test fixture | `PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md` finding **N12** |
+| **No real solve path is constructed anywhere outside a test fixture.** `server.js` *is* the production composition root: it starts the 8 `SCHEDULED` workers at boot and 3 of the 4 `LEADER_ONLY` workers on promotion — **11 of 18**. The `coordinator` cannot be composed (its round loop bottoms out in a routing engine **B1 has not selected**) and 6 workers are `DEFERRED` with declared blockers. `gate:composition` fails on the `coordinator` alone | `docs/phase15/PHASE_15_IMPLEMENTATION_STATE.md` · `docs/phase15/PHASE_15_BLOCKERS.md` **B1** · verified 2026-08-29. *(Originally recorded as "no production composition root exists" — finding N12 of the archived consolidated report, written before Phase 15's composition work landed. A 2026-08-29 revision then said "starts 17 of 18", which confused `gate:composition`'s compliance count with the number of workers that run; corrected here.)* |
 | No round has ever executed | ibid. |
 
 **Consequence a new developer will hit immediately:** `POST /api/tasks` currently responds
@@ -91,14 +99,16 @@ A 503 naming the state is honest; a queue nobody drains is not.
 |---|---|---|
 | Phases 0–14 | Implemented and independently verified | `PHASE_*_INDEPENDENT_VERIFICATION.md` |
 | **Phases 1–2** | **Additionally remediated and closed**, each with its migration executed against a disposable PostgreSQL 18.3 rather than statically checked | `PHASE_1_REMEDIATION_AND_CLOSURE.md`, `PHASE_2_REMEDIATION_AND_CLOSURE.md` |
-| **Phase 15** (verification, gates, cutover) | **BLOCKED** | `PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md` §19 |
-| **Phase 16** (Tier 2 enablement) | **NOT READY — must not begin** | ibid. §20 |
-| **B1** (routing engine) — Step 1 | **BLOCKED** behind D1 (region definition) | ibid. §36, `PHASE_15_B1_ROUTING_DECISION_REPORT.md` |
-| Calibration | **39 Safety-class parameters not `DERIVED`** | ibid. §7 |
+| **Phase 15** (verification, gates, cutover) | **IMPLEMENTATION CLOSED · RELEASE BLOCKED** — 8 of 24 blocking §24 gates are not green, none of them closable by a commit here | `docs/phase15/PHASE_15_CLOSURE_CHECKLIST.md` |
+| **Phase 16** (Tier 2 enablement) | **NOT READY — must not begin** | ibid. |
+| **B1** (routing engine) — Step 1 | **BLOCKED** behind D1 (region), D3 (fleet speed model) and D8 (extract vintage) | `docs/phase15/PHASE_15_BLOCKERS.md` · `npm run routing:readiness` |
+| Calibration | **39 Safety-class parameters not `DERIVED`** (242 entries: 52 DERIVED / 152 PROVISIONAL / 38 UNCALIBRATED; 54 Safety-class) | `npm run gate:calibration` · verified 2026-08-29 |
 | §6.1 blocking decisions B1, B2, B3, B6, B8 | **Unresolved** | `IMPLEMENTATION_EXECUTION_PLAN.md` §6.1 |
 
-`gates.blockers({})` returns all 23 rows with no evidence filed. **This is the release-gate
-machinery working as designed, not a defect.**
+`gates.blockers({})` returns all **24** rows with no evidence filed. **This is the release-gate
+machinery working as designed, not a defect.** *(The table has held 24 rows since Phase 15;
+"23" here predated the last addition. Re-measured 2026-08-29:
+`RELEASE_GATES.length === 24`, every row `blocking: true`.)*
 
 > **Routing adapters exist. A routing engine has not been selected.**
 > `Backend/tools/routing/` contains a benchmark harness, an adapter contract, and a five-state
@@ -115,11 +125,11 @@ This document ranks **below every item in this table.**
 | Rank | Document | Standing |
 |---|---|---|
 | 1 | [`NEXT_GENERATION_ASSIGNMENT_ENGINE.md`](NEXT_GENERATION_ASSIGNMENT_ENGINE.md) | **FROZEN.** The architecture. Where anything disagrees with it, the other thing is defective |
-| 2 | [`docs/adr/`](docs/adr/) — 38 records | ADR-01…32 `Accepted — frozen`; ADR-33 `Accepted` (integration). Each fixes one decision's identity **and its rejected alternative** |
+| 2 | [`docs/adr/`](docs/adr/) — **38 frozen records + 2 integration records = 40 files** | ADR-01…32 plus six lettered sub-records `Accepted — frozen` (the complete Appendix C set); **ADR-33** (B1 traversal-domain scope) and **ADR-34** (cutover rehearsal purpose) `Accepted` — integration decisions, numbered from 33 upward per [`docs/adr/README.md`](docs/adr/README.md). Each fixes one decision's identity **and its rejected alternative** |
 | 3 | [`IMPLEMENTATION_EXECUTION_PLAN.md`](IMPLEMENTATION_EXECUTION_PLAN.md) | **Active — the plan of record.** Phases 0–16, capability inventory, §6.1 blocking decisions, §7 master checklist |
-| 4 | [`PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md`](PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md) | **The living Phase 15 status register.** Append-only, currently revision 8.1. Authoritative for *current programme state* |
+| 4 | [`docs/phase15/PHASE_15_MASTER.md`](docs/phase15/PHASE_15_MASTER.md) | **The Phase 15 source of truth.** Authoritative for *current programme state*, with `PHASE_15_IMPLEMENTATION_STATE.md`, `PHASE_15_VERIFICATION_STATE.md`, `PHASE_15_BLOCKERS.md` and `PHASE_15_CLOSURE_CHECKLIST.md` beside it. Superseded reports — including the former register `PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md` — are in [`docs/phase15/archive/`](docs/phase15/archive/) and are **historical evidence only** |
 | 5 | [`Backend/src/engine/ARCHITECTURE.md`](Backend/src/engine/ARCHITECTURE.md) · [`TIERS.md`](Backend/src/engine/TIERS.md) | Module map and obligation tiers. `TIERS.md` is machine-checked against `guards/tierAssertions.js` |
-| 6 | Source, tests, and the seven build gates | The final arbiter of what exists |
+| 6 | Source, tests, and the **eight** build gates | The final arbiter of what exists. `npm run gates` runs eight — Phase 15 added `gate:composition` — and currently **exits 1**: seven PASS, `gate:composition` FAILs on B1. CI runs seven of the eight and is therefore green; see §9.1 |
 
 > **Two of these are build dependencies, not prose.** Four test files read
 > `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` and `docs/adr/**` from disk by path and assert against
@@ -409,8 +419,15 @@ guarantee.
 | **Fairness — duty-cycle regulariser, repositioning** | `fairness/dutyCycle.js`, `repositioning.js` | **DESIGN — Phase 16** (Tier 2, T2-10 / T2-11). Absent by design |
 | **Reliability estimation** | `reliability/` | **DESIGN — Phase 16** (Tier 2, T2-09). Empty by design |
 
-19 workers exist in `src/workers/` (coordinator, outbox, reconciler, timer, invariant, cutover,
-calibration, shadow, and others). **None is on production scheduling.**
+**18 workers** are registered in `src/workers/registry.js` (coordinator, outbox, reconciler, timer,
+invariant, cutover, calibration, shadow, and others). **Phase 15 moved 11 of them onto production
+scheduling** — `server.js` starts the 8 `SCHEDULED` workers at boot and `leaderWorkers.js` starts 3
+of the 4 `LEADER_ONLY` workers on leadership promotion. The `coordinator` is refused (B1) and 6 are
+`DEFERRED`, each naming its own blocker, which `assertRegistry()` makes mandatory.
+
+*Corrected 2026-08-29. This paragraph previously read "19 workers exist … None is on production
+scheduling", which was true before Phase 15 and false after it. Current breakdown and the six
+deferral reasons: [`docs/phase15/PHASE_15_IMPLEMENTATION_STATE.md`](docs/phase15/PHASE_15_IMPLEMENTATION_STATE.md).*
 
 ### 4.3 Obligation tiers
 
@@ -425,8 +442,8 @@ The frozen architecture tiers every mechanism, and **the tiering is normative**:
 Three rules: every Tier 2 mechanism must be individually disableable and degrade to a *tested*
 Tier 1 behaviour; **no Tier 0 or Tier 1 guarantee may depend on a Tier 2 mechanism**; and the
 staged order is a consequence, not a suggestion. Rule 2 is mechanically enforced over the static
-import graph — `npm run gate:tiers`, currently *"276 modules, 382 governed import edges, no Tier 0/1
-→ Tier 2 dependency."*
+import graph — `npm run gate:tiers`, which reports, re-measured 2026-08-29: *"285 modules, 423
+governed import edges, no Tier 0/1 → Tier 2 dependency."*
 
 Full detail: [`Backend/src/engine/TIERS.md`](Backend/src/engine/TIERS.md).
 
@@ -504,15 +521,17 @@ A benchmark harness (`npm run routing:b1`), an adapter contract, and a five-stat
 refused **mechanically**, and so that until they arrive the repository reports **BLOCKED in code**
 rather than only in a document.
 
-Full detail: [`PHASE_15_B1_ROUTING_DECISION_REPORT.md`](PHASE_15_B1_ROUTING_DECISION_REPORT.md),
-[`PHASE_15_ROUTING_CONFIGURATION_DECISION.md`](PHASE_15_ROUTING_CONFIGURATION_DECISION.md),
-[`PHASE_15_ROUTING_PREREQUISITE_REMEDIATION_REPORT.md`](PHASE_15_ROUTING_PREREQUISITE_REMEDIATION_REPORT.md),
+Current state: [`docs/phase15/PHASE_15_BLOCKERS.md`](docs/phase15/PHASE_15_BLOCKERS.md) **B1**, or run
+`npm run routing:readiness`. Historical detail (archived, superseded):
+[`docs/phase15/archive/PHASE_15_B1_ROUTING_DECISION_REPORT.md`](docs/phase15/archive/PHASE_15_B1_ROUTING_DECISION_REPORT.md),
+[`PHASE_15_ROUTING_CONFIGURATION_DECISION.md`](docs/phase15/archive/PHASE_15_ROUTING_CONFIGURATION_DECISION.md),
+[`PHASE_15_ROUTING_PREREQUISITE_REMEDIATION_REPORT.md`](docs/phase15/archive/PHASE_15_ROUTING_PREREQUISITE_REMEDIATION_REPORT.md),
 and §6/§21/§32 of the consolidated report.
 
 ### 6.4 Consequence for scheduling
 
-Routing is not one item among several. `PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md` finding
-**N11** established that the **shadow composition root itself depends on B1** — `expandCandidates`
+Routing is not one item among several. `docs/phase15/archive/PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md`
+finding **N11** established that the **shadow composition root itself depends on B1** — `expandCandidates`
 needs `evaluateExact`, which needs travel times, which need a routing engine. The 14-day shadow
 window therefore sits *behind* the longest-lead-time procurement item, not beside it.
 
@@ -637,12 +656,21 @@ document does not invent one.**
 
 ### 9.1 Today
 
-Single Node.js process, `npm start`. CI (`.github/workflows/ci.yml`) runs the seven build gates
-first, independently of the test suites, then the test projects — deliberately, because a
-tier-dependency violation or an unregistered constant is a structural defect no passing test makes
-acceptable. Until the pre-Phase-16 reconciliation it ran **three** of them and **two** of the five
-test lanes; it now runs all seven gates and all five lanes. `gate:calibration` and `safety:case`
-stay out of CI on purpose — the reasons are recorded in the workflow file itself.
+Single Node.js process, `npm start`. CI (`.github/workflows/ci.yml`) runs the build gates first,
+independently of the test suites, then the test projects — deliberately, because a tier-dependency
+violation or an unregistered constant is a structural defect no passing test makes acceptable.
+Until the pre-Phase-16 reconciliation it ran **three** gates and **two** of the five test lanes; it
+now runs **seven gate steps** (`gate:columngen` on pull requests only, so a push runs six) plus
+`test:gates`, and all five Jest projects. `gate:calibration` and `safety:case` stay out of CI on
+purpose — the reasons are recorded in the workflow file itself.
+
+> **CI runs seven of the eight gates in `npm run gates`. The eighth — `gate:composition` — is not
+> in CI, and it is the one that fails.** The workflow's header enumerates exactly two deliberate
+> absences and this is not one of them; it gives no reason. **Consequence: CI is green on a tree
+> where the blocking §24 gate `engine_decision_path_wired` is RED.** The authority is
+> `npm run gates` and `npm run release:verdict`, not CI. Recorded — not fixed — as residual
+> observation 7 in [`docs/phase15/PHASE_15_BLOCKERS.md`](docs/phase15/PHASE_15_BLOCKERS.md);
+> changing CI is outside a documentation pass.
 
 ### 9.2 Cutover — IMPLEMENTED, not executed
 
@@ -719,10 +747,10 @@ Every item here is real, open, and recorded elsewhere. **None is resolved by thi
 | Overall system | **This document** | Source | `docs/history/legacy-system-reference.md` |
 | Architecture | `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` | `docs/adr/`, `engine/ARCHITECTURE.md` | `docs/history/legacy-scale-analysis.md` |
 | Implementation plan | `IMPLEMENTATION_EXECUTION_PLAN.md` | Phase reports | — |
-| **Current programme status** | **`PHASE_15_CONSOLIDATED_REMEDIATION_REPORT.md`** | Phase 15 routing reports | `PHASE_15_BLOCKER_RESOLUTION_PLAN.md` |
+| **Current programme status** | **`docs/phase15/PHASE_15_MASTER.md`** | The four canonical documents beside it | `docs/phase15/archive/` (all superseded Phase 15 reports) |
 | Assignment engine | Spec §1–§9 · ADR-01, 02, 02b–d, 26 | `engine/ARCHITECTURE.md`, `TIERS.md` | `docs/history/legacy-assignment-engine-audit.md` |
 | Solver | Spec §9.3 · ADR-02b, 02d | `PHASE_10_COST_SCALING_*`, `solve/` | `PHASE_10_*` |
-| Routing | Spec §5.2, §20.3 · **ADR-11, ADR-33** | 4 Phase 15 routing reports, `tools/routing/` | — |
+| Routing | Spec §5.2, §20.3 · **ADR-11, ADR-33** | `docs/phase15/PHASE_15_BLOCKERS.md` (B1), `tools/routing/` | 4 Phase 15 routing reports in `docs/phase15/archive/` |
 | Spatial | Spec §3.6 · **ADR-28** | `spatial/cells.js` | — |
 | Mobility | Spec §2.1–2.2 | `domain/mobilityModel.js` | — |
 | Feasibility | Spec §7, §14, §15 · ADR-06, 09, 09b, 15 | `feasibility/`, `TIERS.md` | — |
