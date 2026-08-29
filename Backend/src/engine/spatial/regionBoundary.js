@@ -622,12 +622,25 @@ function d2ResidualCheck(input) {
    V-11, V-12, V-13 — the region among its neighbours, and against the extract
    ═══════════════════════════════════════════════════════════════════════════ */
 
-/** @returns {boolean} whether two axis-aligned boxes share any area */
+/**
+ * A **conservative pre-filter**, never the answer: do two axis-aligned boxes share any point at
+ * all? Two boxes that are strictly separated cannot bound polygons that meet, so the geometry
+ * below can be skipped for them. Boxes that touch or overlap go on to the real comparison — a
+ * bounding box is not a region and V-11 is never decided on one.
+ *
+ * @returns {boolean}
+ */
 function boxesOverlap(a, b) {
   return !(a.maxLon < b.minLon || b.maxLon < a.minLon || a.maxLat < b.minLat || b.maxLat < a.minLat);
 }
 
-/** Ray casting on the exterior ring. @returns {boolean} */
+/**
+ * Ray casting on a closed ring. Defined for a point that is **not on** the ring; every caller
+ * below establishes that first, because the ray cast's answer for a point lying on an edge is
+ * whichever side the arithmetic happens to land on.
+ *
+ * @returns {boolean}
+ */
 function pointInRing(point, ring) {
   let inside = false;
   // @structural a closed ring repeats its first position last, so the last distinct vertex is at length - 2
@@ -639,20 +652,130 @@ function pointInRing(point, ring) {
   return inside;
 }
 
-/** @returns {boolean} whether two validated polygons share any area */
-function polygonsOverlap(left, right) {
-  // Any edge crossing is an overlap.
-  for (const ringA of left) {
-    for (let a = 0; a < ringA.length - 1; a += 1) {
-      for (const ringB of right) {
-        for (let b = 0; b < ringB.length - 1; b += 1) {
-          if (segmentsCross(ringA[a], ringA[a + 1], ringB[b], ringB[b + 1])) return true;
-        }
+/**
+ * Every parameter `t ∈ [0, 1]` along the segment `[p1, p2]` at which it meets the closed segment
+ * `[q1, q2]`, and the sub-range of `t` over which the two are collinear and overlapping.
+ *
+ * The collinear stretch is reported as a **parameter range** rather than as a pair of points
+ * because that is what lets the caller recognise a shared edge by arithmetic on the parameters
+ * it already has. Re-deriving a midpoint and testing it back against the other line would
+ * reintroduce exactly the rounding a tolerance would then have to absorb, and V-11 introduces
+ * none — see `validateRegionsDisjoint`.
+ *
+ * @param {number[]} p1 @param {number[]} p2 @param {number[]} q1 @param {number[]} q2
+ * @returns {{ touches: number[], collinear: number[]|null }}
+ */
+function meetingParameters(p1, p2, q1, q2) {
+  const rx = p2[0] - p1[0];
+  const ry = p2[1] - p1[1];
+  const sx = q2[0] - q1[0];
+  const sy = q2[1] - q1[1];
+  const denominator = rx * sy - ry * sx;
+  const dx = q1[0] - p1[0];
+  const dy = q1[1] - p1[1];
+
+  if (denominator !== 0) {
+    const t = (dx * sy - dy * sx) / denominator;
+    const u = (dx * ry - dy * rx) / denominator;
+    return { touches: t >= 0 && t <= 1 && u >= 0 && u <= 1 ? [t] : [], collinear: null };
+  }
+  // Parallel. Collinear as well only when the offset between the two lines is zero.
+  if (dx * ry - dy * rx !== 0) return { touches: [], collinear: null };
+  const lengthSquared = rx * rx + ry * ry;
+  if (lengthSquared === 0) return { touches: [], collinear: null };
+  const first = (dx * rx + dy * ry) / lengthSquared;
+  const second = first + (sx * rx + sy * ry) / lengthSquared;
+  const lo = Math.max(0, Math.min(first, second));
+  const hi = Math.min(1, Math.max(first, second));
+  if (lo > hi) return { touches: [], collinear: null };
+  return { touches: [lo, hi], collinear: [lo, hi] };
+}
+
+/**
+ * Walk one ring against another and report what its boundary does relative to the other's
+ * **interior**.
+ *
+ * Each edge is cut at every parameter where it meets the other ring, so the interior of every
+ * resulting stretch is homogeneous — wholly inside the other ring, wholly outside it, or wholly
+ * along it — and one sample per stretch decides the stretch exactly. A stretch lying along a
+ * shared edge is recognised from the collinear parameter range that produced it, never by
+ * re-testing a recomputed point.
+ *
+ * @param {number[][]} ring
+ * @param {number[][]} other
+ * @returns {{ entersInterior: boolean, wholly: boolean }} `wholly` — every stretch of this ring
+ *   runs along the other's boundary
+ */
+function traceRingAgainst(ring, other) {
+  let stretches = 0;
+  let alongBoundary = 0;
+
+  for (let index = 0; index < ring.length - 1; index += 1) {
+    const from = ring[index];
+    const to = ring[index + 1];
+    const cuts = [0, 1];
+    const shared = [];
+    for (let j = 0; j < other.length - 1; j += 1) {
+      const meeting = meetingParameters(from, to, other[j], other[j + 1]);
+      for (const t of meeting.touches) cuts.push(t);
+      if (meeting.collinear) shared.push(meeting.collinear);
+    }
+    cuts.sort((a, b) => a - b);
+
+    for (let k = 0; k < cuts.length - 1; k += 1) {
+      // @structural the arithmetic mean of two parameters — a midpoint's own divisor
+      const mid = (cuts[k] + cuts[k + 1]) / 2;
+      // A cut repeated, or two cuts too close to have a midpoint between them, is not a stretch.
+      if (!(mid > cuts[k]) || !(mid < cuts[k + 1])) continue;
+      stretches += 1;
+      if (shared.some(([lo, hi]) => mid >= lo && mid <= hi)) {
+        alongBoundary += 1;
+        continue;
       }
+      const point = [from[0] + (to[0] - from[0]) * mid, from[1] + (to[1] - from[1]) * mid];
+      // The stretch meets the other ring nowhere in its interior, so this point is strictly
+      // inside or strictly outside and the ray cast is well defined.
+      if (pointInRing(point, other)) return { entersInterior: true, wholly: false };
     }
   }
-  // Containment without a crossing: one exterior ring wholly inside the other.
-  return pointInRing(left[0][0], right[0]) || pointInRing(right[0][0], left[0]);
+  return { entersInterior: false, wholly: stretches > 0 && alongBoundary === stretches };
+}
+
+/**
+ * Do two validated polygons share **area**?
+ *
+ * PHASE 15 residual pass, R-2. This asked whether any pair of edges met at all — `segmentsCross`
+ * reports a collinear overlap as a crossing, because for V-3 (a ring doubling back on itself) it
+ * must — so two regions sharing only the line `x = 1` were reported as overlapping, and so were
+ * two meeting at a single corner. That is the **strict** direction, but it is not the contract:
+ * this function's own name and the sentence above it ask about shared *area*, `boxesOverlap` is
+ * documented as a filter rather than an answer, and V-11's reason (§3.5 — every Agent and every
+ * Leg belongs to exactly one region at a time, and §3.6 assigns membership by **published cell**,
+ * not by geometry) is about a shared interior. Genuinely adjacent operating regions — a depot
+ * catchment abutting the metro area next to it — are the normal case, and refusing them would
+ * have sent Operations back to redraw a correct boundary.
+ *
+ * So the question asked is the one V-11 means: **positive-area intersection is an overlap;
+ * boundary-only contact is not.** No tolerance is introduced — an "almost touching" rule would
+ * be this module deciding how close two regions may be drawn, which is a geographic question it
+ * has no authority over, and the comparisons below are the same exact ones `segmentsCross` and
+ * `checkRing` already make.
+ *
+ * @param {number[][][]} left @param {number[][][]} right
+ * @returns {boolean}
+ */
+function polygonsOverlap(left, right) {
+  // The exterior ring is what the containment half of this comparison has always used
+  // (`left[0]`, `right[0]`). Hole semantics are unchanged and none is introduced here.
+  const leftTrace = traceRingAgainst(left[0], right[0]);
+  if (leftTrace.entersInterior) return true;
+  const rightTrace = traceRingAgainst(right[0], left[0]);
+  if (rightTrace.entersInterior) return true;
+  // Neither boundary passes through the other's interior, so the two interiors are either
+  // disjoint or the same. They are the same exactly when one boundary runs wholly along the
+  // other: V-2 and V-3 have already established that both rings are closed and simple, and a
+  // simple closed curve cannot be a proper subset of another simple closed curve.
+  return leftTrace.wholly || rightTrace.wholly;
 }
 
 /**
@@ -661,6 +784,21 @@ function polygonsOverlap(left, right) {
  * §3.5 makes region → shard a function (`Shard.regionId @unique`) and states that every Agent
  * and every Leg belongs to exactly one region at a time. Two overlapping regions make that
  * statement false for the overlap, and the failure surfaces as an Agent routed to two shards.
+ *
+ * **What counts as an overlap (R-2).** A shared *interior* — positive area. Regions that meet
+ * along an edge or at a corner are disjoint and are accepted: they share no area, so no Agent
+ * and no Leg is in two of them, and adjacent operating regions are the ordinary case rather
+ * than a defect. See `polygonsOverlap`, which is where that contract is enforced.
+ *
+ * **No tolerance.** Every comparison here is exact. A near-miss rule would amount to this module
+ * deciding how close two boundaries may be drawn before they count as the same place, which is a
+ * geographic decision it holds no authority to make — the same reason `checkPosition` refuses to
+ * re-order a `[lat, lon]` file rather than correcting it.
+ *
+ * **Entries that are not usable are the caller's to report.** This compares the geometries it can
+ * compare and filters the rest; an entry that never reaches the comparison is silently
+ * uncompared, so a caller that assembles the list from operator input must report the entries it
+ * supplied that did not validate. `b1Readiness.assessD1` does — see R-1 there.
  *
  * @param {object[]} validated results of `validateRegionDeclaration`, `VALID` ones only
  * @returns {{ status: string, problems: string[] }}
@@ -685,9 +823,10 @@ function validateRegionsDisjoint(validated) {
       const overlapping = ordered[i].polygons.some((left) => ordered[j].polygons.some((right) => polygonsOverlap(left, right)));
       if (overlapping) {
         problems.push(
-          `V-11 regions "${ordered[i].regionId}" and "${ordered[j].regionId}" overlap. §3.5 makes region → shard a ` +
-            "function (Shard.regionId is unique) and requires every Agent and every Leg to belong to exactly one " +
-            "region at a time; an overlap makes that undefined for anything inside it",
+          `V-11 regions "${ordered[i].regionId}" and "${ordered[j].regionId}" overlap — they share area, not merely ` +
+            "a boundary. §3.5 makes region → shard a function (Shard.regionId is unique) and requires every Agent " +
+            "and every Leg to belong to exactly one region at a time; an overlap makes that undefined for anything " +
+            "inside it",
         );
       }
     }
@@ -806,6 +945,11 @@ module.exports = {
   FINE_CELL_BAND,
   CELL_INDEXING,
   CELL_INDEXINGS,
+  // Exported because D1's `versionDate` and D8's `extract.vintage` are the same kind of fact
+  // and were being judged by two different rules: this one rejects `2026-02-31`, and
+  // `b1Readiness.assessD8`'s own regex accepted it. Two authorities disagreeing about what a
+  // date is, is the shape this programme has now found five times.
+  isIsoDate,
   validateRegionDeclaration,
   boundingBoxOf,
   validateCellIdentity,

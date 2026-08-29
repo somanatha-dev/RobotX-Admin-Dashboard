@@ -76,6 +76,10 @@
 const regionBoundary = require("../../src/engine/spatial/regionBoundary");
 const mobilityModel = require("../../src/engine/domain/mobilityModel");
 const deployment = require("./adapters/deployment");
+// The engine-neutral adapter contract, for one thing only: `isPlaceholder`. It is required
+// directly rather than through `./adapters`, whose index materialises every candidate against the
+// environment — this module already defers that to `candidateStatus()` and must not undo it here.
+const contract = require("./adapters/contract");
 
 /**
  * @structural the five readiness states; see this file's header for why three would not do
@@ -103,6 +107,11 @@ function isNonEmptyString(value) {
 /** @param {unknown} value @returns {boolean} */
 function isPositiveNumber(value) {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+/** @param {unknown} value @returns {boolean} */
+function isFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 /**
@@ -173,12 +182,81 @@ function assessD1(config) {
     problems.push(...cover.problems);
   }
 
-  const disjoint = regionBoundary.validateRegionsDisjoint(Array.isArray(source.regions) ? source.regions.map(regionBoundary.validateRegionDeclaration) : [declaration]);
+  // ── V-11 — and the region under assessment is always in the comparison ──────────────────
+  // PHASE 15 adversarial pass. This read `Array.isArray(source.regions) ? source.regions.map(…)
+  // : [declaration]`, so the moment an operator supplied the neighbours the seam documents —
+  // `regions?: [ …OTHER region declarations, for V-11 disjointness… ]` — the declaration being
+  // assessed dropped out of the set. With one neighbour supplied, `validateRegionsDisjoint`
+  // received a single region, and a single region cannot overlap: two regions sharing half
+  // their area reported D1 PASS with zero problems. The check was called and was a no-op in
+  // exactly the configuration it exists for.
+  //
+  // The declaration is therefore always the first member. A `regions` entry that re-declares
+  // the primary's own regionId is reported as the duplicate it is rather than compared against
+  // itself — §3.5 makes region → shard a function, so one id naming two declarations is
+  // ill-formed input whichever geometry each carries, and reporting it is strictly the
+  // fail-closed direction: both branches produce a problem, neither produces a pass.
+  //
+  // ── R-1 — a neighbour that does not validate is REPORTED, never dropped ──────────────────
+  // PHASE 15 residual pass. `validateRegionsDisjoint` filters its argument to the entries whose
+  // status is VALID, because it can only compare geometry it has; `assessD1` folded in the
+  // *disjointness* problems and never the neighbours' own declaration problems. So a malformed
+  // entry in `regions[]` — a three-position ring, a `[lat, lon]` swap, a missing regionId, a
+  // `null`, a bare string — vanished before V-11 saw the set, and D1 reported PASS with zero
+  // problems over a region collection that contained unusable data. It is the same shape as A2
+  // one layer out: the check ran, over a set the bad input had already left.
+  //
+  // A neighbour is an operator's answer like any other, so it is validated by the same authority
+  // and its problems are attributed to the slot they came from. Nothing is repaired and nothing
+  // is dropped; the collection is either usable in full or it is a FAIL naming which entry is
+  // not. An absent `regions` key is still an absence — the seam writes it `regions?` — but a key
+  // that is present and is not an array is a wrong-typed answer rather than an absence, and §4.1
+  // rule 3 forbids reading "no neighbours" out of it.
+  if (source.regions !== undefined && !Array.isArray(source.regions)) {
+    problems.push(
+      `V-11 regions must be an array of region declarations, received ${JSON.stringify(source.regions) || String(source.regions)}. ` +
+        "It carries the OTHER regions this deployment operates, for the disjointness comparison; omit the key " +
+        "entirely if there are none — a value that is not an array is a wrong answer, not the absence of one, and " +
+        "reading it as 'no neighbours' would switch V-11 off for exactly the deployment it exists for",
+    );
+  }
+  const neighbours = Array.isArray(source.regions) ? source.regions.map((entry) => regionBoundary.validateRegionDeclaration(entry)) : [];
+  neighbours.forEach((entry, index) => {
+    if (entry.status === regionBoundary.BOUNDARY_STATUS.VALID) return;
+    if (entry.status === regionBoundary.BOUNDARY_STATUS.NOT_CONFIGURED) {
+      problems.push(
+        `V-11 regions[${index}] is empty (null or undefined). Every entry is a region declaration to compare this ` +
+          "one against; an empty slot is not one, and it cannot be compared — so it is reported rather than skipped, " +
+          "because a neighbour that quietly leaves the comparison is a neighbour V-11 never checked",
+      );
+      return;
+    }
+    for (const problem of entry.problems) {
+      problems.push(`V-11 regions[${index}] does not validate, so it cannot be compared for disjointness — ${problem}`);
+    }
+  });
+  const redeclared = neighbours.filter((entry) => entry.regionId !== null && entry.regionId === declaration.regionId);
+  for (const duplicate of redeclared) {
+    problems.push(
+      `V-11 regions[] re-declares "${duplicate.regionId}", the region under assessment. §3.5 makes region → shard a ` +
+        "function (Shard.regionId is unique), so one id naming two declarations is undefined rather than redundant. " +
+        "regions[] carries the OTHER regions this deployment operates, for the disjointness comparison; the region " +
+        "being assessed is already in it",
+    );
+  }
+  const disjoint = regionBoundary.validateRegionsDisjoint([declaration, ...neighbours.filter((entry) => entry.regionId !== declaration.regionId)]);
   problems.push(...disjoint.problems);
 
-  if (Array.isArray(source.chargers) && source.cover) {
-    problems.push(...regionBoundary.validateChargerContainment({ cover: source.cover, chargers: source.chargers }).problems);
-  }
+  // ── V-12 — run unconditionally, so that "no catalogue" is an absence rather than a pass ──
+  // PHASE 15 adversarial pass. This was guarded by `Array.isArray(source.chargers) &&
+  // source.cover`, so a deployment that supplied no charger catalogue at all — or supplied one
+  // under the wrong type — skipped V-12 silently and D1 reported PASS. `chargers[]` is not
+  // optional in the seam `deployment.js` and §36.3.1 document (`regions?` and
+  // `cardinalityException?` carry the question mark; `chargers` does not), and §14.5 makes it
+  // `E_return`'s population. The validator already answers NOT_CONFIGURED with a reason when
+  // either input is missing, so folding its problems in unconditionally reports the absence
+  // instead of consuming it — the same treatment the cover above already gets.
+  problems.push(...regionBoundary.validateChargerContainment({ cover: source.cover, chargers: source.chargers }).problems);
 
   // D2's residual is **carried, not charged to D1.** The check §36.2 records as unrunnable is
   // run here for the first time — it needed D1 field 2 and a geometry, and both now exist —
@@ -308,6 +386,21 @@ function assessD3(config) {
 const MS_PER_DAY = 86400000;
 
 /**
+ * Is a value the axis-aligned box V-13 compares against? Four finite numbers, and the box is
+ * not inside-out. Nothing is defaulted: an absent or malformed box is the operator's to supply.
+ *
+ * @param {unknown} box
+ * @returns {boolean}
+ */
+function isBoundingBox(box) {
+  if (!box || typeof box !== "object") return false;
+  for (const field of ["minLon", "minLat", "maxLon", "maxLat"]) {
+    if (typeof box[field] !== "number" || !Number.isFinite(box[field])) return false;
+  }
+  return box.minLon <= box.maxLon && box.minLat <= box.maxLat;
+}
+
+/**
  * Assess D8. Three parts, and they do not all have the same blocker (§36.7): the **vintage**
  * and the **cadence** are properties of an extract and therefore behind D1; the **downtime
  * budget** is an availability question Operations can answer without knowing the region, but
@@ -318,13 +411,30 @@ const MS_PER_DAY = 86400000;
  * applies to a tool's own output as much as to a round's. The CLI supplies today's date; every
  * test supplies a fixed one.
  *
+ * ── V-13, and F1's discharge ───────────────────────────────────────────────
+ * `B1_ROUTING_ENGINE_DECISION_PREPARATION.md` §11 F1 records
+ * `regionBoundary.validateExtractMargin()` as *"implemented, unit-tested, called by nothing"*,
+ * and records the consequence exactly: this function validated `identity`, `source`,
+ * `vintage`, `refreshCadenceDays` and `recontractionDowntimeBudgetSeconds` and **never read
+ * `extract.bbox` or `extract.marginDegrees`**, so a deployment could supply an extract whose
+ * bounding box does not cover the region and D8 would report `PASS`. That was reproduced
+ * mechanically in this pass and is now discharged the way F1 prescribes: the two fields are
+ * required like the other five, and V-13 runs against the region D1 validated.
+ *
+ * **No margin, box, vintage or cadence is supplied, defaulted or inferred here.** The two new
+ * fields are refused when absent — which is what the other five already do — and V-13 is run,
+ * never simulated: when D1 has not produced a valid region the check reports that it could not
+ * run and D8 is `BLOCKED` on D1, which is the state it is already in on this tree.
+ *
  * @param {object} config the deployment module
- * @param {{ asOf?: string }} [options] an ISO date to evaluate staleness against
+ * @param {{ asOf?: string, region?: object }} [options] an ISO date to evaluate staleness
+ *   against, and the validated D1 declaration V-13 sizes the extract against
  * @returns {object}
  */
 function assessD8(config, options) {
   const extract = config && config.extract;
   const asOf = options && options.asOf;
+  const region = options && options.region;
 
   if (!extract || typeof extract !== "object") {
     return verdict(
@@ -343,10 +453,34 @@ function assessD8(config, options) {
   const problems = [];
   if (!isNonEmptyString(extract.identity)) problems.push("extract.identity is required — a stable name for the extract every measurement will be attributed to");
   if (!isNonEmptyString(extract.source)) problems.push("extract.source is required — where the snapshot came from, so a re-cut can be reproduced");
-  if (!isNonEmptyString(extract.vintage) || !/^\d{4}-\d{2}-\d{2}$/u.test(extract.vintage)) {
+  // ── R-3 — a placeholder is not a named source ───────────────────────────────────────────
+  // PHASE 15 residual pass. These two are D8's named-evidence fields — `identity` is what every
+  // Step 3 and Step 4 measurement is *attributed to*, and `source` is the answer to "where did
+  // this snapshot come from, and how is it re-cut?". Both were judged by "is it a non-empty
+  // string?" alone, so `source: "tbd"` reported D8 PASS: an extract with no stated provenance,
+  // recorded as a complete D8 answer. The placeholder authority already existed one directory
+  // away and covered four `deployment` fields for exactly this reason; it is one rule now rather
+  // than two, and no value is supplied for either field here.
+  for (const field of ["identity", "source"]) {
+    if (isNonEmptyString(extract[field]) && contract.isPlaceholder(extract[field])) {
+      problems.push(
+        `extract.${field} is "${extract[field]}", which is a placeholder rather than a named answer. D8 part 1 is ` +
+          "the snapshot the extract was cut from and every B1 measurement is attributed to it; a placeholder is " +
+          "indistinguishable from an answer once it reaches a Step 4 record, and a re-cut cannot be reproduced from " +
+          "one. Naming it is Operations'; nothing is inferred or defaulted here",
+      );
+    }
+  }
+  // The date authority is `regionBoundary.isIsoDate`, the one D1's `versionDate` is judged by.
+  // PHASE 15 adversarial pass: this was a local `/^\d{4}-\d{2}-\d{2}$/` test, which accepted
+  // `2026-02-31` — a string that matches the shape and is not a date. D8 then reported PASS on
+  // it, having computed an age against a rolled-over month, while the same string supplied as
+  // `region.versionDate` was refused two functions away. One kind of fact, two rules.
+  if (!regionBoundary.isIsoDate(extract.vintage)) {
     problems.push(
-      "extract.vintage is required as an ISO date (YYYY-MM-DD) — D8 part 1, the OSM snapshot the extract was cut " +
-        "from. It is never inferred from a file timestamp: a copied file has a new timestamp and the same vintage",
+      "extract.vintage is required as an ISO calendar date (YYYY-MM-DD) — D8 part 1, the OSM snapshot the extract " +
+        "was cut from. It is never inferred from a file timestamp: a copied file has a new timestamp and the same " +
+        "vintage",
     );
   }
   if (!Number.isInteger(extract.refreshCadenceDays) || extract.refreshCadenceDays <= 0) {
@@ -364,8 +498,46 @@ function assessD8(config, options) {
     );
   }
 
+  // ── The two fields V-13 reads, required for the same reason the other five are ──────────
+  // Both are named in `deployment.js`'s extract block and in §36.3.1's, and neither was read
+  // by anything. They are Operations' to state — the box the extract was actually cut to, and
+  // the margin it was cut with — and no value for either is supplied or defaulted here.
+  if (!isBoundingBox(extract.bbox)) {
+    problems.push(
+      "extract.bbox is required — { minLon, minLat, maxLon, maxLat } in the region's own CRS, the box the extract " +
+        "was actually cut to. V-13 compares it against the region's bounding box plus the margin; without it the " +
+        "check that the routing graph covers the region cannot run, and an extract that does not cover the region " +
+        "answers every query and answers some of them wrongly",
+    );
+  }
+  if (!isFiniteNumber(extract.marginDegrees) || extract.marginDegrees < 0) {
+    problems.push(
+      "extract.marginDegrees is required and must be a finite non-negative number of degrees — the margin the " +
+        "extract was cut with beyond the region's own bounding box. Its size is a property of the chosen engine's " +
+        "snapping and border behaviour, measured at B1 Step 1/3; none is assumed here",
+    );
+  }
+
   if (problems.length > 0) {
     return verdict("D8", READINESS.BLOCKED, problems, "extract metadata is incomplete — the missing fields are decisions, not derivations");
+  }
+
+  // ── V-13 — F1's discharge. The check exists, and this is the caller it never had ─────────
+  // Every input V-13 needs from the extract is present by here, so a `NOT_CONFIGURED` answer
+  // can only mean the other input is absent: D1 has not produced a valid region to size the
+  // extract against. That is a blocker on D1, not a pass, and saying so is the whole point of
+  // keeping BLOCKED and PASS apart.
+  const margin = regionBoundary.validateExtractMargin({ region, extract });
+  if (margin.status === regionBoundary.BOUNDARY_STATUS.NOT_CONFIGURED) {
+    return verdict(
+      "D8",
+      READINESS.BLOCKED,
+      [...margin.problems],
+      "extract metadata is complete; V-13 cannot run without D1's region and D8 is not released without it",
+    );
+  }
+  if (margin.status === regionBoundary.BOUNDARY_STATUS.INVALID) {
+    return verdict("D8", READINESS.FAIL, [...margin.problems], "the extract does not cover the declared region plus its own stated margin");
   }
 
   // Every field is present. Staleness is the one thing that can now be evaluated, and only
@@ -376,6 +548,26 @@ function assessD8(config, options) {
   const ageDays = Math.floor((Date.parse(`${asOf}T00:00:00Z`) - Date.parse(`${extract.vintage}T00:00:00Z`)) / MS_PER_DAY);
   if (!Number.isFinite(ageDays)) {
     return verdict("D8", READINESS.NOT_MEASURED, [`staleness was not evaluated: "${asOf}" is not an ISO date`], "extract metadata is complete; staleness not evaluated");
+  }
+  // PHASE 15 adversarial pass — the other direction. `ageDays > cadence` is the only
+  // comparison this made, so a vintage dated **after** the evaluation date produced a negative
+  // age, cleared any cadence, and reported PASS: a single mistyped year pinned the extract
+  // permanently fresh, and the staleness check that exists because *"a stale extract routes
+  // over a map the region no longer has, and it does so silently"* would never fire again.
+  // A snapshot cannot be cut from a map that does not exist yet, so this is a FAIL rather than
+  // a stale one — and no date is corrected here.
+  if (ageDays < 0) {
+    return verdict(
+      "D8",
+      READINESS.FAIL,
+      [
+        `the extract's vintage ${extract.vintage} is ${-ageDays} days AFTER the evaluation date ${asOf}. An OSM ` +
+          "snapshot cannot be cut from a map that does not exist yet, and a vintage in the future clears every " +
+          "refresh cadence for as long as it stands — the staleness check would never fire again. The vintage is " +
+          "Operations' to correct; none is inferred here",
+      ],
+      "the extract's stated vintage is in the future",
+    );
   }
   if (ageDays > extract.refreshCadenceDays) {
     return verdict(
@@ -526,7 +718,10 @@ function assess(options) {
 
   const d1 = assessD1(config);
   const d3 = assessD3(config);
-  const d8 = assessD8(config, { asOf: settings.asOf });
+  // D8 is handed D1's validated declaration so that V-13 has the region it sizes the extract
+  // against (F1). It is passed, never re-derived: two validations of one geometry are two
+  // answers waiting to disagree.
+  const d8 = assessD8(config, { asOf: settings.asOf, region: d1.region });
   const candidates = candidateStatus();
   const steps = assessSteps({ d1, d3, d8, candidates });
 
@@ -553,7 +748,18 @@ function assess(options) {
      * are a property of the harness. Marking them inadmissible at the source is the only thing
      * that stops them being quoted later as though they were the decision's evidence.
      */
-    stepEvidenceAdmissible: steps[0].status !== READINESS.BLOCKED && steps[2].status !== READINESS.BLOCKED,
+    // PHASE 15 adversarial pass. This asked only whether Steps 1 and 3 were **not BLOCKED**,
+    // and Step 1 has a fifth state: `NOT_CONFIGURED` — "D1 and D3 are supplied; no candidate
+    // deployment is configured yet". So with the two decisions answered and **no candidate
+    // deployed and no hierarchy built**, it reported `true`. That is reachable rather than
+    // theoretical: `adapters/index.js:57–58` calls any module passed to `--engine ./x.js`
+    // AVAILABLE on the strength of it exporting a `matrix()` function, so a hand-written
+    // adapter is measured — and the gate would have called those numbers admissible Step 3
+    // evidence while Step 1 had not been performed at all. Admissibility now requires Step 1
+    // to have reached the state §12.2 describes as released — `NOT_MEASURED` or better. This
+    // narrows the flag and never widens it; no threshold moves and no step becomes PASS.
+    stepEvidenceAdmissible:
+      (steps[0].status === READINESS.NOT_MEASURED || steps[0].status === READINESS.PASS) && steps[2].status !== READINESS.BLOCKED,
     engineSelected: false,
   });
 }

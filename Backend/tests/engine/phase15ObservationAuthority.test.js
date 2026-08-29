@@ -403,6 +403,53 @@ describe("P15-F1 cases K and L — missing or invalid authoritative data fails c
     expect(evidence.resolveMinObservationMs({ get: () => undefined })).toEqual({});
   });
 
+  /**
+   * ── The authority must not fabricate a bound, even a failing one (mutant MU3) ──
+   *
+   * Found by the P15-F1 mutation attack. Replace the resolution with
+   *
+   *     minObservationMs = { soak: 0, shadow_agreement: 0, ...resolveMinObservationMs(…) }
+   *
+   * — a missing parameter defaulting to zero instead of being omitted — and the whole
+   * P15-F1 suite still passed, 239/239. The cutover was still refused, because
+   * `evidence.admit()` independently refuses a bound of `0`; the mutant was caught by the
+   * *consumer's* guard and by nothing on the producing side.
+   *
+   * That is defence in depth working, and it is also the exact asymmetry this programme has
+   * now found four times (P15-C1's age bound, P15-E4's zero bound, P15-F1 itself): a guard on
+   * one side of a producer/consumer pair, with no test standing behind the other. Relax the
+   * consumer — which P15-E4 shows is a live possibility, since that guard did not exist until
+   * this phase — and the fabricated zero becomes a soak gate any window discharges.
+   *
+   * It also puts a number the register never stated into the record an operator reads. The
+   * shipped authority reports `(got undefined)` — *nothing resolved* — for a parameter that is
+   * absent and for one that holds an unusable value alike, because `resolveMinObservationMs`
+   * omits both; that merging is deliberate and documented, and both states fail closed
+   * identically. `(got 0)` is a third thing, and it is a claim about the register that is
+   * false: it says the register answered zero when the register did not answer at all.
+   *
+   * So the producing side is pinned here, at the authority boundary rather than on the
+   * helper: the authority resolves the bound or it does not, and it never supplies one on the
+   * register's behalf.
+   */
+  test("an unresolvable parameter yields no bound — the authority never fabricates a zero", () => {
+    const absent = stage.authoriseEnable(enableRequest({ parameterValues: { get: () => undefined } }));
+    const zero = stage.authoriseEnable(enableRequest({ parameterValues: { get: () => 0 } }));
+
+    // Both fail closed, and both fail closed on the same two rows.
+    expect(refusedGates(absent)).toEqual(WINDOWED);
+    expect(refusedGates(zero)).toEqual(WINDOWED);
+
+    // And in both the authority reports that nothing resolved, rather than reporting a value
+    // it invented. A `(got 0)` here is the fabricated bound, and it is what MU3 produces.
+    for (const outcome of [absent, zero]) {
+      for (const row of outcome.refusal.detail) {
+        expect(row.detail).toMatch(/did not resolve to a positive duration \(got undefined\)/);
+        expect(row.detail).not.toMatch(/\(got 0\)/);
+      }
+    }
+  });
+
   test("a parameter source that throws refuses the request rather than judging half a table", () => {
     const outcome = stage.authoriseEnable(
       enableRequest({

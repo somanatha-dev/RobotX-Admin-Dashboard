@@ -170,14 +170,79 @@ const HOSTED_HOSTS = Object.freeze([
  */
 const PLACEHOLDER_TOKENS = new Set(["tbd", "tba", "todo", "n/a", "unknown", "unspecified", "pending", "?", "-", "--", "xxx", "fixme", "placeholder"]);
 
+/**
+ * Is this string a note to oneself rather than a value?
+ *
+ * PHASE 15 residual pass, R-3. The comparison above existed only inside `normaliseDeployment`,
+ * applied to its own four fields, so `travelTimeSpread.source: "tbd"` was accepted while
+ * `deployment.extract: "tbd"` was refused — two rules for one question, which is the shape this
+ * programme keeps finding. It is a predicate now, and every field whose contract requires a
+ * **named evidence source** is judged by it.
+ *
+ * ── Which fields those are, and which are deliberately not ─────────────────
+ * The rule is applied where a name is the whole content of the requirement — where the field
+ * exists so that somebody can later ask *"where did this come from?"* and get an answer:
+ *
+ *   `travelTimeSpread.source`   N29 / §32.4 R7 — the named provenance of every `travelSdSeconds`
+ *                               this adapter produces, carried into `description`.
+ *   `deployment.{shape, extract, profilesBuilt, hierarchyBuildTime}`
+ *                               b1Benchmark.js:89–90, :590–591 — Step 4's operational record.
+ *   `extract.identity`, `extract.source`  (b1Readiness `assessD8`) — D8's own two: the name every
+ *                               measurement is attributed to, and where the snapshot came from.
+ *
+ * It is **not** applied to every string in the system, and specifically not to `engineProfile`
+ * (an engine-side costing name, D3's, matched against a deployed profile rather than read as
+ * evidence) nor to `regionId` / `name` / `version` in `regionBoundary.js` (D1's identifiers and
+ * commercial label, judged by V-7's own rule, which is about stability rather than provenance).
+ * Widening it to those would be a change to a different authority's contract and is not made
+ * here. The token list itself is unchanged, and is deliberately narrow for the reason recorded
+ * above it: "none" and "not built" are honest answers and are not in it.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isPlaceholder(value) {
+  if (typeof value !== "string") return false;
+  return PLACEHOLDER_TOKENS.has(value.trim().toLowerCase().replace(/[.\s]+$/u, ""));
+}
+
 /** @param {unknown} value @returns {boolean} */
 function isFiniteNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-/** @param {unknown} value @returns {boolean} */
+/**
+ * @param {unknown} value @returns {boolean}
+ *
+ * PHASE 15 adversarial pass. This compared `value.length > 0` and therefore accepted a string
+ * of spaces. Every other authority in this programme trims first — `regionBoundary.js` states
+ * the reason as *"a key that differs from its own trimmed form is two keys"* — and the two
+ * authorities disagreeing is what let `travelTimeSpread: { source: "   " }` satisfy N29's
+ * **named** source and `deployment: { extract: "   " }` satisfy the check whose whole purpose
+ * is that *"a placeholder there is indistinguishable from an answer"*: the placeholder
+ * comparison below trims, this one did not, so whitespace fell between them. The value itself
+ * is never rewritten — only the acceptance test — because an operator's string is carried
+ * verbatim into `description` and into Step 4's record.
+ */
 function isNonEmptyString(value) {
-  return typeof value === "string" && value.length > 0;
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/**
+ * The hostname R1 is enforced against, in its one canonical form.
+ *
+ * A fully-qualified name may be written with a trailing root dot — `router.project-osrm.org.`
+ * — and every resolver, and every HTTP client in Node, treats it as the same host. `new URL()`
+ * preserves the dot, so a by-name comparison against `HOSTED_HOSTS` missed it and all six
+ * public services were reachable one keystroke away from the check that exists to refuse them.
+ * R1 is §32.4's one requirement marked non-negotiable, so the comparison is made on the
+ * canonical form rather than on the spelling.
+ *
+ * @param {string} hostname
+ * @returns {string}
+ */
+function canonicalHost(hostname) {
+  return hostname.toLowerCase().replace(/\.+$/u, "");
 }
 
 /**
@@ -201,7 +266,7 @@ function assertSelfHosted(engineId, baseUrl) {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new AdapterError(engineId, ROUTE_STATUS.MALFORMED_REQUEST, `baseUrl "${baseUrl}" must be http or https`);
   }
-  const host = parsed.hostname.toLowerCase();
+  const host = canonicalHost(parsed.hostname);
   if (HOSTED_HOSTS.some((hosted) => host === hosted || host.endsWith(`.${hosted}`))) {
     throw new AdapterError(
       engineId,
@@ -317,6 +382,20 @@ function normaliseSpread(declared, problems) {
   }
   if (!isNonEmptyString(declared.source)) {
     problems.push("travelTimeSpread.source is required — a free-text name of where the spread comes from (N29, §32.4 R7)");
+  } else if (isPlaceholder(declared.source)) {
+    // PHASE 15 residual pass, R-3. The whole of N29 is that somebody must *name* where the
+    // spread comes from: no shortlisted engine returns one, so every `travelSdSeconds` this
+    // adapter emits is computed from this field's model and value, and the name is the only
+    // record of whose number it is. "tbd" satisfies "a non-empty string" and satisfies nothing
+    // else — it reaches `description`, and reads there as though the question had been answered.
+    // The four `deployment` fields were already guarded this way; this one was not.
+    problems.push(
+      `travelTimeSpread.source is "${declared.source}", which is a placeholder rather than a named source. N29 ` +
+        "(§32.4 R7): none of the shortlisted engines returns a travel-time spread, so every travelSdSeconds is " +
+        "derived from this configuration and carried into the adapter's description as coming from here. A " +
+        "placeholder there is indistinguishable from an answer. Naming the source is the requirement; no source is " +
+        "chosen or defaulted by this adapter",
+    );
   }
   if (declared.model !== "PROPORTIONAL" && declared.model !== "ABSOLUTE_SECONDS") {
     problems.push('travelTimeSpread.model must be "PROPORTIONAL" (a fraction of travelSeconds) or "ABSOLUTE_SECONDS"');
@@ -386,7 +465,7 @@ function normaliseDeployment(declared, problems) {
     // non-empty string" and satisfies nothing else: it would reach `description`, reach the
     // Step 5 record, and read there as though somebody had answered. Refusing it invents no
     // value — it declines to accept a non-answer as one.
-    if (PLACEHOLDER_TOKENS.has(declared[field].trim().toLowerCase().replace(/[.\s]+$/u, ""))) {
+    if (isPlaceholder(declared[field])) {
       problems.push(
         `deployment.${field} is "${declared[field]}", which is a placeholder rather than a value. This field is ` +
           "carried verbatim into the adapter's description and into B1 Step 4's operational record; a placeholder " +
@@ -718,6 +797,11 @@ module.exports = {
   AdapterError,
   HOSTED_HOSTS,
   PLACEHOLDER_TOKENS,
+  // Exported because `b1Readiness.assessD8` judges D8's own two named-source fields
+  // (`extract.identity`, `extract.source`) and was judging them by "is it a non-empty string?"
+  // alone. One authority for "is this a placeholder?", not two — R-3.
+  isPlaceholder,
+  canonicalHost,
   assertSelfHosted,
   normaliseConfig,
   normaliseMatrixRequest,

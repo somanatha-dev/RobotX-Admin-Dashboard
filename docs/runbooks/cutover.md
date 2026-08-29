@@ -180,21 +180,130 @@ agent knowing about it. Declaring either at p99 is a category error, not a relax
 
 ### 3.2 Authorise
 
+> **This step's invocation was wrong until the Phase 15 final pass, and an operator following
+> it literally could not authorise anything.** *(P15-F7.)* The block below used to name ten
+> fields and stop, omitting `sourceDigest`, `evidenceMaxAgeMs` and `parameterValues` — all
+> three of which `authoriseEnable()` requires. Measured against the shipped authority, the
+> documented call returned:
+>
+> ```
+> EVIDENCE_CONTEXT_INCOMPLETE
+>   the release evidence cannot be judged: this request supplies no `evidenceMaxAgeMs` …;
+>   and no `sourceDigest` …; and no `parameterValues` …
+> ```
+>
+> **That refusal was correct** — the authority is doing exactly what it exists to do, and
+> nothing below weakens it. The defect was in this file: the procedure asked the operator to
+> make a call that could not succeed, and the fix is to document where the three missing
+> values legitimately come from. **None of them may be invented at the console**, which is
+> why each has an acquisition step rather than a suggested literal.
+
+**First assemble the four inputs that are not simply yours to type.**
+
+Paths below are relative to `Backend/`, which is where every command in this runbook is run.
+
+```js
+const fs = require("fs");
+const configService = require("./src/engine/config/service");
+const { sourceDigest } = require("./tools/release/sourceDigest");
+
+// (a) The §24 gate table, as `npm run release:gates` judged it — the build's own run records
+//     plus whatever attestations have been filed. This is a *file you read*, not an object
+//     you write: `collectEvidence.js` produces the run records by running the gates.
+const readJson = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null);
+const evidenceDocument    = readJson("docs/release-evidence.json");
+const attestationDocument = readJson("docs/release-attestations.json"); // absent today
+const fromEvidence     = (evidenceDocument && evidenceDocument.evidence) || {};
+const fromAttestations = (attestationDocument && attestationDocument.attestations) || {};
+
+// A build record and an attestation for the SAME gate is a contradiction, and a plain spread
+// would let the attestation silently win. `verdict.js:103–107` collects the collision and
+// forces that gate RED; this procedure must do the same, or it is more permissive than the
+// tool whose verdict it is supposed to be acting on.
+const collisions = Object.keys(fromAttestations).filter((id) => Object.hasOwn(fromEvidence, id));
+const releaseEvidence = { ...fromEvidence, ...fromAttestations };
+for (const id of collisions) {
+  releaseEvidence[id] = { gateId: id, producer: "collision", producedAtMs: Date.now(), pass: false };
+}
+if (collisions.length > 0) {
+  console.warn(`CONTRADICTION — build record and attestation both filed for: ${collisions.join(", ")}`);
+}
+
+// (b) The tree you are shipping. Take it from the tree — NOT from the evidence file.
+//     `node tools/release/sourceDigest.js` prints the same value.
+const digest = sourceDigest().digest;
+
+// (c) The age bound you are taking this decision under, in ms. It must be the same bound the
+//     release verdict was taken under: `verdict.js` defaults to 24 h and `--max-age-hours`
+//     overrides it. 24 h is `24 * 3600000`.
+const evidenceMaxAgeMs = 24 * 3600000;
+
+// (d) The authoritative parameter source — the configuration **in force**, which is the
+//     pinned version and not the register's defaults. In a running process this same object
+//     is `app.locals.config`, installed by §3.3's pull.
+const config = await configService.loadPinnedSnapshot({ prisma, kv });
+if (!config) throw new Error("no configuration version is pinned — see the note below");
+const parameterValues = { get: (name) => config.resolve(name) };
+```
+
+> **(d) answers `null` on a deployment that has never published, and that is not a bug to work
+> around.** `loadPinnedSnapshot()` returns `null` when no version is pinned — measured against
+> a schema built from empty: 0 `ConfigVersion` rows, 0 `ConfigActiveVersion` rows, `null`. And
+> a first publish is what §1's box is about: the register's own defaults are **not** a
+> publishable configuration, and the parameter that makes them unpublishable
+> (`route.degraded_reserve_factor`) is one of B8's 39. So on a deployment that has not
+> discharged B8, this step stops here, correctly — staging a shard *is* publishing a binding
+> (§3.3), so there is no ordering that gets around it. Do **not** substitute
+> `configService.defaultSnapshot()` to get past it: that is the register's defaults rather
+> than the configuration in force, and if anyone ever binds `release.soak_duration` to a
+> shorter value, the defaults would hide it — which is the P15-F1 defect wearing a different
+> hat. The first publish is the cutover's first act, and it is blocked on B8, not on this file.
+
+Four things about that list, because each is a rule and not a formality:
+
+- **(a) is read, never authored.** A hand-written `{ pass: true }` table is the exact attack
+  `collectEvidence.js` was written to end (§1). If `release-attestations.json` does not exist,
+  spread nothing — an absent attestation leaves its gate `NOT_EVALUATED`, which blocks, and
+  that is the honest state. Filing one to make a gate green is fabrication.
+- **(b) is computed from the tree, not copied out of (a).** Copying the digest from the
+  evidence file would make the binding check compare the evidence against itself and pass
+  always. The whole point is that the two are obtained independently and *must agree*: if they
+  do not, your evidence describes a different program and every `BUILD`/`SUITE` record is
+  refused. That refusal is the mechanism working.
+- **(c) is a bound you declare, and there is no default here.** `authoriseEnable()` refuses a
+  missing or non-finite one rather than assuming a generous one, because for the `PRODUCTION`
+  and `ORGANISATIONAL` records — which carry no digest — age is the *only* thing binding them
+  to the system being shipped.
+- **(d) is the Config Service's answer, not a literal.** The minimum observation windows for
+  `soak` and `shadow_agreement` are `release.soak_duration` and
+  `cutover.shadow_agreement_window`, and the authority reads them **itself**, from this
+  source. You may not state them: a request carrying `minObservationMs` is refused outright
+  (`OBSERVATION_BOUND_NOT_THE_CALLERS`), in both directions, because a caller who can state
+  the bound can state a smaller one. If you believe 72 hours is wrong, change
+  `release.soak_duration` through the Config Service — versioned, approved, audited — not here.
+
+**Then authorise.**
+
 ```js
 const authorisation = stage.authoriseEnable({
   shard, allShards, liveShardIds,
-  releaseEvidence,          // the §24 gate evidence
+  releaseEvidence,          // (a) the §24 gate evidence
   killSwitchState,          // every Tier 2 switch thrown
   declaration,              // from 3.1
   requestedBy: "<you>",
   approvedBy: "<a different person>",
   reason: "<why now>",
   requestedAtMs: Date.now(),
+  sourceDigest: digest,     // (b) the tree the run records must have run against
+  evidenceMaxAgeMs,         // (c) how stale a record may be and still describe this system
+  parameterValues,          // (d) the authoritative source for the observation windows
 });
 ```
 
-If it refuses, `refusal.code` says which of the five grounds and `refusal.detail` names the
-specifics. Do not route around a refusal; every one of them is a gate somebody put there.
+If it refuses, `refusal.code` says which ground and `refusal.detail` names the specifics. Do
+not route around a refusal; every one of them is a gate somebody put there. In particular
+`EVIDENCE_CONTEXT_INCOMPLETE` means *your request was malformed* — supply the named field, and
+never by loosening what it is supposed to carry.
 
 ### 3.3 Publish and audit
 

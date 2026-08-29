@@ -347,6 +347,125 @@ describe("V-11, V-12, V-13", () => {
   });
 });
 
+describe("V-11 — R-2: an overlap is shared AREA, not shared boundary", () => {
+  /**
+   * PHASE 15 residual pass, R-2. `polygonsOverlap` asked whether any pair of edges met at all,
+   * via `segmentsCross` — which reports a collinear overlap as a crossing because V-3, where it
+   * is looking for a ring that doubles back on itself, needs it to. So two regions sharing only
+   * the line `x = 1` were INVALID, and so were two meeting at a single corner.
+   *
+   * The contract was established from the shipped module rather than chosen here: this
+   * function's own line asks whether two polygons "share any **area**", `boxesOverlap` is
+   * documented as a filter and not an answer, and V-11's stated reason — §3.5's "every Agent and
+   * every Leg belongs to exactly one region at a time", with §3.6 assigning membership by
+   * published cell rather than by geometry — is a statement about interiors. A depot catchment
+   * abutting the metro area beside it is the ordinary case, not a defect.
+   *
+   * **These are not regions.** Every polygon below is a unit square or a triangle on the equator,
+   * chosen so that nobody can read one as a deployment.
+   */
+  const declaration = (regionId, coordinates) => ({
+    regionId,
+    name: `not an operating region — ${regionId}`,
+    kind: REGION_KIND.METRO_SERVICE_AREA,
+    crs: "EPSG:4326",
+    version: "r2-fixture",
+    versionDate: "2026-08-09",
+    boundary: { type: "Polygon", coordinates: [coordinates] },
+  });
+  const box = (regionId, minLon, minLat, maxLon, maxLat) =>
+    declaration(regionId, [
+      [minLon, minLat],
+      [maxLon, minLat],
+      [maxLon, maxLat],
+      [minLon, maxLat],
+      [minLon, minLat],
+    ]);
+  const disjointness = (...supplied) => regionBoundary.validateRegionsDisjoint(supplied.map(regionBoundary.validateRegionDeclaration));
+
+  const UNIT = box("R2-UNIT", 0, 0, 1, 1);
+
+  test.each([
+    ["A — a positive-area overlap is INVALID", box("R2-A", 0.5, 0.5, 1.5, 1.5), BOUNDARY_STATUS.INVALID],
+    ["B — edge-only contact is VALID", box("R2-B", 1, 0, 2, 1), BOUNDARY_STATUS.VALID],
+    ["C — corner-only contact is VALID", box("R2-C", 1, 1, 2, 2), BOUNDARY_STATUS.VALID],
+    ["D — disjoint regions are VALID", box("R2-D", 10, 10, 11, 11), BOUNDARY_STATUS.VALID],
+    ["E — identical regions are INVALID", box("R2-E", 0, 0, 1, 1), BOUNDARY_STATUS.INVALID],
+    ["F — a tiny positive-area overlap is INVALID", box("R2-F", 0.9999, 0.5, 2, 1.5), BOUNDARY_STATUS.INVALID],
+  ])("%s", (_label, other, expected) => {
+    expect(disjointness(UNIT, other).status).toBe(expected);
+    // …and the answer does not depend on the order the two were supplied in (§9.6).
+    expect(disjointness(other, UNIT).status).toBe(expected);
+  });
+
+  test("E is INVALID for the right reason — an identical region shares every point of its interior", () => {
+    // The one case boundary sampling alone cannot see: two identical squares have no stretch of
+    // either boundary inside the other, because the two boundaries ARE each other. It is caught
+    // by the property that makes it identical rather than by a special case for equality.
+    expect(problemsOf(disjointness(UNIT, box("R2-CLONE", 0, 0, 1, 1)))).toMatch(/V-11.*share area, not merely a boundary/su);
+  });
+
+  test("containment is still an overlap, with and without a shared edge", () => {
+    // Wholly inside, touching nothing.
+    expect(disjointness(UNIT, box("R2-IN", 0.2, 0.2, 0.3, 0.3)).status).toBe(BOUNDARY_STATUS.INVALID);
+    // Inside and flush against three of the four edges — every vertex of the smaller region is
+    // ON the larger's boundary, so a vertex-only test would have called this disjoint.
+    expect(disjointness(box("R2-WIDE", 0, 0, 2, 1), UNIT).status).toBe(BOUNDARY_STATUS.INVALID);
+  });
+
+  test("THE SHARED EDGE MAY BE SLANTED — this is not an axis-aligned or bounding-box result", () => {
+    // Two halves of the unit square, sharing the diagonal from [0,0] to [1,1] and nothing else.
+    // Their bounding boxes are IDENTICAL, so a box comparison would call them overlapping; they
+    // share a boundary of positive length and no area at all, so V-11 must not.
+    const lower = declaration("R2-LOWER", [[0, 0], [1, 0], [1, 1], [0, 0]]);
+    const upper = declaration("R2-UPPER", [[0, 0], [1, 1], [0, 1], [0, 0]]);
+    expect(disjointness(lower, upper).status).toBe(BOUNDARY_STATUS.VALID);
+
+    // …and a slanted pair that genuinely shares area is still refused.
+    const crossing = declaration("R2-CROSS", [[0.4, 0], [1.4, 1], [0.4, 1], [0.4, 0]]);
+    expect(disjointness(lower, crossing).status).toBe(BOUNDARY_STATUS.INVALID);
+  });
+
+  test("a row of adjacent regions is a legitimate deployment and passes as a set", () => {
+    // The consequence of the fix that matters operationally: three regions tiling a strip, each
+    // touching the next along one edge, is what an operator supplying a real service area
+    // actually looks like. It was INVALID on every pair.
+    const strip = disjointness(box("R2-W", 0, 0, 1, 1), box("R2-M", 1, 0, 2, 1), box("R2-E2", 2, 0, 3, 1));
+    expect(strip).toMatchObject({ status: BOUNDARY_STATUS.VALID, problems: [] });
+    // One of the three then genuinely overlapping a fourth is still caught, and names only that pair.
+    const spoiled = disjointness(box("R2-W", 0, 0, 1, 1), box("R2-M", 1, 0, 2, 1), box("R2-BAD", 1.5, 0.5, 2.5, 1.5));
+    expect(spoiled.status).toBe(BOUNDARY_STATUS.INVALID);
+    expect(spoiled.problems).toHaveLength(1);
+    expect(spoiled.problems[0]).toMatch(/"R2-BAD"/u);
+    expect(spoiled.problems[0]).toMatch(/"R2-M"/u);
+  });
+
+  test("V-3 IS UNCHANGED — a ring that doubles back along itself still has no interior", () => {
+    // `segmentsCross` treats collinear overlap as a crossing, and V-3 needs that. R-2 changed
+    // what V-11 asks, not what a ring is: the self-intersection check still runs on the same
+    // function, and this asserts the fix did not reach it.
+    const bowtie = regionBoundary.validateRegionDeclaration(declaration("R2-BOWTIE", [[0, 0], [1, 1], [1, 0], [0, 1], [0, 0]]));
+    expect(bowtie.status).toBe(BOUNDARY_STATUS.INVALID);
+    expect(problemsOf(bowtie)).toMatch(/V-3 .*crosses segment/su);
+
+    const doublesBack = regionBoundary.validateRegionDeclaration(declaration("R2-SPUR", [[0, 0], [2, 0], [1, 0], [1, 1], [0, 0]]));
+    expect(doublesBack.status).toBe(BOUNDARY_STATUS.INVALID);
+  });
+
+  test("NO TOLERANCE WAS INTRODUCED — a hair of overlap is an overlap, and a hair of gap is not", () => {
+    // The tempting fix for R-2 is an epsilon, which would be this module deciding how close two
+    // boundaries may be drawn before they count as the same place — a geographic decision it has
+    // no authority to make, the same reason checkPosition refuses to re-order a [lat, lon] file.
+    // So the boundary is exact in both directions, at the smallest step the coordinates allow.
+    const overlapsByAHair = box("R2-HAIR-IN", 1 - Number.EPSILON, 0, 2, 1);
+    expect(disjointness(UNIT, overlapsByAHair).status).toBe(BOUNDARY_STATUS.INVALID);
+    const missesByAHair = box("R2-HAIR-OUT", 1 + Number.EPSILON, 0, 2, 1);
+    expect(disjointness(UNIT, missesByAHair).status).toBe(BOUNDARY_STATUS.VALID);
+    // …and exactly flush is the contact case, which is the whole of R-2.
+    expect(disjointness(UNIT, box("R2-FLUSH", 1, 0, 2, 1)).status).toBe(BOUNDARY_STATUS.VALID);
+  });
+});
+
 describe("N21 at the publish path — the guard that is actually load-bearing", () => {
   /**
    * A map whose cell ids are placeholder tokens, in the shape `prisma/seed.js` publishes.

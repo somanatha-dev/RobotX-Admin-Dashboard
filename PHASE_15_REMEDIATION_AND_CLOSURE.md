@@ -1,4 +1,4 @@
-# Phase 15 — Third-Pass Adversarial Audit, Remediation, Re-verification and Closure
+﻿# Phase 15 — Third-Pass Adversarial Audit, Remediation, Re-verification and Closure
 
 **Date:** 2026-08-24 · **Branch:** `feature/dashboard` · **Baseline commit:** `3f0e522` ("maps enhanced")
 **Source digest at arrival:** `134ebc0d1d6cd047b5ebb62de9808489274520c9c9607795a9ef0d9e43373a2c` (562 files)
@@ -2083,3 +2083,773 @@ the one honest thing to say is: *P15-F1 is closed; nothing here searched for its
 **TRUTH > GREEN.**
 
 # P15-F1 — CLOSED.  PHASE 15 — BLOCKED.
+
+---
+---
+
+# PART IV — FINAL P15-F1 CLOSURE, EVIDENCE RECONCILIATION AND STOP-GATE
+
+**Date:** 2026-08-29 · **Branch:** `feature/dashboard` · **Scope:** re-verify the P15-F1
+remediation independently, reconcile the release evidence, classify the producer/consumer
+composition honestly, and stop — or find a reason not to.
+
+**Digest, arrival and closure (unchanged across this whole pass):**
+`431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470` (565 files)
+
+Nothing in `src/`, `tools/` or `tests/` was changed by this pass. One documentation file was
+changed (§40), and `docs/` is outside the digest scope by `sourceDigest.js`'s own definition, so
+the release collection below binds the same tree that arrived.
+
+---
+
+## 36. The release collection — one was discarded, and why
+
+**The collection that was on disk at arrival passed every criterion the mandate lists and was
+still not usable.** It is worth stating exactly, because "it met the stated criteria" was very
+nearly enough to ship it:
+
+| Mandate criterion | The arrival collection |
+|---|---|
+| tree unchanged during collection | **yes** — endpoints agreed, digest `431010ace…` |
+| zero records VOID | **yes** — 0 of 17 |
+| every record bound to the final digest | **yes** — 17 of 17 |
+| no evidence manually edited | **yes** — sole producer `tools/release/collectEvidence.js` |
+| no `NOT_EVALUATED` converted to `GREEN` | **yes** — all 7 still `NOT_EVALUATED` |
+| no external evidence fabricated | **yes** |
+
+And its verdict was **8 green, 9 red, 7 not evaluated**, against the clean collection's 16/1/7.
+Eight gates were RED that are not red. Six carried exit code **3221225794** — `0xC0000142`,
+Windows `STATUS_DLL_INIT_FAILED`: *the gate process never started*. The seventh,
+`determinism_replay`, recorded `106 failed, 6601 passed` from a run whose `-- determinism` path
+filter had not applied and which ran the whole engine project against a contended machine.
+
+`npm test` passes **7 162 / 7 162** on that same tree. So those eight REDs were an artefact of
+the collector competing for the process table, and the mandate's criteria cannot see it: every
+one of them is about *provenance* and *binding*, and this was a failure of *execution*.
+
+**Recorded as a gap in the criteria, not just as an incident.** A collection can be perfectly
+bound, perfectly attributed, entirely un-edited, and still be evidence about a machine rather
+than about a program. `collect()` already returns `ok: false` when any gate exits non-zero — the
+information was there; nothing downstream distinguishes *"this gate is red"* from *"this gate
+did not run"*. `0xC0000142` is not a gate verdict. That distinction has no representation in the
+evidence schema today, and this pass does not add one — it is named here so the next collection
+that reads strangely is diagnosed rather than believed.
+
+**One fresh collection was then performed serially**, with nothing else running, per §1 of the
+mandate. No source was modified during it.
+
+## 37. Why the machine was contended — and what it means for this evidence
+
+`ListAgents` reports **three other interactive Claude Code sessions live in this repository**
+during this pass (`robotx-0e`, `robotx-11`, `robotx-e5`). That is the mundane explanation for
+the `0xC0000142` failures, and it is also a standing hazard for every measurement in this
+programme: **the tree is not under any one pass's exclusive control.**
+
+Two consequences, both handled rather than assumed away:
+
+- The digest was recomputed **after** every long-running step — the collection, the mutation
+  attack, the live-database run — and is `431010ace188c4b1…` at each. The collector's own
+  before/after endpoints agreed, which is what makes the 17 records non-VOID.
+- One file *did* change under this pass, at 11:36, written by another session:
+  `docs/runbooks/cutover.md`. It is outside the digest scope, so no evidence record is affected.
+  It is dealt with on its merits in §40, **and its authorship is disclosed there** rather than
+  absorbed into this pass's account of itself.
+
+## 38. P15-F1 — final adversarial verification
+
+Re-run **outside jest and outside the digest scope**, sharing no code with
+`phase15ObservationAuthority.test.js`, deriving the authoritative requirement from the shipped
+register rather than restating it.
+
+```
+register: release.soak_duration = 72 hours, cutover.shadow_agreement_window = 14 days
+authority resolves: { shadow_agreement: 1209600000, soak: 259200000 } = 72 h, 14 d
+
+CONTROL 1 — honest request authorised: true
+CONTROL 2 — 73 h soak / 15 d shadow authorised: true
+```
+
+The controls come first because *a refusal from a fixture that could never be authorised proves
+nothing*. Both pass, so every refusal below is a refusal of the attack and not of the fixture.
+
+| # | Attack | Result |
+|---|---|---|
+| 1 | 1 ms caller bound | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| 2 | 1 second caller bound | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| 3 | 24 hour caller bound (against 72 h) | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| 4 | 0 | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| 5 | negative | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| 6 | `NaN` | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| 7 | `Infinity` | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| 8 | **omitted caller field** | refused `RELEASE_GATE_NOT_GREEN` → `shadow_agreement` + `soak`, both `OBSERVATION_WINDOW_TOO_SHORT`, naming **72h** |
+| 9 | missing authoritative register | refused `EVIDENCE_CONTEXT_INCOMPLETE` |
+| 10 | invalid authoritative register (`get` not a function) | refused `EVIDENCE_CONTEXT_INCOMPLETE` |
+| 10b | register accessor throws | refused `PARAMETER_REGISTER_UNREADABLE` |
+| 10c | register resolves nothing | refused → both gates `OBSERVATION_WINDOW_REQUIRED`, reported `(got undefined)`, **no fabricated zero** |
+| 11 | oversized (100 days) | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| 11b | oversized (`Number.MAX_VALUE`) | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| 12a | caller states **exactly** the authoritative 72 h / 14 d | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| 12b | field present as `undefined` (the spread shape) | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| 12c | empty object | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| 13 | `Object.create({ soak: 1 })` — the field reached by prototype | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+
+**Attack 8 is the one that proves the register was consulted.** "Refused" is not evidence of
+that; *refused for being one second against seventy-two hours, by name* is. Attack 10c is the
+producer-side half: the authority reports that nothing resolved rather than reporting a number
+the register never gave.
+
+**0 of the mandate's 12 attacks weaken the authoritative observation requirement.**
+
+### 38.1 The one probe that is not refused, and why it is not a thirteenth attack
+
+A **nineteenth** probe was added beyond the mandate's twelve: a caller who supplies a *lying
+register* — an accessor answering `1` for `release.soak_duration` — together with a 2-hour soak
+window. It is **authorised**.
+
+That is not a new finding. It is §33.3's recorded limit, reproduced deliberately to confirm the
+limit is where §33.3 says it is and no wider: the bound is now the answer *the configuration
+system gives for a registered parameter*, at the same trust level as `killSwitchState` and
+`releaseEvidence`, and closing it completely would require an `src/engine/**` module to read the
+Config Service, which §22 forbids. **It is reported, not fixed, and not counted as a bypass of
+the twelve.**
+
+## 39. Mutation — 5 mutants, 5 killed, 0 survivors
+
+Each protection removed from the shipped `stage.js`; the P15-F1 suite required to **fail**; the
+file restored from an in-memory copy and **SHA-256 compared**; the suite required to pass again.
+Baseline proven green before and after.
+
+```
+target sha256 BEFORE: b72ce3f6fea1669d1f792caad03cc8c3e04b096dde2551bcbb1ee30981242d4b
+BASELINE  exit 0
+
+MU1  KILLED   11/51 failing   the authoritative resolution — the applied bound reverts to `source.minObservationMs`
+MU2  KILLED   18/51 failing   the guard refusing a caller-stated bound (`Object.hasOwn`)
+MU3  KILLED   27/51 failing   BOTH — the exact pre-P15-F1 source: a caller-supplied bound, honoured
+MU4  KILLED    7/51 failing   the `parameterValues` requirement in the evidence-context check
+MU5  KILLED    1/51 failing   PRODUCER SIDE — the authority fabricates a zero bound for a parameter the register did not answer
+
+BASELINE AFTER  exit 0
+target sha256 AFTER : b72ce3f6fea1669d1f792caad03cc8c3e04b096dde2551bcbb1ee30981242d4b   identical: true
+mutants: 5   killed: 5   survivors: 0
+```
+
+**MU5's count is the finding, not its verdict.** It is killed by **exactly one** test — the
+regression added for it. Every other mutant is caught many times over; this one is caught once,
+which means the producing side has a single point of failure in the suite and would have
+**survived** before that test existed. It is recorded as a thin margin rather than as a pass.
+
+MU2 and MU4 remain honestly weaker, as §32 already states: removing either leaves the system
+fail-closed and loses a refusal that *names the right thing*. **MU3 is the load-bearing one**,
+and it is the mutation the mandate names.
+
+## 40. Producer / consumer composition — stated exactly
+
+### `authoriseEnable()` has no production runtime caller. None was manufactured.
+
+Re-derived on this tree, three independent ways:
+
+- **grep over `src/` and `server.js`** — every occurrence of the name is a comment
+  (`server.js:573`, `health.controller.js:294,333`, `cutover.worker.js:59,67`,
+  `guardrails.js:35,302`, `rollbackPublisher.js:42,230`, `evidence.js` ×5, `gates.js:497`).
+- **the two production modules that require `cutover/stage`** call something else:
+  `health.controller.js:329` calls `cutoverStage.plan(shards)`; `cutover.worker.js:81` calls
+  `stage.authoriseRollback(...)`.
+- **no HTTP surface reaches it** — `src/routes/` exposes exactly one cutover path,
+  `GET /health/cutover`, which is read-only and self-describes as `authoritative: false`.
+
+### Classification: **OPERATOR/ENABLE SURFACE — NO PRODUCTION CALLER PRESENT**
+
+**This is an intentionally external/operator surface. It is not a Phase-15 defect, and it is
+not a later phase's debt.** The repository decides this itself; nothing here is inferred:
+
+| Evidence | Where |
+|---|---|
+| the module names its own caller: *"the caller — the cutover worker **or an operator's tooling** — publishes the configuration binding"* | `stage.js` header |
+| §22.3 forbids the automated caller: *"no automated process makes the change that raises risk"*, and the function **refuses `automated: true`** and refuses requester ≡ approver | `stage.js:503–516` |
+| only a rollback may be published without a human | `rollbackPublisher.js:224–230` |
+| the worker is written to call the rollback half **only**, and says so | `cutover.worker.js:59–67, 81` |
+| the operator's tooling exists and is a **written procedure**, not code | `docs/runbooks/cutover.md` §3.2–3.3 |
+| the composition gate's scope is *workers*, not every export — so this is outside it by design, not by omission | `checkCompositionRoot.js` header |
+
+An in-repository production caller would be a process taking a shard live, which is the precise
+act §22.3 prohibits. **A caller here would be the defect.** The honest statement is therefore
+*not* "this is uncomposed and someone should compose it" but: **the enable half is exercised by
+a human following a runbook, and the runbook is the artefact that must be correct.**
+
+Which is where this pass found its one new defect.
+
+### P15-F7 — the documented invocation could not authorise anything · **Medium (procedure)** · FIXED (documentation)
+
+**`docs/runbooks/cutover.md` §3.2 is the only documented invocation of `authoriseEnable()` in
+the repository** — it *is* the "operator's tooling" the module header names. Its code block
+passed ten fields and stopped, omitting `sourceDigest` and `evidenceMaxAgeMs` (required since
+P15-C1) and `parameterValues` (required since P15-F1).
+
+**Reproduced, against an otherwise perfect, fully green fixture:**
+
+```
+RUNBOOK §3.2, AS WRITTEN — an operator copying the documented call
+  authorised: false
+  refusal:    EVIDENCE_CONTEXT_INCOMPLETE
+    missing: `evidenceMaxAgeMs` — how stale a record may be and still describe this system
+    missing: `sourceDigest` — the tree the build gates' run records must have run against
+    missing: `parameterValues` — the authoritative parameter source … from which the minimum
+             observation windows for shadow_agreement and soak are read
+
+THE SAME CALL WITH THE REQUIRED FIELDS SUPPLIED
+  authorised: true
+
+DIRECTION: fail-closed (refused)
+```
+
+**The refusal is correct and nothing about the authority was changed.** The defect is in the
+procedure: it asked an operator to make a call that cannot succeed. Same class and same
+direction as **P15-E6**, which this document already fixed as documentation.
+
+**The fix documents where the three values legitimately come from**, with an acquisition step
+each rather than a suggested literal — `releaseEvidence` **read** from
+`docs/release-evidence.json` (never authored), `sourceDigest` **computed from the tree** and
+explicitly not copied out of the evidence file, `evidenceMaxAgeMs` declared to match the
+verdict's bound, and `parameterValues` taken from `loadPinnedSnapshot()` — the configuration
+**in force**, not the register's defaults.
+
+**Every factual claim in that fix was checked against the code before it was allowed to stand:**
+
+| Claim | Verified |
+|---|---|
+| `configService.loadPinnedSnapshot({ prisma, kv })` exists with that signature | `service.js:526–527` |
+| `snapshot.resolve(name)` exists | `service.js:229` |
+| `verdict.js` defaults to a 24 h bound, `--max-age-hours` overrides | `DEFAULT_MAX_AGE_HOURS = 24`, `verdict.js:66` |
+| the evidence/attestation spread matches what `verdict.js` itself does | `verdict.js:101–104` |
+| `docs/release-attestations.json` is absent today | `Backend/docs/` holds `release-evidence.json` only |
+| `loadPinnedSnapshot()` returns `null` on a schema built from empty | **measured** on a virgin migrated database: 0 `ConfigVersion`, 0 `ConfigActiveVersion`, `null` |
+
+**Authorship disclosed.** That runbook edit was written at 11:36 by **another Claude Code session
+working concurrently in this repository** (§37), not by this pass. It is retained because the
+defect it addresses is real and was reproduced here independently, and because every claim in it
+verifies against the code — **not** because it was found in the tree. It is named as another
+session's work rather than absorbed into this pass's account of itself.
+
+**One divergence, reported and not fixed:** the runbook assembles evidence and attestations with
+a plain spread, while `verdict.js:103–107` additionally detects gate-id **collisions** between
+the two and forces the colliding gate RED. With `release-attestations.json` absent the two agree
+today, and the runbook says to spread nothing when it is absent. It is recorded so the next
+person to file an attestation knows the procedure is a shade more permissive than the tool.
+
+## 41. Cross-phase integrity — Phases 0–14
+
+**Every file modified in the working tree, with its owner:**
+
+| File | Owner | Why it is modified |
+|---|---|---|
+| `Backend/tests/engine/phase15ObservationAuthority.test.js` | **Phase 15** | +47 lines: the MU5 producer-side regression (§39) |
+| `Backend/docs/release-evidence.json` | **Phase 15** | regenerated by `collectEvidence.js` — sole producer, no hand edit |
+| `Backend/src/engine/spatial/regionBoundary.js` | **B1 prerequisite** | R-2: `polygonsOverlap` — boundary contact is not shared area |
+| `Backend/tools/routing/b1Readiness.js` | **B1 prerequisite** | A2–A7, R-1, R-3 |
+| `Backend/tools/routing/adapters/contract.js` | **B1 prerequisite** | A8, R-3 |
+| `Backend/tests/engine/spatialRegionBoundary.test.js` | **B1 prerequisite** | R-2 regressions |
+| `Backend/tests/engine/routingB1Readiness.test.js` | **B1 prerequisite** | A2–A7, R-1, R-3 regressions |
+| `Backend/tests/engine/routingB1Adapters.test.js` | **B1 prerequisite** | A8 regressions |
+| `docs/runbooks/cutover.md` | **Phase 15** | P15-F7 (§40) — another session's edit, verified and disclosed |
+
+**`regionBoundary.js` is the one file here that a Phase-2-era commit created, and it is not an
+unrelated change.** The diff is confined to `boxesOverlap`, two new private helpers,
+`polygonsOverlap`, `validateRegionsDisjoint` and the export list — the V-11 geometry B1's D1
+assessment depends on, documented in full in `PHASE_15_B1_PREREQUISITE_ADVERSARIAL_PASS.md`
+§R-2, with the contract derived from three statements already in the tree and a mutation (M-R2)
+that kills the old behaviour across two suites. **No Phase-0–14 change is silently accepted
+here; this one is named, attributed and justified.**
+
+**Byte-identical to `HEAD`, verified by blob hash:**
+
+| | |
+|---|---|
+| `prisma/schema.prisma` | `c039c40ae7146726cfd96870f58065be76092a69` — same |
+| all 5 register files (`appendixA`, `cost`, `killSwitches`, `legacy`, `supplementary`) | same |
+| `cutover/gates.js`, `cutover/evidence.js`, `cutover/stage.js` | same |
+| `release/sourceDigest.js`, `release/verdict.js`, `release/collectEvidence.js` | same |
+| `gates/checkCompositionRoot.js` | same |
+| **27 migrations** | 0 modified, 0 added |
+
+`git status --porcelain` over `Backend/src/db`, `src/engine/{commitment,dispatch,domain,shard}`
+and `prisma/` is **empty**. **No gate definition, no threshold and no migration moved.**
+
+## 42. Final measured results
+
+All on the stable final tree at digest `431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470` (565 files).
+
+```
+$ npm test                                                                     exit 0
+Test Suites: 160 passed, 160 total
+Tests:       7162 passed, 7162 total
+Snapshots:   0 total                    Time: 334.241 s
+
+$ npm run gates                                                                exit 1
+gate: tier-dependencies          PASS — 285 modules, 423 governed import edges
+gate: parameter-register         PASS
+gate: tenets                     PASS — 282 modules
+gate: identity-isolation         PASS — 16 modules
+gate: reconstruction-equivalence PASS — 3 corpus decisions, byte for byte
+gate: legacy-retirement          PASS — 4 retired modules absent, 340 files
+gate: column-generation          PASS — NOT_REQUIRED
+gate: composition-root           FAIL — 1 of 18 workers: coordinator
+                                        [LEADER_ONLY_NOT_COMPOSABLE] owner EXTERNAL — B1
+
+$ npm run release:gates                            (clean serial collection)   exit 1
+source digest 431010ace188c4b1…    16 green, 1 red, 7 not evaluated
+17 records, 0 VOID, 17/17 bound to the final digest, 1 non-zero exit
+  (engine_decision_path_wired, exit 1 — B1)
+RELEASE: BLOCKED — 8 blocking gate(s) are not green.
+
+$ node tools/routing/b1Readiness.js                                            exit 0
+OVERALL: BLOCKED    D1 BLOCKED · D3 BLOCKED · D8 BLOCKED
+Steps 1, 3, 4, 5 BLOCKED · Step 2 PASS
+NO ENGINE IS SELECTED, RANKED OR RECOMMENDED
+
+$ node tools/gates/checkCalibration.js                                         exit 1
+FAIL — 39 blocking findings. 242 entries: 52 DERIVED, 152 PROVISIONAL,
+38 UNCALIBRATED. 54 Safety-class.
+
+$ node tools/simFidelity/validate.js                                           exit 1
+7 models NOT_MEASURED, 6 safety-relevant. No study was supplied.
+
+$ node tools/safetyCase/assemble.js                                            exit 0
+12 hazards from 38 predicates and 22 invariants; every reference resolves.
+release gates: 0 green, 0 red, 24 not evaluated   (the assembler files no evidence)
+```
+
+**Live PostgreSQL.** Disposable **PostgreSQL 18.3**, port **55437**, `initdb` into the scratchpad
+from the installed binaries — never Neon, never the default 5432 cluster, both of which every
+harness refuses by name. Schema applied with `prisma migrate deploy`: **27/27 migrations, 0
+failed, 0 rolled back.**
+
+| Harness | Result |
+|---|---|
+| `tools/verify/phase15LiveDatabase.js` | **12/12**, exit 0 |
+| `tools/verify/phase15CurrentTree.js` | **32/32**, exit 0 |
+| `tools/verify/phase15EvidenceBinding.js` | **17/17**, exit 0 |
+| `tools/verify/phase15VersionInForce.js` | **19/19**, exit 0 |
+| | **80/80** |
+
+The cluster was created for this pass and destroyed after it. No production data was read or
+written.
+
+### 42.1 The §24 table, by status
+
+| | Gates |
+|---|---|
+| **GREEN (16)** | `tier_dependencies`, `parameter_register`, `design_tenets`, `identity_isolation`, `erasure_reconstruction_equivalence`, `legacy_removed_from_build`, `lower_bound_admissibility`, `model_check_capacity_1_2_3` *(NOT PROVEN — B-M)*, `determinism_replay`, `snapshot_retention`, `chaos_capacity_1`, `chaos_capacity_2`, `cache_tier_flush`, `scale_targets`, `locality`, `overload_admission_control` |
+| **RED (1)** | `engine_decision_path_wired` — B1 |
+| **NOT_EVALUATED (7)** | `calibration_safety_derived` (B8) · `invariants_enforced`, `simulator_fidelity`, `soak`, `shadow_agreement` (B-P) · `safety_case_assembled`, `rollback_rehearsed` (B-O) |
+
+**No `NOT_EVALUATED` was converted to `GREEN`.** All seven are the same seven.
+
+## 43. Remaining blockers
+
+| ID | Description | Class | Owner | State after this pass |
+|---|---|---|---|---|
+| **B1** | No routing engine selected. `coordinator` uncomposable; `gate:composition` FAIL; `engine_decision_path_wired` RED; `b1Readiness` OVERALL BLOCKED with D1, D3, D8 each BLOCKED and Steps 1/3/4/5 BLOCKED | **EXTERNAL** | Ops + Commercial (D1), Product + Fleet Eng (D3), Ops (D8) | **OPEN — unchanged.** No engine selected, ranked or recommended. No operating region, fleet-speed or extract-vintage data invented |
+| **B8** | 39 Safety-class parameters not `DERIVED`; `gate:calibration` exit 1; 242 entries, 52 DERIVED / 152 PROVISIONAL / 38 UNCALIBRATED, 54 Safety-class | **EXTERNAL** | §22.4's calibration owner | **OPEN — unchanged.** `release.soak_duration` is still PROVISIONAL and was not promoted; P15-F1 made the system *use* it, which is a different act |
+| **B-P** | 4 PRODUCTION gates `NOT_EVALUATED` — `invariants_enforced`, `simulator_fidelity`, `soak`, `shadow_agreement`. `sim:fidelity` reports 7 models NOT_MEASURED, 6 safety-relevant | **OBSERVATION** | needs an operating fleet | **OPEN — unchanged.** No observation window manufactured. The 14-day shadow window still cannot *begin*, because the shadow worker cannot compose (B1) |
+| **B-O** | 3 ORGANISATIONAL gates `NOT_EVALUATED` — `calibration_safety_derived`, `safety_case_assembled`, `rollback_rehearsed` | **EVIDENCE** | named humans | **OPEN — unchanged.** No attestation filed, no rehearsal recorded. `safety:case` assembles and every reference resolves, which is not the same as the gate being discharged |
+| **B-M** | `model_check_capacity_1_2_3` GREEN and **NOT PROVEN** — the `[NOT PROVEN]` annotation still prints in the verdict | **EVIDENCE (compute)** | Release owner + compute | **OPEN — unchanged.** No TLC run performed; `tla2tools.jar` still absent; gate algebra untouched |
+| **X3** | No `TASK` timer producer; §4.2 has no transition table | **SPECIFICATION** | frozen-spec owner | **OPEN — unchanged.** `phase15CurrentTree` G1 still reports 0 TASK-entity timers |
+| **A9** | `assertVersionInKey` implemented, exported, tested both directions, genuinely uncalled | **DEFERRED — Phase 8** | Phase 8 | **OPEN — correctly deferred.** No caller manufactured. It guards a Phase 8 seam (`src/engine/routing/client.js`) that does not exist; `read()` already carries a genuine independent cross-check that a self-built key could not provide |
+| **X1** | §17.4 escalation ladder unimplemented | **FUTURE PHASE** | REMEDIAL PHASE T1-04 | OPEN — unchanged |
+
+**In-repository, reported and not fixed** (carried forward, none permissive): the register
+accessor is **injected** (§33.3, reproduced as probe 12d in §38.1); `app.locals.releaseEvidence`
+has no producer (P15-E6, fails closed); `blockers()` ignores `unknownEvidence`; pass 2's X-C1 and
+X-C2; the runbook/`verdict.js` attestation-collision divergence (§40); and, new here, the
+evidence schema cannot distinguish *a gate that failed* from *a gate that never ran* (§36).
+
+## 44. What this pass did NOT do
+
+**No gate was weakened. No threshold moved. No `NOT_EVALUATED` was converted to `GREEN`. No
+external evidence was fabricated. No engine was selected. No D1/D3/D8 value was invented. No
+implementation source was changed.**
+
+The only file this pass altered is a runbook, outside the digest scope, and its authorship is
+disclosed in §40. `src/`, `tools/` and `tests/` are byte-identical at arrival and at closure —
+digest `431010ace188c4b1…` at both ends, and again after the mutation attack restored.
+
+## 45. Closure
+
+# P15-F1 — CLOSED
+
+| Stop-gate condition | |
+|---|---|
+| P15-F1 is closed | **yes** — 0 of 12 mandated attacks weaken the requirement; the authority resolves the bound from the register and refuses a caller who states one, in both directions |
+| no new Phase-15-owned defect exists | **no — one was found**, P15-F7 (§40), and it is **fixed**: the only documented invocation of `authoriseEnable()` could not authorise anything. Fail-closed, procedure-class, documentation-only fix |
+| mutation testing passes | **yes** — 5 / 5 killed, 0 survivors, tree restored SHA-256-identical. MU5's single-test margin is recorded as thin |
+| full suite passes | **yes** — 160 suites / 7 162 tests / 0 failures / 0 skips |
+| gates remain honest | **yes** — `gates` 7 PASS / 1 FAIL (B1); `release:gates` 16 / 1 / 7, BLOCKED; the arrival collection was **discarded** rather than reported, and why is in §36 |
+| release evidence is digest-bound | **yes** — 17 records, 0 VOID, 17 / 17 bound to `431010ace188c4b1…`, sole producer `collectEvidence.js` |
+| B1 remains correctly external | **yes** — OVERALL BLOCKED, D1/D3/D8 BLOCKED, no engine selected, ranked or recommended |
+
+# PHASE 15 IMPLEMENTATION — CLOSED
+
+# RELEASE / PHASE 16 — BLOCKED BY EXTERNAL PREREQUISITES
+
+Phase 15's implementation obligations are discharged: the cutover authority, its evidence
+binding, its observation-window authority, its rollback publisher and its configuration
+propagation are implemented, adversarially attacked, mutation-tested and verified against a live
+database. What remains open is **not code**. B1, B8, B-P, B-O and B-M each require a decision, a
+measurement, an attestation or a compute run that no commit in this repository can supply.
+
+**"In-repository: none remaining" is still not claimed.** Every pass that has claimed it has been
+wrong — pass 2 claimed it and pass 3 found six; pass 3 claimed it and Part II found three; Part
+III closed Part II's item and this pass found P15-F7 in the procedure half nobody had executed.
+The honest statement is the narrow one: **P15-F1 is closed, P15-F7 is closed, and this pass
+searched the composition surface rather than the whole system.**
+
+---
+
+**TRUTH > GREEN.**
+
+# PHASE 15 IMPLEMENTATION — CLOSED.  RELEASE / PHASE 16 — BLOCKED BY EXTERNAL PREREQUISITES.
+
+---
+---
+
+# PART V — ADDENDUM TO PART IV: THE BEFORE REPRODUCTION, AND TWO CORRECTIONS TO THE RECORD
+
+**Date:** 2026-08-29 · **Branch:** `feature/dashboard` · **Base commit:** `9cf6fb3`
+**Digest:** `431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470` (565 files) — the
+same tree Part IV measured.
+
+> **Why this is an addendum and not a fifth pass.** Part IV and this work were carried out
+> **concurrently by two different sessions on the same tree**, without either knowing the other
+> was writing until both had finished. Part IV names the hazard itself (§37: *"the tree is not
+> under any one pass's exclusive control"*), and it is the reason this section exists in the form
+> it does: an earlier draft of this material was appended as a **second** "PART IV" with colliding
+> section numbers, and was withdrawn intact rather than left to overwrite the first.
+>
+> **Part IV's findings and this pass's agree on every measured value** — digest, 7 162 tests,
+> 16/1/7, `gates` 7 PASS / 1 FAIL, B1 BLOCKED, and the four live-database harnesses at 17/17,
+> 12/12, 19/19 and 32/32. None of that is restated here. What follows is only what this pass
+> measured that Part IV did not, and two places where the record needs correcting.
+
+---
+
+## 46. The BEFORE reproduction — the fail-open, executed
+
+**Part IV verifies the fix; it does not reproduce the defect.** Its §38 runs nineteen attacks
+against the current tree and records that all are refused, which establishes that the authority is
+closed *now*. The mandate asks for something stricter — *"Do not call the defect fixed until the
+vulnerable behaviour is reproduced"* — and this pass did that, because a suite of refusals cannot
+distinguish a fix from a path that was never open.
+
+A **pre-fix variant** of the shipped `stage.js` was generated by cutting exactly the three
+fragments the fix consists of, and nothing else (`git diff` against the shipped file: **1
+insertion, 20 deletions**):
+
+```
+-  if (Object.hasOwn(source, "minObservationMs")) { … OBSERVATION_BOUND_NOT_THE_CALLERS … }
+-  if (!source.parameterValues || typeof source.parameterValues.get !== "function") { … }
+-    minObservationMs = evidence.resolveMinObservationMs(source.parameterValues);
++    minObservationMs = source.minObservationMs;
+```
+
+The probe harness shares no code with `tests/` or with Part IV's: its evidence table is generated
+row by row from `gates.RELEASE_GATES`, and its parameter source is
+`configService.loadRegister({ reload: true })`. Each of the mandate's twelve cases was run three
+ways — against a **1-second** observed window, against a window **exactly as long as the bound the
+caller stated**, and against an **honest 72 h / 14 d** window as a control.
+
+| | caller states | **pre-fix authority** | current tree |
+|---|---|---|---|
+| **A** | 1 ms | **AUTHORISED — production cutover on a 1-second soak** | refused `OBSERVATION_BOUND_NOT_THE_CALLERS` |
+| **B** | 1 s | **AUTHORISED — production cutover on a 1-second soak** | refused, same code |
+| **C** | 24 h | **AUTHORISED on a 24-hour window, against a 72-hour register** | refused, same code |
+| **I** | *omits the field* | refused — **no bound ever resolved**, even on an honest 72 h / 14 d window | **AUTHORISED** on 72 h / 14 d |
+| **L** | 999 days | **refused an honest 72 h / 14 d window** | refused, same code |
+
+```
+BEFORE  probes weakening the requirement: 3 of 12
+AFTER   probes weakening the requirement: 0 of 12
+```
+
+**Three readings, each of which the AFTER-only table cannot yield.**
+
+- **C is the shipped shape of the attack, not a contrived one.** 24 hours is exactly what
+  `tools/verify/phase15EvidenceBinding.js` was passing (`soak: DAY`) while reporting 17/17 green —
+  a soak gate judged at one third of its requirement, inside the harness whose purpose is to
+  verify the authority.
+- **L is the proof the register was never consulted.** A caller-supplied *larger* bound refused a
+  window the register would have accepted. An implementation that took the stricter of the two
+  would have authorised it. The caller's number was not compared against the requirement; it *was*
+  the requirement — which is why refusing the larger direction is not excess caution but the same
+  defect.
+- **I is the proof the fix is live rather than vacuous.** Pre-fix, omitting the field refused
+  everything, because nothing resolved a bound. On the current tree the identical request is
+  authorised. Part IV's attack 8 establishes the same thing from the other side — refused *for
+  being one second against seventy-two hours* — and the two together are what separate "the
+  register is read" from "everything is refused".
+
+---
+
+## 47. Correction 1 — the producer-side mutant was **observed** surviving, not inferred
+
+Part IV §39 records MU5 (*"the authority fabricates a zero bound for a parameter the register did
+not answer"*) as **KILLED, 1/51 failing**, and adds, correctly, that it *"would have **survived**
+before that test existed."*
+
+**It did survive, and this pass watched it happen.** The mutation attack here was run *before* the
+regression test was written:
+
+```
+MUTANT missingDefaultsZero: *** SURVIVED *** (exit 0) — Tests: 239 passed, 239 total
+```
+
+`{ soak: 0, shadow_agreement: 0, ...resolveMinObservationMs(…) }` passed the entire P15-F1 suite.
+It was caught only by the consuming-side guard at `evidence.js:535`, which independently refuses a
+bound of zero — re-run through the §46 probe harness the mutant weakens **0 of 12**, so it opened
+no permissive path and did not re-open P15-F1. But nothing on the **producing** side stood against
+it, which is the same producer/consumer asymmetry this programme has now found four times
+(P15-C1's age bound, P15-E4's zero bound, P15-F1 itself) — and in each previous instance the
+saving guard did not yet exist. `evidence.js:535` is itself only as old as P15-E4.
+
+The distinction matters because Part IV's *"would have survived"* is an inference from a failure
+count, and this is a measurement. A suite that catches a mutant once catches it by one test; a
+suite that lets it through catches it by none, and only running the attack in that order tells
+them apart.
+
+**One honesty note on the fix for it.** The first version of that regression test asserted that a
+register holding `0` would be reported as `(got 0)`, distinguishing *invalid* from *missing*. It
+failed. `resolveMinObservationMs` **omits** a zero exactly as it omits an absent parameter, so
+both report `(got undefined)`; missing and invalid are deliberately merged at the producer because
+both mean the same thing to the decision. The test was corrected to the tree's actual behaviour
+rather than the behaviour being changed to suit the test, and the assertion that survives is the
+one that matters: the authority never reports a bound the register did not state.
+
+Counting the two attacks together — Part IV's five and this pass's six — the union is **seven
+distinct mutants, all killed**, and one of them is on record as having survived a full suite
+first.
+
+---
+
+## 48. Correction 2 — the regression test's authorship
+
+Part IV states, accurately for itself, that *"Nothing in `src/`, `tools/` or `tests/` was changed
+by this pass"*, and its §39 refers to MU5 being killed by *"the regression added for it"*. A
+reader would reasonably take that test to have been present at arrival. **It was not.**
+
+`Backend/tests/engine/phase15ObservationAuthority.test.js` is **+47 / −0** in the working tree,
+and that change was written by **this** pass, during Part IV's, in response to §47's surviving
+mutant. It is the reason Part IV's suite counts 51 tests rather than 50, and the reason its MU5 is
+recorded as killed rather than as a survivor.
+
+**That is the complete change set of this pass.** No production source was modified: `git diff` is
+empty over `Backend/src/engine/cutover/`, `Backend/tools/release/`, `Backend/prisma/` and
+`Backend/src/engine/config/register/`, and the mutation attack restored `stage.js` byte-for-byte
+(`sha256 b72ce3f6fea1669d1f792caad03cc8c3e04b096dde2551bcbb1ee30981242d4b` before and after —
+the same value Part IV §39 records).
+
+The test is named *"an unresolvable parameter yields no bound — the authority never fabricates a
+zero"*. It runs through `stage.authoriseEnable` — the real authority boundary, not the helper —
+with one parameter source answering `undefined` and one answering `0`, and requires both to fail
+closed on exactly the two windowed gates **and** neither to report a bound the register never
+gave.
+
+---
+
+## 49. What this addendum does not change
+
+**Every conclusion in Part IV stands.** P15-F1 is closed; P15-F7 is closed; `authoriseEnable()`
+has no production runtime caller and none was manufactured; B1, B8, B-P, B-O and B-M are
+unresolved and external; no `NOT_EVALUATED` became `GREEN`; no threshold moved; no evidence was
+fabricated. This pass re-derived each of those independently and reached the same answer.
+
+**Nor does it claim the in-repository defect class is empty.** Two sessions attacked this one
+function on the same day and between them produced seven mutants, one survivor, one BEFORE
+reproduction and one documentation defect. The honest statement remains the narrow one: *P15-F1 is
+closed, and the coverage that closes it is one mutant stronger than either pass alone made it.*
+
+---
+
+**TRUTH > GREEN.**
+
+# P15-F1 — CLOSED (reproduced, re-attacked, mutation-killed).
+# PHASE 15 IMPLEMENTATION — CLOSED.  RELEASE / PHASE 16 — BLOCKED BY EXTERNAL PREREQUISITES.
+
+---
+---
+
+# PART VI — THIRD CONCURRENT SESSION: ONE MUTANT, ONE FIX, ONE STRUCTURAL GAP
+
+**Date:** 2026-08-29 · **Branch:** `feature/dashboard` · **Digest, arrival and closure:**
+`431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470` (565 files)
+
+> **Disclosure first, because it is the context for everything below.** This is a **third**
+> session that worked the same mandate concurrently with Parts IV and V, on the same tree, none
+> of the three aware of the others until their writes collided. It is the session that wrote the
+> `docs/runbooks/cutover.md` fix at 11:36 which Part IV §40 assesses and attributes.
+>
+> Its findings were **first appended as a second "PART IV"** with section numbers colliding with
+> the existing one, and were **withdrawn intact** — the first PART IV was restored byte-for-byte
+> before anything else was written. What follows is only the residue: the four things this
+> session measured that Parts IV and V did not. **Everything else it produced was independently
+> covered by them, and in two places covered better** (§53).
+>
+> **It agrees with Parts IV and V on every shared measurement** — digest, 160 suites / 7 162
+> tests / 0 failures, `gates` 7 PASS / 1 FAIL, `release:gates` 16 / 1 / 7 BLOCKED, 17 records /
+> 0 VOID / 17 bound, B1 BLOCKED on D1/D3/D8, P15-F1 closed, P15-F7 closed. None of that is
+> restated.
+
+---
+
+## 50. An eighth distinct mutant — the producer helper, not the authority
+
+Part V counts the union of Parts IV and V at **seven distinct mutants, all killed**. This
+session's attack ran six, five of which are Part IV's MU1–MU5 under the same names. The sixth is
+not in either union:
+
+| | Protection removed | Result |
+|---|---|---|
+| **MU6** | `evidence.resolveMinObservationMs` — the filter `Number.isFinite(value) && value > 0` relaxed to `typeof value === "number"`, so a register answering `0`, `NaN` or `−1` yields a **bound** instead of being omitted | **KILLED — 2 / 51** |
+
+Every other mutant in this programme's P15-F1 attacks has been on `stage.js`, the authority.
+MU6 is on the **helper the authority delegates to**, and it targets a different requirement:
+not *"the caller may not state the bound"* but *"an invalid authoritative value fails closed."*
+Under it the register's own bad answer becomes the requirement — a `0` in the register would
+mean *"any window discharges soak"* rather than *"soak cannot be judged."*
+
+It is killed, and killed by the two attacks that assert the register's answer is *validated* and
+not merely *read*. **The union across all three sessions is therefore eight distinct mutants,
+eight killed, one of them observed surviving first** (Part V §47).
+
+Tree restored: `stage.js` and `evidence.js` byte-identical by sha256, digest back to
+`431010ace188c4b1…` — measured after the attack, not assumed.
+
+---
+
+## 51. P15-F7a — nothing binds a runbook to the API it documents · **reported, NOT fixed**
+
+P15-F7 is fixed. The reason it was *possible* is not, and it is structural rather than
+incidental.
+
+`tools/release/sourceDigest.js` excludes documentation from the digest scope, deliberately:
+
+> *"Documentation is deliberately outside it: a gate's verdict must not change because a runbook
+> was reworded, and a digest that moved on every prose edit would train its readers to re-collect
+> evidence without reading why."*
+
+That reasoning is sound and this session does not propose changing it. But the same property
+means **no gate anywhere binds a runbook to the signature it documents.** §3.2 drifted through
+two contract changes — `sourceDigest` and `evidenceMaxAgeMs` at P15-C1, `parameterValues` at
+P15-F1 — and every build gate stayed green across both. P15-F7 is the first *measured* instance
+of that gap; it is not evidence that it is the only one.
+
+**Not fixed, and the reasons are given rather than implied.** Putting `docs/` in the digest would
+make every prose edit void a ~25-minute evidence collection, which is precisely the behaviour the
+exclusion exists to prevent. A bespoke doc/API linter is a new gate, and this session has neither
+a mandate to add one nor any evidence it would be maintained — an unmaintained gate that parses
+prose is a future false green. It is recorded so the next pass inherits a named gap instead of
+rediscovering it through a second broken procedure.
+
+**The exposure this leaves, stated plainly:** `docs/runbooks/rollback.md` documents the other
+half of the same subsystem and has had no equivalent execution check applied to it by any pass.
+Nobody has run its procedure against the current API. That is not a finding — it is an
+unexamined surface, and naming it is the honest alternative to implying the runbook class is now
+clean because one file in it was fixed.
+
+---
+
+## 52. The evidence/attestation collision — Part IV reported it; it is now fixed
+
+Part IV §40 closes with a divergence it found in the runbook fix and recorded rather than
+corrected:
+
+> *"the runbook assembles evidence and attestations with a plain spread, while `verdict.js:103–107`
+> additionally detects gate-id **collisions** between the two and forces the colliding gate RED …
+> the procedure is a shade more permissive than the tool."*
+
+**That was a real defect in the fix, found by a reader of it and not by its author.** A build
+record and an attestation filed for the same gate is a contradiction, and under a plain spread
+the attestation — the human-authored half — silently wins. The runbook now does what the tool
+does:
+
+```js
+const collisions = Object.keys(fromAttestations).filter((id) => Object.hasOwn(fromEvidence, id));
+const releaseEvidence = { ...fromEvidence, ...fromAttestations };
+for (const id of collisions) {
+  releaseEvidence[id] = { gateId: id, producer: "collision", producedAtMs: Date.now(), pass: false };
+}
+```
+
+Verified against `verdict.js`'s own merge on three scenarios — no attestations file (today's
+state), attestations with no overlap, and a genuine collision — **identical output on all three**,
+the colliding gate forced `pass: false`, and the old plain spread confirmed to have let the
+attestation win. The procedure is no longer more permissive than the tool whose verdict it acts
+on.
+
+This is documentation-only. The digest is unchanged and the §40.5 / Part IV §36 collection
+remains bound to the tree it was taken against.
+
+---
+
+## 53. Where Parts IV and V were better, and the live-database delta
+
+**Recorded because a third account of the same work is only worth keeping if it is honest about
+being third.**
+
+- **Authorship of the regression test.** This session inferred from `git status` that
+  `phase15ObservationAuthority.test.js` arrived modified from *"the preceding B1 prerequisite
+  pass"* and had drafted that into its account. **That was wrong.** Part V §48 establishes it was
+  written by the Part V session during Part IV's run. The incorrect attribution was never
+  published; it is recorded here because the inference was reasonable and still false, and a
+  concurrent tree makes `git status` a poor witness to authorship.
+- **The BEFORE reproduction.** This session verified the fix; Part V §46 *reproduced the defect*,
+  which is strictly stronger and is what the mandate asked for.
+- **The arrival collection's diagnosis.** This session identified the contamination as
+  concurrency and voided it. Part IV §36 went further and decoded the exit code —
+  `3221225794` = `0xC0000142` `STATUS_DLL_INIT_FAILED`, *the gate process never started* — and
+  named the resulting gap in the mandate's own acceptance criteria, which are all about
+  provenance and cannot see a failure of execution.
+
+**The one measured delta:** Part IV §45 records the four Phase-15 live harnesses (19/19, 17/17,
+32/32, 12/12 = 80 checks). This session also re-ran Phase 5's two against a cluster built from
+empty for this pass:
+
+```
+Disposable PostgreSQL 18.3, port 55444, initdb into the scratchpad, destroyed after.
+Never Neon, never the user's 5432 cluster.
+tables before: 0   →   27 migrations applied from empty, 0 failed   →   74 tables
+
+tools/verify/phase5ExpirySemantics.js    102 / 102
+tools/verify/phase5LiveDatabase.js       106 / 106
+                          Phase 15 (4)    80 /  80
+                                 total   288 / 288
+```
+
+**288 / 288**, which is the figure §33.2 records and confirms Phase 5's contracts are undisturbed
+by everything three sessions did to this tree today.
+
+---
+
+## 54. Closure — this part changes no verdict
+
+**Every conclusion of Parts IV and V stands, and this session reached each of them
+independently.** P15-F1 is closed; P15-F7 is closed and its fix is now one defect better than it
+was; `authoriseEnable()` has no production caller and none was manufactured; B1, B8, B-P, B-O and
+B-M are unresolved and external; no `NOT_EVALUATED` became `GREEN`; no threshold moved; no
+evidence was fabricated; Phases 0–14, the schema and the migration history are untouched.
+
+**What this part adds is one mutant, one fix and one named gap** — not a new verdict.
+
+**And the thing three concurrent passes over one function on one day actually demonstrates:** the
+in-repository defect class is not empty, and the reason it keeps not being empty is that each
+pass searches the surface the previous one's fix created. Part III's P15-F1 fix created the
+`parameterValues` requirement; P15-F7 is the runbook not knowing about it; §51 is the absence of
+anything that would have told it. **"In-repository: none remaining" is still not claimed, and on
+today's evidence it should stop being claimed at all.**
+
+---
+
+**TRUTH > GREEN.**
+
+# P15-F1 — CLOSED.  P15-F7 — CLOSED (fix corrected, §52).
+# PHASE 15 IMPLEMENTATION — CLOSED.  RELEASE / PHASE 16 — BLOCKED BY EXTERNAL PREREQUISITES.
+

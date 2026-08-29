@@ -27,6 +27,7 @@
 const readiness = require("../../tools/routing/b1Readiness");
 const cells = require("../../src/engine/spatial/cells");
 const mobilityModel = require("../../src/engine/domain/mobilityModel");
+const regionBoundary = require("../../src/engine/spatial/regionBoundary");
 const { SEED_SPATIAL_MAP } = require("../../prisma/seed");
 
 const { READINESS } = readiness;
@@ -55,6 +56,10 @@ const FIXTURE = Object.freeze({
   // call rather than as a literal so it cannot drift from `H3_RESOLUTION.FINE`, and so nobody
   // reads a pasted token as a place.
   cover: { fineCells: [{ cellId: cells.cellForPoint(0, 0, cells.RESOLUTION.FINE), zoneId: "z1" }], cardinalityException: "fixture, not a deployment" },
+  // V-12's input. Present because the check now runs unconditionally: a fixture that omitted it
+  // was previously accepted as a complete D1 answer, which is the defect this pass reproduced.
+  // The one charger sits in the one cell the cover publishes.
+  chargers: [{ chargerId: "FIXTURE-CHARGER", cellId: cells.cellForPoint(0, 0, cells.RESOLUTION.FINE) }],
   mobility: [
     {
       modelId: "FIXTURE-CLASS",
@@ -72,8 +77,17 @@ const FIXTURE = Object.freeze({
     vintage: "2026-08-01",
     refreshCadenceDays: 30,
     recontractionDowntimeBudgetSeconds: 600,
+    // V-13's two inputs. The region above is the unit square [0,0]–[1,1], so a box one degree
+    // outside it covers that plus the stated margin generously. Both are fixture values sized
+    // to the fixture geometry; neither is a margin, a box or an extract proposed for any
+    // deployment, and the gate still supplies no value for either of its own.
+    bbox: { minLon: -1, minLat: -1, maxLon: 2, maxLat: 2 },
+    marginDegrees: 0.05,
   },
 });
+
+/** The FIXTURE region, validated — what `assess()` hands `assessD8` so V-13 can run. */
+const FIXTURE_REGION = regionBoundary.validateRegionDeclaration(FIXTURE.region);
 
 describe("the repository's real state — nothing supplied", () => {
   const report = readiness.assess({ config: null, asOf: "2026-08-09" });
@@ -197,7 +211,10 @@ describe("D3 — the speed model, classified rather than assumed", () => {
 });
 
 describe("D8 — extract metadata, hardened without a value being chosen", () => {
-  const assess = (extract, asOf) => readiness.assessD8({ extract }, { asOf });
+  // The region is supplied because V-13 needs one to size the extract against. Without it the
+  // gate reports BLOCKED on D1 rather than a verdict about the extract, which is the point of
+  // F1's discharge and is asserted directly further down.
+  const assess = (extract, asOf) => readiness.assessD8({ extract }, { asOf, region: FIXTURE_REGION });
 
   test("no extract metadata is BLOCKED, and the message says why there is nowhere to record one", () => {
     expect(assess(undefined).status).toBe(READINESS.BLOCKED);
@@ -206,11 +223,80 @@ describe("D8 — extract metadata, hardened without a value being chosen", () =>
 
   test("each missing D8 field is BLOCKED and is named as a decision rather than a derivation", () => {
     const complete = FIXTURE.extract;
-    for (const field of ["identity", "source", "vintage", "refreshCadenceDays", "recontractionDowntimeBudgetSeconds"]) {
+    // `bbox` and `marginDegrees` join the list because V-13 reads them and nothing did before
+    // (F1). They are required the same way the other five are: named, and never defaulted.
+    for (const field of ["identity", "source", "vintage", "refreshCadenceDays", "recontractionDowntimeBudgetSeconds", "bbox", "marginDegrees"]) {
       const result = assess({ ...complete, [field]: undefined });
       expect({ field, status: result.status }).toEqual({ field, status: READINESS.BLOCKED });
       expect({ field, named: result.problems.join("\n").includes(`extract.${field}`) }).toEqual({ field, named: true });
     }
+  });
+
+  describe("R-3 — a placeholder is not a named source", () => {
+    // PHASE 15 residual pass. `PLACEHOLDER_TOKENS` lived in `adapters/contract.js` and was
+    // applied only to `normaliseDeployment`'s four fields, so `deployment.extract: "tbd"` was
+    // refused while D8's own `extract.source: "tbd"` reported PASS — one question, two rules.
+    // `identity` is what every Step 3 and Step 4 measurement is attributed to; `source` is the
+    // answer to "where did this snapshot come from, and how would a re-cut be reproduced?".
+    const PLACEHOLDERS = ["tbd", "TBD", "Tbd", "  tbd  ", "TBD.", "tbd .", "todo", "unknown", "UNKNOWN", "placeholder", "n/a", "N/A", "pending", "unspecified", "?", "-", "--", "xxx", "fixme"];
+
+    test.each([["identity"], ["source"]])("extract.%s refuses every placeholder token, in every case and spacing", (field) => {
+      const accepted = PLACEHOLDERS.filter((token) => assess({ ...FIXTURE.extract, [field]: token }, "2026-08-09").status !== READINESS.BLOCKED);
+      expect(accepted).toEqual([]);
+      // …and the message names the field and sends the reader to Operations, not to a code change.
+      const result = assess({ ...FIXTURE.extract, [field]: "tbd" }, "2026-08-09");
+      expect(result.problems.join("\n")).toMatch(new RegExp(`extract\\.${field} is "tbd", which is a placeholder`, "u"));
+      expect(result.problems.join("\n")).toMatch(/Naming it is Operations'; nothing is inferred or defaulted here/u);
+    });
+
+    test("an empty or whitespace-only source is still the ABSENCE message, not the placeholder one", () => {
+      // Two different defects with two different remedies: nothing was supplied, versus a
+      // non-answer was. A8 established the first; this must not swallow it into the second.
+      for (const blank of ["", "   ", "\t\n"]) {
+        const result = assess({ ...FIXTURE.extract, source: blank }, "2026-08-09");
+        expect(result.status).toBe(READINESS.BLOCKED);
+        expect(result.problems.join("\n")).toMatch(/extract\.source is required — where the snapshot came from/u);
+        expect(result.problems.join("\n")).not.toMatch(/is a placeholder rather than a named answer/u);
+      }
+    });
+
+    test("LEGITIMATE SOURCES ARE UNAFFECTED — the rule refuses non-answers, not formats", () => {
+      // The failure this must not become is a validator with opinions about how a source is
+      // spelled. A URL, a file name, a vendor and a ticket reference are all answers.
+      for (const source of [
+        "Geofabrik europe-latest.osm.pbf, cut 2026-08-01",
+        "https://download.geofabrik.de/europe-latest.osm.pbf",
+        "internal mirror osm-mirror-01:/snapshots/2026-08-01",
+        "OSM planet, ticket OPS-1183",
+        "unknown-roads-survey-2026",
+        "N/A-WEST depot survey",
+      ]) {
+        expect({ source, status: assess({ ...FIXTURE.extract, source }, "2026-08-09").status }).toEqual({ source, status: READINESS.PASS });
+      }
+      // "unknown-roads-survey-2026" and "N/A-WEST depot survey" are the ones that matter: the
+      // comparison is against the WHOLE trimmed field, never a substring of it.
+    });
+
+    test("D8's other five fields are not judged by the placeholder rule", () => {
+      // The rule is scoped to the two fields whose contract is a NAMED SOURCE. `vintage` is
+      // already an ISO calendar date and the three numbers are already numbers, so widening it
+      // to them would add nothing; the point of recording the scope is that it is a scope.
+      expect(assess({ ...FIXTURE.extract, vintage: "tbd" }, "2026-08-09").problems.join("\n")).toMatch(/extract\.vintage is required as an ISO calendar date/u);
+      expect(assess({ ...FIXTURE.extract, vintage: "tbd" }, "2026-08-09").problems.join("\n")).not.toMatch(/is a placeholder rather than a named answer/u);
+    });
+
+    test("the placeholder authority is ONE rule, shared — not a second copy of the token list", () => {
+      // The defect underneath R-3 is two authorities for one question. The gate must be using
+      // the adapter layer's own predicate, so that a token added there is refused here too.
+      // eslint-disable-next-line global-require
+      const contract = require("../../tools/routing/adapters/contract");
+      expect(contract.isPlaceholder("TBD.")).toBe(true);
+      expect(contract.isPlaceholder("Geofabrik europe-latest")).toBe(false);
+      const spy = jest.spyOn(contract, "isPlaceholder");
+      assess({ ...FIXTURE.extract, source: "tbd" }, "2026-08-09");
+      expect(spy).toHaveBeenCalledWith("tbd");
+      spy.mockRestore();
+    });
   });
 
   test("a vintage that is not an ISO date is refused, and is never inferred from a file timestamp", () => {
@@ -229,11 +315,106 @@ describe("D8 — extract metadata, hardened without a value being chosen", () =>
     expect(assess(FIXTURE.extract, "2026-08-09").status).toBe(READINESS.PASS);
     expect(assess(FIXTURE.extract, undefined).status).toBe(READINESS.NOT_MEASURED);
   });
+
+  test("A VINTAGE IN THE FUTURE FAILS — it does not clear every cadence forever", () => {
+    // The staleness comparison was one-sided (`ageDays > cadence`), so a vintage dated after
+    // the evaluation date produced a negative age, cleared any cadence, and reported PASS. One
+    // mistyped year would have pinned the extract permanently fresh and the check that exists
+    // because a stale extract "answers every query" would never have fired again.
+    const future = assess({ ...FIXTURE.extract, vintage: "2062-08-01" }, "2026-08-09");
+    expect(future.status).toBe(READINESS.FAIL);
+    expect(future.problems.join("\n")).toMatch(/13141 days AFTER the evaluation date 2026-08-09/u);
+    expect(future.problems.join("\n")).toMatch(/cannot be cut from a map that does not exist yet/u);
+    // The boundary: the evaluation date itself is age 0 and is not the future.
+    expect(assess({ ...FIXTURE.extract, vintage: "2026-08-09" }, "2026-08-09").status).toBe(READINESS.PASS);
+    // …and one day after it is.
+    expect(assess({ ...FIXTURE.extract, vintage: "2026-08-10" }, "2026-08-09").status).toBe(READINESS.FAIL);
+  });
+
+  test("a vintage that matches YYYY-MM-DD and is not a calendar date is refused — one date authority", () => {
+    // `2026-02-31` matched the local regex, parsed to a rolled-over March date, and reported
+    // PASS with an age computed against a day that does not exist — while the same string as
+    // `region.versionDate` was refused by `regionBoundary.isIsoDate` two functions away. D8 now
+    // uses that same authority.
+    expect(regionBoundary.isIsoDate("2026-02-31")).toBe(false);
+    expect(assess({ ...FIXTURE.extract, vintage: "2026-02-31" }, "2026-08-09").status).toBe(READINESS.BLOCKED);
+    expect(assess({ ...FIXTURE.extract, vintage: "2026-13-01" }, "2026-08-09").status).toBe(READINESS.BLOCKED);
+    expect(assess({ ...FIXTURE.extract, vintage: "0000-00-00" }, "2026-08-09").status).toBe(READINESS.BLOCKED);
+    // A real leap day in a real leap year is a date and is accepted.
+    expect(assess({ ...FIXTURE.extract, vintage: "2028-02-29" }, "2028-03-01").status).toBe(READINESS.PASS);
+    // …and the same day in a non-leap year is not.
+    expect(assess({ ...FIXTURE.extract, vintage: "2027-02-29" }, "2027-03-01").status).toBe(READINESS.BLOCKED);
+  });
+
+  describe("V-13 — F1's discharge: the check that was implemented, tested and called by nothing", () => {
+    // B1_ROUTING_ENGINE_DECISION_PREPARATION.md §11 F1: `validateExtractMargin()` existed, was
+    // exported, had three unit tests and NO production caller, and `assessD8` never read
+    // `extract.bbox` or `extract.marginDegrees` — so "a deployment could supply an extract whose
+    // bounding box does not cover the region, and D8 would report PASS". These assert the caller.
+
+    test("AN EXTRACT THAT DOES NOT COVER THE REGION FAILS D8 — this is the defect F1 named", () => {
+      const tight = { ...FIXTURE.extract, bbox: { minLon: 0.4, minLat: 0.4, maxLon: 0.6, maxLat: 0.6 } };
+      const result = assess(tight, "2026-08-09");
+      expect(result.status).toBe(READINESS.FAIL);
+      expect(result.problems.join("\n")).toMatch(/V-13 extract\.bbox\.minLon is 0\.4/u);
+      expect(result.problems.join("\n")).toMatch(/EXTRACT_MISS rather than a route/u);
+    });
+
+    test("the failure direction is exact — short on ONE edge fails on exactly that edge", () => {
+      // The margin is 0.05 and the region is [0,0]–[1,1], so maxLat must reach 1.05.
+      const short = { ...FIXTURE.extract, bbox: { minLon: -0.05, minLat: -0.05, maxLon: 1.05, maxLat: 1.04 } };
+      const result = assess(short, "2026-08-09");
+      expect(result.status).toBe(READINESS.FAIL);
+      expect(result.problems).toHaveLength(1);
+      expect(result.problems[0]).toMatch(/V-13 extract\.bbox\.maxLat is 1\.04, which does not cover the region's maxLat of 1\.05/u);
+      // Exactly meeting the bound is coverage, not a failure: the check refuses under-coverage.
+      expect(assess({ ...short, bbox: { ...short.bbox, maxLat: 1.05 } }, "2026-08-09").status).toBe(READINESS.PASS);
+    });
+
+    test("V-13 CANNOT PASS BY DEFAULT — a complete extract with no region is BLOCKED on D1, never PASS", () => {
+      // The dangerous outcome would be a check that reports a pass when it did not run. Every
+      // extract field is present here; the only absent input is D1's geometry.
+      const noRegion = readiness.assessD8({ extract: FIXTURE.extract }, { asOf: "2026-08-09" });
+      expect(noRegion.status).toBe(READINESS.BLOCKED);
+      expect(noRegion.problems.join("\n")).toMatch(/V-13 cannot run: there is no valid region geometry/u);
+      // An INVALID region is not a valid region either, and is likewise not a pass.
+      const invalid = regionBoundary.validateRegionDeclaration({ regionId: "X", name: "X" });
+      expect(readiness.assessD8({ extract: FIXTURE.extract }, { asOf: "2026-08-09", region: invalid }).status).toBe(READINESS.BLOCKED);
+    });
+
+    test("a malformed bbox is refused rather than coerced", () => {
+      const bad = (bbox) => assess({ ...FIXTURE.extract, bbox }, "2026-08-09").status;
+      expect(bad({ minLon: NaN, minLat: -1, maxLon: 2, maxLat: 2 })).toBe(READINESS.BLOCKED);
+      expect(bad({ minLon: -Infinity, minLat: -1, maxLon: 2, maxLat: 2 })).toBe(READINESS.BLOCKED);
+      expect(bad({ minLon: "-1", minLat: -1, maxLon: 2, maxLat: 2 })).toBe(READINESS.BLOCKED);
+      expect(bad({ minLon: -1, minLat: -1, maxLon: 2 })).toBe(READINESS.BLOCKED);
+      // Inside-out: a box whose min exceeds its max would "cover" everything by comparison.
+      expect(bad({ minLon: 2, minLat: 2, maxLon: -1, maxLat: -1 })).toBe(READINESS.BLOCKED);
+      expect(bad([])).toBe(READINESS.BLOCKED);
+      expect(assess({ ...FIXTURE.extract, marginDegrees: -0.1 }, "2026-08-09").status).toBe(READINESS.BLOCKED);
+      expect(assess({ ...FIXTURE.extract, marginDegrees: NaN }, "2026-08-09").status).toBe(READINESS.BLOCKED);
+      expect(assess({ ...FIXTURE.extract, marginDegrees: "0.05" }, "2026-08-09").status).toBe(READINESS.BLOCKED);
+      // Zero is a real answer — "cut to the bounding box exactly" — and is accepted as one.
+      expect(assess({ ...FIXTURE.extract, marginDegrees: 0 }, "2026-08-09").status).toBe(READINESS.PASS);
+    });
+
+    test("the validator is ACTUALLY CALLED — proven by observing the module, not by reading it", () => {
+      // "Implemented and tested" is what F1 already was. The property under test is that the
+      // production path reaches it, so the spy is on the module `b1Readiness` requires.
+      const spy = jest.spyOn(regionBoundary, "validateExtractMargin");
+      readiness.assess({ config: FIXTURE, asOf: "2026-08-09" });
+      expect(spy).toHaveBeenCalled();
+      const [call] = spy.mock.calls;
+      expect(call[0].extract).toBe(FIXTURE.extract);
+      expect(call[0].region.status).toBe(regionBoundary.BOUNDARY_STATUS.VALID);
+      spy.mockRestore();
+    });
+  });
 });
 
 describe("supplying the decisions releases exactly the steps they release", () => {
   test("D1 + D3 alone release Step 1 and Step 3 to NOT_MEASURED — and leave Step 4 BLOCKED on D8", () => {
-    const report = readiness.assess({ config: { region: FIXTURE.region, cover: FIXTURE.cover, mobility: FIXTURE.mobility }, asOf: "2026-08-09" });
+    const report = readiness.assess({ config: { region: FIXTURE.region, cover: FIXTURE.cover, chargers: FIXTURE.chargers, mobility: FIXTURE.mobility }, asOf: "2026-08-09" });
     expect(report.decisions.D1.status).toBe(READINESS.PASS);
     expect(report.decisions.D3.status).toBe(READINESS.PASS);
     expect(report.decisions.D8.status).toBe(READINESS.BLOCKED);
@@ -302,6 +483,187 @@ describe("supplying the decisions releases exactly the steps they release", () =
     const report = readiness.assess({ config: swapped, asOf: "2026-08-09" });
     expect(report.decisions.D1.status).toBe(READINESS.FAIL);
     expect(report.decisions.D1.problems.join("\n")).toMatch(/not a latitude/u);
+  });
+
+  test("TWO OVERLAPPING REGIONS FAIL D1 — the region under assessment is always in V-11's set", () => {
+    // The seam documents `regions?` as "the OTHER region declarations, for V-11 disjointness",
+    // and `assessD1` read `source.regions.map(...)` *instead of* the declaration rather than
+    // beside it. So supplying one neighbour handed `validateRegionsDisjoint` a single region —
+    // and a single region cannot overlap. Two regions sharing half their area reported D1 PASS
+    // with zero problems: the check was called, and was a no-op in the exact configuration it
+    // exists for.
+    const overlapping = { ...FIXTURE.region, regionId: "FIXTURE-NEIGHBOUR", name: "neighbour", boundary: { type: "Polygon", coordinates: [[[0.5, 0.5], [1.5, 0.5], [1.5, 1.5], [0.5, 1.5], [0.5, 0.5]]] } };
+    const report = readiness.assess({ config: { ...FIXTURE, regions: [overlapping] }, asOf: "2026-08-09" });
+    expect(report.decisions.D1.status).toBe(READINESS.FAIL);
+    expect(report.decisions.D1.problems.join("\n")).toMatch(/V-11 regions .* overlap/u);
+    expect(report.decisions.D1.problems.join("\n")).toMatch(/FIXTURE-NEIGHBOUR/u);
+    // …and Step 1 is re-blocked, because an overlapping region is not a released D1.
+    expect(stepOf(report, 1).status).toBe(READINESS.BLOCKED);
+    expect(report.stepEvidenceAdmissible).toBe(false);
+  });
+
+  test("a DISJOINT neighbour still passes — V-11 refuses overlap, not plurality", () => {
+    const disjoint = { ...FIXTURE.region, regionId: "FIXTURE-FAR", name: "far", boundary: { type: "Polygon", coordinates: [[[10, 10], [11, 10], [11, 11], [10, 11], [10, 10]]] } };
+    expect(readiness.assess({ config: { ...FIXTURE, regions: [disjoint] }, asOf: "2026-08-09" }).decisions.D1.status).toBe(READINESS.PASS);
+  });
+
+  test("AN EDGE-ADJACENT NEIGHBOUR IS DISJOINT — R-2, at the production authority path", () => {
+    // A2's fix made V-11 reachable from `assessD1` for the first time, and the first thing an
+    // operator supplying two genuinely adjacent regions would have met is a FAIL. Regions that
+    // abut share no area, so no Agent and no Leg is in two of them; the geometry contract is
+    // asserted in spatialRegionBoundary.test.js and this asserts the gate reads it.
+    const abutting = { ...FIXTURE.region, regionId: "FIXTURE-ABUTTING", name: "abutting", boundary: { type: "Polygon", coordinates: [[[1, 0], [2, 0], [2, 1], [1, 1], [1, 0]]] } };
+    const report = readiness.assess({ config: { ...FIXTURE, regions: [abutting] }, asOf: "2026-08-09" });
+    expect(report.decisions.D1).toMatchObject({ status: READINESS.PASS, problems: [] });
+
+    // …and one degree of genuine shared interior on the same pair is still a FAIL. The change is
+    // to what "overlap" means, not to whether V-11 fires.
+    const intruding = { ...abutting, regionId: "FIXTURE-INTRUDING", boundary: { type: "Polygon", coordinates: [[[0.9, 0], [2, 0], [2, 1], [0.9, 1], [0.9, 0]]] } };
+    const spoiled = readiness.assess({ config: { ...FIXTURE, regions: [intruding] }, asOf: "2026-08-09" });
+    expect(spoiled.decisions.D1.status).toBe(READINESS.FAIL);
+    expect(spoiled.decisions.D1.problems.join("\n")).toMatch(/V-11 regions .* overlap — they share area, not merely a boundary/su);
+    expect(stepOf(spoiled, 1).status).toBe(READINESS.BLOCKED);
+  });
+
+  describe("R-1 — a malformed entry in regions[] is REPORTED, never dropped", () => {
+    // PHASE 15 residual pass. `validateRegionsDisjoint` filters its argument to the entries whose
+    // status is VALID — it can only compare geometry it has — and `assessD1` folded in the
+    // DISJOINTNESS problems and never the neighbours' own declaration problems. So a malformed
+    // entry vanished before V-11 saw the set and D1 reported PASS with zero problems over a
+    // collection containing unusable data: the same shape as A2, one layer further out.
+    //
+    // Every malformed input below is built by this block rather than perturbed from FIXTURE, so
+    // what is asserted is that the gate refuses inputs this test invented — not that it refuses
+    // a fixture somebody already arranged to fail.
+    const ring = (minLon, minLat, maxLon, maxLat) => [[minLon, minLat], [maxLon, minLat], [maxLon, maxLat], [minLon, maxLat], [minLon, minLat]];
+    const neighbour = (regionId, coordinates) => ({
+      regionId,
+      name: `neighbour — not an operating region (${regionId})`,
+      kind: "METRO_SERVICE_AREA",
+      crs: "EPSG:4326",
+      version: "r1-fixture",
+      versionDate: "2026-08-09",
+      boundary: { type: "Polygon", coordinates },
+    });
+    const FAR = neighbour("R1-FAR", [ring(20, 20, 21, 21)]);
+    const d1Of = (regions) => readiness.assess({ config: { ...FIXTURE, regions }, asOf: "2026-08-09" }).decisions.D1;
+
+    test("the controls — an absent, empty, or well-formed regions[] is unaffected", () => {
+      // The property that keeps this fix from being a widening: legitimate collections behave
+      // exactly as they did. `regions?` is optional in the seam and its absence is still absence.
+      expect(d1Of(undefined)).toMatchObject({ status: READINESS.PASS, problems: [] });
+      expect(d1Of([])).toMatchObject({ status: READINESS.PASS, problems: [] });
+      expect(d1Of([FAR])).toMatchObject({ status: READINESS.PASS, problems: [] });
+      expect(d1Of([FAR, neighbour("R1-FAR-2", [ring(30, 30, 31, 31)])])).toMatchObject({ status: READINESS.PASS, problems: [] });
+    });
+
+    test.each([
+      ["1 · malformed geometry — a ring of three positions", [neighbour("R1-RING", [[[5, 5], [6, 5], [5, 5]]])], /regions\[0\] does not validate.*RFC 7946/su],
+      ["2 · no region identifier", [{ ...neighbour("R1-NOID", [ring(5, 5, 6, 6)]), regionId: undefined }], /regions\[0\] does not validate.*regionId is required/su],
+      ["3 · malformed coordinates — a [lat, lon] file", [neighbour("R1-SWAP", [[[5, 500], [6, 500], [6, 501], [5, 500]]])], /regions\[0\] does not validate.*not a latitude/su],
+      ["3b · a coordinate that is not a number", [neighbour("R1-NAN", [[[5, 5], ["6", 5], [6, 6], [5, 5]]])], /regions\[0\] does not validate.*two finite numbers/su],
+      ["4 · a null entry", [null], /regions\[0\] is empty \(null or undefined\)/u],
+      ["4b · an undefined entry", [undefined], /regions\[0\] is empty \(null or undefined\)/u],
+      ["5 · a non-object entry — a string", ["R1-STRING"], /regions\[0\] does not validate.*a region declaration must be an object/su],
+      ["5b · a non-object entry — a number", [7], /regions\[0\] does not validate.*a region declaration must be an object/su],
+      ["7 · all entries invalid", [null, 7, { regionId: "R1-BARE" }], /regions\[0\] is empty[\s\S]*regions\[1\][\s\S]*regions\[2\]/u],
+    ])("%s cannot disappear — D1 FAILS and names the slot", (_label, regions, pattern) => {
+      const d1 = d1Of(regions);
+      expect(d1.status).toBe(READINESS.FAIL);
+      expect(d1.problems.join("\n")).toMatch(pattern);
+    });
+
+    test("6 · a mixed collection is reported entry by entry — the valid ones are not what saves it", () => {
+      const d1 = d1Of([FAR, null, neighbour("R1-BAD", [[[5, 5], [6, 5], [5, 5]]])]);
+      expect(d1.status).toBe(READINESS.FAIL);
+      // The slot index is the operator's own array index, so the message points at the entry.
+      expect(d1.problems.join("\n")).toMatch(/regions\[1\] is empty/u);
+      expect(d1.problems.join("\n")).toMatch(/regions\[2\] does not validate/u);
+      // …and the well-formed entry at [0] is not blamed for its neighbours.
+      expect(d1.problems.join("\n")).not.toMatch(/regions\[0\]/u);
+    });
+
+    test("A MALFORMED ENTRY DOES NOT SUPPRESS V-11 — a real overlap beside it is still caught", () => {
+      // The narrow reading of R-1 was "an unusable neighbour is silently not compared", not
+      // "V-11 is off". Both must hold at once: the unusable entry is reported AND the comparison
+      // still runs over the entries that are usable.
+      const overlapping = neighbour("R1-OVERLAP", [ring(0.5, 0.5, 1.5, 1.5)]);
+      const d1 = d1Of([null, overlapping]);
+      expect(d1.status).toBe(READINESS.FAIL);
+      expect(d1.problems.join("\n")).toMatch(/regions\[0\] is empty/u);
+      expect(d1.problems.join("\n")).toMatch(/V-11 regions .*"R1-OVERLAP".* overlap/su);
+    });
+
+    test("regions[] that is not an array at all is a wrong answer, not an absence", () => {
+      // The same defect one level up: a mistyped collection was read as "no neighbours", which
+      // switches V-11 off for exactly the deployment it exists for. §4.1 rule 3 — state is never
+      // inferred from the absence of data — and the seam writes the key `regions?`, so omitting
+      // it is the way to say there are none.
+      for (const regions of [null, 7, "R1-STRING", { "R1-KEYED": {} }, true]) {
+        const d1 = d1Of(regions);
+        expect({ regions: String(regions), status: d1.status }).toEqual({ regions: String(regions), status: READINESS.FAIL });
+        expect(d1.problems.join("\n")).toMatch(/V-11 regions must be an array of region declarations/u);
+      }
+    });
+
+    test("a malformed neighbour re-blocks Step 1 and keeps a benchmark inadmissible", () => {
+      // A defect that only changed a message would be worth little. D1 not passing is what holds
+      // Step 1, and Step 1 not being released is what marks a run inadmissible as Step 3 evidence.
+      const report = readiness.assess({ config: { ...FIXTURE, regions: [null] }, asOf: "2026-08-09" });
+      expect(report.decisions.D1.status).toBe(READINESS.FAIL);
+      expect(stepOf(report, 1).status).toBe(READINESS.BLOCKED);
+      expect(stepOf(report, 1).blockedBy).toEqual(["D1"]);
+      expect(report.stepEvidenceAdmissible).toBe(false);
+      expect(report.overall).toBe(READINESS.BLOCKED);
+    });
+  });
+
+  test("re-declaring the assessed region inside regions[] is reported as a duplicate, not compared with itself", () => {
+    // The fail-closed direction on the other branch: §3.5 makes region → shard a function, so
+    // one id naming two declarations is undefined rather than redundant. Both branches produce
+    // a problem; neither produces a pass.
+    const report = readiness.assess({ config: { ...FIXTURE, regions: [FIXTURE.region] }, asOf: "2026-08-09" });
+    expect(report.decisions.D1.status).toBe(READINESS.FAIL);
+    expect(report.decisions.D1.problems.join("\n")).toMatch(/re-declares "TEST-FIXTURE-NOT-A-REGION", the region under assessment/u);
+  });
+
+  test("V-12 RUNS UNCONDITIONALLY — an absent charger catalogue is an absence, never a pass", () => {
+    // This was guarded by `Array.isArray(source.chargers) && source.cover`, so a deployment
+    // that supplied no catalogue skipped V-12 in silence and D1 reported PASS. `chargers` is
+    // not optional in the seam (`regions?` and `cardinalityException?` carry the question mark;
+    // `chargers` does not) and §14.5 makes it E_return's population.
+    for (const chargers of [undefined, null, { "CHG-1": "cell" }, "CHG-1", 7]) {
+      const report = readiness.assess({ config: { ...FIXTURE, chargers }, asOf: "2026-08-09" });
+      expect({ chargers: JSON.stringify(chargers) || String(chargers), status: report.decisions.D1.status }).toEqual({
+        chargers: JSON.stringify(chargers) || String(chargers),
+        status: READINESS.FAIL,
+      });
+      expect(report.decisions.D1.problems.join("\n")).toMatch(/V-12 cannot run/u);
+    }
+    // A charger outside the cover is still caught, and a charger inside it still passes.
+    const outside = readiness.assess({ config: { ...FIXTURE, chargers: [{ chargerId: "CHG-OUT", cellId: cells.cellForPoint(40, 40, cells.RESOLUTION.FINE) }] }, asOf: "2026-08-09" });
+    expect(outside.decisions.D1.status).toBe(READINESS.FAIL);
+    expect(outside.decisions.D1.problems.join("\n")).toMatch(/V-12 charger "CHG-OUT".*not in this region's cover/su);
+    expect(readiness.assess({ config: FIXTURE, asOf: "2026-08-09" }).decisions.D1.status).toBe(READINESS.PASS);
+  });
+
+  test("A BENCHMARK RUN IS NOT ADMISSIBLE WHILE NO CANDIDATE IS DEPLOYED — Step 1 NOT_CONFIGURED is not release", () => {
+    // The flag asked only whether Steps 1 and 3 were not BLOCKED, and Step 1 has a fifth state:
+    // NOT_CONFIGURED — "D1 and D3 are supplied; no candidate deployment is configured yet". So
+    // with the decisions answered and nothing deployed and no hierarchy built, it read `true`.
+    // That was reachable: `adapters/index.js` calls any module passed to `--engine ./x.js`
+    // AVAILABLE on the strength of a `matrix()` function, so a hand-written adapter is measured
+    // — and those numbers would have been called admissible Step 3 evidence.
+    const report = readiness.assess({ config: FIXTURE, asOf: "2026-08-09" });
+    expect([report.decisions.D1.status, report.decisions.D3.status, report.decisions.D8.status]).toEqual([READINESS.PASS, READINESS.PASS, READINESS.PASS]);
+    expect(stepOf(report, 1).status).toBe(READINESS.NOT_CONFIGURED);
+    expect(report.candidates.deployed).toEqual([]);
+    expect(report.stepEvidenceAdmissible).toBe(false);
+    expect(readiness.format(report)).toMatch(/would NOT be admissible as B1 Step 3 evidence/u);
+    // The narrowing is one-directional: nothing here turns a BLOCKED step into anything else.
+    expect(stepOf(report, 5).status).toBe(READINESS.BLOCKED);
+    expect(report.overall).not.toBe(READINESS.PASS);
+    expect(report.engineSelected).toBe(false);
   });
 
   test("the seeded map is not a region, and supplying it as one is refused", () => {

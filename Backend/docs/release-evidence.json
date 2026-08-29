@@ -1,347 +1,347 @@
 {
   "schema": "robotx.release-evidence.v1",
-  "producedAtMs": 1787630558377,
+  "producedAtMs": 1787984925657,
   "producer": "tools/release/collectEvidence.js",
-  "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+  "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
   "only": "all",
   "evidence": {
     "tier_dependencies": {
       "gateId": "tier_dependencies",
-      "producedAtMs": 1787628937098,
+      "producedAtMs": 1787983629590,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run gate:tiers",
         "exitCode": 0,
-        "startedAtMs": 1787628934429,
-        "finishedAtMs": 1787628937098,
+        "startedAtMs": 1787983628493,
+        "finishedAtMs": 1787983629590,
         "tail": "\n> backend@1.0.0 gate:tiers\n> node tools/gates/checkTierDependencies.js\n\ngate: tier-dependencies (§1.8 rule 2)\n  PASS — 285 module(s), 423 governed import edge(s), no Tier 0/1 → Tier 2 dependency.\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "parameter_register": {
       "gateId": "parameter_register",
-      "producedAtMs": 1787628939884,
+      "producedAtMs": 1787983630636,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run gate:params",
         "exitCode": 0,
-        "startedAtMs": 1787628937098,
-        "finishedAtMs": 1787628939884,
+        "startedAtMs": 1787983629590,
+        "finishedAtMs": 1787983630636,
         "tail": "\n> backend@1.0.0 gate:params\n> node tools/gates/checkParameterRegister.js\n\ngate: parameter-register (§22, Appendix A)\n  PASS — 189 engine module(s) checked against 242 registered parameter(s); no bare behavioural constants.\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "design_tenets": {
       "gateId": "design_tenets",
-      "producedAtMs": 1787628943964,
+      "producedAtMs": 1787983631624,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run gate:tenets",
         "exitCode": 0,
-        "startedAtMs": 1787628939884,
-        "finishedAtMs": 1787628943964,
+        "startedAtMs": 1787983630636,
+        "finishedAtMs": 1787983631624,
         "tail": "\n> backend@1.0.0 gate:tenets\n> node src/engine/guards/tenets.js\n\ngate: tenets (T1 type separation, T6 decision-path determinism)\n  PASS — 282 module(s) checked, no violations.\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "identity_isolation": {
       "gateId": "identity_isolation",
-      "producedAtMs": 1787628947473,
+      "producedAtMs": 1787983632567,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run gate:privacy",
         "exitCode": 0,
-        "startedAtMs": 1787628943965,
-        "finishedAtMs": 1787628947473,
+        "startedAtMs": 1787983631624,
+        "finishedAtMs": 1787983632567,
         "tail": "\n> backend@1.0.0 gate:privacy\n> node tools/gates/checkIdentityIsolation.js\n\ngate: identity-isolation (§23.7)\n  PASS — 16 module(s) in the cost and decision-record scopes hold no identifying field; no street address is an input to any cost term.\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "erasure_reconstruction_equivalence": {
       "gateId": "erasure_reconstruction_equivalence",
-      "producedAtMs": 1787628949721,
+      "producedAtMs": 1787983633454,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run gate:erasure",
         "exitCode": 0,
-        "startedAtMs": 1787628947473,
-        "finishedAtMs": 1787628949721,
+        "startedAtMs": 1787983632567,
+        "finishedAtMs": 1787983633454,
         "tail": "\n> backend@1.0.0 gate:erasure\n> node tools/replay/replayDecision.js --erased\n\ngate: reconstruction-equivalence over an ERASED corpus (§23.7, §24.3)\n  PASS — 3 corpus decision(s), 3 with a Tier B record; reconstruction from Tier A alone reproduces every one byte for byte.\n         erasure removed 0 identifying field(s) from the inputs and changed no replayed cost, which is the separation §23.7 requires.\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "legacy_removed_from_build": {
       "gateId": "legacy_removed_from_build",
-      "producedAtMs": 1787628954258,
+      "producedAtMs": 1787983635789,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run gate:legacy",
         "exitCode": 0,
-        "startedAtMs": 1787628951467,
-        "finishedAtMs": 1787628954258,
+        "startedAtMs": 1787983634392,
+        "finishedAtMs": 1787983635789,
         "tail": "\n> backend@1.0.0 gate:legacy\n> node tools/gates/checkLegacyRetirement.js\n\ngate: legacy-retirement (execution plan, Phase 15)\n  PASS — 4 retired module(s) absent from the build and unimported; no retired symbol redefined across 340 file(s).\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "engine_decision_path_wired": {
       "gateId": "engine_decision_path_wired",
-      "producedAtMs": 1787628957210,
+      "producedAtMs": 1787983637360,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run gate:composition",
         "exitCode": 1,
-        "startedAtMs": 1787628954258,
-        "finishedAtMs": 1787628957210,
+        "startedAtMs": 1787983635789,
+        "finishedAtMs": 1787983637360,
         "tail": "\n> backend@1.0.0 gate:composition\n> node tools/gates/checkCompositionRoot.js\n\ngate: composition-root (execution plan, Phase 15 — workers move to production scheduling)\n  FAIL — 1 violation(s) across 18 registered worker(s):\n    coordinator (tier 0, workers/coordinator.worker)\n        [LEADER_ONLY_NOT_COMPOSABLE] declared LEADER_ONLY and reachable, but it CANNOT BE COMPOSED: the round loop needs `expandCandidates`, `pricedCandidateFor` and `commit`. The first two resolve, through plan/insertion.js → planBuilder.hopsForSequence → routing/cellPairCache.hopsFor, to an injected `route` function — the routing engine. **No routing engine is selected**: that is execution-plan item B1, whose Step 5 is blocked on D1 (no authoritative operating region), D3 (no fleet speed model) and D8 (no extract vintage), none of which is an engineering task. `npm run routing:readiness` reports BLOCKED and refuses to fabricate one. Starting the coordinator against an invented router would assign real work on invented travel times, which is worse than not assigning it. [requires: expandCandidates, pricedCandidateFor, commit] [owner: B1 — Operations + Commercial (D1), Product + Fleet Engineering (D3), Operations (D8)] — this blocker is EXTERNAL to this repository and no commit here closes it.\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "lower_bound_admissibility": {
       "gateId": "lower_bound_admissibility",
-      "producedAtMs": 1787629558999,
+      "producedAtMs": 1787983928229,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run test:engine -- candidatesLowerBound",
         "exitCode": 0,
-        "startedAtMs": 1787628957210,
-        "finishedAtMs": 1787629558999,
-        "tail": "\n> backend@1.0.0 test:engine\n> jest --runInBand --forceExit --selectProjects engine candidatesLowerBound\n\nRunning one project: engine\n\u001b[2m09:15:38\u001b[0m \u001b[96m●\u001b[0m \u001b[36mINFO \u001b[0m \u001b[2m[engine] \u001b[0mround\n  \u001b[2mkind\u001b[0m=round  \u001b[2mroundId\u001b[0m=r1  \u001b[2mshardId\u001b[0m=s1  \u001b[2mlegCount\u001b[0m=40  \u001b[2massigned\u001b[0m=38\n\u001b[2m09:15:38\u001b[0m \u001b[93m▲\u001b[0m \u001b[33mWARN \u001b[0m \u001b[2m[engine] \u001b[0manomaly.commit_aborted\n  \u001b[2mkind\u001b[0m=anomaly.commit_aborted  \u001b[2mdecisionId\u001b[0m=d1  \u001b[2mcommitmentId\u001b[0m=c1  \u001b[2mshardId\u001b[0m=s1\n",
+        "startedAtMs": 1787983637360,
+        "finishedAtMs": 1787983928229,
+        "tail": "\n> backend@1.0.0 test:engine\n> jest --runInBand --forceExit --selectProjects engine candidatesLowerBound\n\nRunning one project: engine\n\u001b[2m11:41:49\u001b[0m \u001b[96m●\u001b[0m \u001b[36mINFO \u001b[0m \u001b[2m[engine] \u001b[0mround\n  \u001b[2mkind\u001b[0m=round  \u001b[2mroundId\u001b[0m=r1  \u001b[2mshardId\u001b[0m=s1  \u001b[2mlegCount\u001b[0m=40  \u001b[2massigned\u001b[0m=38\n\u001b[2m11:41:49\u001b[0m \u001b[93m▲\u001b[0m \u001b[33mWARN \u001b[0m \u001b[2m[engine] \u001b[0manomaly.commit_aborted\n  \u001b[2mkind\u001b[0m=anomaly.commit_aborted  \u001b[2mdecisionId\u001b[0m=d1  \u001b[2mcommitmentId\u001b[0m=c1  \u001b[2mshardId\u001b[0m=s1\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "model_check_capacity_1_2_3": {
       "gateId": "model_check_capacity_1_2_3",
-      "producedAtMs": 1787629869759,
+      "producedAtMs": 1787984255652,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run test:engine -- ModelCheck",
         "exitCode": 0,
-        "startedAtMs": 1787629558999,
-        "finishedAtMs": 1787629869759,
-        "tail": "\n> backend@1.0.0 test:engine\n> jest --runInBand --forceExit --selectProjects engine ModelCheck\n\nRunning one project: engine\n\u001b[2m09:20:51\u001b[0m \u001b[96m●\u001b[0m \u001b[36mINFO \u001b[0m \u001b[2m[engine] \u001b[0mround\n  \u001b[2mkind\u001b[0m=round  \u001b[2mroundId\u001b[0m=r1  \u001b[2mshardId\u001b[0m=s1  \u001b[2mlegCount\u001b[0m=40  \u001b[2massigned\u001b[0m=38\n\u001b[2m09:20:51\u001b[0m \u001b[93m▲\u001b[0m \u001b[33mWARN \u001b[0m \u001b[2m[engine] \u001b[0manomaly.commit_aborted\n  \u001b[2mkind\u001b[0m=anomaly.commit_aborted  \u001b[2mdecisionId\u001b[0m=d1  \u001b[2mcommitmentId\u001b[0m=c1  \u001b[2mshardId\u001b[0m=s1\n",
+        "startedAtMs": 1787983928229,
+        "finishedAtMs": 1787984255652,
+        "tail": "\n> backend@1.0.0 test:engine\n> jest --runInBand --forceExit --selectProjects engine ModelCheck\n\nRunning one project: engine\n\u001b[2m11:47:03\u001b[0m \u001b[96m●\u001b[0m \u001b[36mINFO \u001b[0m \u001b[2m[engine] \u001b[0mround\n  \u001b[2mkind\u001b[0m=round  \u001b[2mroundId\u001b[0m=r1  \u001b[2mshardId\u001b[0m=s1  \u001b[2mlegCount\u001b[0m=40  \u001b[2massigned\u001b[0m=38\n\u001b[2m11:47:03\u001b[0m \u001b[93m▲\u001b[0m \u001b[33mWARN \u001b[0m \u001b[2m[engine] \u001b[0manomaly.commit_aborted\n  \u001b[2mkind\u001b[0m=anomaly.commit_aborted  \u001b[2mdecisionId\u001b[0m=d1  \u001b[2mcommitmentId\u001b[0m=c1  \u001b[2mshardId\u001b[0m=s1\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "determinism_replay": {
       "gateId": "determinism_replay",
-      "producedAtMs": 1787630156927,
+      "producedAtMs": 1787984534608,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run test:engine -- determinism",
         "exitCode": 0,
-        "startedAtMs": 1787629869759,
-        "finishedAtMs": 1787630156927,
-        "tail": "\n> backend@1.0.0 test:engine\n> jest --runInBand --forceExit --selectProjects engine determinism\n\nRunning one project: engine\n\u001b[2m09:25:38\u001b[0m \u001b[96m●\u001b[0m \u001b[36mINFO \u001b[0m \u001b[2m[engine] \u001b[0mround\n  \u001b[2mkind\u001b[0m=round  \u001b[2mroundId\u001b[0m=r1  \u001b[2mshardId\u001b[0m=s1  \u001b[2mlegCount\u001b[0m=40  \u001b[2massigned\u001b[0m=38\n\u001b[2m09:25:38\u001b[0m \u001b[93m▲\u001b[0m \u001b[33mWARN \u001b[0m \u001b[2m[engine] \u001b[0manomaly.commit_aborted\n  \u001b[2mkind\u001b[0m=anomaly.commit_aborted  \u001b[2mdecisionId\u001b[0m=d1  \u001b[2mcommitmentId\u001b[0m=c1  \u001b[2mshardId\u001b[0m=s1\n",
+        "startedAtMs": 1787984255652,
+        "finishedAtMs": 1787984534608,
+        "tail": "\n> backend@1.0.0 test:engine\n> jest --runInBand --forceExit --selectProjects engine determinism\n\nRunning one project: engine\n\u001b[2m11:51:54\u001b[0m \u001b[96m●\u001b[0m \u001b[36mINFO \u001b[0m \u001b[2m[engine] \u001b[0mround\n  \u001b[2mkind\u001b[0m=round  \u001b[2mroundId\u001b[0m=r1  \u001b[2mshardId\u001b[0m=s1  \u001b[2mlegCount\u001b[0m=40  \u001b[2massigned\u001b[0m=38\n\u001b[2m11:51:54\u001b[0m \u001b[93m▲\u001b[0m \u001b[33mWARN \u001b[0m \u001b[2m[engine] \u001b[0manomaly.commit_aborted\n  \u001b[2mkind\u001b[0m=anomaly.commit_aborted  \u001b[2mdecisionId\u001b[0m=d1  \u001b[2mcommitmentId\u001b[0m=c1  \u001b[2mshardId\u001b[0m=s1\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "snapshot_retention": {
       "gateId": "snapshot_retention",
-      "producedAtMs": 1787630441507,
+      "producedAtMs": 1787984855054,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run test:engine -- observabilityDecisionRecord",
         "exitCode": 0,
-        "startedAtMs": 1787630156927,
-        "finishedAtMs": 1787630441507,
-        "tail": "\n> backend@1.0.0 test:engine\n> jest --runInBand --forceExit --selectProjects engine observabilityDecisionRecord\n\nRunning one project: engine\n\u001b[2m09:30:22\u001b[0m \u001b[96m●\u001b[0m \u001b[36mINFO \u001b[0m \u001b[2m[engine] \u001b[0mround\n  \u001b[2mkind\u001b[0m=round  \u001b[2mroundId\u001b[0m=r1  \u001b[2mshardId\u001b[0m=s1  \u001b[2mlegCount\u001b[0m=40  \u001b[2massigned\u001b[0m=38\n\u001b[2m09:30:22\u001b[0m \u001b[93m▲\u001b[0m \u001b[33mWARN \u001b[0m \u001b[2m[engine] \u001b[0manomaly.commit_aborted\n  \u001b[2mkind\u001b[0m=anomaly.commit_aborted  \u001b[2mdecisionId\u001b[0m=d1  \u001b[2mcommitmentId\u001b[0m=c1  \u001b[2mshardId\u001b[0m=s1\n",
+        "startedAtMs": 1787984534608,
+        "finishedAtMs": 1787984855054,
+        "tail": "\n> backend@1.0.0 test:engine\n> jest --runInBand --forceExit --selectProjects engine observabilityDecisionRecord\n\nRunning one project: engine\n\u001b[2m11:57:13\u001b[0m \u001b[96m●\u001b[0m \u001b[36mINFO \u001b[0m \u001b[2m[engine] \u001b[0mround\n  \u001b[2mkind\u001b[0m=round  \u001b[2mroundId\u001b[0m=r1  \u001b[2mshardId\u001b[0m=s1  \u001b[2mlegCount\u001b[0m=40  \u001b[2massigned\u001b[0m=38\n\u001b[2m11:57:13\u001b[0m \u001b[93m▲\u001b[0m \u001b[33mWARN \u001b[0m \u001b[2m[engine] \u001b[0manomaly.commit_aborted\n  \u001b[2mkind\u001b[0m=anomaly.commit_aborted  \u001b[2mdecisionId\u001b[0m=d1  \u001b[2mcommitmentId\u001b[0m=c1  \u001b[2mshardId\u001b[0m=s1\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "chaos_capacity_1": {
       "gateId": "chaos_capacity_1",
-      "producedAtMs": 1787630444315,
+      "producedAtMs": 1787984857728,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run test:chaos",
         "exitCode": 0,
-        "startedAtMs": 1787630441507,
-        "finishedAtMs": 1787630444315,
+        "startedAtMs": 1787984855054,
+        "finishedAtMs": 1787984857728,
         "tail": "\n> backend@1.0.0 test:chaos\n> jest --runInBand --forceExit --selectProjects chaos\n\nRunning one project: chaos\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "chaos_capacity_2": {
       "gateId": "chaos_capacity_2",
-      "producedAtMs": 1787630444315,
+      "producedAtMs": 1787984857728,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run test:chaos",
         "exitCode": 0,
-        "startedAtMs": 1787630441507,
-        "finishedAtMs": 1787630444315,
+        "startedAtMs": 1787984855054,
+        "finishedAtMs": 1787984857728,
         "tail": "\n> backend@1.0.0 test:chaos\n> jest --runInBand --forceExit --selectProjects chaos\n\nRunning one project: chaos\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "cache_tier_flush": {
       "gateId": "cache_tier_flush",
-      "producedAtMs": 1787630446963,
+      "producedAtMs": 1787984860411,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run test:chaos -- cacheFlush",
         "exitCode": 0,
-        "startedAtMs": 1787630444315,
-        "finishedAtMs": 1787630446963,
+        "startedAtMs": 1787984857728,
+        "finishedAtMs": 1787984860411,
         "tail": "\n> backend@1.0.0 test:chaos\n> jest --runInBand --forceExit --selectProjects chaos cacheFlush\n\nRunning one project: chaos\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "scale_targets": {
       "gateId": "scale_targets",
-      "producedAtMs": 1787630484956,
+      "producedAtMs": 1787984882265,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run test:scale",
         "exitCode": 0,
-        "startedAtMs": 1787630446963,
-        "finishedAtMs": 1787630484956,
+        "startedAtMs": 1787984860411,
+        "finishedAtMs": 1787984882265,
         "tail": "\n> backend@1.0.0 test:scale\n> jest --runInBand --forceExit --selectProjects scale\n\nRunning one project: scale\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "locality": {
       "gateId": "locality",
-      "producedAtMs": 1787630517952,
+      "producedAtMs": 1787984903328,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run test:scale -- locality",
         "exitCode": 0,
-        "startedAtMs": 1787630484956,
-        "finishedAtMs": 1787630517952,
+        "startedAtMs": 1787984882265,
+        "finishedAtMs": 1787984903328,
         "tail": "\n> backend@1.0.0 test:scale\n> jest --runInBand --forceExit --selectProjects scale locality\n\nRunning one project: scale\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "overload_admission_control": {
       "gateId": "overload_admission_control",
-      "producedAtMs": 1787630557722,
+      "producedAtMs": 1787984925233,
       "producer": "tools/release/collectEvidence.js",
       "run": {
         "command": "npm run test:scale -- overload",
         "exitCode": 0,
-        "startedAtMs": 1787630517952,
-        "finishedAtMs": 1787630557722,
+        "startedAtMs": 1787984903328,
+        "finishedAtMs": 1787984925233,
         "tail": "\n> backend@1.0.0 test:scale\n> jest --runInBand --forceExit --selectProjects scale overload\n\nRunning one project: scale\n",
         "build": {
-          "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+          "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
           "fileCount": 565
         }
       },
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     }
@@ -350,22 +350,22 @@
     "calibration_safety_derived": {
       "command": "npm run gate:calibration",
       "exitCode": 1,
-      "startedAtMs": 1787628949721,
-      "finishedAtMs": 1787628951467,
+      "startedAtMs": 1787983633454,
+      "finishedAtMs": 1787983634392,
       "tail": "egion straight-line-versus-network error measurements\n    route.degraded_reserve_factor\n        [SAFETY_NOT_DERIVED] Safety-class and PROVISIONAL. §22.4: no Tier 0 parameter may be PROVISIONAL or UNCALIBRATED at launch. Awaits: measured degraded-estimate error distribution\n    security.attestation_max_age\n        [SAFETY_NOT_DERIVED] Safety-class and PROVISIONAL. §22.4: no Tier 0 parameter may be PROVISIONAL or UNCALIBRATED at launch. Awaits: measured firmware and hardware change cadence per agent class\n    security.certificate_revocation_recheck_interval\n        [SAFETY_NOT_DERIVED] Safety-class and PROVISIONAL. §22.4: no Tier 0 parameter may be PROVISIONAL or UNCALIBRATED at launch. Awaits: the operated CA's revocation-publication latency\n    security.energy_rate_tolerance\n        [SAFETY_NOT_DERIVED] Safety-class and PROVISIONAL. §22.4: no Tier 0 parameter may be PROVISIONAL or UNCALIBRATED at launch. Awaits: the measured residual distribution of §14.2's consumption model against reported SoC\n    security.implausible_report_quarantine_threshold\n        [SAFETY_NOT_DERIVED] Safety-class and PROVISIONAL. §22.4: no Tier 0 parameter may be PROVISIONAL or UNCALIBRATED at launch. Awaits: the measured background rate of refused reports on healthy agents\n    security.position_plausibility_tolerance\n        [SAFETY_NOT_DERIVED] Safety-class and PROVISIONAL. §22.4: no Tier 0 parameter may be PROVISIONAL or UNCALIBRATED at launch. Awaits: the measured distribution of implied speed between accepted fixes, per agent class\n    shard.store_round_trip_budget\n        [SAFETY_NOT_DERIVED] Safety-class and PROVISIONAL. §22.4: no Tier 0 parameter may be PROVISIONAL or UNCALIBRATED at launch. Awaits: measured p99 round-trip to the operated consensus store\n    sim.max_optimistic_bias\n        [SAFETY_NOT_DERIVED] Safety-class and PROVISIONAL. §22.4: no Tier 0 parameter may be PROVISIONAL or UNCALIBRATED at launch. Awaits: the first one-sided simulator fidelity study against production\n",
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     },
     "safety_case_assembled": {
       "command": "node tools/safetyCase/assemble.js",
       "exitCode": 0,
-      "startedAtMs": 1787630557722,
-      "finishedAtMs": 1787630557997,
+      "startedAtMs": 1787984925233,
+      "finishedAtMs": 1787984925512,
       "tail": "safety case (§24.7) — 12 hazard(s) assembled from 38 predicates and 22 invariants\n  written to docs/safety-case/SAFETY_CASE.md\n  release gates: 0 green, 0 red, 24 not evaluated\n  PASS — every reference resolves\n",
       "build": {
-        "sourceDigest": "72f943df83416c7317b107a903efedee1863459ea3839ccd2b016a69e43e8c81",
+        "sourceDigest": "431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470",
         "fileCount": 565
       }
     }

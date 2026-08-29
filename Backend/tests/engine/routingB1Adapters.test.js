@@ -170,6 +170,142 @@ describe("configuration is validated, and nothing missing is quietly decided", (
     expect(contract.assertSelfHosted("test", "http://osrm.internal:5000/")).toBe("http://osrm.internal:5000");
   });
 
+  test("EVERY HOSTED HOST IS REFUSED IN EVERY SPELLING OF ITS NAME — including the trailing root dot", () => {
+    // PHASE 15 adversarial pass. The comparison was `parsed.hostname.toLowerCase()` against the
+    // list, and a fully-qualified name may be written with a trailing root dot —
+    // `router.project-osrm.org.` — which every resolver and every HTTP client in Node treats as
+    // the same host. `new URL()` preserves the dot, so ALL SIX public services were reachable
+    // one keystroke away from the check that exists to refuse them. R1 is §32.4's one
+    // requirement marked non-negotiable, so this walks the shipped list rather than a copy of
+    // three of it, and asserts on the canonical form rather than on the spelling.
+    const leaked = [];
+    for (const hosted of contract.HOSTED_HOSTS) {
+      for (const url of [
+        `http://${hosted}/`,
+        `http://${hosted}./`, // the trailing-dot FQDN that got through
+        `https://${hosted}../`, // and more than one of them
+        `https://${hosted.toUpperCase()}/`,
+        `https://sub.${hosted}/`,
+        `https://sub.${hosted}./`,
+        `http://${hosted}.:8080/table`,
+      ]) {
+        try {
+          contract.assertSelfHosted("test", url);
+          leaked.push(url);
+        } catch {
+          // refused, which is the requirement
+        }
+      }
+    }
+    expect(leaked).toEqual([]);
+    expect(contract.canonicalHost("Router.Project-OSRM.ORG.")).toBe("router.project-osrm.org");
+    // A genuinely self-hosted deployment is still accepted — the check refuses hosted services,
+    // not trailing dots, and an internal name written as an FQDN must still work.
+    for (const own of ["http://osrm.internal:5000", "https://valhalla.svc.cluster.local./", "http://10.0.0.5:8002", "https://graphhopper.internal.example.com"]) {
+      expect(() => contract.assertSelfHosted("test", own)).not.toThrow();
+    }
+  });
+
+  test("WHITESPACE IS NOT AN ANSWER — the emptiness check trims, as every other authority does", () => {
+    // The placeholder guard trims before comparing ("TBD." and "tbd" are one non-answer) and
+    // the emptiness guard did not, so `"   "` fell between them: it satisfied N29's requirement
+    // for a NAMED spread source, and it satisfied `deployment.extract`, whose whole purpose is
+    // that "a placeholder there is indistinguishable from an answer". Both are carried verbatim
+    // into `description` and into B1 Step 4's operational record.
+    const refuses = (patch, pattern) => {
+      let thrown = null;
+      try {
+        osrm.create(configFor(patch));
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).not.toBeNull();
+      expect(thrown.message).toMatch(pattern);
+    };
+    refuses({ travelTimeSpread: { source: "   ", model: "PROPORTIONAL", value: 0.1 } }, /travelTimeSpread\.source is required/u);
+    refuses({ engineProfile: "  " }, /engineProfile is required/u);
+    refuses({ deployment: { shape: "s", extract: "   ", profilesBuilt: "p", hierarchyBuildTime: "h" } }, /deployment\.extract is required/u);
+    refuses({ deployment: { shape: "s", extract: "e", profilesBuilt: "\t\n", hierarchyBuildTime: "h" } }, /deployment\.profilesBuilt is required/u);
+    // …and a real value with no surrounding whitespace is unaffected: the value is never
+    // rewritten, only the acceptance test changed.
+    const adapter = osrm.create(configFor({ deployment: { shape: " s ", extract: " e ", profilesBuilt: "p", hierarchyBuildTime: "h" } }));
+    expect(adapter.description).toMatch(/extract  e /u);
+  });
+
+  test("A PLACEHOLDER IS NOT A NAMED SOURCE — R-3, travelTimeSpread.source", () => {
+    // PHASE 15 residual pass. `PLACEHOLDER_TOKENS` was compared only inside
+    // `normaliseDeployment`, against its own four fields, so `deployment.extract: "tbd"` was
+    // refused and `travelTimeSpread.source: "tbd"` was accepted — one question, two rules, which
+    // is the shape A6 found for dates. N29's whole requirement is that somebody NAME where the
+    // spread comes from: no shortlisted engine returns one, so every travelSdSeconds this
+    // adapter emits is computed here and this field is the only record of whose number it is.
+    // It is carried verbatim into `description`, where "tbd" reads as though somebody answered.
+    const attempt = (source) => {
+      try {
+        osrm.create(configFor({ travelTimeSpread: { source, model: "PROPORTIONAL", value: 0.1 } }));
+        return "ACCEPTED";
+      } catch (error) {
+        return error.message;
+      }
+    };
+
+    // Every token in the SHIPPED list, in five spellings each, asserted against the list itself
+    // rather than against a copy of part of it — the discipline A1 established.
+    const leaked = [];
+    for (const token of contract.PLACEHOLDER_TOKENS) {
+      for (const spelling of [token, token.toUpperCase(), `  ${token}  `, `${token}.`, `${token} .`]) {
+        if (attempt(spelling) === "ACCEPTED") leaked.push(spelling);
+      }
+    }
+    expect(leaked).toEqual([]);
+    expect(attempt("tbd")).toMatch(/travelTimeSpread\.source is "tbd", which is a placeholder rather than a named source/u);
+    expect(attempt("tbd")).toMatch(/N29/u);
+
+    // An empty or whitespace-only source keeps A8's message: nothing supplied and a non-answer
+    // supplied are two defects with two remedies, and this must not swallow the first.
+    for (const blank of ["", "   ", "\t\n"]) {
+      expect(attempt(blank)).toMatch(/travelTimeSpread\.source is required/u);
+      expect(attempt(blank)).not.toMatch(/is a placeholder rather than a named source/u);
+    }
+
+    // …and a real answer, in any format an operator might write one, is untouched. The rule
+    // refuses non-answers, not spellings — a validator with opinions about how a source is
+    // written would be a worse defect than the one it replaced.
+    for (const source of [
+      "Fleet telemetry 2026-Q2, 41 812 completed legs (ticket OPS-1183)",
+      "https://internal.example.com/evidence/travel-time-spread-2026Q2.csv",
+      "unknown-roads pilot survey, 2026-07",
+      "N/A-WEST depot stopwatch study",
+      "vendor SLA §4.2",
+    ]) {
+      expect({ source, result: attempt(source) }).toEqual({ source, result: "ACCEPTED" });
+    }
+  });
+
+  test("R-3's scope is the fields whose contract is a NAMED SOURCE, and it is not widened past them", () => {
+    // The refusal that makes this a fix rather than a blanket ban: `engineProfile` is an
+    // engine-side costing name matched against a deployed profile, not evidence about where a
+    // number came from, and the token list holds strings ("-", "?") a profile could legitimately
+    // be called. Widening the rule to every string in the system is exactly the "do not globally
+    // reject these strings everywhere" failure, so the scope is asserted rather than assumed.
+    expect(() => osrm.create(configFor({ engineProfile: "tbd" }))).not.toThrow();
+    // The four deployment fields keep their own message, unchanged, and the honest negatives the
+    // list was deliberately kept narrow for are still accepted.
+    expect(() => osrm.create(configFor({ deployment: { shape: "fixture", extract: "tbd", profilesBuilt: "none", hierarchyBuildTime: "not built" } }))).toThrow(
+      /deployment\.extract is "tbd", which is a placeholder rather than a value/u,
+    );
+    expect(() => osrm.create(configFor({ deployment: { shape: "fixture", extract: "none — D1 open", profilesBuilt: "none", hierarchyBuildTime: "not built" } }))).not.toThrow();
+    // One predicate, exported, so the readiness gate judges D8's named-source fields by the same
+    // rule instead of keeping a second copy of the list (see routingB1Readiness.test.js).
+    expect([contract.isPlaceholder("TBD."), contract.isPlaceholder(" n/a "), contract.isPlaceholder("Geofabrik europe-latest"), contract.isPlaceholder(undefined), contract.isPlaceholder(7)]).toEqual([
+      true,
+      true,
+      false,
+      false,
+      false,
+    ]);
+  });
+
   test("no adapter defaults travelSdSeconds — N29, the coalesce that hid the question", () => {
     // `cellPairCache.buildEntry` requires a finite non-negative spread and §8.4 prices p_late
     // from the ETA predictive distribution rather than the point estimate. None of the three
