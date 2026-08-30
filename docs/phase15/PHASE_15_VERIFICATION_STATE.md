@@ -25,10 +25,10 @@
 
 | | |
 |---|---|
-| Date of execution | **2026-08-29** (consolidation) · re-executed 2026-08-29 (documentation-integrity audit) · **partially re-executed 2026-08-30** (V-10) · **re-executed 2026-08-30** (post-V-10 current-state audit — see **§7b** for the command-by-command record) |
+| Date of execution | **2026-08-29** (consolidation) · re-executed 2026-08-29 (documentation-integrity audit) · **partially re-executed 2026-08-30** (V-10) · **re-executed 2026-08-30** (post-V-10 current-state audit — see **§7b**) · **2026-08-30 — closure item V-9**, the Phase 0–14 cross-phase re-verification (see **§7c**) |
 | Branch | `feature/dashboard` |
-| HEAD | `67b7c7c` — with T1-04, the `Leg.slaDeadline` producer and V-10 **uncommitted** |
-| Working tree | **Not clean.** Source, test, tool, schema and migration changes from T1-04 and the `Leg.slaDeadline` producer, plus V-10's: two runbooks, one code comment, one new engine test suite, one new live-DB harness, one `package.json` script |
+| HEAD | **`7335260`** — T1-04, the `Leg.slaDeadline` producer and V-10 were **committed as a snapshot** before V-9 ran. *Rows below that say "`67b7c7c` + uncommitted" describe the same content under its previous git identity; **the digest did not move**, which is the fact that matters* |
+| Working tree | **No application source modified** — `git status --short` was empty before and after V-9. *(It was "not clean" through V-10; the snapshot commit is what changed, not the content.)* **Since V-9 closed, the five canonical documents in `docs/phase15/` carry their own uncommitted edits; `docs/` is outside the source-digest scope, so the digest is unmoved — re-measured `d033038c…` / 573 on 2026-08-31 by the freeze audit.** |
 | **Source digest — CURRENT** | **`d033038cb261c3de0efe13796af9aa26d190ea113a5a2bfe5971480f72bdca00`** (**573 files**), measured 2026-08-30 after V-10 |
 | Source digest — the T1-04 tree V-10 started from | `f6f69ea1a54ca211939f71c029017de7fe5089ab0484733a98439868adcc2dd4` (571 files) |
 | Source digest — the 2026-08-29 consolidation | `431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470` (565 files) — **superseded** |
@@ -148,10 +148,12 @@ means:
 - **The "16 GREEN" figure quoted throughout Phase 15 documentation is historical.** On the
   current tree nothing is green, because nothing has been collected against it.
 - **A fresh `npm run release:gates` (`verdict.js --collect`) is required before any Phase 15
-  closure claim.** It is a ~25-minute serial collection. It was **not** run by this pass: the
-  verdict is `BLOCKED` before and after, the working tree is still uncommitted and would void
-  the collection on the next source edit, and re-collecting is the release owner's step at a
-  quiescent tree — not a documentation act.
+  closure claim.** It is a ~25-minute serial collection. It was **not** run by this pass, nor by
+  any pass since: the verdict is `BLOCKED` before and after, and re-collecting is the release
+  owner's step at a quiescent, committed tree — not a documentation act. *(This bullet also gave
+  "the working tree is still uncommitted and would void the collection on the next source edit".
+  **That premise expired** with the snapshot `7335260` — corrected 2026-08-31 by the freeze audit.
+  The conclusion is unchanged: **a committed tree is not an instruction to collect.**)*
 - **It changes no blocker.** B1's `engine_decision_path_wired` was RED for its own reason and
   still is; the 7 `NOT_EVALUATED` rows are untouched by staleness because nothing was ever
   filed for them.
@@ -413,9 +415,9 @@ as unverified, not as passing, and not as failing. Do not cite an archived numbe
 |---|---|---|
 | **Mutation testing** | **Partially executed 2026-08-30 by V-10** — see below. Not re-run across the rest of the tree | Archived third-pass report claims 8 distinct mutants across three concurrent sessions, all killed. **UNVERIFIED HERE.** V-10's own three are verified |
 | **TLC exhaustive model checking** | `tla2tools.jar` is absent — it is not runnable on this tree at all. **Evidence state: NOT MEASURED / OPEN** | **Not** "never run by any pass" — that phrasing was imprecise and is corrected here. `lifecycle.tla` has never been run under TLC at any capacity; `formal/README.md:34-45` records two completed `commitment.tla` runs on **2026-08-15** under TLA+ 1.8.0 (`commitment_c1.cfg` as checked in, plus a reduced capacity-2 form), and `commitment_c2.cfg` as checked in did not converge. **HISTORICAL — a different tree, no recorded tool checksum, operator or hardware; cited as neither current nor a discharge.** This is blocker **B-M** |
-| **Phase 0–14 cross-phase re-verification** | Out of scope for the 2026-08-29 consolidation; `npm test` covers the suites but not the per-phase live-DB harnesses. **The final closure audit of 2026-08-30 re-derived this row and it no longer holds as written: closure-checklist row V-9's trigger — *"run if the tree changes materially"* — is SATISFIED on this tree**, and the row is **repository-owned, actionable and unrun**. See `PHASE_15_CLOSURE_CHECKLIST.md` §C V-9 | Archived report claims Phases 0–14, **schema and migration history untouched** — **that premise is false on this tree**: `prisma/schema.prisma` is +103 lines and migration 28 was added, and T1-04 additionally changed `expiryActions.js` (+153), `leaderWorkers.js` (+68), `task.service.js` (+187) and `metrics.js` (+123). **UNVERIFIED HERE, and now known to need re-running rather than merely being unmeasured** |
-| **Phase 5 live harnesses** (`phase5ExpirySemantics.js`, `phase5LiveDatabase.js`) | Out of Phase 15 scope for the consolidation — **but no longer out of scope on the evidence.** `phase5ExpirySemantics.js:28` requires `src/engine/supervision/expiryActions.js` and `:31` requires `src/workers/leaderWorkers.js`, **both of which T1-04 modified** — `attemptTransition` gained a `deadlineSecondsOverride` that changes which deadline a target state is armed with, and `escalationLadder` went from an unconditional refusal to four verdicts. **This is the most directly affected slice of V-9 and it is unrun** | Archived claim: 102/102 and 106/106, total 288/288 with the Phase 15 four. **UNVERIFIED HERE, and the archived numbers were measured against a tree that did not contain T1-04's changes to this harness's own subject — do not cite them as current** |
-| **`npm run release:gates`** (`--collect`) | A ~25-minute serial collection that would overwrite `docs/release-evidence.json`. **Not run**, and deliberately so: the working tree is uncommitted, so the next source edit would void the collection, and re-collecting is the **release owner's step at a quiescent, committed tree** — not a documentation act, and never something to run to make the current tree look green | **The checked-in collection is NOT current-tree evidence.** It is bound to the superseded `431010ace1…` and every record is `[STALE]` — see §0 and §3.0. *(This row previously read "the checked-in artefact is already bound to this exact digest … re-collection would add nothing", and "the checked-in collection **is** current-tree evidence". Both were true on 2026-08-29 and false from the moment T1-04 moved the digest; they contradicted §3.0 of this same document. Corrected 2026-08-30.)* |
+| ~~**Phase 0–14 cross-phase re-verification**~~ | **EXECUTED 2026-08-30 — closure item V-9. No longer unverified.** Scope derived by transitive-closure intersection; **7 harnesses run** on a disposable cluster, **315/317**, **no regression**, no code changed. See **§7c** | **Was UNKNOWN; now measured.** The archived premise — *"Phases 0–14, schema and migration history untouched"* — was indeed false on this tree, which is why the row was run. The schema movement turned out to be **purely additive** (one new table, one back-relation; **no pre-existing column changed**), so no Phase 0–14 subject table moved |
+| ~~**Phase 5 live harnesses** (`phase5ExpirySemantics.js`, `phase5LiveDatabase.js`)~~ | **EXECUTED 2026-08-30 under V-9 — the most directly affected slice, and it was run first.** `phase5LiveDatabase.js` **106/106, exit 0**. `phase5ExpirySemantics.js` **100/102, exit 1** — and **both failures are its own FINDING assertions that §17.4's ladder does not exist**, which T1-04 deliberately made false. **Not a regression:** proven by isolating the variable and corroborated by `verify:t104` 72/72. The `LADDER_EXHAUSTED → FAILED` row was **not** taken and the deadline **was** re-armed — the property those checks protect is intact. See **§7c.4** | The archived 102/102 + 106/106 are superseded. **Current: 100/102 and 106/106**, and the 2 are premise-invalidation, not defects. The harness was **deliberately not edited to go green**; what a Phase 5 maintainer would need to change is stated in §7c.4 |
+| **`npm run release:gates`** (`--collect`) | A ~25-minute serial collection that would overwrite `docs/release-evidence.json`. **Not run**, and deliberately so: re-collecting is the **release owner's step at a quiescent, committed tree** — not a documentation act, and never something to run to make the current tree look green. *(This cell also gave "the working tree is uncommitted, so the next source edit would void the collection" as a reason. **That premise expired** when the snapshot `7335260` was committed before V-9 — corrected 2026-08-31 by the freeze audit, and the conclusion is unchanged. **A committed tree is not an instruction to collect:** the verdict is BLOCKED either way, so a fresh collection would restore the 16/1/7 rendering and change no gate's standing.)* | **The checked-in collection is NOT current-tree evidence.** It is bound to the superseded `431010ace1…` and every record is `[STALE]` — see §0 and §3.0. *(This row previously read "the checked-in artefact is already bound to this exact digest … re-collection would add nothing", and "the checked-in collection **is** current-tree evidence". Both were true on 2026-08-29 and false from the moment T1-04 moved the digest; they contradicted §3.0 of this same document. Corrected 2026-08-30.)* |
 | **Soak / shadow-agreement / invariant observation windows** | Require an operating fleet. Cannot be run here. **Must not be simulated** | Blocker **B-P** |
 | **Rollback rehearsal** | Requires a declared non-production environment and a named operator. **Must not be fabricated** | Blocker **B-O** |
 | ~~**`docs/runbooks/rollback.md` procedure vs the current API**~~ | **EXECUTED 2026-08-30 — closure item V-10.** No longer unverified | **Was UNKNOWN; now measured.** Five defects found and fixed, one of them permissive and fleet-wide. See §5's V-10 harness (15/15) and `PHASE_15_BLOCKERS.md` § *V-10* |
@@ -479,6 +481,172 @@ the act this programme forbids.
 `server.js:547` and `sockets/socket.server.js:184` call `processEnabled()` — the **process** half,
 not the per-shard binding — and `workers/coordinator.worker.js` reads neither. **V-10's finding
 stands exactly as recorded, and B1 item 5 is unchanged.**
+
+---
+
+## 7c. Closure item V-9 — the Phase 0–14 cross-phase re-verification, 2026-08-30
+
+**Executed for the first time.** V-9's trigger — *"run if the tree changes materially"* — had
+fired and the row had never been run. **Result: the scoped Phase 0–14 contracts hold on this
+tree. No regression. No code changed.**
+
+### 7c.1 How the scope was derived — not asserted
+
+The instruction V-9 carries is to scope to the surfaces whose subjects moved, **not** to run all
+22 historical harnesses. The scope was computed rather than judged:
+
+1. The changed application-source set was taken from `git diff --stat 67b7c7c 7335260` —
+   **11 files**: `server.js`, `cutover/rollbackPublisher.js` (comment only), the three new
+   `engine/fairness/` modules, `observability/metrics.js`, `supervision/expiryActions.js`,
+   `services/task.service.js`, `workers/fairness.worker.js`, `workers/leaderWorkers.js`,
+   `workers/registry.js`.
+2. For each of the **22** harnesses under `tools/verify/` that is not Phase 15's, the transitive
+   `require()` closure restricted to `Backend/{src,server.js}` was computed and intersected with
+   that set.
+3. **The schema diff was read, not assumed.** It is **purely additive**: one new table
+   (`LadderEscalation`) and one back-relation on `Leg`. **No column on any pre-existing table
+   changed**, so no Phase 0–14 harness's *subject table* moved. `Leg.slaDeadline` already
+   existed; T1-04 added its producer, not the column.
+
+| Harness | closure | changed modules in closure | In V-9 scope? |
+|---|---:|---:|---|
+| **`phase5ExpirySemantics.js`** | 70 | **5** — `expiryActions` + `leaderWorkers` **direct**, `fairness/ladder`, `fairness/operatorCapacity`, `registry` transitive | **YES — primary** |
+| **`phase9ProductionPath.js`** | 131 | **5** — all transitive via `src/app` (the real HTTP intake path): `task.service`, `metrics`, `ladder`, `operatorCapacity`, `registry` | **YES** |
+| **`phase14LiveDatabase.js`** | 37 | **3** — `task.service` **direct**, and it *calls* `admitToRound`, the changed function | **YES** |
+| **`phase11LiveDatabase.js`** | 10 | **1** — `observability/metrics` **direct** | **YES** |
+| `phase5LiveDatabase.js` | 14 | 0 | **YES — data-surface control.** Phase 5's other half; owns the I4 audit and the timer table that intake now populates |
+| `phase12LiveDatabase.js` · `phase12Profile.js` | 17 · 17 | 0 · 0 | **YES — data-surface control.** `invariantWorker.checkPass` evaluates **I4**, the invariant whose production population T1-04 changed |
+| `phase13LiveDatabase.js` | 38 | 0 | **YES — control.** The audit named "Phase 12–13"; leadership/reconciler over Legs |
+| `phase3` · `phase4` · `phase6` ×4 · `phase7` ×3 · `phase8` · `phase9LiveDatabase` · `phase10` ×2 · `phase13Profile` | — | **0 each** | **NO — 14 harnesses skipped.** No changed module anywhere in the closure **and** no changed table in the subject. Their subjects are commitment, dispatch, feasibility, energy, payload, privacy-free solve and the availability index, none of which the tree movement touched |
+
+### 7c.2 Database and environment
+
+**Cluster:** disposable **PostgreSQL 18.3**, `initdb` from the installed binaries into the session
+scratchpad, **port 55437**, `max_connections=200`, **destroyed after use** (`pg_ctl -m fast stop`,
+data directory removed, 0 listeners on 55437 confirmed). **Never Neon. Never the default 5432
+instance** — every harness refuses both by name and `Backend/.env`'s `DATABASE_URL` was overridden
+in the environment (`dotenv.config()` carries no `override`, so the ambient value wins).
+
+**Schema:** `npx prisma migrate deploy` from an **empty** database → **28 / 28 migrations applied,
+0 failed, 0 rolled back**, **76 base tables**. Each harness then ran against its own database
+cloned from that migrated template (`CREATE DATABASE … TEMPLATE`), so no harness inherited another's
+rows.
+
+### 7c.3 Harnesses executed — every one, with its exit code
+
+| Harness | Result | Exit |
+|---|---|---:|
+| `phase5ExpirySemantics.js` | **100 / 102** — 2 invalidated-premise FINDING checks, §7c.4 | 1 |
+| `phase5LiveDatabase.js` | **106 / 106** | 0 |
+| `phase9ProductionPath.js` | **7 / 7** (real app, real route, real DB) | 0 |
+| `phase11LiveDatabase.js` | **31 / 31** | 0 |
+| `phase12Profile.js` | **completed, no error** — drove `invariantWorker.checkPass` and `invariantChecker.checkOne` over 500 Legs / 500 agents | 0 |
+| `phase12LiveDatabase.js` | **NOT RUNNABLE — UNKNOWN.** Aborted at fixture check **T4** (*"no Mission row; seed the database first"*) before reaching any subject under test. **Blocked by a pre-existing seed defect, not by anything V-9 assesses** — §7c.5 | 1 |
+| `phase13LiveDatabase.js` | **73 / 73** | 0 |
+| | **315 / 317** across the five that report check counts | |
+| *`t104LadderLiveDatabase.js`* | ***72 / 72** — **corroboration, not V-9 scope.** Run only to discriminate §7c.4* | *0* |
+
+**Skipped — 14, each for the same measured reason:** `phase3LiveDatabase`, `phase4LiveDatabase`,
+`phase6AlphaProbe`, `phase6LiveDatabase`, `phase6NullTierProbe`, `phase6PlantedViolations`,
+`phase7ClosureProbe`, `phase7LiveDatabase`, `phase7SecurityClassProbe`, `phase8LiveDatabase`,
+`phase9LiveDatabase`, `phase10Oracle`, `phase10Profile`, `phase13Profile`. **Zero changed modules
+in the transitive closure and zero changed tables in the subject.** This is the "scope
+intelligently" instruction discharged by measurement; it is **not** a claim that they would fail.
+
+### 7c.4 The two failures — expected semantic change, NOT a regression
+
+Both are in `phase5ExpirySemantics.js`, and **both are FINDING assertions that pass by confirming
+a gap is still present** — the same construction as `phase15CurrentTree`'s G1/G2/G3. T1-04 closed
+the gap they assert, so they now fail *by design*:
+
+| Check | Asserts | Now |
+|---|---|---|
+| `:1101` — *"FINDING X1 — §17.4's escalation ladder (T1-04) has no implementation"* | `src/engine/fairness/` holds **0** modules | holds **3**. **X1/T1-04 is CLOSED**; this check asserts the state T1-04 was opened to end |
+| `:334` — *"QUEUED · ESCALATION_LADDER refuses by name"* | `lastOutcome === "LADDER_NOT_IMPLEMENTED"` | `LADDER_UNDETERMINED:LADDER_NOT_PUBLISHED` |
+
+**The second needed proof, not assertion, and it got it.** `LADDER_UNDETERMINED` could mean the
+shipped ladder is inert — a real regression. It is not. The single variable was isolated against
+the shipped `ladder.stepTableFrom`:
+
+```
+harness VALUES map: 28 entries · ladder.step_* entries in it: 0
+A. harness VALUES as-is             → ok=false
+     "ladder.step_1_widen_radius_fraction did not resolve to a finite number,
+      so §17.4 rung 1 (WIDEN_SEARCH_RADIUS) has no trigger."
+B. harness VALUES + the 8 register-published fractions
+                                    → ok=true, 8 rungs, [0.25,0.4,0.55,0.7,0.8,0.85,0.9,1]
+```
+
+The harness hand-builds its `VALUES` map and that map **predates T1-04's register entries**; the
+register publishes all 8 (`grep` confirms), and every register entry T1-04 added carries
+`changeClass: "POLICY"`. **Corroborated end to end:** `t104LadderLiveDatabase.js` drove the
+shipped ladder against the same cluster — rungs recorded, the three §21.4 SLIs derived from its
+own rows, `Leg.slaDeadline` written by the real `admitToRound`, the timer armed at rung 1's
+225 s of a 900 s budget — **72 / 72, exit 0**. **The ladder is not inert; the fixture is stale.**
+
+**The safety-critical half of that check still passed, and that is the load-bearing fact.** The
+two checks either side of `:334` — *"it does NOT read a missing ladder as an exhausted one — the
+Leg is not FAILED"* (`state=QUEUED`) and *"the deadline is re-armed rather than discharged (I4)"*
+(`timerState=PENDING attempts=1`) — **both passed**. The §4.4 `LADDER_EXHAUSTED → FAILED` row was
+not taken. The property Phase 5 wrote that check to protect is intact.
+
+**No code was changed, and the harness was deliberately NOT edited to make it green.** Flipping
+two FINDING assertions to their inverse would produce a green run and destroy the record of what
+they were asserting. V-9's instruction is explicit — *document an intentionally invalidated
+premise rather than force a false PASS* — and this section is that documentation. **What a future
+Phase 5 maintainer needs** (owned by Phase 5, not by Phase 15, and not done here): add the 8
+`ladder.step_*_fraction` entries to the harness's `VALUES` map, and rewrite `:334` and `:1101` to
+assert the post-T1-04 truth — that the ladder exists, resolves, and returns `STEP_AVAILABLE`.
+
+### 7c.5 One incidental defect — pre-existing, out of V-9's scope, NOT fixed
+
+`phase12LiveDatabase.js` could not be run, and the reason is a genuine defect that **V-9 did not
+cause and does not own**:
+
+> **`node prisma/seed.js` fails silently and exits 0.** It aborts inside `seedRegister`
+> (`config/service.js:598`) with `PrismaClientValidationError: Invalid value for argument
+> "changeClass". Expected ConfigChangeClass.` — **3 register entries carry
+> `changeClass: "OPERATIONAL"`** (`feasibility.negative_cache_ttl`, `link.min_quality`,
+> `reliability.max_intervention_rate`) and the `ConfigChangeClass` enum has **7 members, none of
+> them `OPERATIONAL`**. `main().catch(console.error)` swallows it, so the process **reports
+> success** having written **165 of 250** register entries and **0 Mission / 0 Shard / 0 Region /
+> 0 Agent**. A partial seed that exits 0 is worse than one that fails.
+
+**Proven pre-existing by construction, not assumed.** The `ConfigChangeClass` enum, the 3
+`OPERATIONAL` entries (8 occurrences) and `prisma/seed.js` are **byte-identical at `67b7c7c`**;
+`git diff 67b7c7c 7335260` touches none of them; `git log -S'"OPERATIONAL"'` dates it to
+**`cbe540e`, 2026-08-09** — three weeks before the tree movement V-9 exists to assess. Same
+inputs, same code, same enum ⇒ the seed failed identically before T1-04.
+
+**Not fixed here**, and deliberately: it is not a Phase 15 item, it moves no §24 gate, choosing
+between *"add `OPERATIONAL` to the enum"* and *"reclassify the 3 entries"* is a §22.1 register
+governance decision rather than a mechanical one, and **fabricating the missing `Mission` row to
+force `phase12LiveDatabase` green would have been manufacturing the fixture** — which V-9's own
+instructions forbid. Registered as **residual observation 8** in `PHASE_15_BLOCKERS.md`.
+`gate:params` does not catch it because it reads the register JSON, not the database.
+
+**Phase 12's surface is covered regardless:** `phase12Profile.js` exercised the same
+`invariantWorker.checkPass` / `invariantChecker.checkOne` path over 500 Legs against the live
+cluster and exited 0, and `phase12LiveDatabase`'s closure carries **zero** changed modules — it
+was a discretionary control, never a scope-derived requirement, so its `UNKNOWN` does not hold
+V-9 open.
+
+### 7c.6 What V-9 changed
+
+**Nothing.** No source, test, tool, threshold, gate, configuration, register entry or harness was
+modified. Measured after the run, not asserted:
+
+```
+git status --short   → (empty)
+sourceDigest()       → {"digest":"d033038cb261c3de0efe13796af9aa26d190ea113a5a2bfe5971480f72bdca00",
+                        "fileCount":573}
+```
+
+**Identical to the digest in every header of this document set.** **Mutation testing is therefore
+not owed** — V-6's requirement is per *implementation* pass, and V-9 wrote no implementation.
+
+**Conclusion: the current Phase 15 tree remains compatible with the affected Phase 0–14
+contracts. V-9 — CLOSED / VERIFIED.**
 
 ---
 

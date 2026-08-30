@@ -7,7 +7,19 @@
 > Blockers: **[`PHASE_15_BLOCKERS.md`](PHASE_15_BLOCKERS.md)**
 
 **Current tree (re-measured 2026-08-30):** digest `d033038cb261c3de…` (**573 files**) · **HEAD:**
-`67b7c7c` + uncommitted T1-04 / `Leg.slaDeadline` / V-10 work
+**`7335260`** — *the T1-04 / `Leg.slaDeadline` / V-10 work that every document below describes as
+"uncommitted at `67b7c7c`" was committed as a snapshot before V-9 ran. **The digest is unchanged at
+`d033038c…` / 573**, which is the binding fact: the tree's content did not move, only its git
+identity. **No application source is modified**; the only modified paths are the five canonical
+documents themselves, which `docs/` keeps outside the source-digest scope — re-measured
+2026-08-31 by the freeze audit.*
+
+**Re-assessed a fourth time 2026-08-30 — closure item V-9**, the Phase 0–14 cross-phase
+re-verification. **Executed for the first time. §A and §B did not move and the verdict is
+unchanged.** One row in §C moved: **V-9 GREEN**. 7 Phase 0–14 harnesses on a disposable
+PostgreSQL 18.3 cluster, **315 / 317 checks**, both failures being `phase5ExpirySemantics`
+FINDING assertions whose premise T1-04 deliberately invalidated. **No regression, no code
+changed, digest unmoved.** Full record: `PHASE_15_VERIFICATION_STATE.md` §7c.
 **Originally assessed:** 2026-08-29 · **Tree:** digest `431010ace188c4b1…` (565 files) · **HEAD:** `b68dc5d` — **superseded**
 **Re-assessed:** 2026-08-29 by the documentation-integrity audit. Every command below was
 re-executed and every exit code re-observed on the same digest. **The verdict did not change.**
@@ -142,11 +154,11 @@ corrected in place below and marked with what they used to say.
 | V-2 | Build gates green (excluding the B1 one) | **GREEN** | 7 of 8 PASS, **re-run 2026-08-30 after V-10**: `gate:tiers` 289 modules / 432 edges · `gate:params` 192 / 250 · `gate:tenets` 286 · `gate:privacy` 16 · `gate:erasure` 3 · `gate:legacy` 346 files · `gate:columngen` NOT_REQUIRED. `gate:composition` FAIL — **1 violation across 19 registered workers** (18 before T1-04's `fairness.worker`) | No | — |
 | V-3 | Live-database verification of Phase 15 contracts | **GREEN** | **167/167** across six harnesses on disposable PG 18.3 — the four Phase 15 (80), T1-04 (72), **V-10 (15)** | No | — |
 | V-4 | Migration chain applies from empty | **GREEN** | **28/28**, 0 failed, 0 rolled back (27 + T1-04's `LadderEscalation`, re-applied 2026-08-30 for V-10). *(Recorded as "29/29" until 2026-08-30. **The chain and the result are unchanged — only the count was wrong**: 27 + 1 = 28, and a direct re-count on 2026-08-30 returns 28 migration directories and 28 `migration.sql` files.)* | No | — |
-| **V-5** | Release evidence bound to the current digest | **RED — the collection has aged out** | The checked-in collection is bound to `431010ace1…` and produced `2026-08-29T06:28:45Z`; the tree is now `d033038c…` and every record is **`[STALE]`** (~126 000 s against an 86 400 s bound). `release:verdict` → **0 green, 17 red, 7 not evaluated** | **No — it changes no blocker.** The verdict was BLOCKED and still is; every RED is staleness, not a gate failing | **Release owner: run `npm run release:gates` at a quiescent, committed tree.** Not done here — it is a ~25-min collection that the next source edit would void, and the working tree is uncommitted |
+| **V-5** | Release evidence bound to the current digest | **RED — the collection has aged out** | The checked-in collection is bound to `431010ace1…` and produced `2026-08-29T06:28:45Z`; the tree is now `d033038c…` and every record is **`[STALE]`** (~126 000 s against an 86 400 s bound). `release:verdict` → **0 green, 17 red, 7 not evaluated** | **No — it changes no blocker.** The verdict was BLOCKED and still is; every RED is staleness, not a gate failing | **Release owner: run `npm run release:gates` at a quiescent, committed tree.** Not done here, and **not by any subsequent pass** — it is a ~25-min collection, it is the release owner's step rather than a documentation act, and **the verdict is BLOCKED either way**: re-collecting changes the rendering, not the outcome. *(This cell also gave "the working tree is uncommitted" as a reason. **That premise expired** when the snapshot `7335260` was committed before V-9 — corrected 2026-08-31 by the freeze audit. **The conclusion is unchanged, and a committed tree is not an instruction to collect**: `engine_decision_path_wired` is RED on its own merits and the 7 `NOT_EVALUATED` rows have nothing filed, so a fresh collection would render 16/1/7 and still read BLOCKED.)* |
 | V-6 | Mutation testing on the current tree | **PARTIAL** | **V-10's three mutants: 3 built, 3 killed**, tree restored and the restoration byte-verified (`PHASE_15_VERIFICATION_STATE.md` §7a). The rest of the tree is unmeasured | No | Re-run per implementation pass, as V-10 did |
 | V-7 | Exhaustive TLC model checking | **NOT EVALUATED** — B-M evidence state **NOT MEASURED / OPEN** | `tla2tools.jar` absent, so not runnable here. `lifecycle.tla` never run under TLC at any capacity; two `commitment.tla` runs recorded 2026-08-15 (TLA+ 1.8.0) against a different tree — historical, not a discharge | **YES — B-M** | Provision, run all six as checked in, **record the provenance** (`B1_EXTERNAL_INPUT_HANDOFF.md` §7.3a), release owner accepts (§7.6) |
 | V-8 | Production observation windows (soak / shadow / invariants / fidelity) | **NOT EVALUATED** | Require an operating fleet | **YES — B-P** | Operate the fleet. **Never simulate** |
-| **V-9** | Phase 0–14 cross-phase re-verification | **NOT EVALUATED — and its trigger HAS FIRED** | `npm test` covers the suites, not the per-phase live-DB harnesses. **The trigger below is satisfied on this tree:** T1-04 and the `Leg.slaDeadline` producer changed `src/engine/supervision/expiryActions.js` (+153 — `attemptTransition` gained `deadlineSecondsOverride`, `escalationLadder` gained four verdicts), `src/workers/leaderWorkers.js` (+68), `src/services/task.service.js` (+187), `src/engine/observability/metrics.js` (+123), `prisma/schema.prisma` (+103) and added migration 28. **`tools/verify/phase5ExpirySemantics.js` requires the first two of those modules directly** (`:28`, `:31`) and has not been re-run. The archived claim this row rested on — *"Phases 0–14, schema and migration history untouched"* — is false on this tree | No | **REPOSITORY-OWNED AND ACTIONABLE — unrun, result UNKNOWN.** Run the harnesses whose subjects moved (Phase 5; the Phase 9 / 12–13 harnesses over the intake path and the SLIs) on a disposable cluster. **Not all of 0–14**, and **not a blocker**: it moves no gate and not the verdict *(this row previously read only "Run if the tree changes materially", and the verdict block below asserted V-9 "has no trigger" — corrected by the final closure audit, 2026-08-30)* |
+| **V-9** | Phase 0–14 cross-phase re-verification | **GREEN — executed 2026-08-30. CLOSED / VERIFIED** | **Scope derived, not asserted:** the transitive `require()` closure of all **22** Phase 0–14 harnesses was intersected with the **11** changed application-source files. **4 harnesses carry a changed module in their closure** (`phase5ExpirySemantics` 5, `phase9ProductionPath` 5, `phase14LiveDatabase` 3, `phase11LiveDatabase` 1); the other 18 carry **zero**. **7 harnesses executed** on disposable PostgreSQL 18.3 (port 55437, 28/28 migrations from empty, destroyed after use): **315 / 317 checks passed**. The **2 failures are both `phase5ExpirySemantics` FINDING assertions whose premise T1-04 deliberately invalidated** — they assert the ladder does *not* exist — and **neither is a regression**: proven by isolating the single variable (`stepTableFrom(harness VALUES)` → `ok=false`; the same map **plus the 8 register-published rung fractions** → `ok=true`, 8 strictly increasing rungs), and corroborated by `verify:t104` **72/72** live. **No regression found. No code changed** — digest still `d033038c…` / 573, working tree clean. Full record: `PHASE_15_VERIFICATION_STATE.md` **§7c** | No | **none — CLOSED.** *(This row previously read "NOT EVALUATED — and its trigger HAS FIRED … unrun, result UNKNOWN". The trigger did fire; the answer is now measured.)* V-9 surfaced one **incidental, pre-existing, out-of-scope** defect — `prisma/seed.js` silently partial-seeds and exits 0 — registered as residual observation **8** in `PHASE_15_BLOCKERS.md`. It is **not** a Phase 15 item and moves no gate |
 | **V-10** | `docs/runbooks/rollback.md` procedure executed against the current API | **GREEN — executed 2026-08-30** | Traced §0–§6 against the current API; **5 defects found and fixed**, one permissive and fleet-wide. 7 tests, 3 mutants/3 killed, **15/15 on live PostgreSQL** (`npm run verify:v10`). Full record: `PHASE_15_BLOCKERS.md` § **V-10** | No | none. **The structural exposure it sat on — P15-F7a, nothing binds a runbook to its API — is unchanged and still open**; `rollback.md` §7 now records the date of the last trace |
 
 ---
@@ -195,28 +207,41 @@ Repository-owned AND actionable
   BLOCKERS:                             0   — A9 is repository-owned but deferred to Phase 8.
                                             No blocker is repository-owned and actionable.
   IMPLEMENTATION DEFECTS:               0   — none found by the final closure audit.
-  VERIFICATION ROWS:                    1   — V-9. NOT external, NOT a blocker, NOT code.
-                                            Its trigger ("the tree changes materially") is
-                                            SATISFIED: T1-04 changed expiryActions.js,
-                                            leaderWorkers.js, task.service.js, metrics.js,
-                                            schema.prisma and added migration 28, and
-                                            tools/verify/phase5ExpirySemantics.js requires
-                                            two of those modules directly. Unrun; result
-                                            UNKNOWN. It moves no gate and not the verdict.
-                                            (This block previously read "Repository-owned
-                                            AND actionable: 0 … V-9 has no trigger" and
-                                            claimed §C held NO row this repository can
-                                            close by itself. Corrected by the final
-                                            closure audit, 2026-08-30.)
-                                            V-10 was the previous such row and it CLOSED
-                                            2026-08-30. It was never a blocker and closing
-                                            it moved no gate — which is the third time in
-                                            three passes that the next genuine item was
-                                            not in the blocker table at all. V-9 is the
-                                            fourth. V-5 is the release owner's evidence
+  VERIFICATION ROWS:                    0   — V-9 CLOSED 2026-08-30. It was the last §C row
+                                            this repository could close by itself, and it
+                                            is now measured rather than UNKNOWN: 7 Phase
+                                            0-14 harnesses on a disposable cluster,
+                                            315/317, no regression, no code changed.
+                                            (This block previously read "VERIFICATION
+                                            ROWS: 1 — V-9 … Unrun; result UNKNOWN", and
+                                            before that "0 … V-9 has no trigger". The
+                                            trigger fired, the row was run, and it closed.)
+                                            V-5 is the release owner's evidence
                                             re-collection, V-7 is B-M (jar + compute),
                                             V-8 is B-P (operating fleet), V-6 has no pass
-                                            to attach to. Re-derive this; do not inherit it.
+                                            to attach to — four external rows and no
+                                            internal one. Re-derive this; do not inherit it.
+
+  CAUTION — this count is Phase-15-scoped, and V-9 demonstrated the limit of that.
+                                            V-9 executed cleanly AND surfaced a genuine
+                                            repository-owned actionable defect that is
+                                            NOT Phase 15's and NOT in any register above:
+                                            prisma/seed.js swallows its own failure and
+                                            exits 0 after seeding 165 of 250 register
+                                            entries and none of the domain fixtures,
+                                            because 3 entries carry changeClass
+                                            "OPERATIONAL" and the ConfigChangeClass enum
+                                            has no such member. Pre-existing since
+                                            cbe540e (2026-08-09) — proven, not assumed:
+                                            the enum, the 3 entries and seed.js are all
+                                            byte-identical at 67b7c7c. It blocks
+                                            phase12LiveDatabase.js from running on an
+                                            empty cluster. Registered as residual
+                                            observation 8. "0 repository-owned actionable"
+                                            above means PHASE 15 items; it has never meant
+                                            the repository is defect-free, and this is the
+                                            fourth pass running in which the next genuine
+                                            item was outside the blocker table.
 
 Evidence currency (measured 2026-08-30):    docs/release-evidence.json is STALE and bound to
                                             a superseded digest, so release:verdict reads

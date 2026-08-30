@@ -6,8 +6,10 @@
 > Evidence for every "last verified" line below: [`PHASE_15_VERIFICATION_STATE.md`](PHASE_15_VERIFICATION_STATE.md).
 
 **Last verified:** **2026-08-30** · **Tree:** digest `d033038cb261c3de…` (**573 files**), HEAD
-`67b7c7c` + uncommitted T1-04 / `Leg.slaDeadline` / V-10 work
-*(Previously 2026-08-29 at `431010ace188c4b1…` / 565 files / HEAD `b68dc5d` — superseded.)*
+**`7335260`** — the T1-04 / `Leg.slaDeadline` / V-10 work was **committed as a snapshot** before V-9
+ran, and **the digest did not move**. *(This line read "HEAD `67b7c7c` + uncommitted …", which
+describes the same content under its previous git identity; corrected 2026-08-31 by the freeze
+audit. Previously 2026-08-29 at `431010ace188c4b1…` / 565 files / HEAD `b68dc5d` — superseded.)*
 **Re-verified 2026-08-29** by the documentation-integrity audit: every blocker below re-derived from
 the current repository; blocker count and classifications unchanged. The audit added the
 § *Cross-phase documentation discrepancies* register at the end and found **no new blocker**.
@@ -44,9 +46,17 @@ the current repository; blocker count and classifications unchanged. The audit a
 | **1** | REPOSITORY-OWNED but correctly deferred to another phase (A9) |
 | **0** | NOT EVALUATED |
 
-Plus **6 residual in-repository observations** — reported, not fixed, none permissive
-*(was 7; observation 2 was discharged by closure item **V-10** on 2026-08-30)*. They are listed at
-the end and are **not** counted as blockers.
+Plus **7 residual in-repository observations** — reported, not fixed, none permissive
+*(was 6; observation 2 was discharged by **V-10** and **observation 8 was added by V-9** on
+2026-08-30 — a pre-existing silent-partial-seed defect that is not Phase 15's)*. They are listed
+at the end and are **not** counted as blockers.
+
+> **Updated 2026-08-30 by closure item V-9** — the Phase 0–14 cross-phase re-verification,
+> executed for the first time. **No blocker moved, no classification changed, and no new blocker
+> was found.** 7 Phase 0–14 harnesses on a disposable cluster, **315/317**, both failures being
+> `phase5ExpirySemantics` FINDING assertions whose premise T1-04 deliberately invalidated. **No
+> code was changed and the digest is unmoved.** What moved: a new closed section, § *V-9*, and
+> **residual observation 8**. Full record: `PHASE_15_VERIFICATION_STATE.md` §7c.
 
 **Standing rule for this register.** A blocker is not re-opened because an archived report carries
 an older classification, and not closed because an archived report says "FIXED". Each entry below
@@ -589,6 +599,64 @@ corrected, and the corrected procedure executed against a real database.
 
 ---
 
+## V-9 — the Phase 0–14 cross-phase re-verification (CLOSED 2026-08-30)
+
+**Status:** **CLOSED — executed, no regression found, no code changed**
+**Classification:** REPOSITORY-OWNED · **was the last Phase-15-owned closure-checklist row that
+was actionable in this repository and had never been executed** — the successor to V-10, and the
+fourth pass running in which the next genuine item was **not in this blocker table**
+**Owner:** Phase 15 · **Executed:** 2026-08-30 at digest `d033038c…` (573 files)
+
+**What V-9 was.** `PHASE_15_CLOSURE_CHECKLIST.md` §C row **V-9** — *"Phase 0–14 cross-phase
+re-verification"* — stood at `NOT EVALUATED`, blocking **No**, result **UNKNOWN**, with its
+trigger (*"run if the tree changes materially"*) **already fired**: T1-04 and the `Leg.slaDeadline`
+producer changed `expiryActions.js` (+153), `leaderWorkers.js` (+68), `task.service.js` (+187),
+`metrics.js` (+123), `schema.prisma` (+103) and added migration 28 — and
+`tools/verify/phase5ExpirySemantics.js` requires the first two directly.
+
+**Scope was derived, not judged.** The transitive `require()` closure of all **22** Phase 0–14
+harnesses was intersected with the **11** changed application-source files. **4 carry a changed
+module** (`phase5ExpirySemantics` 5, `phase9ProductionPath` 5, `phase14LiveDatabase` 3,
+`phase11LiveDatabase` 1); **18 carry none**. The schema diff was read and is **purely additive** —
+one new table, one back-relation, **no pre-existing column altered** — so no Phase 0–14 subject
+table moved. **7 harnesses were run; 14 were skipped with that measurement as the reason.**
+
+**Result: 315 / 317 checks on disposable PostgreSQL 18.3.** `phase5LiveDatabase` 106/106 ·
+`phase13LiveDatabase` 73/73 · `phase11LiveDatabase` 31/31 · `phase9ProductionPath` 7/7 ·
+`phase12Profile` completed clean · `phase5ExpirySemantics` **100/102**.
+
+**The 2 failures are not defects, and this was proven rather than argued.** Both are
+`phase5ExpirySemantics` **FINDING assertions** — checks that pass by confirming a gap is still
+open — and the gap they assert is *"§17.4's escalation ladder has no implementation"*, which
+**X1/T1-04 closed on this same tree**. The subtler of the two returned
+`LADDER_UNDETERMINED:LADDER_NOT_PUBLISHED`, which could have meant the shipped ladder was inert.
+It does not: the harness's hand-built `VALUES` map carries **0** of the 8 `ladder.step_*_fraction`
+entries T1-04 registered, and feeding the shipped `stepTableFrom` that same map **plus the
+register's own fractions** flips it from `ok=false` to `ok=true` with 8 strictly increasing
+rungs. `verify:t104` corroborated end to end at **72/72** on the same cluster. **The
+`LADDER_EXHAUSTED → FAILED` row was not taken and the deadline was re-armed** — the property those
+checks exist to protect held.
+
+**What V-9 did NOT do:** it did not edit the two stale assertions to make the run green (that
+would have destroyed the record of what they asserted), did not fabricate the `Mission` row that
+would have let `phase12LiveDatabase` run, did not touch a gate, threshold, test or configuration,
+and did not re-collect release evidence. **`git status` is empty and the digest is unmoved at
+`d033038c…` / 573** — so **no mutation testing was owed**, V-6 being a per-*implementation*-pass
+requirement.
+
+**Two items are handed on, neither of them Phase 15's:**
+1. **Phase 5 owns its own harness's staleness** — `phase5ExpirySemantics.js:334` and `:1101`
+   assert a pre-T1-04 world. What to change is written out in
+   `PHASE_15_VERIFICATION_STATE.md` §7c.4. Not done here.
+2. **A pre-existing seed defect**, found incidentally and registered as **residual observation 8**
+   below. It is repository-owned and actionable and it is **not a Phase 15 item**.
+
+**Closure condition (met):** the harnesses whose subjects moved were identified by measurement,
+executed against a disposable live database, and every failure classified as regression or
+expected semantic change on evidence. **V-9 — CLOSED / VERIFIED.**
+
+---
+
 ## Residual in-repository observations — reported, not fixed, none permissive
 
 These are **not blockers**. They are carried forward so a future pass inherits named gaps instead of
@@ -602,6 +670,7 @@ rediscovering them. Each was re-confirmed present on 2026-08-29.
 | 4 | **`gates.blockers()` ignores `unknownEvidence`.** Evidence filed against an unknown gate id never appears as a blocker | `src/engine/cutover/gates.js` — `blockers()` filters `results` only | `evaluate()` does fold it into `ok`, and `verdict.js` prints it |
 | 5 | **The evidence schema cannot distinguish a gate that failed from a gate that never ran** | Discovered when a gate process failed to start (`0xC0000142 STATUS_DLL_INIT_FAILED`) and the collection was discarded rather than reported | Detected in practice; the affected collection was voided, not published |
 | 6 | **The register accessor is injected**, and pass 2's **X-C1** / **X-C2** | Archived third-pass report §33.3, probe 12d | Carried forward, none permissive |
+| 8 | **`prisma/seed.js` fails silently and exits 0 — a partial seed reported as success.** It aborts inside `seedRegister` with `Invalid value for argument "changeClass". Expected ConfigChangeClass`: **3 register entries carry `changeClass: "OPERATIONAL"`** (`feasibility.negative_cache_ttl`, `link.min_quality`, `reliability.max_intervention_rate`) and the enum has **7 members, none of them `OPERATIONAL`**. `main().catch(console.error)` swallows it, so the process **exits 0** having written **165 of 250** register entries and **0 Mission / 0 Shard / 0 Region / 0 Agent**. **Found by V-9 on 2026-08-30**, as the reason `phase12LiveDatabase.js` could not run from an empty cluster | Measured on the disposable cluster: `SELECT count(*)` → `ParameterRegisterEntry` 165, `Mission` 0, `Shard` 0, `Region` 0. **Proven pre-existing by construction:** the enum, the 3 entries and `seed.js` are **byte-identical at `67b7c7c`**, the T1-04 diff touches none of them, and `git log -S'"OPERATIONAL"'` dates it to **`cbe540e`, 2026-08-09** | **Not permissive, and NOT Phase 15's** — it predates the tree movement V-9 assesses by three weeks, moves **no §24 gate**, and affects only a development/verification fixture path. It **is** repository-owned and actionable, and is recorded here rather than fixed because the choice between *"add `OPERATIONAL` to `ConfigChangeClass`"* and *"reclassify the 3 entries"* is a **§22.1 register governance decision**, not a mechanical one. `gate:params` does not catch it because it reads the register JSON, never the database. **Do not fabricate the missing `Mission` row to make `phase12LiveDatabase` green** |
 | 7 | **CI does not run `gate:composition`** — CI is green on a tree where a blocking §24 gate is RED | `.github/workflows/ci.yml` — 7 gate steps, no `gate:composition`; the workflow header enumerates exactly **two** deliberate absences (`gate:calibration`, `safety:case`) and this is not one of them, so **no reason is recorded**. `npm run gates` runs 8 and exits 1; CI runs 7 of those 8 and exits 0, and the omitted one is the only one that fails | The gate is authoritative via `npm run gates` and `release:verdict`; CI is not the §24 authority. **Recorded by the consolidation; extended by the 2026-08-29 audit**, which additionally found that `gate:columngen` is pull-request-only (a push runs 6 gate steps) and that `ARCHITECTURE.md` §9.1 and `ROBOTX_SYSTEM_HANDBOOK.md` §42 both described CI as running the complete gate set. Those two prose statements were corrected; **CI itself was not changed** — that is a code change and is out of scope for a documentation pass |
 
 ---

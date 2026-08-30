@@ -6,18 +6,26 @@
 > This document answers *what exists*. It does **not** answer *what is proven* — that is
 > [`PHASE_15_VERIFICATION_STATE.md`](PHASE_15_VERIFICATION_STATE.md).
 
-**Current tree:** **2026-08-30** · **HEAD** `67b7c7c` + uncommitted T1-04 / `Leg.slaDeadline` /
-V-10 work · **digest `d033038cb261c3de…` (573 files)**
+**Current tree:** **2026-08-30** · **HEAD** **`7335260`**, **no application source modified** (the
+only modified paths are these five canonical documents, which `docs/` keeps outside the digest
+scope) — T1-04, the
+`Leg.slaDeadline` producer and V-10 were committed as a snapshot before closure item V-9 ran ·
+**digest `d033038cb261c3de…` (573 files) — unchanged by that commit and unchanged by V-9, which
+wrote no code**
 **Originally measured:** 2026-08-29 · HEAD `b68dc5d` · digest `431010ace188c4b1…` (565 files) — **superseded**
 **Re-verified:** 2026-08-29 by the documentation-integrity audit, on that digest;
 **re-measured 2026-08-30** by the post-V-10 current-state audit, on this one.
 Every path below was confirmed to exist (or confirmed absent) by direct filesystem inspection on
 that tree.
 
-> **Current tree: digest `d033038cb261c3de…` (573 files), HEAD `67b7c7c`, 2026-08-30.** T1-04, the
-> `Leg.slaDeadline` producer and closure item V-10 have all landed uncommitted since the
-> measurement above, so **the header's `b68dc5d` / `431010ace1…` / 565 describe a superseded
-> tree**. Counts corrected in place, each re-measured 2026-08-30 against `d033038c…`:
+> **Current tree: digest `d033038cb261c3de…` (573 files), HEAD `7335260`, 2026-08-30.** T1-04, the
+> `Leg.slaDeadline` producer and closure item V-10 all landed after the "originally measured"
+> line above and were **committed as the snapshot `7335260`** before V-9 ran, so **the
+> `b68dc5d` / `431010ace1…` / 565 line describes a superseded tree**. *(This block opened
+> "HEAD `67b7c7c` … have all landed uncommitted", which contradicted this document's own header;
+> corrected 2026-08-31 by the freeze audit. `67b7c7c` is `7335260`'s parent and carries the same
+> digest-scope content.)* Counts corrected in place, each re-measured 2026-08-30 against
+> `d033038c…`:
 >
 > - the registry registers **19** workers, not 18 (T1-04 added `fairness.worker.js`), which starts
 >   at boot — so `SCHEDULED` is **9** and **12 of 19** workers start, not 11 of 18;
@@ -345,7 +353,27 @@ which its own parenthetical refutes; the 29 was wrong wherever it appeared.*
 **Every one refuses to run against Neon or a default-port (5432) instance by name.** They require a
 disposable cluster. Applying all **28** migrations to an empty database yields the Phase 15 74 domain
 tables plus `LadderEscalation`, plus `_prisma_migrations` — re-applied from empty on 2026-08-30
-for V-10 (`prisma migrate deploy`, *"All migrations have been successfully applied"*).
+for V-10 (`prisma migrate deploy`, *"All migrations have been successfully applied"*), and **again
+from empty on 2026-08-30 for V-9: 28/28 applied, 0 failed, 0 rolled back, 76 base tables.**
+
+### The Phase 0–14 harnesses — 22 more, and what V-9 established about them
+
+`tools/verify/` holds **28** harnesses in total: the six above, plus **22 belonging to Phases
+3–14**. They are not Phase 15's, but Phase 15's tree movement is what put them back in question,
+and **closure item V-9 answered that on 2026-08-30**:
+
+- **4 of the 22 carry a changed module in their transitive `require()` closure** —
+  `phase5ExpirySemantics` (5, two of them direct), `phase9ProductionPath` (5, all via the real
+  HTTP intake path), `phase14LiveDatabase` (3, and it calls the changed `admitToRound`),
+  `phase11LiveDatabase` (1, `observability/metrics`). **The other 18 carry none.**
+- **7 were executed** on a disposable PostgreSQL 18.3 cluster: **315 / 317 checks**. The 2
+  failures are `phase5ExpirySemantics` **FINDING assertions** that §17.4's ladder does not
+  exist — which **T1-04 deliberately made false** — and neither is a regression.
+- **`phase12LiveDatabase.js` cannot run from an empty cluster**, and not for a Phase 15 reason:
+  `prisma/seed.js` aborts silently and exits 0 (residual observation 8), so no `Mission` row is
+  ever created. **Pre-existing since 2026-08-09, proven by construction.**
+
+Full scope table, exit codes and classifications: `PHASE_15_VERIFICATION_STATE.md` **§7c**.
 
 ---
 
