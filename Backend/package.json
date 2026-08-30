@@ -30,7 +30,9 @@
     "test:legacy": "jest --runInBand --forceExit --selectProjects legacy",
     "test:scale": "jest --runInBand --forceExit --selectProjects scale",
     "test:watch": "jest --runInBand --watch",
-    "verify": "npm run gates && npm test"
+    "verify": "npm run gates && npm test",
+    "verify:t104": "node tools/verify/t104LadderLiveDatabase.js",
+    "verify:v10": "node tools/verify/v10RollbackRunbook.js"
   },
   "keywords": [],
   "author": "",

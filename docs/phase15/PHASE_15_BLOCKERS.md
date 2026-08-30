@@ -5,25 +5,48 @@
 > Current source of truth for navigation and verdict: **[`PHASE_15_MASTER.md`](PHASE_15_MASTER.md)**.
 > Evidence for every "last verified" line below: [`PHASE_15_VERIFICATION_STATE.md`](PHASE_15_VERIFICATION_STATE.md).
 
-**Last verified:** 2026-08-29 · **Tree:** digest `431010ace188c4b1…` (565 files), HEAD `b68dc5d`
+**Last verified:** **2026-08-30** · **Tree:** digest `d033038cb261c3de…` (**573 files**), HEAD
+`67b7c7c` + uncommitted T1-04 / `Leg.slaDeadline` / V-10 work
+*(Previously 2026-08-29 at `431010ace188c4b1…` / 565 files / HEAD `b68dc5d` — superseded.)*
 **Re-verified 2026-08-29** by the documentation-integrity audit: every blocker below re-derived from
 the current repository; blocker count and classifications unchanged. The audit added the
 § *Cross-phase documentation discrepancies* register at the end and found **no new blocker**.
+
+> **Updated 2026-08-30 by closure item V-10** (tree now digest `d033038c…`, 573 files). **The
+> blocker count and every classification are unchanged.** What moved:
+> - **B1 gained a fifth item of required engineering work** — the coordinator does not read the
+>   per-shard cutover switch, so a Rollback A does not stop a running coordinator. Filed, not
+>   implemented; see B1 item 5.
+> - **Residual observation 2 is discharged** — the rollback runbook has now been executed
+>   against the current API. Observation 1 (**P15-F7a**) is unchanged and still open.
+> - **A new closed section, § *V-10*,** records the five defects it found.
+> - **`release-evidence.json` has aged out.** `release:verdict` now reports 0 green / 17 red /
+>   7 not evaluated — every RED for `[STALE]`, not for a gate failing. No blocker moves; the
+>   verdict was and is BLOCKED. See `PHASE_15_VERIFICATION_STATE.md` §3.0.
+>
+> **Re-audited 2026-08-30, after V-10 closed** — every blocker below re-derived from the current
+> tree (digest `d033038c…`, 573 files; `gate:composition` exit 1 at **19** registered workers;
+> `release:verdict` exit 1 at 0/17/7). **The blocker count is still 7, every classification is
+> unchanged, 0 are repository-owned and actionable, and no new blocker was found.** The audit
+> corrected stale *numbers* in this register — the worker count in B1's evidence, and rows C1, C3
+> and C7 of the cross-phase table — and **changed no finding, no severity and no owner.** In
+> particular **nothing in § *V-10* was altered**: its five findings stand exactly as recorded.
 
 ## Summary
 
 | Count | |
 |---:|---|
-| **8** | Open blockers |
+| **7** | Open blockers — **was 8; X1/T1-04 closed 2026-08-30** |
 | **0** | REPOSITORY-OWNED and actionable |
 | **2** | EXTERNAL (B1, B8) |
-| **2** | SPECIFICATION / ADR (X3, X1/T1-04) |
+| **1** | SPECIFICATION / ADR (X3) — X1/T1-04 was the second and is now closed |
 | **3** | EVIDENCE / OPERATIONS (B-P, B-O, B-M) |
 | **1** | REPOSITORY-OWNED but correctly deferred to another phase (A9) |
 | **0** | NOT EVALUATED |
 
-Plus **7 residual in-repository observations** — reported, not fixed, none permissive. They are
-listed at the end and are **not** counted as blockers.
+Plus **6 residual in-repository observations** — reported, not fixed, none permissive
+*(was 7; observation 2 was discharged by closure item **V-10** on 2026-08-30)*. They are listed at
+the end and are **not** counted as blockers.
 
 **Standing rule for this register.** A blocker is not re-opened because an archived report carries
 an older classification, and not closed because an archived report says "FIXED". Each entry below
@@ -42,8 +65,10 @@ re-confirmed EXTERNAL by every pass since.
 **Last verified:** 2026-08-29
 
 **Current evidence:**
-- `npm run gate:composition` → exit **1**, 1 violation of 18 workers: `coordinator`
-  `[LEADER_ONLY_NOT_COMPOSABLE]`, owner declared **EXTERNAL** by the gate itself.
+- `npm run gate:composition` → exit **1**, **1 violation across 19 registered workers**:
+  `coordinator` `[LEADER_ONLY_NOT_COMPOSABLE]`, owner declared **EXTERNAL** by the gate itself.
+  *(Re-run 2026-08-30. Was "1 violation of 18"; T1-04 added a 19th worker and **the violation
+  count did not move**.)*
 - `npm run release:verdict` → §24 gate `engine_decision_path_wired` **RED**.
 - `npm run routing:readiness` → `OVERALL: BLOCKED`; D1, D3, D8 each BLOCKED; Steps 1, 3, 4, 5
   BLOCKED; Step 2 PASS.
@@ -74,17 +99,31 @@ benchmark evidence and written into an ADR. Step 3 evidence cannot be produced b
 (deploy each candidate against the target region extract, build per-profile contraction hierarchies)
 requires a region that does not exist.
 
-**Required external input:**
+**Required external input.** The field-by-field requirements, per-field ownership and evidence, the
+operator deployment-module contract and B1's execution order are in
+**[`B1_EXTERNAL_INPUT_HANDOFF.md`](B1_EXTERNAL_INPUT_HANDOFF.md)** — the single operational handoff
+for this blocker. Summary only below.
 
 | | Owner | What is missing |
 |---|---|---|
-| **D1** | Operations + Commercial | The authoritative operating region: `regionId` + `name`, `kind`, the serviceable boundary as GeoJSON Polygon/MultiPolygon in **WGS-84 `[lon, lat]`**, the CRS, and a version label with a date |
+| **D1** | Operations + Commercial | **Partially answered 2026-08-30 — still BLOCKED.** The owner has declared two independent campus regions with `regionId`, `name`, `kind: CAMPUS`, `crs: OGC:CRS84`, version + date, and an adopted boundary feature each; JSSATE's geometry is pinned as an external snapshot. **Still missing:** the RNSIT snapshot artefact, the cell cover (see below), and every governance record — no approval, no Commercial confirmation, no Architecture approval exists. Full record: [`B1_EXTERNAL_INPUT_HANDOFF.md`](B1_EXTERNAL_INPUT_HANDOFF.md) §1.8 |
 | **D3** | Product + Fleet Engineering | The agent classes this deployment operates and, per distinct mobility model, §2.2's six elements with a real speed model over `roadClass`, `gradient`, `surface`, `payloadMass`, `congestion`, `weather` |
 | **D8** | Operations | Extract identity, source, vintage (ISO date, never a file timestamp), refresh cadence, re-contraction downtime budget, **plus `extract.bbox` and `extract.marginDegrees`** (read by validator V-13) |
 
 D1 additionally releases: the cell cover (Engineering), the charger catalogue (Ops / Charging — now
 required, not optional), V-11 disjointness, V-12 containment, V-13 margin, D2's residual (N23), and
 `projectCell()` (N27).
+
+**D1's live sub-blocker since 2026-08-30 is architectural, not a missing input.** The approved
+JSSATE boundary is ≈0.1022 km² against a ≈0.7373 km² H3 res-8 cell, so standard `polygonToCells`
+returns **zero** fine cells and **V-8 fires** — and `cover.cardinalityException` cannot rescue it,
+because that exception is read only inside the V-9 branch. The owner has **refused** both
+over-assigning containment modes (`containmentOverlapping`, `containmentOverlappingBbox`) and has
+escalated the coverage-semantics question, but **the escalation target is NOT DEFINED**: RobotX has
+no separate Architecture, Commercial or approval authority, and none may be invented or inferred.
+So D1 is currently blocked on a **governance vacuum**. Measurements, refusals and consequences:
+[`B1_EXTERNAL_INPUT_HANDOFF.md`](B1_EXTERNAL_INPUT_HANDOFF.md) §1.8.3–§1.8.5. **D3 and B-M are not
+behind this escalation.**
 
 **Required engineering work after the dependency arrives:**
 1. B1 Steps 1, 3, 4 — deploy, benchmark, record.
@@ -94,6 +133,28 @@ required, not optional), V-11 disjointness, V-12 containment, V-13 margin, D2's 
 4. Composition-root construction at `server.js`: `evaluateExact`, `pricedCandidateFor`,
    `hopsForSequence`, plus the routing client and charger precompute trigger. **Estimate as
    composition-root work, not adapter wiring.**
+5. **NEW, added by V-10 on 2026-08-30 — the coordinator does not read the per-shard cutover
+   switch, so a Rollback A does not stop a running coordinator.** Measured on the current tree:
+   `cutover.engine_enabled` (via `cutover/enabled.js`) has exactly **four** production consumers
+   — `services/task.service.js` (intake, 503 `ENGINE_NOT_LIVE`), `cutover/agentGate.js` (all five
+   socket handlers), `controllers/health.controller.js` (reporting) and `cutover/store.liveShards()`
+   (the guardrail controller's own enumeration). **`workers/coordinator.worker.js` is not among
+   them**: `runRound()` takes no configuration snapshot and asks no cutover question, and
+   `server.js` gates the coordinator lifecycle on `ENGINE_ENABLED` — the *process* half — only.
+   So Rollback A stops new work **entering** a shard and does not stop a coordinator already
+   draining that shard's `WorkQueue`.
+
+   **It is filed here, under B1, and deliberately not implemented.** The gate needs a
+   configuration snapshot injected into a worker that **cannot be composed at all** until B1
+   selects an engine. Writing it now would produce a guard whose only caller does not exist —
+   the defect class this register was created to stop (Phase 14 wrote nine such guards, tested
+   all, called none), and the same reasoning that keeps **A9** deferred. `docs/runbooks/rollback.md`
+   §2 now states plainly that the stand-down is not enforced by configuration, instead of
+   promising it.
+
+   *It is invisible today rather than harmless: no coordinator runs, because `leaderWorkers`
+   refuses to compose one. The two states are indistinguishable in this deployment, which is
+   exactly why five passes did not notice.*
 
 **Do not:**
 - Select, rank, recommend or hint at an engine. `b1Readiness.js` explicitly refuses to, and so must you.
@@ -118,9 +179,19 @@ written; the routing client and composition root built; `gate:composition` exits
 **First discovered:** 2026-08-08 · **Last verified:** 2026-08-29
 
 **Current evidence:** `npm run gate:calibration` → exit **1**, `FAIL — 39 blocking finding(s)`.
-242 registered entries: **52 DERIVED, 152 PROVISIONAL, 38 UNCALIBRATED; 54 Safety-class.**
+**250 registered entries: 52 DERIVED, 160 PROVISIONAL, 38 UNCALIBRATED; 54 Safety-class**
+— **re-run 2026-08-30 at digest `d033038c…`.**
 `phase15CurrentTree.js` check **G3** confirms the gate and the publish validator agree that B8
 blocks the cutover (190 launch-gate findings; defaults refused by V9).
+
+> **The register grew and B8 did not — measured, not assumed.** It held **242** entries
+> (152 `PROVISIONAL`) on 2026-08-29. **REMEDIAL PHASE T1-04 added exactly 8**, all
+> `PROVISIONAL`, all §17.4 ladder-rung fractions:
+> `ladder.step_1_widen_radius_fraction` … `ladder.step_8_alternative_modality_fraction`.
+> **None of the 8 is Safety-class**, which is why the two numbers that matter here —
+> **39 blocking findings and 54 Safety-class entries — are unchanged.** T1-04 added no
+> Safety-class calibration debt, and this row's totals had simply never been re-measured
+> after it. Nothing about B8's ownership, closure condition or classification moves.
 
 **Why it blocks:** §22.4 — no Tier 0 parameter may be `PROVISIONAL` or `UNCALIBRATED` at launch.
 §24 gate `calibration_safety_derived` is `NOT_EVALUATED`, which blocks exactly as RED.
@@ -216,9 +287,18 @@ same gate id — do not attempt to override a build record with an attestation.
 
 ## B-M — `model_check_capacity_1_2_3` is GREEN and NOT PROVEN
 
-**Status:** OPEN
-**Classification:** **EVIDENCE / OPERATIONS** (compute provisioning)
-**Owner:** Release owner + compute
+**Status:** OPEN · **Evidence state: NOT MEASURED / OPEN.** Not `PASS`, and the gate rendering
+GREEN is not evidence that it is.
+**Classification:** **EVIDENCE / OPERATIONS** (compute provisioning) — an **independent
+release-evidence item, NOT a B1 sub-step.** It is independent of D1, D3, D8, routing-engine
+selection and B1 Steps 1/3/4/5, in both directions: B-M progress is not B1 progress and B1 progress
+is not B-M progress.
+**Owner:** **Release owner** (provisions `tla2tools.jar`, executes or coordinates the runs, and
+gives **final acceptance**) · **Compute/Platform** (suitable compute and the machine statement) ·
+**Safety engineer** (property-coverage and boundedness judgement) · **Engineering** (repository
+implementation and mechanical support only — **release authority does not transfer to Engineering**).
+Full ownership and the run-record requirements:
+[`B1_EXTERNAL_INPUT_HANDOFF.md`](B1_EXTERNAL_INPUT_HANDOFF.md) §7.3a and §7.6.
 **First discovered:** pass 3 (as **P15-E5**) · **Last verified:** 2026-08-29
 
 **Current evidence:** `release:verdict` prints the gate as GREEN with an inline `[NOT PROVEN]`
@@ -238,12 +318,39 @@ exist.
 **Required external input:** `tla2tools.jar` and machine time.
 
 **Required engineering work after the dependency arrives:** run the six configurations per
-`formal/README.md`; then, and only then, remove `establishedByCommand` from the gate.
+`formal/README.md`; record the run per the handoff's §7.3a (tool version **and SHA-256**, JDK
+version, machine/compute characteristics, named operator and run date, whether each state graph
+actually **closed**, state counts/diameter/runtime, the §24.2 properties each run covered,
+boundedness explicitly accepted, capacity scope explicitly addressed, and the retained raw output);
+then, **on the release owner's recorded acceptance and not before**, remove `establishedByCommand`
+from the gate.
+
+**Two structural gaps in the machinery itself — recorded here, NOT to be fixed.** Both verified
+against the current tree on 2026-08-29. Do **not** modify `gates.js`, `evidence.js`,
+`sourceDigest.js` or any test to accommodate a TLC run:
+
+1. **A completed TLC run has no normal evidence-admission path.** The gate is `EVIDENCE.SUITE` with
+   `command: "npm run test:engine -- ModelCheck"` (`gates.js:186-190`), and `evidence.admit()`
+   refuses any BUILD/SUITE record whose `run.command` is not that exact command
+   (`COMMAND_MISMATCH`, `evidence.js:342-405`). A `java -jar tla2tools.jar …` run cannot be filed
+   against this gate, and the schema has no field for any of the provenance items above. **The run
+   evidence therefore lives only in the written record — nothing admits, checks or ages it**, and
+   the only mechanical act reflecting a discharge is the flag removal above.
+2. **`formal/` is outside the source-digest scope.** The digest covers `Backend/{src,tools,tests}`
+   plus `package.json` and `jest.config.js` (`sourceDigest.js:33-36`); `formal/` is at the
+   repository root. **No evidence record is bound to the state of the two `.tla` modules or the six
+   `.cfg` files** — one could be altered between a run and its citation with no digest movement and
+   no gate reaction. This is why the runs must be recorded as executed *as checked in*. **Do not
+   propose digest-scoping `formal/` as a fix** — see `PHASE_15_MASTER.md` §10.
 
 **Do not:** remove the `[NOT PROVEN]` annotation, change the gate algebra, or mark the gate proven.
-The GREEN status is *not* a discharge and must not be read as one.
+The GREEN status is *not* a discharge and must not be read as one; **the `[NOT PROVEN]` annotation
+is the authoritative statement of this row's truth and outranks the GREEN.**
 
-**Closure condition:** a completed exhaustive TLC run recorded as evidence.
+**Closure condition:** the checked-in configurations completed exhaustively, recorded with the
+provenance above, and accepted by the release owner; then the flag removed. **Note the gate's
+status does not move on closure** — it is GREEN before and after — so the gate table cannot be used
+to track B-M. This register and the handoff §7 are where its state lives.
 
 ---
 
@@ -276,32 +383,129 @@ declaring that `TASK` has no timed transitions.
 
 ## X1 / T1-04 — The §17.4 escalation ladder and the three fairness modules
 
-**Status:** OPEN
-**Classification:** **SPECIFICATION / ADR** — *phase ownership is closed; the work is not done*
+**Status:** **CLOSED — implemented, composed, and verified against a live database** (2026-08-30)
+**Classification:** was SPECIFICATION / ADR · **now discharged by REPOSITORY work**
 **Owner:** **REMEDIAL PHASE T1-04** (`IMPLEMENTATION_EXECUTION_PLAN.md` §3, §6.3)
-**First discovered:** recorded as ARCHITECTURE.md gap 16 / OAD-7 · **Last verified:** 2026-08-29
+**First discovered:** recorded as ARCHITECTURE.md gap 16 / OAD-7 · **Closed:** 2026-08-30
 
-**Current evidence:** `src/engine/fairness/` **exists and is empty**. `ladder.js`,
-`operatorCapacity.js` and `agentStarvation.js` are absent. `src/engine/lifecycle/preemption.js` is
-absent.
+**What it was:** `src/engine/fairness/` existed and was empty. §1.8 places the anti-starvation
+*guarantee* in this ladder, and Phase 8's aging-multiplier cap was justified *because* the
+guarantee lives here — so the engine had neither the unbounded price it had deliberately given up
+nor the ladder it gave it up for.
 
-**Why it blocks:** these are **T1-04, Tier 1**, invariant **I13**. §1.8 places the anti-starvation
-*guarantee* in this ladder; Phase 8's aging-multiplier cap was justified *because* the guarantee
-lives here. The cap shipped; the guarantee did not. Phase 15's completion criteria **E1** and **E2**
-cannot be honestly discharged until the remedial phase *completes*, and Phase 16's only prerequisite
-is Phase 15.
+**What now exists (all three, Tier 1, invariant I13):**
 
-**Ownership is resolved (OAD-7):** the plan's §3 now carries REMEDIAL PHASE T1-04, prerequisites
-Phases 11–14, parallel with Phase 15, preceding Phase 15's E1/E2. **Registration is authorisation,
-not implementation.** Do not re-litigate which phase owns it — that decision is closed.
+| Module | What it implements |
+|---|---|
+| `src/engine/fairness/ladder.js` | §17.4's eight rungs, triggered on elapsed queue age over `sla.assignment_deadline`; four named verdicts; every crossed rung recorded with what was relaxed and why |
+| `src/engine/fairness/operatorCapacity.js` | §17.4's human capacity model — `ops.escalation_capacity`, the triage order, holding, and sustained-saturation alerting |
+| `src/engine/fairness/agentStarvation.js` | §17.5's detection: zero completed missions in `fairness.idle_alert_period` while nominally available |
 
-**Required engineering work:** implement the three modules per §1.8 and §17.4, under the remedial
-phase.
+**Where it runs — the composition, which is the part that makes it more than a module:**
 
-**Do not:** implement them as part of a Phase 15 task, or treat the resolved ownership as though the
-modules now exist.
+- `workers/leaderWorkers.js:timer()` builds the ladder and passes it to
+  `expiryActions.handlers({ ladder })`. The timer worker fires `ESCALATION_LADDER`, which §4.3
+  declares as the expiry action of `QUEUED`. That is the runtime caller, and there is no other.
+- `services/task.service.js:admitToRound()` now arms the `QUEUED` deadline in the transaction that
+  creates the Leg. **This was the load-bearing find of the session:** the production request path
+  armed *no* `QUEUED` timer at all, so `checkI4` reported every admitted Leg as `NO_PENDING_TIMER`
+  and the ladder had no trigger for customer work. Composing the ladder without this would have
+  produced a mechanism that was present, tested, and unreachable.
+- `server.js` starts `workers/fairness.worker.js` for §17.5, whose signal is an *absence* over a
+  window and therefore has no deadline behind it.
+- `observability/metrics.js` derives `outstanding_escalations`, `escalation_saturation_time` and
+  `ladder_step_distribution` from `LadderEscalation` — the three §21.4 SLIs whose producer note
+  used to read "`src/engine/fairness/` still holds no ladder".
 
-**Closure condition:** REMEDIAL PHASE T1-04 completes; E1/E2 dischargeable.
+**Verification:** 93 tests in `tests/engine/fairnessLadder.test.js`; the full five-lane suite green
+at **161 suites / 7 261 tests**; and **72/72 checks against live PostgreSQL 18.3** via
+`npm run verify:t104` — every one of the migration's ten CHECK constraints rejecting its own
+planted violation, and the shipped module driven end to end through real Prisma transactions.
+(65/65 at T1-04's own closure; the seven added on 2026-08-30 are the `Leg.slaDeadline` producer
+below, driven through the real `admitToRound` path.)
+
+**Not everything §17.4 and §17.5 name is implemented.** Four genuinely remain, each with a stated
+reason rather than an omission:
+
+| Remaining | Why |
+|---|---|
+| §17.5 **exercise missions** | A short reposition mission needs §17.3's repositioning — **Tier 2**, which §1.8 rule 2 forbids this Tier 1 mechanism from depending on — and no EXERCISE Leg producer exists. `agentStarvation.exerciseCandidates` produces the list; every entry carries the blocker |
+| §17.4 **rate limiting** into the human queue | No register entry parameterises a rate. Admission is gated on concurrent capacity, which §17.4 *does* parameterise. A gap in smoothing, not in the guarantee |
+| §17.4 **saturation → §20.5 admission control** | The directive is emitted; nothing consumes it. Owned by §20.5, not by T1-04. **Re-derived 2026-08-30 — this is not one missing producer but four distinct undecided questions; see below** |
+| §17.4 rung 8 **alternative modality** | No register entry names a modality set, so "where configured" reads as not configured and the decline branch runs. The collaborator seam exists and is unused |
+
+#### `Leg.slaDeadline` — **CLOSED 2026-08-30**
+
+T1-04 left §17.4's triage comparator with a third key it could not use. `compareForTriage` orders
+escalations by "custody state first, then obstruction class, **then SLA breach proximity**, then
+queue age", and breach proximity is read from `Leg.slaDeadline` — a nullable column whose only
+writer on the tree was `domain/mappers/legacyTask.taskToWork()`, which sets it to `null`. Every Leg
+therefore reached a dispatcher as "proximity unknown", and the key collapsed to arrival order.
+
+**The producer.** `task.service.superviseQueuedEntry` now writes the column in the transaction that
+creates the Leg, as `storeTime + sla.assignment_deadline`. Nothing was invented: §4.3 gives Leg
+state `QUEUED` the exit deadline `sla.assignment_deadline` (registered, default 900 s), §4.5
+requires that deadline to be registered in the transaction entering the state, and the column holds
+that deadline's absolute instant. The producer sits beside the §4.5 timer and takes the **same**
+resolved budget and the **same** store-clock read, so the instant §17.4 sorts on and the instant
+§4.5 fires on are one number rather than two that can drift.
+
+Three properties are load-bearing and each is tested:
+- **The whole budget, not the rung.** The timer is armed at rung 1's boundary (225 s of 900 s)
+  because the ladder re-arms at each rung. A deadline derived from that would declare every Leg in
+  breach 675 s early — urgent-looking and wrong.
+- **Written once, never moved.** It sits below the "already supervised" guard, so a retried
+  submission converging on the same Leg does not recompute it against a later clock. Requeue paths
+  (§11.2, `cutover/legEntryDeadline.superviseEntry`) are deliberately untouched: restarting the
+  assignment budget on every offer rejection would reset the anti-starvation clock a Leg could then
+  cycle indefinitely against.
+- **Null over a guess.** An unresolvable `sla.assignment_deadline` leaves the column `null` (§22.1),
+  which the comparator already reads as "proximity unknown, sort last".
+
+**Verification:** 7 focused tests in `tests/engine/intakeStranglerSeam.test.js`; the engine lane
+green at **130 suites / 6 927 tests**; and **7 live-PostgreSQL checks** in `npm run verify:t104`
+driving the real `admitToRound` (72/72 overall). Both mutants were built and both were caught —
+`budgetSeconds → armedSeconds` fails 3 tests, removing the write fails 5.
+
+**This closes the column's gap and nothing wider.** `Leg.slaDeadline` is populated by the legacy
+`Task` → Leg admission path, which is the only Leg-creation path in production. Legs created by any
+future non-legacy intake would need the same producer, and Legs admitted *before* this change keep
+`null` — no backfill was run, because rewriting the deadline of an in-flight Leg would change the
+supervision it is already under.
+
+#### §20.5 admission control — why the seam cannot be closed by writing a producer (2026-08-30)
+
+A pass scoped to §20.5 traced the seam and found the earlier "no production producer" framing
+**understated the blocker**. `intake/admission.js` is complete and correct; `intake.admit()` already
+calls `admission.assess()`. What is absent is not wiring but **decided semantics for the inputs**.
+Measured on the production input shape — `admissionInputs` is `{}` because neither
+`tasks.controller.js` nor `socket.server.js` ever sets it — `assess()` returns **ADMIT for all 30
+purpose × SLA-class combinations**, with every observed control value `null` except `shedLevel`,
+pinned at `0` (`NOMINAL`). §20.5 is presently incapable of declining anything in production.
+
+Each of the four controls is blocked on a **different** missing decision:
+
+| Control | Missing decision |
+|---|---|
+| Per-tenant rate / concurrency quotas | **§27 open decision #13** — "Multi-tenancy model … drives F4, `C_policy`, and **quota design**", *Depends on: Commercial model*. No quota parameter is registered, and `tenantId` has no production source (null on every request). **External/commercial, not repository-owned** |
+| Global admission (projected queue delay > class budget) | The rule and the budget are settled — `sla.assignment_deadline` (default 900 s, scoped `sla_class`/`tenant`) is resolvable via `snapshot.resolve()`, and `predictAssignmentWindow`'s `atRisk` field is already arithmetically the §20.5 test. The **input** is not producible: §3.4 defines the projection as "derived from current queue depth **and supply**", `solve/cadence.js` keys its regime on feasible supply, and the specification never defines what quantity *intake* measures as supply — while §3.4 forbids consulting the routing provider on the request path and §7 makes feasibility a round-path evaluation. `feasibleSupply` has **no producer anywhere on the tree**, including in `coordinator.worker.js`, which takes it as an input defaulting to `0`. The Availability Index cannot supply it: it is cache-tier and advisory, and §3.3 / §18.5 rule 3 forbid promoting it to an authority for a customer-visible decline. `cadence.windowFor`'s config shape has no register→config producer either |
+| Class-based shedding (`shedLevel`) | The published **order** is implemented (`SHED_LADDER`). The **level** is not derivable: §18.5 makes Shed Load a *binary* named mode, B19's entry condition ("arrival rate > capacity") has **no registered threshold parameter**, and no published mapping exists from overload severity to rungs 1/2/3. Nothing under `src/` ever calls `transitions.enter()` for `SHED_LOAD` |
+| §17.4 saturation → admission | The **trigger** is fully specified and already computed deterministically by T1-04 (`ops.escalation_capacity`, `ops.escalation_saturation_period`). The **consequence** is not: "declining new work of *the affected classes*" — the phrase occurs **exactly once in the 5 941-line specification and is never defined**. Closing it requires choosing (a) which classes are "affected", and (b) whether the consequence is a §20.5 *shed* verdict (purpose-then-class, custodial-exempt) or a *global-admission decline* (queue-delay-keyed) — different verdicts, different operator meanings, different custodial paths |
+
+**No code was written for §20.5.** Each producer would have required inventing a threshold, a
+supply definition, or a class set that the frozen specification does not publish — and a producer
+that manufactures its own input is the failure mode this blocker register exists to record, not a
+closure of it. The two decisions that would unblock the repository-owned half are: **what quantity
+intake measures as "supply"**, and **what "the affected classes" denotes in §17.4**.
+
+**`src/engine/lifecycle/preemption.js` is still absent, and that is correct** — §4.8 preemption is
+**Tier 2 / Phase 16**. It was listed as evidence under this blocker; it is not T1-04's. Rung 4
+emits a `PERMIT_PREEMPTION_OF_LOWER_CLASS` directive and calls nothing, which is what §1.8 rule 2
+requires and what `gate:tiers` enforces.
+
+**Closure condition (met):** the three modules exist, are reachable from the production path, and
+are verified against a live database. **E1/E2 are now dischargeable as far as T1-04 is concerned**
+— they remain blocked by B1, which is external.
 
 ---
 
@@ -330,6 +534,61 @@ unguarded.
 
 ---
 
+## V-10 — the rollback runbook traced against the current API (CLOSED 2026-08-30)
+
+**Status:** **CLOSED** — executed, five defects fixed, verified against a live database
+**Classification:** REPOSITORY-OWNED · **was the only Phase-15-owned closure-checklist row that
+was actionable in this repository and had never been executed**
+**Owner:** Phase 15 · **Executed:** 2026-08-30 at digest `d033038c…` (573 files)
+
+**What V-10 was.** `PHASE_15_CLOSURE_CHECKLIST.md` §C row **V-10** —
+*"`docs/runbooks/rollback.md` procedure executed against the current API"* — stood at
+`NOT EVALUATED`, blocking **No**, with the note *"No pass has ever done it"* and the status
+**UNKNOWN, not clean**. It was the next genuine item: `rollback.md` §5 is the procedure the
+`rollback_rehearsed` gate (**B-O**) is evidence for, and `rollbackPublisher`'s
+`SUPERSEDES_AN_UNPINNED_VERSION` refusal routes an operator into §2 by name. A runbook that has
+drifted is discovered during the incident it exists for.
+
+**Five defects. The first is permissive and fleet-wide.**
+
+| # | Defect | Severity |
+|---|---|---|
+| **V10-1** | **§2 step 1 published a single binding.** It read, in full: *"Publish `authorisation.action.binding` (`cutover.engine_enabled = false`, region scope)."* A configuration version is a **complete set** — `config/service.publish()` writes exactly `snapshot.declaredBindings` and inherits nothing, and `config.controller.publishVersion` defaults `bindings` to `[]`. The manual Rollback A therefore reverted **every other parameter in the deployment** to its register default, as a side effect of disabling one shard. `rollbackPublisher.bindingsWithRegionDisabled` exists precisely to prevent this on the automatic path; the runbook never carried it across. Fixed by new **§2.1**, which gives the recipe, names `POST /api/config/publish`, and states the pin | **Permissive, fleet-wide** |
+| **V10-2** | **§2 promised a coordinator stand-down that no code performs.** *"The coordinator stands down for that shard at the next tick."* The per-shard switch has four production consumers and `coordinator.worker.js` is not one of them. Corrected in the runbook; **the missing gate is routed to B1's composition-root work** (item 5 above) and deliberately not written, because the worker it belongs in cannot be composed | **Permissive claim; latent behaviour** |
+| **V10-3** | **§4 argued Rollback B was safe from a mirror that has no writer.** *"It reads `Robot.currentTaskId`, which the engine maintains as a mirror, so an agent executing an engine commitment appears busy and is not re-assigned."* **No code in the build assigns `Robot.currentTaskId` a task id.** Its only writers clear it (`tasks.controller.js:263`, `dtaro.handler.js:183`); it was the *legacy* path's own record (`tools/migrate/backfillDomain.js:32-34`) and that path was deleted at Phase 15. So after Rollback B every agent holding an engine commitment reads IDLE to the legacy dispatcher and can be re-assigned — **a double assignment, arriving during the incident that prompted the rollback**. Corrected, and the hazard and the `Commitment`-table remedy stated. **The column is retained by design** and `commitmentSchema.test.js` still fails if a drop arrives early — *retained is not maintained* | **Permissive claim; real hazard** |
+| **V10-4** | **§5 never named the six rehearsal step keys.** The record table said *"each of the six steps above, named individually"*. `evidence.REHEARSAL_STEPS` requires `cutover`, `automatic_rollback`, `no_decision_path_confirmed`, `artefact_rollback`, `recutover`, `recorded`. A record filed from the runbook alone is refused `REHEARSAL_INCOMPLETE` — **on a gate no build can close**. The keys, and the `approval.recordedBy`/`approvedBy` and `pass` fields, are now named | **Obstructive — blocks B-O** |
+| **V10-5** | **`rollbackPublisher.js` cited `rollback.md` §4** for the carry-forward sentence, which is in **§3**; §4 is Rollback B and says nothing of the kind. Corrected in the code comment | Low |
+
+**Also corrected in `cutover.md`, because it is the same sentence:** §3.3's *"Publish
+`authorisation.action.binding` through the Config Service"* carries V10-1 in the enable
+direction, and it named **`POST /api/config/versions`** as the publish endpoint. That endpoint
+does not exist — `/versions` is `GET`, the read-only version list, and it returns no payloads.
+The publish route is **`POST /api/config/publish`**.
+
+**One claim in this register's own draft was corrected by the live run.** The one-binding
+publish does **not** simply succeed: **V9** refuses it, because dropping the set takes
+`route.degraded_reserve_factor` to a default over the combined-conservatism cap. That is a
+guard by coincidence, not by design — it names an energy cap rather than the four vanished
+bindings, and check **B2** of the harness shows that resolving it the obvious way (bind the one
+parameter the message names) publishes and pins successfully, reverting everything else. The
+severity is unchanged; the description is now true. This is recorded because a register that
+edits its own drafts silently is a register nobody can audit.
+
+**Verification:** 7 tests in `tests/engine/phase15RollbackRunbook.test.js`; **3 mutants built,
+3 killed**; the engine lane green at 131 suites / 6 934 tests and the full suite at 162 / 7 275;
+and **15/15 against live PostgreSQL 18.3** via `npm run verify:v10`, including a BEFORE variant
+that reproduces the fleet-wide revert and a `C6` check that the manual recipe and the automatic
+publisher produce the same binding set field for field.
+
+**What V-10 did NOT do:** it did not add a prose-parsing gate, digest-scope `docs/`, weaken any
+gate, or write the coordinator's cutover check. **P15-F7a — the structural gap that nothing
+binds a runbook to its API — is still open**, and is residual observation 1.
+
+**Closure condition (met):** the procedure traced end to end against the current API, the drifts
+corrected, and the corrected procedure executed against a real database.
+
+---
+
 ## Residual in-repository observations — reported, not fixed, none permissive
 
 These are **not blockers**. They are carried forward so a future pass inherits named gaps instead of
@@ -337,8 +596,8 @@ rediscovering them. Each was re-confirmed present on 2026-08-29.
 
 | # | Observation | Evidence | Why it is not a blocker |
 |---|---|---|---|
-| 1 | **P15-F7a — nothing binds a runbook to the API it documents.** `docs/` is outside the source-digest scope by design, so no gate detects a runbook drifting from a signature it calls. `docs/runbooks/cutover.md` §3.2 drifted through two contract changes with every build gate green | `tools/release/sourceDigest.js` scope; the P15-F7 defect | Structural gap, not a live defect. Fixing it means either digest-scoping `docs/` (which would void a ~25-min evidence collection on every prose edit — the exact behaviour the exclusion prevents) or adding a prose-parsing gate (an unmaintained future false green). **Recorded deliberately rather than fixed.** |
-| 2 | **`docs/runbooks/rollback.md` has never had its procedure executed against the current API.** | No pass has done it | An **unexamined surface**, not a known defect. Status: **UNKNOWN**. Naming it is the honest alternative to implying the runbook class is clean because one file in it was fixed |
+| 1 | **P15-F7a — nothing binds a runbook to the API it documents.** `docs/` is outside the source-digest scope by design, so no gate detects a runbook drifting from a signature it calls. `docs/runbooks/cutover.md` §3.2 drifted through two contract changes with every build gate green — and **on 2026-08-30 V-10 found five more drifts, in the other runbook** | `tools/release/sourceDigest.js` scope; the P15-F7 defect; the V-10 findings below | Structural gap. Still **not** fixed by digest-scoping `docs/` (which would void a ~25-min evidence collection on every prose edit) or by a prose-parsing gate (an unmaintained future false green). **Two partial compensating controls now exist and are the most that should be built:** `rollback.md` §7 records the date of the last hand-trace, and `tests/engine/phase15RollbackRunbook.test.js` pins the two *constants* the runbook enumerates — not its prose |
+| 2 | ~~**`docs/runbooks/rollback.md` has never had its procedure executed against the current API.**~~ **EXECUTED 2026-08-30 — closure item V-10.** Five defects found and fixed; see § *V-10* below | `npm run verify:v10` — 15/15 on live PostgreSQL 18.3; 7 tests in `tests/engine/phase15RollbackRunbook.test.js`; 3 mutants, 3 killed | **No longer UNKNOWN.** The surface is examined and the defects are closed. The *structural* exposure is observation 1 and remains open |
 | 3 | **`app.locals.releaseEvidence` has no producer** (P15-E6). The cutover health endpoint always evaluates against `{}` | `grep`: no assignment; read with `\|\| {}` at `health.controller.js:319` | **Fails closed** — every gate reads as not-green |
 | 4 | **`gates.blockers()` ignores `unknownEvidence`.** Evidence filed against an unknown gate id never appears as a blocker | `src/engine/cutover/gates.js` — `blockers()` filters `results` only | `evaluate()` does fold it into `ok`, and `verdict.js` prints it |
 | 5 | **The evidence schema cannot distinguish a gate that failed from a gate that never ran** | Discovered when a gate process failed to start (`0xC0000142 STATUS_DLL_INIT_FAILED`) and the collection was discarded rather than reported | Detected in practice; the affected collection was voided, not published |
@@ -362,13 +621,13 @@ about Phase 15, the canonical documents win — `PHASE_15_MASTER.md` §1's autho
 
 | # | Statement | Where | Truth | Why Phase 15 owned it |
 |---|---|---|---|---|
-| **C1** | "None of the 19 workers is on production scheduling" | `ARCHITECTURE.md` §4.2 · `ROBOTX_SYSTEM_HANDBOOK.md` §3.3 | **11 of 18 start.** 8 `SCHEDULED` at boot + 3 of 4 `LEADER_ONLY` on promotion | "All engine workers move to production scheduling" **is** Phase 15's execution-plan row |
+| **C1** | "None of the 19 workers is on production scheduling" | `ARCHITECTURE.md` §4.2 · `ROBOTX_SYSTEM_HANDBOOK.md` §3.3 | **12 of 19 start** (re-measured 2026-08-30): 9 `SCHEDULED` at boot + 3 of 4 `LEADER_ONLY` on promotion. *(Read "11 of 18 · 8 SCHEDULED" when written on 2026-08-29; T1-04's `fairness.worker.js` is the 19th and it is `SCHEDULED`. **The falsehood being corrected is unchanged — "none" is still wrong.**)* | "All engine workers move to production scheduling" **is** Phase 15's execution-plan row |
 | **C2** | "No production composition root exists" (archived finding **N12**) | `ROBOTX_SYSTEM_HANDBOOK.md` §3.3 · §51.2 · §2 summary | **`Backend/server.js` is the composition root.** What is absent is a constructible *solve path* — a different claim, and the one that is still true | Phase 15 built the composition root |
-| **C3** | "19 workers" | `ARCHITECTURE.md` §1.4, §4.2 · `ROBOTX_SYSTEM_HANDBOOK.md` §0.1, §3.3, §51.2 | **18 registered.** `src/workers/` holds **20** `.js` files (18 `*.worker.js` + `registry.js` + `leaderWorkers.js`). "19" is wrong under every reading — and `leaderWorkers.js`, which broke the old file count, is Phase 15's own D-5 fix | Phase 15 wrote the registry and `leaderWorkers.js` |
+| **C3** | "19 workers" | `ARCHITECTURE.md` §1.4, §4.2 · `ROBOTX_SYSTEM_HANDBOOK.md` §0.1, §3.3, §51.2 | **⚠ THIS ROW HAS INVERTED — DO NOT ACT ON ITS ORIGINAL TEXT.** On 2026-08-29 the registry held **18** and this row read *"18 registered … `src/workers/` holds 20 `.js` files … '19' is wrong under every reading"*. **Since T1-04 the registry registers exactly 19** (re-measured 2026-08-30), so the figure this register was created to correct is now the *correct* registry count, reached by coincidence rather than by anyone updating it. The file count did **not** converge: `src/workers/` now holds **21** `.js` files (19 `*.worker.js` + `registry.js` + `leaderWorkers.js`), so "19" is still wrong **as a file count** and right **as a registry count**. **A future pass must not "correct" 19 → 18.** The genuine remaining defect in those documents is that they say *none* of the workers is scheduled (row C1), not the number | Phase 15 wrote the registry and `leaderWorkers.js` |
 | **C4** | "`gates.blockers({})` returns all **23** rows" / "23 release gates" | `ARCHITECTURE.md` §1.5 · `ROBOTX_SYSTEM_HANDBOOK.md` §60.4, §87 | **24 rows**, all blocking; `blockers({})` returns 24 | The §24 gate table is Phase 15's deliverable |
 | **C5** | "16 GREEN, 2 RED, 1 **PARTIAL**, 4 NOT_EVALUATED" | `ROBOTX_SYSTEM_HANDBOOK.md` §60.4 | **16 GREEN, 1 RED, 7 NOT_EVALUATED.** Doubly wrong: the counts moved, **and there is no `PARTIAL` status in the gate algebra** — `gates.js` defines GREEN, RED and NOT_EVALUATED only | It misstates the release verdict, which is the closure surface |
 | **C6** | "the seven build gates" | `ARCHITECTURE.md` §2 rank 6 · `ROBOTX_SYSTEM_HANDBOOK.md` §0.2 item 6 · `README.md` verification block | **`npm run gates` runs 8** and **exits 1**. Phase 15 added the eighth, `gate:composition`, and it is the one that fails | Phase 15 added the gate; a "seven gates, all passing" reading hides the RED one |
-| **C7** | `gate:legacy` quoted as *"…across 301 file(s)"* | `ARCHITECTURE.md` §1.3 | **340 files**, re-measured 2026-08-29. The load-bearing number is *4 absent*, not the corpus size | `gate:legacy` is Phase 15's gate |
+| **C7** | `gate:legacy` quoted as *"…across 301 file(s)"* | `ARCHITECTURE.md` §1.3 | **346 files**, re-measured 2026-08-30 *(340 on 2026-08-29; the corpus grew with T1-04's and V-10's files)*. **The load-bearing number is *4 absent*, not the corpus size** — which is exactly why this row moves every time the tree does, and why quoting the corpus size at all is the weaker practice | `gate:legacy` is Phase 15's gate |
 | **C8** | Authority table lists ADR-33 but **not ADR-34** | `ARCHITECTURE.md` §2 rank 2 · `README.md` doc table (said "38 records") | **40 ADR files** = 38 frozen Appendix C records + ADR-33 + **ADR-34**. `docs/adr/README.md`'s "38 records are the complete set" is correct *for the frozen set* and is not a defect | **ADR-34 is Phase 15's own ADR** (cutover rehearsal purpose, resolving D-7) |
 | **C9** | CI described as running the complete build-gate set | `ARCHITECTURE.md` §9.1 · `ROBOTX_SYSTEM_HANDBOOK.md` §42 | CI runs **7 of 8** gate steps (6 on a push — `gate:columngen` is pull-request-only) and omits `gate:composition` **without stating a reason** | See residual observation 7 |
 
@@ -383,7 +642,7 @@ phases it did not measure. A **currency banner** was added at the head of
 
 | # | Drift | Where | Current, measured 2026-08-29 | Owner |
 |---|---|---|---|---|
-| **D1** | "145 suites · 6 363 tests" (and "6 287", "6 357") | `ROBOTX_SYSTEM_HANDBOOK.md` lines 53, 55, 1136, 1895, 2915, 3858, 3860, 4081, 4083, 4120, 4132, 4350, 4525, 4553 · `ARCHITECTURE.md` header | **160 suites / 7 162 tests / 0 failures**, exit 0 | Whoever next re-compiles the handbook |
+| **D1** | "145 suites · 6 363 tests" (and "6 287", "6 357") | `ROBOTX_SYSTEM_HANDBOOK.md` lines 53, 55, 1136, 1895, 2915, 3858, 3860, 4081, 4083, 4120, 4132, 4350, 4525, 4553 · `ARCHITECTURE.md` header | **162 suites / 7 275 tests / 0 failures**, exit 0 — re-measured 2026-08-30 *(was 160 / 7 162 on 2026-08-29; T1-04 and V-10 added two suites)*. **This row is itself the argument for the rule below: a suite count is stale the moment anyone adds a test, which is why these are recorded rather than chased** | Whoever next re-compiles the handbook |
 | **D2** | "185 engine modules" / "186 `.js` files" | `ROBOTX_SYSTEM_HANDBOOK.md` lines 64, 146, 247, 299, 2911, 3243, 3247, 4110, 4553 · `ARCHITECTURE.md` §1.4 | **Approximate, and each gate scopes its own:** `gate:tiers` governs **285**, `gate:params` scans **189**, `find src/engine -name '*.js'` gives **192**. The handbook's own advice — quote a gate's number with the gate's name attached — is the right rule | Programme-wide |
 | **D3** | `gate:tiers` quoted as "277 modules / 386 edges" and `gate:params` as "183 modules" | `ROBOTX_SYSTEM_HANDBOOK.md` §0.1 | **285 / 423** and **189 / 242** | Phase 0's gates |
 | **D4** | "39 ADR files … ADR-01 through ADR-33 plus six lettered sub-records" — presented as a *corrected* count | `ROBOTX_SYSTEM_HANDBOOK.md` §0.1 | **40 files**, ADR-01…**34** plus six lettered. The handbook corrected 38→39 and was then overtaken by ADR-34 | Whoever next re-compiles the handbook |

@@ -9,11 +9,17 @@
 > were corrected by later passes. Reading them to decide what to implement is the specific
 > failure this document exists to prevent.
 
-**Consolidated:** 2026-08-29
-**Branch:** `feature/dashboard` · **HEAD:** `b68dc5d` ("before phase 15 docs structuring") · working tree clean
-**Source digest of the tree every measurement below was taken against:**
-`431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470` (565 files)
+**Consolidated:** 2026-08-29 · **Last updated:** **2026-08-30** (post-V-10 **current-state audit**;
+before it, closure item **V-10**)
+**Branch:** `feature/dashboard` · **HEAD:** `67b7c7c` · **working tree NOT clean** — T1-04, the
+`Leg.slaDeadline` producer and V-10 are all uncommitted
+**Source digest of the current tree:**
+`d033038cb261c3de0efe13796af9aa26d190ea113a5a2bfe5971480f72bdca00` (**573 files**)
 — computed live via `node -e "require('./tools/release/sourceDigest.js').sourceDigest()"` from `Backend/`.
+
+> **Digest `431010ace1…` (565 files) is the 2026-08-29 consolidation's tree and is superseded.**
+> Measurements below still dated 2026-08-29 were taken against it; the ones re-executed on
+> 2026-08-30 say so. `PHASE_15_VERIFICATION_STATE.md` carries every current number.
 
 ---
 
@@ -63,15 +69,46 @@ Phase 16 has exactly one prerequisite: Phase 15.
   its configuration propagation are implemented, adversarially attacked, mutation-tested, and
   verified against a live PostgreSQL database. Six adversarial passes have each closed their own
   findings.
-- **Release BLOCKED** means: `npm run release:verdict` exits 1 — **8 of 24 blocking gates are not
-  green** (1 RED, 7 NOT_EVALUATED). Nothing in this repository can turn any of those 8 green.
-- **Phase 16 NOT READY** follows from the release verdict, and additionally from **REMEDIAL PHASE
-  T1-04**, whose three fairness modules do not exist.
+- **Release BLOCKED** means: `npm run release:verdict` exits 1. **8 of 24 blocking gates are not
+  green for their own reasons** (1 RED — B1; 7 NOT_EVALUATED — B8/B-P/B-O), and nothing in this
+  repository can turn any of those 8 green. **As measured on 2026-08-30 the tool reports 0
+  green / 17 red / 7 not evaluated**, because the checked-in evidence collection is bound to the
+  superseded digest and has aged past every gate's `maxAgeMs` — every extra RED is `[STALE]`, not
+  a gate failing, and a fresh `npm run release:gates` at a committed tree restores the 16. See
+  `PHASE_15_VERIFICATION_STATE.md` §3.0. **The verdict is BLOCKED either way.**
+- **Phase 16 NOT READY** follows from the release verdict. It no longer follows from **REMEDIAL
+  PHASE T1-04**: that phase ran on 2026-08-30 and its three fairness modules exist, are composed
+  into the production timer and worker paths, and are verified against a live database.
 
 **"In-repository defects: none remaining" is NOT claimed and should not be claimed.** Every pass
 that has claimed it has been proven wrong by the next pass, because each pass searches the surface
 the previous pass's fix created. See §51 of the archived third-pass report for why this is
 structural rather than accidental.
+
+**The 2026-08-30 demonstration of exactly that.** This document told an agent, in §9, that *"there
+is no unblocked Phase 15 implementation work identified"*. Closure item **V-10** — *"`rollback.md`
+executed against the current API"*, `NOT EVALUATED`, status **UNKNOWN**, never executed by any
+pass — was sitting in `PHASE_15_CLOSURE_CHECKLIST.md` §C the whole time. Executing it found
+**five defects**, including a manual rollback procedure that would have reverted the fleet's
+entire configuration, and a §4 paragraph arguing that Rollback B was safe from a database mirror
+that has had no writer since Phase 15 deleted the legacy dispatcher. **None of them was in the
+blocker table**, and none would have been found by any test. Three passes running, the next
+genuine item has been outside the blocker register — so read §C of the checklist, not only §7 of
+this file.
+
+**The 2026-08-30 post-V-10 audit, and why it did not produce a seventh implementation task.**
+V-10's changes were re-examined for newly actionable repository-owned work — the worker-count
+move, the runbook edits, the new verification harness, and the digest movement. **There is none,
+and none was manufactured.** Everything found was **stale documentation**: the canonical set still
+carried the pre-T1-04 tree's numbers (18 workers, 11 starting, 340 legacy-corpus files, 242
+register entries, `160`/`7 162` tests), recorded **29** migrations where 27 + T1-04's one is
+**28**, and — most consequentially — **asserted in two places that the checked-in evidence
+collection "matches the current tree"**, contradicting the V-10 finding that it has aged out. All
+are corrected in place and marked with what they used to say; the command-by-command record is
+`PHASE_15_VERIFICATION_STATE.md` **§7b**. **No code was written, no gate or threshold touched, no
+blocker moved, and none of V-10's five findings was altered.** *A pass that finds only stale
+numbers should report only stale numbers — inventing a remediation to justify the pass is the
+failure mode this file's §10 exists to prevent.*
 
 ---
 
@@ -80,13 +117,13 @@ structural rather than accidental.
 | | |
 |---|---|
 | Branch | `feature/dashboard` |
-| HEAD | `b68dc5d8653b6b9f435b29b21a70775e1dcd4d45` — "before phase 15 docs structuring" |
-| Working tree | **Not clean, and deliberately so.** The consolidation (2026-08-29) and the documentation-integrity audit that followed it are **uncommitted, documentation-only** changes: the five files in `docs/phase15/`, `archive/` and its README, and pointer/fact corrections in `ARCHITECTURE.md`, `README.md`, `ROBOTX_SYSTEM_HANDBOOK.md` and `docs/history/README.md`. **No application source, test, schema, migration, gate, threshold or CI file was touched** — which is why the digest below is unchanged |
-| Source digest | `431010ace188c4b1b91415821e8cebc7beeb8f3f378a1b39fb77986fb3b22470` |
-| Files in digest scope | 565 |
+| HEAD | `67b7c7c` — "documentation of phase 15 resolved" *(re-read 2026-08-30. An earlier revision of this row still named `b68dc5d`, the consolidation's HEAD, and contradicted this file's own header)* |
+| Working tree | **Not clean, and deliberately so — but no longer documentation-only.** The 2026-08-29 consolidation's changes were documentation-only; **T1-04, the `Leg.slaDeadline` producer and V-10 have since touched application source, tests, schema, a migration and `package.json`**, all uncommitted. That is precisely **why the digest below moved** from `431010ace1…`/565. *(The "no application source was touched … which is why the digest is unchanged" sentence that stood here described the 2026-08-29 tree and was false on this one.)* |
+| Source digest | **`d033038cb261c3de0efe13796af9aa26d190ea113a5a2bfe5971480f72bdca00`** *(2026-08-29's `431010ace1…` is superseded)* — re-verified live 2026-08-30 |
+| Files in digest scope | **573** *(was 565)* |
 | Digest scope | `Backend/{src,tools,tests}`, `Backend/package.json`, `Backend/jest.config.js` — **`docs/` is deliberately excluded** |
-| Registered workers | 18 registered · **11 actually start** (8 `SCHEDULED` + 3 of 4 `LEADER_ONLY`) · 6 `DEFERRED` · 1 refused (`coordinator`, B1) |
-| Prisma migrations | 27 |
+| Registered workers | **19 registered** · **12 actually start** (9 `SCHEDULED` + 3 of 4 `LEADER_ONLY`) · 6 `DEFERRED` · 1 refused (`coordinator`, B1). *Was 18/11 before T1-04 added `fairness.worker.js`; re-measured 2026-08-30 via `registry.report({running:[]})` → total 19, scheduled 9, leaderOnly 4, deferred 6.* `src/workers/` holds **21** `.js` files (19 `*.worker.js` + `registry.js` + `leaderWorkers.js`) |
+| Prisma migrations | **28** *(27 before T1-04, which added exactly one — `20260830120000_ladder_escalation_t1_04`)*. **Re-counted directly 2026-08-30: 28 directories, 28 `migration.sql` files.** *An earlier revision said "29 (was 27; T1-04 added one)", which contradicts its own arithmetic; the 29 was wrong wherever it appeared* |
 | §24 release gates | 24, all blocking. `gates.blockers({})` returns all **24** |
 | Build gates in `npm run gates` | **8** — 7 PASS, 1 FAIL (`gate:composition`) |
 
@@ -102,17 +139,17 @@ Full detail: **[`PHASE_15_IMPLEMENTATION_STATE.md`](PHASE_15_IMPLEMENTATION_STAT
 
 | Subsystem | State |
 |---|---|
-| Cutover authority | **Implemented** — `src/engine/cutover/` (10 modules) |
+| Cutover authority | **Implemented** — `src/engine/cutover/` (10 modules). Its **operator procedures** were traced against it for the first time on 2026-08-30 (**V-10**): 5 runbook defects, fixed — see `PHASE_15_BLOCKERS.md` § *V-10* |
 | Release gates + evidence | **Implemented** — `tools/release/` (3 tools), 24-gate table in `src/engine/cutover/gates.js` |
-| Workers / composition root | **Implemented** — `server.js` is the production composition root. 18 registered; **11 start** (8 `SCHEDULED` + 3 of 4 `LEADER_ONLY`). **1 cannot be composed** (`coordinator`, B1) and **6 are `DEFERRED` with declared blockers**. `gate:composition`'s "1 violation of 18" counts *compliance*, not *starts* — see `PHASE_15_IMPLEMENTATION_STATE.md` |
+| Workers / composition root | **Implemented** — `server.js` is the production composition root. **19 registered; 12 start** (9 `SCHEDULED` + 3 of 4 `LEADER_ONLY`). **1 cannot be composed** (`coordinator`, B1) and **6 are `DEFERRED` with declared blockers**. `gate:composition` prints **"1 violation across 19 registered worker(s)"** and that counts *compliance*, not *starts* — see `PHASE_15_IMPLEMENTATION_STATE.md`. *(Re-measured 2026-08-30; this row said 18/11 and quoted "1 violation of 18", which was the pre-T1-04 tree)* |
 | Legacy retirement | **Complete** — 4 modules deleted, build gate enforces absence |
 | Routing | **Adapters + readiness tool implemented; NO ENGINE SELECTED** (B1, external) |
 | Calibration | Gate implemented; **39 blocking findings** (B8, external) |
 | Simulator fidelity | Gate implemented; **no study supplied** — 7 models NOT_MEASURED |
 | Safety case | Assembler implemented; assembles cleanly. **The §24.7 gate is not thereby discharged** |
-| Formal verification | TLA+ modules + 6 TLC configs present; **`tla2tools.jar` absent — TLC has never been run** |
-| Database | 27 migrations; 4 Phase 15 live-DB harnesses, all green |
-| Runbooks | `docs/runbooks/cutover.md` (391 lines) and `rollback.md` (269 lines) |
+| Formal verification | TLA+ modules + 6 TLC configs present; **`tla2tools.jar` absent, so TLC is not runnable on this tree.** `lifecycle.tla` has **never** been run under TLC at any capacity; `formal/README.md:34-45` records two completed `commitment.tla` runs from **2026-08-15** under TLA+ 1.8.0 (`commitment_c1.cfg` as checked in, plus a reduced capacity-2 form) — neither discharges the gate. **B-M = NOT MEASURED / OPEN** |
+| Database | **28 migrations**; **6** live-DB harnesses (the four Phase 15 ones, plus T1-04's and V-10's), **167/167**, all green |
+| Runbooks | `docs/runbooks/cutover.md` and `rollback.md`. **Both traced against the current API 2026-08-30 (V-10) — 5 defects fixed**, and `rollback.md` §7 now records when that trace happened. P15-F7a (nothing *binds* a runbook to its API) is unchanged and still open |
 
 ---
 
@@ -120,19 +157,23 @@ Full detail: **[`PHASE_15_IMPLEMENTATION_STATE.md`](PHASE_15_IMPLEMENTATION_STAT
 
 Full detail with commands, exit codes and dates: **[`PHASE_15_VERIFICATION_STATE.md`](PHASE_15_VERIFICATION_STATE.md)**.
 
-Everything below was **executed on 2026-08-29 against digest `431010ace1…`** as part of this
-consolidation. These are not inherited numbers.
+**Every row below carries its own date.** The rows marked *re-measured 2026-08-30* were executed
+against the **current** digest `d033038c…` (573 files); the rest were executed on 2026-08-29
+against the superseded `431010ace1…` and have not been re-run since. None is an inherited number —
+but do not read the whole table as one date, which an earlier revision of this sentence invited.
 
 | Command | Exit | Result |
 |---|---|---|
-| `npm test` | **0** | 160 suites / 7 162 tests / 0 failures / 0 skips |
-| `npm run gates` | **1** | 7 PASS, 1 FAIL (`gate:composition` — B1) |
-| `npm run release:verdict` | **1** | 16 GREEN, 1 RED, 7 NOT_EVALUATED — **RELEASE: BLOCKED** |
-| `npm run gate:calibration` | **1** | 39 blocking findings; 242 entries (52 DERIVED / 152 PROVISIONAL / 38 UNCALIBRATED), 54 Safety-class |
-| `npm run routing:readiness` | **0** *(by design)* | **OVERALL: BLOCKED** — D1, D3, D8 all BLOCKED; Steps 1/3/4/5 BLOCKED, Step 2 PASS |
+| `npm test` | **0** | **162 suites / 7 275 tests / 0 failures / 0 skips** — re-measured 2026-08-30 |
+| `npm run gates` | **1** | 7 PASS, 1 FAIL (`gate:composition` — B1, 1 violation of **19** workers) — re-measured 2026-08-30 |
+| `npm run release:verdict` | **1** | **2026-08-30: 0 GREEN, 17 RED, 7 NOT_EVALUATED** — every extra RED is `[STALE]`, not a gate failing. *(2026-08-29, when the collection was current: 16 GREEN, 1 RED, 7 NOT_EVALUATED.)* **RELEASE: BLOCKED**, both times |
+| `npm run gate:calibration` | **1** | 39 blocking findings; **250** entries (52 DERIVED / **160** PROVISIONAL / 38 UNCALIBRATED), 54 Safety-class — **re-measured 2026-08-30**. *(Was 242 / 152; T1-04 added 8 `PROVISIONAL` ladder-rung fractions, **none Safety-class**, so the 39 and the 54 did not move — see `PHASE_15_BLOCKERS.md` § B8)* |
+| `npm run routing:readiness` | **0** *(by design)* | **OVERALL: BLOCKED** — D1, D3, D8 all BLOCKED; Steps 1/3/4/5 BLOCKED, Step 2 PASS — **re-run 2026-08-30, unchanged** |
 | `npm run sim:fidelity` | **1** | 7 models NOT_MEASURED, 6 safety-relevant |
 | `npm run safety:case` | **0** | 12 hazards assembled, every reference resolves |
 | 4 × `tools/verify/phase15*.js` on live PostgreSQL 18.3 | **0** | **80 / 80** checks |
+| `npm run verify:t104` (T1-04 + `Leg.slaDeadline`) | **0** | **72 / 72** checks, 2026-08-30 |
+| **`npm run verify:v10`** (`rollback.md` §2.1 vs the live API) | **0** | **15 / 15** checks, 2026-08-30 — **167 / 167** in total |
 
 **NOT currently verified** (labelled honestly, not assumed): mutation testing, TLC model checking,
 Phase 0–14 cross-phase re-verification, and the soak/shadow/invariant observation windows. See
@@ -144,15 +185,18 @@ Phase 0–14 cross-phase re-verification, and the soak/shadow/invariant observat
 
 Full register with owners and closure conditions: **[`PHASE_15_BLOCKERS.md`](PHASE_15_BLOCKERS.md)**.
 
-**8 open blockers. 0 are repository-owned *and actionable*** — the one repository-owned entry (A9)
-is correctly deferred to Phase 8 and has no action available here.
+**7 open blockers. 0 are repository-owned *and actionable*** — the one repository-owned entry (A9)
+is correctly deferred to Phase 8 and has no action available here. **X1/T1-04 was the eighth and
+was closed on 2026-08-30** by REMEDIAL PHASE T1-04 (§17.4's ladder, its human capacity model, and
+§17.5's detection — implemented, composed, and verified against live PostgreSQL).
 
-> **Two different quantities in this documentation both happen to equal 8. Do not conflate them.**
-> **8 open blockers** (this table) is a programme count — it includes specification and
-> phase-ownership items that are not §24 gates. **8 blocking gates not green** (the §24 table: 1 RED
-> + 7 NOT_EVALUATED) is the release-verdict count. B1 appears in both; X3, X1/T1-04 and A9 appear
-> only in the blocker count; the four individual PRODUCTION gates are one blocker (B-P) but four
-> gate rows. The coincidence is arithmetic, not a correspondence.
+> **Two different quantities in this documentation used to both equal 8. They no longer do, and
+> that is itself worth stating.** **7 open blockers** (this table) is a programme count — it
+> includes specification and phase-ownership items that are not §24 gates. **8 blocking gates not
+> green** (the §24 table: 1 RED + 7 NOT_EVALUATED) is the release-verdict count, and it is
+> **unchanged**: closing X1/T1-04 moved the programme count and no gate, because T1-04 was never a
+> §24 gate row. B1 appears in both; X3 and A9 appear only in the blocker count; the four individual
+> PRODUCTION gates are one blocker (B-P) but four gate rows.
 
 | ID | Summary | Classification | Owner |
 |---|---|---|---|
@@ -160,18 +204,52 @@ is correctly deferred to Phase 8 and has no action available here.
 | **B8** | 39 Safety-class parameters not `DERIVED` | **EXTERNAL** | §22.4 calibration owner |
 | **B-P** | 4 PRODUCTION gates NOT_EVALUATED — needs an operating fleet | **EVIDENCE / OPERATIONS** | Operations |
 | **B-O** | 3 ORGANISATIONAL gates NOT_EVALUATED — needs filed attestations | **EVIDENCE / OPERATIONS** | Named humans / release owner |
-| **B-M** | `model_check_capacity_1_2_3` is GREEN and **NOT PROVEN** — TLC never run | **EVIDENCE / OPERATIONS** (compute) | Release owner + compute |
+| **B-M** | `model_check_capacity_1_2_3` is GREEN and **NOT PROVEN** — **NOT MEASURED / OPEN**. An independent release-evidence item, **not a B1 sub-step** | **EVIDENCE / OPERATIONS** (compute) | Release owner (provisioning + **final acceptance**) · Compute/Platform · Safety engineer (property coverage, boundedness) · Engineering (mechanical only) |
 | **X3** | No `TASK` timer producer; §4.2 has no transition table | **SPECIFICATION / ADR** | Frozen-spec owner |
-| **X1 / T1-04** | §17.4 escalation ladder + 3 fairness modules unimplemented | **SPECIFICATION / ADR** (phase ownership resolved; work not done) | REMEDIAL PHASE T1-04 |
 | **A9** | `assertVersionInKey` implemented, tested, genuinely uncalled | **REPOSITORY-OWNED, correctly deferred** | Phase 8 |
+
+**Closed since the last revision — X1 / T1-04**, on 2026-08-30. §17.4's escalation ladder, its
+human capacity model and §17.5's agent-starvation detection are implemented in
+`src/engine/fairness/`, composed into the production timer path (`leaderWorkers.timer` →
+`expiryActions` → `ESCALATION_LADDER`) and into `server.js`'s scheduled set, and verified by 72/72
+checks against live PostgreSQL. Four parts of §17.4/§17.5 genuinely remain and are recorded with
+their reasons in `PHASE_15_BLOCKERS.md`; none of them is a §24 gate. Composing it required arming
+the `QUEUED` deadline in `task.service.admitToRound`, which the request path had never done — so
+before this phase the ladder would have had no runtime trigger for customer work even had it
+existed.
+
+**`Leg.slaDeadline` gained its producer on 2026-08-30**, in the same function and the same
+transaction: §17.4's triage comparator sorts escalations by SLA breach proximity, and the column
+that proximity is measured from had no writer, so the key was inert and a dispatcher's queue fell
+back to arrival order. It is now `storeTime + sla.assignment_deadline` — §4.3's exit deadline for
+Leg state `QUEUED`, taken from the same resolved budget and the same clock read as the §4.5 timer
+beside it, so the instant §17.4 sorts on cannot drift from the instant §4.5 fires on. Recorded in
+full in `PHASE_15_BLOCKERS.md`.
 
 **A9 is the only repository-owned entry, and it is deferred by design** — its discharge point is
 `src/engine/routing/client.js`, a Phase 8 module that does not exist and cannot exist before B1.
 Do not manufacture a caller for it.
 
-Separately, there are **7 residual in-repository observations that are reported and not fixed**.
+**Closed 2026-08-30 — closure item V-10.** *"`docs/runbooks/rollback.md`'s procedure executed
+against the current API"* was never a blocker; it was a `NOT EVALUATED` verification row in
+`PHASE_15_CLOSURE_CHECKLIST.md` §C with the note *"No pass has ever done it"* and the status
+**UNKNOWN**. Executing it found **five defects** — the worst being that the manual Rollback A, as
+written, published one binding into a configuration system whose versions are *complete sets*, and
+so reverted every other parameter in the deployment while stopping one shard. All five are fixed,
+with 7 tests, 3 mutants killed and **15/15 against live PostgreSQL**. Full record:
+`PHASE_15_BLOCKERS.md` § **V-10**.
+
+**B1 gained a fifth item of required engineering work as a result**, and it is *not* implemented:
+the coordinator does not read the per-shard cutover switch, so a Rollback A does not stop a
+running coordinator. It is invisible today only because no coordinator can be composed. The guard
+belongs in the composition root beside the routing client, and writing it now would produce a
+guard with no caller. See `PHASE_15_BLOCKERS.md` § **B1**, item 5.
+
+Separately, there are **6 residual in-repository observations that are reported and not fixed**
+*(was 7 — observation 2, the unexecuted rollback runbook, was discharged by V-10 on 2026-08-30)*.
 None is permissive. They are listed in `PHASE_15_BLOCKERS.md` §"Residual" and are *not* counted as
-blockers.
+blockers. **Observation 1 — P15-F7a, that nothing binds a runbook to the API it documents — is
+unchanged, and V-10 is the second demonstration of what it costs.**
 
 ### 7.1 Known unresolved contradictions
 
@@ -212,23 +290,64 @@ attestation or a compute run that no commit in this repository can supply.
 
 **For a human / the programme (these unblock Phase 15):**
 
-1. **Operations + Commercial answer D1** — the authoritative operating region: `regionId` + `name`,
-   `kind`, the serviceable boundary as GeoJSON Polygon/MultiPolygon in WGS-84 `[lon, lat]`, the CRS,
-   and a version label with a date.
+1. **D1 — partially answered 2026-08-30, still BLOCKED, and no longer waiting on the region
+   declaration.** The owner has declared two independent campus regions (`rnsit-bengaluru`,
+   `jssate-bengaluru`) with names, `kind`, CRS, versions and an adopted boundary feature each, and
+   JSSATE's geometry is pinned as an external snapshot. What is now needed is **an escalation
+   authority**: the approved boundaries are smaller than one H3 res-8 cell, standard coverage
+   returns zero cells so **V-8** fires, `cardinalityException` cannot rescue it, and the owner has
+   **refused** both over-assigning containment modes. **No Architecture, Commercial or approval
+   authority exists to resolve it, and none may be invented.** Also still outstanding: the RNSIT
+   snapshot artefact and every governance record. See
+   [`B1_EXTERNAL_INPUT_HANDOFF.md`](B1_EXTERNAL_INPUT_HANDOFF.md) §1.8.
 2. **Product + Fleet Engineering answer D3** — the agent classes operated and, per distinct mobility
    model, §2.2's six elements with a real speed model.
 3. **Operations answer D8** — extract identity, source, vintage (ISO), refresh cadence,
    re-contraction downtime budget, plus `extract.bbox` and `extract.marginDegrees`.
 4. **§22.4's calibration owner** derives the 39 Safety-class values (B8).
-5. **Release owner** provisions `tla2tools.jar` and runs the exhaustive TLC configurations (B-M).
+5. **Release owner** provisions `tla2tools.jar` and runs the exhaustive TLC configurations (B-M),
+   recording the run's provenance per `B1_EXTERNAL_INPUT_HANDOFF.md` §7.3a and accepting it per
+   §7.6. **This is independent of 1–4 above and can start today.**
 
 **For an AI coding agent, right now, in this repository:**
 
 - Read the five canonical documents. Nothing else is required to understand current state.
 - Answer questions about current state from `PHASE_15_VERIFICATION_STATE.md`, or re-run the
   command yourself. Do not quote a number from `archive/`.
-- If asked to *implement* something in Phase 15: there is **no unblocked Phase 15 implementation
-  work identified**. Confirm the request against `PHASE_15_BLOCKERS.md` before writing code.
+- If asked to *implement* something in Phase 15: **no unblocked implementation work is identified
+  in `PHASE_15_BLOCKERS.md` — and that is not the same as none existing.** Check
+  **`PHASE_15_CLOSURE_CHECKLIST.md` §C** as well: it is where V-10 sat, unexecuted, through six
+  passes that all read the blocker table. Every §C row that is `NOT EVALUATED` with an owner
+  inside this repository is candidate work. Confirm against both before writing code.
+- **§C was swept on 2026-08-30 after V-10 closed, and re-swept by the final closure audit later the
+  same day. Four of its five open rows are external by construction; the fifth is not.** **V-5** is
+  the release owner's evidence re-collection at a committed tree, **V-7** is B-M (needs
+  `tla2tools.jar` and compute), **V-8** is B-P (needs an operating fleet), and **V-6** is per-pass
+  mutation testing with no pass to attach to. **V-9 — the Phase 0–14 cross-phase re-verification —
+  is NOT external and its trigger HAS fired.** *(An earlier revision of this bullet said "V-9 is a
+  cross-phase re-verification with no trigger" and concluded "there is presently no §C row this
+  repository can close by itself". Both statements were refuted by this tree and are corrected
+  here.)* V-9's own stated trigger in `PHASE_15_CLOSURE_CHECKLIST.md` is *"run if the tree changes
+  materially"*, and T1-04 and the `Leg.slaDeadline` producer changed it materially and across
+  phase boundaries: `src/engine/supervision/expiryActions.js` (**+153 lines** — `attemptTransition`
+  gained a `deadlineSecondsOverride` that changes which deadline a target state is armed with, and
+  `escalationLadder` gained four verdicts where it previously refused unconditionally),
+  `src/workers/leaderWorkers.js` (+68), `src/services/task.service.js` (+187),
+  `src/engine/observability/metrics.js` (+123), `prisma/schema.prisma` (+103) and **one new
+  migration**. `tools/verify/phase5ExpirySemantics.js` **requires the first two of those modules
+  directly** (`:28`, `:31`), and the archived claim this row rested on was *"Phases 0–14, schema and
+  migration history untouched"* — which is now false on its own terms. **V-9 is therefore
+  repository-owned, actionable, and unrun.** It is **not blocking** (§C records it `Blocking? No`),
+  it is **not an implementation defect**, and it moves **no gate, no blocker and not the verdict** —
+  it is a verification run whose result is presently **UNKNOWN**, which is the same state V-10 sat
+  in through six passes. Scope it to the harnesses whose subjects moved — Phase 5, and the Phase 9
+  and Phase 12/13 harnesses covering the intake path and the SLIs — rather than to all of 0–14.
+  **Re-derive this; do not inherit it.**
+- **Do NOT run `npm run release:gates` to make the tree look green.** The checked-in evidence
+  collection is genuinely stale and `release:verdict` genuinely reads 0/17/7; the fix is the
+  release owner's re-collection at a **quiescent, committed** tree, and a collection taken against
+  this uncommitted tree would be voided by the next source edit. **The verdict is BLOCKED either
+  way** — recollecting changes the rendering, not the outcome.
 - If the repository has changed since the digest in §4, **re-measure before answering**. The digest
   is how you tell.
 
@@ -270,6 +389,12 @@ or came close to committing.
 | **`PHASE_15_VERIFICATION_STATE.md`** | What has actually been proven, with command + exit code + date + tree |
 | **`PHASE_15_BLOCKERS.md`** | What prevents closure, who owns it, what closes it |
 | **`PHASE_15_CLOSURE_CHECKLIST.md`** | The exact exit conditions and the current verdict |
+
+### The B1 / B-M operational handoff — read before doing any B1 or B-M work
+
+| File | Answers |
+|---|---|
+| **[`B1_EXTERNAL_INPUT_HANDOFF.md`](B1_EXTERNAL_INPUT_HANDOFF.md)** | **The single operational handoff for the external inputs.** What D1, D3 and D8 require field by field, who owns each, what evidence substantiates it, the operator deployment-module contract, B1's execution order and stop conditions — and, in §7, **B-M**: its independence from B1, its `NOT MEASURED / OPEN` state, what must be recorded, and who accepts it. **Do not write a second handoff.** |
 
 ### Upstream authorities — unchanged by this consolidation
 

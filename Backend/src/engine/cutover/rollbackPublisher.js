@@ -145,7 +145,9 @@ const ACTIVE_VERSION_ID = "singleton";
  * `create()` documents its dependency as *"the payload of the currently **pinned**
  * configuration version"*, this module's header says *"every other binding, kill-switch
  * state, regime, spatial declaration and shard definition of **the version in force** is
- * carried forward unchanged"*, and `docs/runbooks/rollback.md` §4 says the same. The
+ * carried forward unchanged"*, and `docs/runbooks/rollback.md` §3 says the same. (That cited
+ * §4, which is Rollback B — the redeploy — and says nothing about carrying a binding set
+ * forward; corrected by the V-10 runbook trace, 2026-08-30.) The
  * composition root supplied something else:
  *
  *     const latest = await prisma.configVersion.findFirst({ orderBy: { version: "desc" } });

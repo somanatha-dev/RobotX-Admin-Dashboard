@@ -30,6 +30,8 @@ const surrogateKeys = require("../../src/engine/privacy/surrogateKeys");
 
 const BACKEND_ROOT = path.join(__dirname, "..", "..");
 const RECEIVED_AT_MS = 1_800_000_000_000;
+/** The store clock the §4.5 deadline is armed against (§10.6 — never a worker's wall clock). */
+const STORE_NOW = new Date(RECEIVED_AT_MS);
 
 function legacyTaskRow(taskId) {
   return {
@@ -83,7 +85,10 @@ function bridgeStore() {
   };
 
   prisma.mission = { upsert: upsertInto(missions) };
-  prisma.leg = { upsert: upsertInto(legs) };
+  // `update` beside `upsert`: `superviseQueuedEntry` is the producer of `Leg.slaDeadline`
+  // and writes it in the same transaction as the Leg. The double throws on an update that
+  // matches nothing, so a producer writing a Leg it never created fails here.
+  prisma.leg = { upsert: upsertInto(legs), update: updateIn(legs, "id") };
   prisma.stop = { upsert: upsertInto(stops), update: updateIn(stops, "id") };
   prisma.task = {
     // `sealIdentities` updates the Task row it was handed; the fixture's legacy Task is
@@ -107,7 +112,47 @@ function bridgeStore() {
     update: updateIn(identities, "surrogateKey"),
   };
 
-  prisma.__bridge = { missions, legs, stops, tasks, identities };
+  // REMEDIAL PHASE T1-04 — the bridge now arms the §4.5 deadline of the `QUEUED` state
+  // the Leg is created in, in the same transaction as the Leg write. Before this the
+  // request path armed nothing: `checkI4` reported every admitted Leg as
+  // `NO_PENDING_TIMER`, and §17.4's escalation ladder — whose only trigger is `QUEUED`'s
+  // expiry action — never fired for customer work at all.
+  //
+  // The double gains the four capabilities that path needs, and nothing else. It is a
+  // double rather than a stub in the sense that matters: `timers.register` runs for real
+  // against it, including its `requireTransaction` check, which is why the transaction
+  // client below deliberately has **no** `$transaction` of its own.
+  const timers = [];
+  prisma.timer = {
+    count: async ({ where }) =>
+      timers.filter(
+        (row) =>
+          row.entityType === where.entityType &&
+          row.entityId === where.entityId &&
+          row.timerState === where.timerState,
+      ).length,
+    findUnique: async ({ where }) => timers.find((row) => row.timerKey === where.timerKey) || null,
+    create: async ({ data }) => {
+      const row = { id: `TMR-${timers.length + 1}`, createdAt: STORE_NOW, ...data };
+      timers.push(row);
+      return { ...row };
+    },
+    update: updateIn(timers, "id"),
+  };
+  prisma.leg.findUnique = async ({ where }) => {
+    const row = legs.find((entry) => entry.id === where.id);
+    return row ? { ...row } : null;
+  };
+  prisma.$queryRawUnsafe = async () => [{ now: STORE_NOW }];
+  prisma.$transaction = async (run) => {
+    // §4.5's client, with `$transaction` removed: `timers.requireTransaction` refuses
+    // anything that still carries it, which is what stops a timer being written outside
+    // the transaction that entered the state.
+    const { $transaction, ...tx } = prisma;
+    return run(tx);
+  };
+
+  prisma.__bridge = { missions, legs, stops, tasks, identities, timers };
   return prisma;
 }
 
@@ -270,6 +315,144 @@ describe("the legacy Task → domain work bridge (§2.4)", () => {
 
     expect(response.predictedAssignmentWindow.basis).toBe(intake.WINDOW_BASIS.NO_FEASIBLE_SUPPLY);
     expect(response.accepted).toBe(true);
+  });
+});
+
+// ── The `Leg.slaDeadline` producer ──────────────────────────────────────────────
+//
+// §4.3 gives Leg state `QUEUED` the exit deadline `sla.assignment_deadline`; §4.5 requires
+// it to be registered in the transaction that enters the state. `Leg.slaDeadline` holds the
+// absolute instant of that deadline, and §17.4's triage comparator reads it as its third
+// key ("SLA breach proximity"). Before this producer the column had exactly one writer on
+// the tree — `taskToWork`, which writes `null` — so the key was inert in production.
+describe("the Leg.slaDeadline producer (§4.3, §4.5, consumed by §17.4 triage)", () => {
+  const service = require("../../src/engine/config/service");
+  const operatorCapacity = require("../../src/engine/fairness/operatorCapacity");
+
+  /** The published snapshot's `values` map — the same one `assignTask` threads through. */
+  const publishedValues = () => service.buildSnapshot({}).values;
+
+  /**
+   * `sla.assignment_deadline` at its registered default, and §17.4's rung-1 fraction of it.
+   * Both are read from the register rather than written down here, so a republished default
+   * moves the expectation with it instead of turning this file red for the wrong reason.
+   */
+  const BUDGET_SECONDS = publishedValues().get("sla.assignment_deadline");
+  const RUNG_1_SECONDS = require("../../src/engine/fairness/ladder").firstBoundarySecondsFrom(
+    publishedValues(),
+    BUDGET_SECONDS,
+  );
+
+  const admit = (prisma, taskId, options) =>
+    taskService.admitToRound(prisma, legacyTaskRow(taskId), {
+      receivedAtMs: RECEIVED_AT_MS,
+      cadenceConfig: fixture.cadenceConfig(),
+      feasibleSupply: 3,
+      configValues: publishedValues(),
+      ...(options || {}),
+    });
+
+  test("the deadline is the store clock plus the resolved sla.assignment_deadline", async () => {
+    const prisma = bridgeStore();
+    await admit(prisma, "TSK-SLA-1");
+
+    const leg = prisma.__bridge.legs[0];
+    expect(leg.slaDeadline).toBeInstanceOf(Date);
+    // Absolute, and measured from the *store's* clock (§10.6) — never the worker's.
+    expect(leg.slaDeadline.getTime()).toBe(STORE_NOW.getTime() + BUDGET_SECONDS * 1000);
+  });
+
+  // **The defect this test exists to catch.** The timer beside it is armed at rung 1's
+  // boundary (25 % of the budget) because the ladder re-arms itself at each subsequent
+  // rung. A deadline derived from `armedSeconds` rather than `budgetSeconds` would declare
+  // every Leg in breach 675 s early, and the triage order that reads it would be wrong in
+  // the direction that looks urgent.
+  test("the deadline is the whole budget, not the rung-1 boundary the timer is armed at", async () => {
+    const prisma = bridgeStore();
+    await admit(prisma, "TSK-SLA-2");
+
+    const leg = prisma.__bridge.legs[0];
+    const timer = prisma.__bridge.timers[0];
+
+    expect(RUNG_1_SECONDS).toBeLessThan(BUDGET_SECONDS);
+    expect(timer.dueAt.getTime()).toBe(STORE_NOW.getTime() + RUNG_1_SECONDS * 1000);
+    expect(leg.slaDeadline.getTime()).toBe(STORE_NOW.getTime() + BUDGET_SECONDS * 1000);
+    expect(leg.slaDeadline.getTime()).toBeGreaterThan(timer.dueAt.getTime());
+  });
+
+  // The column and the timer must be derivable from one another, because §17.4 sorts on the
+  // first and §4.5 fires on the second. One clock read and one resolved budget is what makes
+  // that true by construction rather than by two computations agreeing.
+  test("the deadline and the timer's recorded ladder budget name the same instant", async () => {
+    const prisma = bridgeStore();
+    await admit(prisma, "TSK-SLA-3");
+
+    const leg = prisma.__bridge.legs[0];
+    const timer = prisma.__bridge.timers[0];
+    const budgetFromTimer = timer.payload.ladderBudgetSeconds;
+
+    expect(budgetFromTimer).toBe(BUDGET_SECONDS);
+    expect(leg.slaDeadline.getTime()).toBe(timer.dueAt.getTime() - RUNG_1_SECONDS * 1000 + budgetFromTimer * 1000);
+  });
+
+  // §22.1 admits no behavioural constant outside the register. An unresolvable parameter
+  // must leave the column null rather than produce a guessed instant — and null is exactly
+  // what the triage comparator already reads as "proximity unknown, sort last".
+  test("an unresolvable sla.assignment_deadline leaves the column null and arms nothing", async () => {
+    const prisma = bridgeStore();
+    await admit(prisma, "TSK-SLA-4", { configValues: null });
+
+    expect(prisma.__bridge.legs[0].slaDeadline).toBeNull();
+    expect(prisma.__bridge.timers).toHaveLength(0);
+  });
+
+  test("a values map that resolves the parameter to a non-positive value is refused too", async () => {
+    const prisma = bridgeStore();
+    await admit(prisma, "TSK-SLA-5", { configValues: new Map([["sla.assignment_deadline", 0]]) });
+
+    expect(prisma.__bridge.legs[0].slaDeadline).toBeNull();
+    expect(prisma.__bridge.timers).toHaveLength(0);
+  });
+
+  // A retried submission converges on the same Leg (the ids are deterministic). The deadline
+  // it was admitted with must not move forward: an anti-starvation clock that restarts on
+  // every retry is not a guarantee.
+  test("a retried admission does not move the deadline", async () => {
+    const prisma = bridgeStore();
+    await admit(prisma, "TSK-SLA-6");
+    const first = prisma.__bridge.legs[0].slaDeadline;
+
+    // The store clock advances between the two attempts; the deadline must not follow it.
+    const later = new Date(STORE_NOW.getTime() + 60_000);
+    prisma.$queryRawUnsafe = async () => [{ now: later }];
+    await admit(prisma, "TSK-SLA-6");
+
+    expect(prisma.__bridge.legs).toHaveLength(1);
+    expect(prisma.__bridge.timers).toHaveLength(1);
+    expect(prisma.__bridge.legs[0].slaDeadline.getTime()).toBe(first.getTime());
+  });
+
+  // The point of the producer: §17.4's third triage key stops being inert. Two Legs equal on
+  // custody and obstruction now order by measured breach proximity rather than by arrival.
+  test("the produced deadline is what §17.4's triage comparator orders on", async () => {
+    const prisma = bridgeStore();
+    await admit(prisma, "TSK-SLA-7");
+    const admitted = prisma.__bridge.legs[0];
+
+    // A second Leg with a tighter contracted budget, admitted at the same instant.
+    const tighter = new Map([["sla.assignment_deadline", 120]]);
+    const other = bridgeStore();
+    await admit(other, "TSK-SLA-8", { configValues: tighter });
+    const urgent = other.__bridge.legs[0];
+
+    const base = { custodyState: "NONE", obstructionClass: null, queueAgeSeconds: 0 };
+    const order = operatorCapacity.triage([
+      { ...base, legId: admitted.legId, slaDeadline: admitted.slaDeadline },
+      { ...base, legId: urgent.legId, slaDeadline: urgent.slaDeadline },
+    ]);
+
+    expect(urgent.slaDeadline.getTime()).toBeLessThan(admitted.slaDeadline.getTime());
+    expect(order.map((row) => row.legId)).toEqual([urgent.legId, admitted.legId]);
   });
 });
 

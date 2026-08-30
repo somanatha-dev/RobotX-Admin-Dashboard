@@ -188,6 +188,19 @@ function deadlineSecondsFor(config, entityType, state) {
  * @param {string} input.event
  * @param {object} [input.context] guard evidence
  * @param {object} [input.data] extra columns
+ * @param {number} [input.deadlineSecondsOverride] REMEDIAL PHASE T1-04. The deadline to
+ *   arm the *target* state with, when the mechanism that owns the target's timing is not
+ *   the register entry §4.3 names. Exactly one action uses it: `ESCALATION_LADDER`.
+ *
+ *   §4.3 arms `QUEUED` for `sla.assignment_deadline`, which §26.1's I13 instrument calls
+ *   "the ladder's **total** budget" — while §17.4 triggers each of its eight rungs on a
+ *   *fraction* of that budget. Re-arming the `QUEUED → QUEUED` self-loop at the whole
+ *   budget again would put one rung per budget, so the ladder would take eight assignment
+ *   deadlines to reach a decision it is specified to reach in one. `taskMachine.js` already
+ *   records where this belongs — "supervised by the §17.4 ladder, whose step timing is
+ *   (T1-04). Named here, owned there" — so the ladder supplies the next rung's boundary
+ *   and this is where it is applied. The override is ignored for every other target,
+ *   because no other state has a mechanism that owns its timing.
  * @returns {Promise<object>}
  */
 async function attemptTransition(ctx, input) {
@@ -216,6 +229,14 @@ async function attemptTransition(ctx, input) {
   let deadlineSeconds;
   if (legMachine.requiresTimer(target)) {
     deadlineSeconds = deadlineSecondsFor(config, timers.ENTITY_TYPE.LEG, target);
+
+    // T1-04's override, applied before the `projected` fallback and before the refusal,
+    // so a ladder rung is armed at the rung rather than at the budget. Guarded on a
+    // positive finite number: an override that did not resolve falls back to §4.3's
+    // register entry rather than arming a deadline of NaN.
+    if (Number.isFinite(source.deadlineSecondsOverride) && source.deadlineSecondsOverride > 0) {
+      deadlineSeconds = source.deadlineSecondsOverride;
+    }
 
     // §4.3 gives `EN_ROUTE_PICKUP` and `EN_ROUTE_DROP` a *projected* deadline — "projected
     // ETA × `execute.eta_tolerance`" — which is not a duration in the register and cannot
@@ -282,18 +303,36 @@ async function readIncumbent(ctx, leg) {
  *
  * §4.4 gives this two rows: `assignment deadline → QUEUED` guarded on *"ladder step
  * available"*, and `ladder exhausted → FAILED`. The guard's evidence — which step the Leg
- * is on, whether another exists, and what it relaxes — is §17.4's, and §17.4's three
- * modules (`fairness/ladder.js`, `operatorCapacity.js`, `agentStarvation.js`) **do not
- * exist**: `src/engine/fairness/` is empty, and the execution plan's §6.3 records why —
- * mechanism T1-04 had no owning phase until a remedial phase was opened for it, and
- * *"registration is authorization, not implementation"*.
+ * is on, whether another exists, and what it relaxes — is §17.4's, and it is the ladder's
+ * to produce.
  *
- * So this handler attempts the relaxation with the ladder's own verdict when a ladder is
- * injected, and **refuses, naming the ladder, when one is not**. What it must never do is
- * take the second row. `LADDER_EXHAUSTED → FAILED` terminates a customer's Leg; reading
- * an unimplemented ladder as an exhausted one would fail real work because a module is
- * missing, which is §4.1 rule 3's prohibition in its most expensive form. The Leg stays
- * `QUEUED`, its deadline is re-armed, and the lag SLI is what pages.
+ * REMEDIAL PHASE T1-04. This handler previously refused unconditionally, because
+ * `src/engine/fairness/` was empty and §17.4's three modules did not exist. They do now,
+ * and `workers/leaderWorkers.js` injects the ladder into the timer worker's handler map,
+ * so this is where the anti-starvation guarantee actually runs.
+ *
+ * ── Four verdicts, not two, and the two extra ones are the safety ───────────
+ * §4.4's two rows are not symmetric. `→ QUEUED` costs a re-queue; `LADDER_EXHAUSTED →
+ * FAILED` terminates a customer's Leg. Any mapping that folds "the ladder could not tell"
+ * into the second row fails real work on the strength of a missing input, which is §4.1
+ * rule 3's prohibition in its most expensive form. So this reads the ladder's own verdict
+ * rather than the truthiness of a field:
+ *
+ *   · `STEP_AVAILABLE` — a rung applied. §4.4's first row, re-armed at the *next rung's*
+ *     boundary rather than at the whole budget (see `deadlineSecondsOverride`).
+ *   · `HELD_FOR_HUMAN_CAPACITY` — rung 7 or 8 reached with no dispatcher capacity behind
+ *     it. §17.4: "Legs waiting to enter it remain on the ladder rather than being deemed
+ *     to have completed step 7." Also §4.4's first row: the Leg stays queued. It is
+ *     reported distinctly so an operator can tell a Leg the ladder is working from a Leg
+ *     the ladder is waiting on a person for.
+ *   · `EXHAUSTED` — rung 8, a human saw it, no alternative modality. §4.4's second row.
+ *     This is the only path to `FAILED`, and the ladder will not return it unless the
+ *     `LadderEscalation` row for rung 8 carries an `admittedAt`.
+ *   · `UNDETERMINED` — no queue row, no budget, a mis-published order, a bad clock. The
+ *     deadline is re-armed and the Leg does not move.
+ *
+ * A ladder that is not injected at all is still `DEPENDENCY_UNAVAILABLE`, and it still
+ * re-arms. The refusal has not been softened; it has stopped being the only outcome.
  *
  * @param {object} ctx
  * @returns {Promise<object>}
@@ -305,37 +344,103 @@ async function escalationLadder(ctx) {
       disposition: DISPOSITION.DEPENDENCY_UNAVAILABLE,
       outcome: "LADDER_NOT_IMPLEMENTED",
       detail:
-        "§17.4's escalation ladder is mechanism T1-04 and has no implementation: src/engine/fairness/ is empty and " +
-        "the execution plan assigns the three modules to a remedial phase that has not run. The deadline is re-armed " +
-        "rather than read as `ladder exhausted`, because failing a Leg on the strength of a missing module would be " +
-        "inferring a decision from an absence (§4.1 rule 3).",
+        "§17.4's escalation ladder (mechanism T1-04) was not injected into this handler map. The deadline is " +
+        "re-armed rather than read as `ladder exhausted`, because failing a Leg on the strength of a missing " +
+        "collaborator would be inferring a decision from an absence (§4.1 rule 3).",
     };
   }
 
   if (ctx.timer.entityType === timers.ENTITY_TYPE.TASK) {
-    // §4.2 has no transition table anywhere in the specification, so a Task's ladder step
-    // has no target state to attempt. The step itself — what was relaxed and why — is
-    // §17.4's to record, and it is recorded by the ladder, not restated here.
-    const step = await ladder.nextStep({ entityType: ctx.timer.entityType, entityId: ctx.timer.entityId, storeTime: ctx.storeTime });
+    // §4.2 has no transition table anywhere in the specification (blocker X3), so a
+    // Task's ladder step has no target state to attempt. The step itself — what was
+    // relaxed and why — is §17.4's to record, and it is recorded against the Leg by the
+    // ladder, not restated here. A Task is waiting exactly while one of its Legs is
+    // queued, which is why `sla.assignment_deadline` carries both deadlines.
+    const step = await ladder.nextStep({
+      tx: ctx.tx,
+      entityType: ctx.timer.entityType,
+      entityId: ctx.timer.entityId,
+      storeTime: ctx.storeTime,
+      record: ctx.record,
+    });
     return {
       disposition: DISPOSITION.ACTED_WITHOUT_TRANSITION,
-      outcome: step && step.available ? `LADDER_STEP_${step.step}` : "LADDER_EXHAUSTED_TASK_SCOPE",
+      outcome: step && step.available === true ? `LADDER_STEP_${step.step}` : "LADDER_TASK_SCOPE_HAS_NO_STEP",
+      detail: step ? step.detail ?? null : null,
     };
   }
 
   const step = await ladder.nextStep({
+    // The fire transaction, so the rung recorded and the transition it justifies commit
+    // or roll back together. A relaxation that survives a rolled-back transition is a
+    // widening nobody authorised (§4.1 rule 5).
+    tx: ctx.tx,
     entityType: ctx.timer.entityType,
     entityId: ctx.timer.entityId,
     leg: ctx.entity,
     storeTime: ctx.storeTime,
+    record: ctx.record,
   });
-  const available = step && step.available === true;
 
-  return attemptTransition(ctx, {
+  // A ladder that returned nothing, or something that is not a verdict, is a ladder this
+  // handler cannot read. Refuse and re-arm — never fall through to the FAILED row.
+  if (!step || typeof step.verdict !== "string") {
+    return {
+      disposition: DISPOSITION.DEPENDENCY_UNAVAILABLE,
+      outcome: "LADDER_VERDICT_UNREADABLE",
+      detail: "the injected ladder did not return a §17.4 verdict; the deadline is re-armed and the Leg does not move",
+    };
+  }
+
+  if (step.verdict === "UNDETERMINED") {
+    ctx.record("timer.ladder_undetermined", {
+      legId: ctx.entity.id,
+      reason: step.reason ?? null,
+      detail: step.detail ?? null,
+    });
+    return {
+      disposition: DISPOSITION.DEPENDENCY_UNAVAILABLE,
+      outcome: `LADDER_UNDETERMINED:${step.reason ?? "UNSTATED"}`,
+      detail: step.detail ?? null,
+    };
+  }
+
+  const available = step.available === true;
+
+  if (step.verdict === "HELD_FOR_HUMAN_CAPACITY") {
+    ctx.record("timer.ladder_held_for_human_capacity", {
+      legId: ctx.entity.id,
+      step: step.step,
+      outstanding: step.outstanding ?? null,
+      capacity: step.capacity ?? null,
+      saturated: step.saturated === true,
+      note:
+        "the Leg reached a human rung and has not been escalated: §17.4 keeps it on the ladder rather than " +
+        "deeming step 7 complete, because a Leg no dispatcher has seen has not been escalated.",
+    });
+  }
+
+  const result = await attemptTransition(ctx, {
     event: available ? transitions.EVENT.ASSIGNMENT_DEADLINE : transitions.EVENT.LADDER_EXHAUSTED,
     context: { ladderStepAvailable: available },
-    data: available ? undefined : undefined,
+    // §17.4's rungs fire at fractions of the budget; §4.3 arms `QUEUED` at the whole of
+    // it. Without this the self-loop re-arms at the budget and the ladder advances one
+    // rung per assignment deadline.
+    deadlineSecondsOverride: available ? step.nextBoundarySeconds : undefined,
   });
+
+  // §4.5's re-arm hook, for the paths that did *not* transition — a guard refused, or
+  // another writer moved the Leg first. The next rung's boundary is still the right
+  // moment to look again, and without it `timer.worker` re-arms at the interval this
+  // timer was originally armed for, which is the whole budget.
+  if (
+    result.disposition !== DISPOSITION.TRANSITIONED &&
+    Number.isFinite(step.nextBoundarySeconds) &&
+    step.nextBoundarySeconds > 0
+  ) {
+    return { ...result, rearmInSeconds: step.nextBoundarySeconds, ladderStep: step.step ?? null };
+  }
+  return { ...result, ladderStep: step.step ?? null };
 }
 
 /**

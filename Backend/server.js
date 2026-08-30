@@ -57,6 +57,10 @@ const rejectionAggregationWorker = require("./src/workers/rejectionAggregation.w
 const calibrationWorker = require("./src/workers/calibration.worker");
 const counterfactualWorker = require("./src/workers/counterfactual.worker");
 const cutoverWorker = require("./src/workers/cutover.worker");
+// REMEDIAL PHASE T1-04 — §17.5's agent-starvation detector. The ladder and its capacity
+// model are driven by the LEADER_ONLY timer worker through §4.3's `ESCALATION_LADDER`;
+// this is the third module, whose signal is an absence and therefore needs a tick.
+const fairnessWorker = require("./src/workers/fairness.worker");
 const cutoverStore = require("./src/engine/cutover/store");
 const cutoverEnabled = require("./src/engine/cutover/enabled");
 // PHASE 15 remediation — the two halves of the cutover switch that had no production
@@ -183,6 +187,41 @@ function startScheduledWorkers(context) {
     "rejection_aggregation",
     rejectionAggregationWorker.start({ prisma, aggregator, onError: onError("rejection_aggregation") }, {}),
   );
+
+  // ── REMEDIAL PHASE T1-04 — §17.5's agent-starvation detector ───────────────
+  //
+  // The one T1-04 module with no deadline behind it. §17.4's ladder and its capacity
+  // model are reached through `ESCALATION_LADDER`, §4.3's expiry action for `QUEUED`, so
+  // the LEADER_ONLY timer worker is their runtime caller. §17.5's detection is a statement
+  // about an absence over a window — "zero completed missions in `fairness.idle_alert_period`
+  // while nominally available" — which nothing announces, so it needs a tick.
+  //
+  // `start` throws rather than defaulting when the period does not resolve, so this is
+  // guarded here for the same reason every other cadence is: a worker that cannot be
+  // configured is reported as not running, not started on a number nobody published.
+  const idleAlertPeriodHours = seconds("fairness.idle_alert_period");
+  if (Number.isFinite(idleAlertPeriodHours) && idleAlertPeriodHours > 0) {
+    started(
+      "fairness",
+      fairnessWorker.start(
+        {
+          prisma,
+          regionId: context.regionId || null,
+          idleAlertPeriodHours,
+          record: (event, detail) => log.info("Fairness (§17.5)", { event, ...detail }),
+          onError: onError("fairness"),
+        },
+        {},
+      ),
+    );
+  } else {
+    log.error("§17.5's agent-starvation detector is NOT running", {
+      worker: "fairness",
+      blockedBy:
+        "fairness.idle_alert_period did not resolve, so the detector has neither a window nor a cadence. An idle " +
+        "fleet will not be reported until it is published.",
+    });
+  }
 
   started(
     "calibration",
@@ -506,6 +545,12 @@ async function start() {
   let certificateWorker = null;
   let engineWorkers = { handles: [], running: [] };
   const engineEnabled = cutoverEnabled.processEnabled();
+  // REMEDIAL PHASE T1-04 — hoisted out of the leadership block below, where it was
+  // resolved for the LEADER_ONLY workers alone. §17.4's `ops.escalation_capacity` and
+  // §17.5's detection are both **region-scoped**, and the SCHEDULED set is started after
+  // the leadership block closes, so a region resolved inside it was out of scope by the
+  // time the fairness worker needed it. Declared here, assigned there, read by both.
+  let regionId = null;
   if (engineEnabled) {
     try {
       const store = election.postgresLeadershipStore(prisma, {
@@ -583,7 +628,6 @@ async function start() {
       //
       // Absent, it stays null and the behaviour is what it was — a gap visible in the
       // escalation row rather than a value invented here.
-      let regionId = null;
       try {
         const shardRow = await prisma.shard.findUnique({
           where: { shardId },
@@ -902,6 +946,9 @@ async function start() {
       snapshotOf: () => app.locals.config,
       logger,
       io,
+      // T1-04 — `fairness.idle_alert_period` is region-scoped, as is
+      // `ops.escalation_capacity`. Resolved above, from `Shard → Region`.
+      regionId,
     });
   } else {
     logger.info(

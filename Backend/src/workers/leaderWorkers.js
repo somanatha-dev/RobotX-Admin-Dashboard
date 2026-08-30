@@ -94,8 +94,16 @@ const clock = require("../engine/commitment/clock");
 // not build until Phase 5's remediation, and the reason `UNCOMPOSABLE` no longer has a
 // `timer` row.
 const expiryActions = require("../engine/supervision/expiryActions");
+// REMEDIAL PHASE T1-04 — §17.4's escalation ladder. Required *here*, in the composition
+// root, and injected into `expiryActions.handlers`: `src/engine/supervision/` is Tier 0
+// by path and the ladder is Tier 1, so requiring it there would invert the dependency
+// §1.8 rule 2's gate governs.
+const ladder = require("../engine/fairness/ladder");
 const legMachine = require("../engine/lifecycle/legMachine");
 const taskMachine = require("../engine/lifecycle/taskMachine");
+// For `ENTITY_TYPE` alone — the ladder's budget is resolved through the same
+// `deadlineSecondsFrom` the `QUEUED` timer is armed by, and that function is keyed on it.
+const timers = require("../engine/supervision/timers");
 
 /** @structural milliseconds per second — a unit conversion, not a threshold */
 const MS_PER_SECOND = 1000;
@@ -332,18 +340,45 @@ const COMPOSERS = Object.freeze({
    * registry's rule asks for: a worker that runs and supervises nothing is the worst of
    * the three states.
    *
-   * ── What is *not* injected, and why that is honest rather than lazy ───────
-   * `handlers()` takes optional collaborators, and two that matter are deliberately not
-   * supplied because they do not exist:
+   * ── The §17.4 ladder, now injected ────────────────────────────────────────
+   * REMEDIAL PHASE T1-04. This composer used to pass `handlers({})` and record why:
+   * *"`ladder` — §17.4's escalation ladder is mechanism T1-04, owned by a remedial phase;
+   * `src/engine/fairness/` is empty."* That was accurate and it is no longer true.
+   * `fairness/ladder.js` exists, and **this is the seam that makes it reachable**: the
+   * timer worker selects `ESCALATION_LADDER` when a `QUEUED` Leg's `sla.assignment_deadline`
+   * comes due, `expiryActions` binds the collaborator supplied here into that handler's
+   * context, and the handler consults it. There is no other production caller and there
+   * does not need to be — §17.4's ladder advances on a deadline, and §4.5 is what owns
+   * deadlines.
    *
-   *   - **`ladder`** — §17.4's escalation ladder is mechanism T1-04, owned by a remedial
-   *     phase; `src/engine/fairness/` is empty. Its handler therefore refuses by name and
-   *     re-arms, rather than reading an unimplemented ladder as an exhausted one and
-   *     failing a customer's Leg.
+   * The ladder is built here rather than inside `expiryActions` for the reason every
+   * other collaborator is: `src/engine/supervision/` is **Tier 0** by path and the ladder
+   * is Tier 1, so a `require` there would invert the dependency the tier gate governs.
+   * Injection keeps the Tier 0 supervisor ignorant of which Tier 1 mechanism owns the
+   * relaxation, which is what let this handler ship correctly refusing before the ladder
+   * existed at all.
+   *
+   * Its own configuration comes from the published register, resolved here once, like
+   * every other worker parameter:
+   *
+   *   · `sla.assignment_deadline` — the ladder's total budget. Read through
+   *     `deadlineSecondsFrom(values, LEG, QUEUED)` rather than by name, so the budget the
+   *     ladder divides into rungs is **the same number the QUEUED timer was armed for**.
+   *     Two independent resolutions of one budget would let the ladder's rung 8 and the
+   *     deadline that invokes it drift apart.
+   *   · `ops.escalation_capacity`, `ops.escalation_saturation_period` — §17.4's human
+   *     capacity model, region-scoped, which is why `context.regionId` is passed and why
+   *     its absence holds escalations rather than admitting them unbounded.
+   *
+   * ── What is still *not* injected, and why that is honest rather than lazy ─
    *   - **`probe`** — §10.3.1 row 3 makes `PROBE` a side-effect-free live query that
    *     `outbox.buildRow` refuses to enqueue, so it is a transport call rather than
    *     anything a worker can persist. Its absence costs a diagnostic; the reassignment
    *     §4.4 mandates happens either way.
+   *   - **`alternativeModality`** — §17.4 rung 8 falls back to a modality "where
+   *     configured"; no register entry names a modality set and no such collaborator
+   *     exists. Not configured is therefore the reading, and the rung's other branch —
+   *     decline with a stated reason — is what runs.
    *
    * Neither absence is papered over with a stub that returns a plausible answer.
    */
@@ -361,7 +396,24 @@ const COMPOSERS = Object.freeze({
       };
     }
 
-    const map = expiryActions.handlers({});
+    // T1-04 — §17.4's ladder, bound to this shard's region and to the same budget the
+    // `QUEUED` deadline is armed for.
+    const escalationLadder = ladder.create({
+      prisma,
+      values,
+      budgetSeconds: deadlineSecondsFrom(values, timers.ENTITY_TYPE.LEG, legMachine.LEG_STATE.QUEUED),
+      regionId: context.regionId,
+      escalationCapacity: finite(values, "ops.escalation_capacity"),
+      saturationPeriodSeconds: finite(values, "ops.escalation_saturation_period"),
+      // `classPRelaxationOrder` is deliberately not passed. §17.4 names the head of rung
+      // 3's sequence — "zone affinity first, dedicated-fleet preference next" — and then
+      // writes "and so on"; the tail is a deployment's to publish and no register entry
+      // carries it. Omitting it makes the ladder relax exactly the two the specification
+      // names, which is the only sequence the specification actually states.
+      record,
+    });
+
+    const map = expiryActions.handlers({ ladder: escalationLadder });
     const completeness = expiryActions.assertComplete(map);
     if (!completeness.ok) {
       return {

@@ -61,6 +61,13 @@ const { PURPOSES } = require("../engine/domain/purpose");
 const identityStore = require("../engine/privacy/identityStore");
 const surrogateKeys = require("../engine/privacy/surrogateKeys");
 const cells = require("../engine/spatial/cells");
+// REMEDIAL PHASE T1-04 — §4.5's deadline for the `QUEUED` state a newly admitted Leg is
+// created in, and §17.4's ladder, which owns the rung timing that deadline is armed at.
+const clock = require("../engine/commitment/clock");
+const ladder = require("../engine/fairness/ladder");
+const legEntryDeadline = require("../engine/cutover/legEntryDeadline");
+const legMachine = require("../engine/lifecycle/legMachine");
+const timers = require("../engine/supervision/timers");
 const privacyKeys = require("../config/privacyKeys");
 
 /**
@@ -218,6 +225,147 @@ function stopNaturalId(stop) {
 }
 
 /**
+ * REMEDIAL PHASE T1-04 — arm the §4.5 deadline of the `QUEUED` state a newly admitted Leg
+ * is created in, and record its absolute instant on `Leg.slaDeadline`.
+ *
+ * Two writes, one transaction, one clock read, one resolved budget — see the block above
+ * the `Leg.slaDeadline` update for why the column and the timer must be derived from the
+ * same two values rather than computed independently.
+ *
+ * ── Why this is not `legEntryDeadline.superviseEntry` ──────────────────────
+ * That module exists for the same obligation and is the right one for the four paths it
+ * names — but every one of those enters a state by a **conditional write**, so it keys the
+ * timer on `leg.version + 1` and cancels the exited state's deadline first. Neither
+ * applies here: this Leg has just been created, it has no prior state to cancel, and its
+ * version is the one the row carries. Keying on `version + 1` would arm a deadline that
+ * `timers.assessFire` discards as stale on its very first pass — supervision that looks
+ * present in the table and is inert in production.
+ *
+ * ── Why the first deadline is rung 1's boundary, not the whole budget ──────
+ * §4.3 gives `QUEUED` the exit deadline `sla.assignment_deadline`, and §26.1's I13
+ * instrument calls that same value "the ladder's **total** budget". §17.4 then triggers
+ * each of its eight rungs on a *fraction* of it — 25 %, 40 %, 55 % and so on. A timer
+ * armed at the whole budget therefore fires once, at 100 %, with all eight rungs already
+ * behind it: the ladder would record every rung at once and go straight to its terminal
+ * decision, having widened nothing. Every rung between "widen the radius" and "ask a
+ * person" would exist and never run.
+ *
+ * So the first deadline is rung 1's boundary and the ladder re-arms itself at each
+ * subsequent one (`expiryActions.escalationLadder`'s `deadlineSecondsOverride`).
+ * `sla.assignment_deadline` is unchanged in meaning and is still the value the ladder
+ * divides — what changed is that the timer now ticks at the rungs inside it.
+ * `lifecycle/taskMachine.js` already recorded where that decision belongs: the ladder is
+ * "whose step timing is (T1-04). Named here, owned there."
+ *
+ * A deployment whose ladder fractions do not resolve falls back to §4.3's register entry
+ * unchanged, so a mis-published ladder costs the schedule and never the supervision.
+ *
+ * @param {object} tx the transaction that created the Leg (§4.5)
+ * @param {object} input
+ * @param {string} input.legId
+ * @param {string|null} [input.shardId]
+ * @param {{ get: (name: string) => any }|null} [input.values] the published `values` map
+ * @returns {Promise<object|null>} the registered timer, or null when it could not be armed
+ */
+async function superviseQueuedEntry(tx, input) {
+  const state = legMachine.LEG_STATE.QUEUED;
+  const spec = legMachine.deadlineFor(state);
+  if (!spec) return null;
+
+  const leg = await tx.leg.findUnique({ where: { id: input.legId } });
+  if (!leg || leg.state !== state) return null;
+
+  // Already supervised — a retried submission converging on the same Leg. `timers.register`
+  // is unique on its key and would converge too; checking first keeps the retry from
+  // depending on a unique-violation path.
+  const existing = await tx.timer.count({
+    where: { entityType: timers.ENTITY_TYPE.LEG, entityId: leg.id, timerState: timers.TIMER_STATE.PENDING },
+  });
+  if (existing > 0) return null;
+
+  const budgetSeconds = legEntryDeadline.deadlineSecondsFrom(input.values, state);
+  if (!Number.isFinite(budgetSeconds) || budgetSeconds <= 0) {
+    // §22.1 admits no behavioural constant outside the register, least of all one invented
+    // at the moment supervision is being armed. An unresolvable deadline is reported and
+    // the Leg is left for `checkI4` to surface, which is the honest failure: a deadline
+    // armed on a guessed budget supervises nothing correctly and looks like it does.
+    logger.error("Could not arm the §4.5 QUEUED deadline: sla.assignment_deadline did not resolve", {
+      legId: leg.legId,
+      parameter: spec.parameter,
+      consequence:
+        "the Leg is queued with no deadline, so §17.4's escalation ladder has no trigger for it (invariant I4)",
+    });
+    return null;
+  }
+
+  const armedSeconds = ladder.firstBoundarySecondsFrom(input.values, budgetSeconds) ?? budgetSeconds;
+  const storeTime = await clock.readStoreTime(tx);
+
+  // ── The `Leg.slaDeadline` producer ──────────────────────────────────────────
+  //
+  // §4.3 gives Leg state `QUEUED` the exit deadline `sla.assignment_deadline`, and §4.5
+  // registers that deadline in the transaction that enters the state. The *absolute
+  // instant* of that exit deadline is what `Leg.slaDeadline` holds, and until now nothing
+  // wrote it: `domain/mappers/legacyTask.taskToWork()` sets it to `null` — correctly, it
+  // is a pure mapper with neither a clock nor a configuration snapshot — and no other
+  // production path touched the column. §17.4's triage comparator
+  // (`fairness/operatorCapacity.compareForTriage`) reads it as its third key, "SLA breach
+  // proximity", so an unpopulated column made that key inert: every Leg sorted as
+  // "proximity unknown" and a dispatcher facing forty escalations got custody and
+  // obstruction, then arrival order.
+  //
+  // ── Why it is computed here and from exactly these two values ──────────────
+  // `storeTime` and `budgetSeconds` are the same two quantities the timer below is armed
+  // from, so the instant this column names and the instant the ladder actually advances
+  // on cannot disagree. Deriving the column anywhere else — from `receivedAtMs`, from a
+  // worker's wall clock, or from a second resolution of the parameter — would be a second
+  // answer to one question, and §17.4 sorts by this one while §4.5 fires on that one.
+  //
+  // **`budgetSeconds`, never `armedSeconds`.** `armedSeconds` is rung 1's boundary — 25 %
+  // of the budget by §17.4's own table — because the ladder re-arms itself at each
+  // subsequent rung. A deadline written from it would declare every Leg in breach at a
+  // quarter of its actual assignment budget, and the triage order that reads it would be
+  // wrong in the direction that looks urgent.
+  //
+  // ── Written once, at creation, and never moved ─────────────────────────────
+  // This is below the "already supervised" guard, so a retried submission converging on
+  // the same Leg returns before reaching it and the deadline is not recomputed against a
+  // later clock. It is also below the budget guard, so an unresolvable parameter leaves
+  // the column `null` rather than a guessed instant (§22.1) — null is what the comparator
+  // already treats as "proximity unknown, sort last", which is the honest reading.
+  //
+  // Only the creation path reaches this function. A Leg that re-enters `QUEUED` later —
+  // an offer rejected or withdrawn (§11.2, `cutover/legEntryDeadline.superviseEntry`) —
+  // deliberately keeps the deadline it was admitted with: restarting the assignment
+  // budget on requeue would let a Leg cycle through offers indefinitely while its
+  // anti-starvation clock was reset each time, which is the guarantee §17.4 exists to
+  // make unbreakable.
+  await tx.leg.update({
+    where: { id: leg.id },
+    data: { slaDeadline: clock.deadlineFrom(storeTime, budgetSeconds) },
+  });
+
+  return timers.register(tx, {
+    entityType: timers.ENTITY_TYPE.LEG,
+    entityId: leg.id,
+    state,
+    entity: leg,
+    dueAt: timers.deadlineFrom(storeTime, armedSeconds),
+    armedSeconds,
+    handler: spec.onExpiry,
+    payload: {
+      armedBy: "task.service.admitToRound",
+      // Recorded so a reader of the row can tell a rung boundary from the whole budget
+      // without re-deriving the ladder, and so `timers.armedSecondsOf`'s default re-arm
+      // is understood to be a rung interval rather than an assignment deadline.
+      ladderBudgetSeconds: budgetSeconds,
+      ladderRungArming: armedSeconds !== budgetSeconds,
+    },
+    shardId: input.shardId === null ? undefined : input.shardId,
+  });
+}
+
+/**
  * PHASE 10 — §3.4's request path, for a legacy `Task` row.
  *
  * The bridge is `domain/mappers/legacyTask.taskToWork()` (Phase 2), which maps one legacy
@@ -241,7 +389,38 @@ async function admitToRound(prisma, pending, options = {}) {
   // Materialised idempotently: the ids are a pure function of `Task.taskId`, so a retry
   // converges on the same rows rather than creating a second Leg for one request.
   await prisma.mission.upsert({ where: { id: work.mission.id }, create: work.mission, update: {} });
-  await prisma.leg.upsert({ where: { id: work.leg.id }, create: work.leg, update: {} });
+
+  // ── REMEDIAL PHASE T1-04 — the Leg and its §4.5 deadline, in one transaction ─
+  //
+  // Everything here except the `superviseQueuedEntry` call is unchanged. What changed is
+  // that the Leg upsert now shares a transaction with the deadline that supervises it,
+  // because until this phase **nothing armed a QUEUED deadline for a newly admitted
+  // Leg at all**, and that absence had two consequences that only look separate:
+  //
+  //   · **Invariant I4** — "Every non-terminal state has a deadline, and the deadline is
+  //     registered in the transaction that enters the state." `invariantChecker.checkI4`
+  //     reports every such Leg as `NO_PENDING_TIMER`. `supervision/reconciler.js` repairs
+  //     orphaned Legs but explicitly skips `QUEUED` and `DEFERRED` ("it is not an orphan
+  //     — it is queued"), so nothing downstream ever repaired it either.
+  //   · **§17.4's anti-starvation ladder had no runtime trigger.** The ladder runs from
+  //     `ESCALATION_LADDER`, which is §4.3's *on expiry* action for `QUEUED`. A Leg with
+  //     no `QUEUED` deadline never expires, so the handler never fires, so the ladder
+  //     never advances — for exactly the customer work it exists to protect. Composing
+  //     the ladder into the timer worker without this would have produced a mechanism
+  //     that is present, tested, and unreachable.
+  //
+  // §4.5's sentence is "in the transaction that enters the state", so the write and the
+  // deadline commit together: a crash between them is what leaves a queued Leg nobody
+  // supervises, which is the state this is here to make unrepresentable.
+  await prisma.$transaction(async (tx) => {
+    await tx.leg.upsert({ where: { id: work.leg.id }, create: work.leg, update: {} });
+    await superviseQueuedEntry(tx, {
+      legId: work.leg.id,
+      shardId: options.shardId ?? null,
+      values: options.configValues,
+    });
+  });
+
   for (const stop of work.stops) {
     await prisma.stop.upsert({ where: { id: stop.id }, create: stop, update: {} });
   }
@@ -416,6 +595,12 @@ async function assignTask(prisma, task, { kv, io, ...options } = {}) {
     idempotencyKey: options.idempotencyKey,
     regionId: options.regionId,
     shardByRegionId: options.shardByRegionId,
+    shardId: options.shardId,
+    // T1-04 — the published `values` map, so the `QUEUED` deadline is armed from
+    // `sla.assignment_deadline` and §17.4's rung-1 fraction rather than from a constant.
+    // The whole snapshot is already here for the cutover gate above; this reads one map
+    // off it rather than resolving configuration a second way.
+    configValues: options.config && options.config.values ? options.config.values : null,
   });
 
   // The legacy `{ ...task }` shape every existing caller reads is still present, and the

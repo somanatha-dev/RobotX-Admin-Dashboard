@@ -70,6 +70,13 @@ const TABLES = Object.freeze([
   "shardRebalance",
   "mission",
   "workQueue",
+  // REMEDIAL PHASE T1-04 — §17.4's escalation ladder, one row per (Leg, rung) reached.
+  // The nine CHECK constraints and the `(legId, step)` unique index that
+  // `20260830120000_ladder_escalation_t1_04` writes are evaluated at apply time in the
+  // same way every earlier phase's are, so the ladder cannot record a rung the database
+  // would refuse — and in particular cannot record a human rung that is both admitted and
+  // held, which is the row that would make §17.4's guarantee false in the table itself.
+  "ladderEscalation",
 ]);
 
 const TABLE_OF_SQL_NAME = Object.freeze({
@@ -88,6 +95,7 @@ const TABLE_OF_SQL_NAME = Object.freeze({
   Stop: "stop",
   Shard: "shard",
   ShardMembership: "shardMembership",
+  LadderEscalation: "ladderEscalation",
   ShardRebalance: "shardRebalance",
   Mission: "mission",
   WorkQueue: "workQueue",
@@ -305,6 +313,18 @@ function createCommitmentStore(seed) {
     "AGENT_ABSENT_FROM_AVAILABILITY_INDEX",
     "ENERGY_ACCOUNTING_INCONSISTENT",
   ];
+  /** §17.4's eight rung actions, as the migration's `LadderEscalation_action_known` lists them. */
+  const LADDER_ACTIONS = [
+    "WIDEN_SEARCH_RADIUS",
+    "ADMIT_FINISHING_SOON_AND_CHARGING_INTERRUPTIBLE",
+    "RELAX_CLASS_P_SOFT_CONSTRAINTS",
+    "PERMIT_PREEMPTION",
+    "REQUEST_CROSS_REGION_CANDIDATES",
+    "MANUFACTURE_SUPPLY",
+    "ESCALATE_TO_HUMAN_DISPATCHER",
+    "ALTERNATIVE_MODALITY_OR_DECLINE",
+  ];
+  const LADDER_OUTCOMES = ["ASSIGNED", "TERMINAL", "DECLINED"];
   const VERIFICATION_LEVELS = ["L0", "L1", "L2", "L3"];
   const VERIFICATION_OUTCOMES = ["SUFFICIENT", "INSUFFICIENT"];
 
@@ -326,6 +346,68 @@ function createCommitmentStore(seed) {
     for (const other of view.timer.values()) {
       if (other.id !== row.id && other.timerKey === row.timerKey) {
         const error = new Error('duplicate key value violates unique constraint "Timer_timerKey_key"');
+        error.code = "23505";
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * REMEDIAL PHASE T1-04 — the nine CHECK constraints and the unique index of
+   * `20260830120000_ladder_escalation_t1_04`, evaluated here so the double refuses
+   * exactly what PostgreSQL would.
+   *
+   * `LadderEscalation_admitted_xor_held` is the one that matters most and it is the
+   * reason this block exists rather than a bare table. §17.4's guarantee turns on the
+   * difference between a Leg that reached rung 7 and a Leg a dispatcher has actually
+   * seen; a row that carried both `admittedAt` and `heldReason`, or neither, would erase
+   * that difference in the store — and a test suite running against a double that allowed
+   * it would report the guarantee held while the schema was the only thing still
+   * enforcing it.
+   */
+  function assertLadderEscalationConstraints(row, view) {
+    if (!Number.isInteger(row.step) || row.step < 1 || row.step > 8) {
+      throw checkViolation("LadderEscalation_step_in_range", row.step);
+    }
+    if (!LADDER_ACTIONS.includes(row.action)) {
+      throw checkViolation("LadderEscalation_action_known", row.action);
+    }
+    if (Boolean(row.humanStep) !== row.step >= 7) {
+      throw checkViolation("LadderEscalation_human_steps_are_seven_and_eight", `${row.step}/${row.humanStep}`);
+    }
+    const admitted = row.admittedAt !== null && row.admittedAt !== undefined;
+    const held = row.heldReason !== null && row.heldReason !== undefined;
+    const wellFormed = row.humanStep ? admitted !== held : !admitted && !held;
+    if (!wellFormed) {
+      throw checkViolation(
+        "LadderEscalation_admitted_xor_held",
+        `humanStep=${row.humanStep} admittedAt=${String(row.admittedAt)} heldReason=${String(row.heldReason)}`,
+      );
+    }
+    const resolved = row.resolvedAt !== null && row.resolvedAt !== undefined;
+    if (resolved && (!admitted || row.resolvedAt.getTime() < row.admittedAt.getTime())) {
+      throw checkViolation("LadderEscalation_resolution_follows_admission", String(row.resolvedAt));
+    }
+    if (resolved !== (row.outcome !== null && row.outcome !== undefined)) {
+      throw checkViolation("LadderEscalation_resolution_is_explained", String(row.outcome));
+    }
+    if (row.outcome !== null && row.outcome !== undefined && !LADDER_OUTCOMES.includes(row.outcome)) {
+      throw checkViolation("LadderEscalation_outcome_known", row.outcome);
+    }
+    if (!(row.budgetSeconds > 0)) {
+      throw checkViolation("LadderEscalation_budget_is_positive", row.budgetSeconds);
+    }
+    if (!(row.queueAgeSeconds >= 0)) {
+      throw checkViolation("LadderEscalation_queue_age_is_not_negative", row.queueAgeSeconds);
+    }
+    if (!Number.isFinite(row.elapsedFraction) || row.elapsedFraction < 0) {
+      throw checkViolation("LadderEscalation_elapsed_fraction_is_finite_and_not_negative", row.elapsedFraction);
+    }
+    // LadderEscalation_legId_step_key — one arrival per rung, which is what makes a
+    // re-fired timer converge instead of recording the same rung twice.
+    for (const other of view.ladderEscalation.values()) {
+      if (other.id !== row.id && other.legId === row.legId && other.step === row.step) {
+        const error = new Error('duplicate key value violates unique constraint "LadderEscalation_legId_step_key"');
         error.code = "23505";
         throw error;
       }
@@ -502,6 +584,11 @@ function createCommitmentStore(seed) {
     for (const [, row] of overlay.timer) {
       if (row === null) continue;
       assertTimerConstraints(row, view);
+    }
+
+    for (const [, row] of overlay.ladderEscalation) {
+      if (row === null) continue;
+      assertLadderEscalationConstraints(row, view);
     }
 
     for (const [, row] of overlay.reconcilerRepair) {

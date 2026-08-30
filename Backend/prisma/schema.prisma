@@ -1396,6 +1396,11 @@ model Leg {
   /// status field that the next step overwrites.
   externalEscalations ExternalEscalation[]
 
+  /// T1-04 — §17.4's anti-starvation ladder. A back-relation only; it adds no column.
+  /// One row per step *reached*, so "which step is this Leg on" is a history with a
+  /// recorded relaxation and cause, not a counter that the next step overwrites.
+  ladderEscalations LadderEscalation[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -3922,4 +3927,102 @@ model OverrideAudit {
   @@index([predicateId, recordedAt])
   @@index([actionClass, recordedAt])
   @@index([granted, recordedAt])
+}
+
+/// REMEDIAL PHASE T1-04 — §17.4's anti-starvation escalation ladder, made durable.
+///
+/// §17.4 states two obligations this table exists for, and neither is satisfiable from
+/// the Leg row alone:
+///
+///   > Ladder steps are each triggered by an elapsed fraction of the SLA budget, each
+///   > individually configurable, each **recorded** with what was relaxed and why.
+///
+///   > Human escalation capacity is modelled explicitly as `ops.escalation_capacity`,
+///   > scoped per region […] with the current outstanding count as a first-class SLI.
+///
+/// The *step* is derivable from queue age (§26.1's I13 instrument is literally "queue age
+/// audit versus ladder step"). What is not derivable is **what was relaxed and why**, and
+/// whether a step-7 escalation was ever actually admitted to a human — which §17.4 makes
+/// the difference between an escalation and a false claim of one:
+///
+///   > A Leg that "reached step 7" without a human ever seeing it has not been escalated,
+///   > and recording otherwise would make the ladder's guarantee false in exactly the
+///   > conditions it exists for.
+///
+/// One row per (Leg, step) reached — a history, like `ExternalEscalation`, not a status
+/// field. `@@unique([legId, step])` is what makes a re-fired timer idempotent: a step is
+/// reached once, and the second attempt updates the human-queue fields rather than
+/// recording a second arrival at the same rung.
+///
+/// `outstanding_escalations` and `escalation_saturation_time` (§21.4) are both derived
+/// from `admittedAt`/`resolvedAt` on these rows, which is why they are a pair of nullable
+/// instants rather than a boolean: a count is a point reading, and saturation is a
+/// question about an interval.
+///
+/// Tier 1 (§1.8) — the ladder is where the anti-starvation guarantee lives. Invariant I13.
+model LadderEscalation {
+  id String @id @default(uuid())
+
+  legId String
+  leg   Leg    @relation(fields: [legId], references: [id], onDelete: Cascade)
+
+  /// 1–8, as §17.4's table numbers them. CHECK-constrained to that range.
+  step Int
+
+  /// The step's action, in the ladder's own vocabulary — WIDEN_SEARCH_RADIUS,
+  /// ADMIT_FINISHING_SOON_AND_CHARGING_INTERRUPTIBLE, RELAX_CLASS_P_SOFT_CONSTRAINTS,
+  /// PERMIT_PREEMPTION, REQUEST_CROSS_REGION_CANDIDATES, MANUFACTURE_SUPPLY,
+  /// ESCALATE_TO_HUMAN_DISPATCHER, ALTERNATIVE_MODALITY_OR_DECLINE. CHECK-constrained.
+  action String
+
+  /// §17.4: *"each recorded with what was relaxed and why"*. The ordered relaxation this
+  /// step applies, as the published sequence named it — never a free-text summary, because
+  /// the round is the consumer and it needs the same tokens the ladder published.
+  relaxations Json
+
+  /// Why the step was reached: the elapsed-fraction trigger that fired.
+  cause String
+
+  /// Snapshotted from the work-queue row at the moment the step was reached, so the
+  /// I13 audit ("queue age versus ladder step") has both halves on one row and neither
+  /// has to be re-derived against a queue that has since moved.
+  queueAgeSeconds Int
+  budgetSeconds   Int
+  elapsedFraction Float
+
+  regionId String?
+  shardId  String?
+  slaClass String?
+
+  reachedAt DateTime
+
+  /// Steps 7 and 8 route to people (§17.4). False for steps 1–6, which is what keeps the
+  /// outstanding-escalation count a count of *human* work rather than of ladder activity.
+  humanStep Boolean @default(false)
+
+  /// When this escalation actually entered the human queue. **Null while it is held**,
+  /// which is §17.4's rule: "Legs waiting to enter it remain on the ladder rather than
+  /// being deemed to have completed step 7."
+  admittedAt DateTime?
+
+  /// Why it is being held — CAPACITY_SATURATED, or null once admitted.
+  heldReason String?
+
+  /// When the escalation stopped being outstanding: the Leg left the queue, by assignment
+  /// or by a terminal decision. Written by the ladder's own reconciliation pass, so the
+  /// count has one source rather than a live count and a stored one that can disagree.
+  resolvedAt DateTime?
+
+  /// ASSIGNED | TERMINAL | DECLINED — how it stopped being outstanding.
+  outcome String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([legId, step])
+  @@index([legId])
+  @@index([step])
+  @@index([regionId, humanStep, resolvedAt])
+  @@index([regionId, admittedAt])
+  @@index([shardId, reachedAt])
 }

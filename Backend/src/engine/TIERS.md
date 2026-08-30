@@ -86,6 +86,21 @@ operable, defensible, and bounded.
 
 Tier 1 carries invariants **I3, I6, I10, I11, I13, I14, I15** (§1.8, §26.1).
 
+**T1-04 landed on 2026-08-30, under REMEDIAL PHASE T1-04.** All three modules exist,
+and the mechanism runs from §4.3's `ESCALATION_LADDER` expiry action through
+`supervision/expiryActions.js`, which the composition root injects the ladder into.
+Two things about its shape are worth stating here rather than only in its own header,
+because both are consequences of this table:
+
+- **Rungs 4, 5 and 6 of §17.4 name Tier 2 mechanisms** — preemption (§4.8),
+  cross-region (§19.6) and repositioning (§17.3). §1.8 rule 2 forbids this Tier 1
+  guarantee from depending on any of them, so each rung emits a published relaxation
+  *directive* and calls nothing. `tools/gates/checkTierDependencies.js` is what keeps
+  that true. The ladder's guarantee therefore holds with every §22.5 kill switch
+  thrown, which §1.8 rule 3 says is exactly how the engine launches.
+- **`src/engine/lifecycle/preemption.js` is still absent and that is correct.** It was
+  once listed as evidence that T1-04 was undone; it is Tier 2 and Phase 16's.
+
 ---
 
 ## Tier 2 — allocation quality

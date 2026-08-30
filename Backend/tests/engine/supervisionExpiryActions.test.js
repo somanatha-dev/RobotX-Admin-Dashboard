@@ -221,29 +221,132 @@ describe("§4.3 QUEUED — ESCALATION_LADDER refuses rather than inventing a dec
     expect(after.state).toBe("QUEUED");
   });
 
+  // ── REMEDIAL PHASE T1-04 — the ladder's verdict, not a boolean ─────────────
+  //
+  // These two tests used to hand the handler `{ available: true }` and `{ available: false }`.
+  // The ladder now returns one of four **named verdicts**, and the handler reads the name
+  // rather than the truthiness of a field, for a reason that is the whole safety argument
+  // of this seam: §4.4's two rows are not symmetric. `→ QUEUED` costs a re-queue;
+  // `LADDER_EXHAUSTED → FAILED` terminates a customer's Leg. A contract in which the
+  // *absence* of a field means "exhausted" fails real work on a missing input, and a
+  // collaborator that returned `{}` — or `undefined`, or threw and was caught upstream —
+  // would take that row. So an unreadable verdict is refused, and the test below plants
+  // exactly that case.
   test("with a ladder that has a step, it attempts §4.4's relaxation row", async () => {
     const store = fixtures.storeFor(fixtures.seed());
     const leg = await legIn(store, "QUEUED");
     const { result, after } = await fire(store, leg, {
-      deps: { ladder: { nextStep: async () => ({ available: true, step: 3 }) } },
+      deps: {
+        ladder: {
+          nextStep: async () => ({ verdict: "STEP_AVAILABLE", available: true, step: 3, nextBoundarySeconds: 135 }),
+        },
+      },
     });
 
     expect(result.disposition).toBe(expiryActions.DISPOSITION.TRANSITIONED);
     expect(result.outcome).toBe("QUEUED→QUEUED");
+    expect(result.ladderStep).toBe(3);
     // The self-transition bumps the version, which re-arms supervision at the new version.
     expect(after.version).toBe(leg.version + 1);
     expect(after.state).toBe("QUEUED");
+  });
+
+  test("the re-armed QUEUED deadline is the ladder's next rung, not the whole budget", async () => {
+    // §4.3 arms `QUEUED` for `sla.assignment_deadline`, which §26.1's I13 instrument calls
+    // "the ladder's **total** budget", while §17.4 fires each rung at a *fraction* of it.
+    // Re-arming the self-loop at the whole budget again would advance the ladder one rung
+    // per assignment deadline — eight budgets to reach a decision specified to be reached
+    // in one. The CONFIG fixture resolves every deadline to 600s, so a re-arm at 135s can
+    // only have come from the ladder.
+    const store = fixtures.storeFor(fixtures.seed());
+    const leg = await legIn(store, "QUEUED");
+    await fire(store, leg, {
+      deps: {
+        ladder: {
+          nextStep: async () => ({ verdict: "STEP_AVAILABLE", available: true, step: 1, nextBoundarySeconds: 135 }),
+        },
+      },
+    });
+
+    const armed = store.rows("timer").filter((row) => row.entityId === leg.id && row.timerState === "PENDING");
+    expect(armed).toHaveLength(1);
+    expect(armed[0].payload.armedSeconds).toBe(135);
   });
 
   test("with a ladder that reports exhaustion, §4.4's terminal row applies — and only then", async () => {
     const store = fixtures.storeFor(fixtures.seed());
     const leg = await legIn(store, "QUEUED");
     const { result, after } = await fire(store, leg, {
-      deps: { ladder: { nextStep: async () => ({ available: false }) } },
+      deps: { ladder: { nextStep: async () => ({ verdict: "EXHAUSTED", available: false, step: 8 }) } },
     });
 
     expect(result.disposition).toBe(expiryActions.DISPOSITION.TRANSITIONED);
     expect(after.state).toBe("FAILED");
+  });
+
+  test("a ladder held at a human rung keeps the Leg QUEUED — reaching rung 7 is not being escalated", async () => {
+    // §17.4: "Legs waiting to enter it remain on the ladder rather than being deemed to
+    // have completed step 7. A Leg that 'reached step 7' without a human ever seeing it
+    // has not been escalated, and recording otherwise would make the ladder's guarantee
+    // false in exactly the conditions it exists for."
+    const store = fixtures.storeFor(fixtures.seed());
+    const leg = await legIn(store, "QUEUED");
+    const { result, after, events } = await fire(store, leg, {
+      deps: {
+        ladder: {
+          nextStep: async () => ({
+            verdict: "HELD_FOR_HUMAN_CAPACITY",
+            available: true,
+            held: true,
+            step: 7,
+            outstanding: 12,
+            capacity: 12,
+            saturated: true,
+            nextBoundarySeconds: 90,
+          }),
+        },
+      },
+    });
+
+    expect(result.disposition).toBe(expiryActions.DISPOSITION.TRANSITIONED);
+    expect(after.state).toBe("QUEUED");
+    const held = events.find((entry) => entry.event === "timer.ladder_held_for_human_capacity");
+    expect(held.detail).toMatchObject({ step: 7, outstanding: 12, capacity: 12, saturated: true });
+  });
+
+  test("an UNDETERMINED verdict re-arms and never takes the FAILED row", async () => {
+    const store = fixtures.storeFor(fixtures.seed());
+    const leg = await legIn(store, "QUEUED");
+    const { result, after } = await fire(store, leg, {
+      deps: {
+        ladder: {
+          nextStep: async () => ({ verdict: "UNDETERMINED", available: null, reason: "NO_QUEUE_ROW" }),
+        },
+      },
+    });
+
+    expect(result.disposition).toBe(expiryActions.DISPOSITION.DEPENDENCY_UNAVAILABLE);
+    expect(result.outcome).toBe("LADDER_UNDETERMINED:NO_QUEUE_ROW");
+    expect(after.state).toBe("QUEUED");
+  });
+
+  test.each([
+    ["nothing at all", undefined],
+    ["an empty object", {}],
+    ["a bare `available: false` with no verdict", { available: false }],
+  ])("a ladder that returns %s is refused, not read as exhaustion", async (_label, verdict) => {
+    // The planted regression. Before T1-04 the handler read `step.available === true` and
+    // mapped everything else to `LADDER_EXHAUSTED` — so any of these three shapes failed a
+    // customer's Leg. All three must now leave it QUEUED.
+    const store = fixtures.storeFor(fixtures.seed());
+    const leg = await legIn(store, "QUEUED");
+    const { result, after } = await fire(store, leg, {
+      deps: { ladder: { nextStep: async () => verdict } },
+    });
+
+    expect(result.disposition).toBe(expiryActions.DISPOSITION.DEPENDENCY_UNAVAILABLE);
+    expect(result.outcome).toBe("LADDER_VERDICT_UNREADABLE");
+    expect(after.state).toBe("QUEUED");
   });
 });
 

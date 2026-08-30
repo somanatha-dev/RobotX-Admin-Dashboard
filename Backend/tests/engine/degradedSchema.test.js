@@ -278,8 +278,17 @@ describe("Phase 12 module tree", () => {
     expect(privacy).toEqual(["erasure.js", "identityStore.js", "surrogateKeys.js"]);
   });
 
-  test("no §17.4 ladder module exists — fairness/ stays empty", () => {
-    expect(fs.readdirSync(path.join(ENGINE, "fairness")).filter((name) => name.endsWith(".js"))).toEqual([]);
+  // REMEDIAL PHASE T1-04. This asserted `fairness/` was **empty**, which was the boundary
+  // while §17.4's ladder had no owning phase. The remedial phase has run and the three
+  // modules `guards/tierAssertions.js` names for T1-04 are on disk, so the boundary moves
+  // rather than disappearing: `fairness/` now holds **exactly** those three and nothing
+  // else. `dutyCycle.js` (§17.2, T2-10) and `repositioning.js` (§17.3) are Tier 2 and
+  // Phase 16's — an assertion that only checked the three were *present* would let either
+  // arrive here unnoticed, which is the drift the empty-directory assertion prevented.
+  test("fairness/ holds exactly T1-04's three §17.4 modules — no Tier 2 fairness module yet", () => {
+    expect(
+      fs.readdirSync(path.join(ENGINE, "fairness")).filter((name) => name.endsWith(".js")).sort(),
+    ).toEqual(["agentStarvation.js", "ladder.js", "operatorCapacity.js"]);
   });
 
   // PHASE 15 — "All engine workers move from shadow to production scheduling." The

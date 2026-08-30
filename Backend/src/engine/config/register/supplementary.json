@@ -2454,6 +2454,198 @@
       "section": "§24.6, T9",
       "requiredBy": "tests/scale/locality — the T9 locality gate",
       "description": "The fractional round-time difference within which a shard in a small fleet and a shard in a million-agent fleet count as statistically indistinguishable (§24.6). T9 is the scaling claim, and its verification needs a number: 'indistinguishable' with no tolerance is a judgement call made after seeing the data. The gate is two-sided here because a shard that is faster in the large fleet is as much a sign of a broken benchmark as one that is slower."
+    },
+    {
+      "name": "ladder.step_1_widen_radius_fraction",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.25,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "sla_class",
+      "scopes": [
+        "global",
+        "sla_class",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "sla_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "observed queue-age distributions per SLA class; the defaults are §17.4's own table",
+      "section": "§17.4",
+      "requiredBy": "step 1 of the §17.4 escalation ladder, whose trigger is an elapsed fraction of sla.assignment_deadline",
+      "description": "Elapsed fraction of the ladder's total budget (sla.assignment_deadline) at which ladder step 1 fires: WIDEN_SEARCH_RADIUS Widen the search radius beyond the class default. §17.4 states the eight rungs are \"each individually configurable\", and §22.2 classes the relaxation ladder order as Policy, so each fraction is a register entry rather than a constant in the ladder. The default is the value §17.4's own table publishes; it is not a chosen number. §17.4 also requires the order to be *published* configuration — \"operations knows in advance exactly what the system will sacrifice under pressure and in what order\" — which is why the eight are registered and validated as a strictly increasing sequence rather than left to the caller."
+    },
+    {
+      "name": "ladder.step_2_admit_wait_classes_fraction",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.4,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "sla_class",
+      "scopes": [
+        "global",
+        "sla_class",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "sla_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "observed queue-age distributions per SLA class; the defaults are §17.4's own table",
+      "section": "§17.4",
+      "requiredBy": "step 2 of the §17.4 escalation ladder, whose trigger is an elapsed fraction of sla.assignment_deadline",
+      "description": "Elapsed fraction of the ladder's total budget (sla.assignment_deadline) at which ladder step 2 fires: ADMIT_FINISHING_SOON_AND_CHARGING_INTERRUPTIBLE Admit FINISHING_SOON and CHARGING_INTERRUPTIBLE with a longer wait horizon. §17.4 states the eight rungs are \"each individually configurable\", and §22.2 classes the relaxation ladder order as Policy, so each fraction is a register entry rather than a constant in the ladder. The default is the value §17.4's own table publishes; it is not a chosen number. §17.4 also requires the order to be *published* configuration — \"operations knows in advance exactly what the system will sacrifice under pressure and in what order\" — which is why the eight are registered and validated as a strictly increasing sequence rather than left to the caller."
+    },
+    {
+      "name": "ladder.step_3_relax_class_p_fraction",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.55,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "sla_class",
+      "scopes": [
+        "global",
+        "sla_class",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "sla_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "observed queue-age distributions per SLA class; the defaults are §17.4's own table",
+      "section": "§17.4",
+      "requiredBy": "step 3 of the §17.4 escalation ladder, whose trigger is an elapsed fraction of sla.assignment_deadline",
+      "description": "Elapsed fraction of the ladder's total budget (sla.assignment_deadline) at which ladder step 3 fires: RELAX_CLASS_P_SOFT_CONSTRAINTS Relax class P soft constraints in the published order. Class I, R and F are never relaxed. §17.4 states the eight rungs are \"each individually configurable\", and §22.2 classes the relaxation ladder order as Policy, so each fraction is a register entry rather than a constant in the ladder. The default is the value §17.4's own table publishes; it is not a chosen number. §17.4 also requires the order to be *published* configuration — \"operations knows in advance exactly what the system will sacrifice under pressure and in what order\" — which is why the eight are registered and validated as a strictly increasing sequence rather than left to the caller."
+    },
+    {
+      "name": "ladder.step_4_permit_preemption_fraction",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.7,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "sla_class",
+      "scopes": [
+        "global",
+        "sla_class",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "sla_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "observed queue-age distributions per SLA class; the defaults are §17.4's own table",
+      "section": "§17.4",
+      "requiredBy": "step 4 of the §17.4 escalation ladder, whose trigger is an elapsed fraction of sla.assignment_deadline",
+      "description": "Elapsed fraction of the ladder's total budget (sla.assignment_deadline) at which ladder step 4 fires: PERMIT_PREEMPTION Permit preemption of lower-class missions (§4.8). §17.4 states the eight rungs are \"each individually configurable\", and §22.2 classes the relaxation ladder order as Policy, so each fraction is a register entry rather than a constant in the ladder. The default is the value §17.4's own table publishes; it is not a chosen number. §17.4 also requires the order to be *published* configuration — \"operations knows in advance exactly what the system will sacrifice under pressure and in what order\" — which is why the eight are registered and validated as a strictly increasing sequence rather than left to the caller."
+    },
+    {
+      "name": "ladder.step_5_cross_region_fraction",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.8,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "sla_class",
+      "scopes": [
+        "global",
+        "sla_class",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "sla_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "observed queue-age distributions per SLA class; the defaults are §17.4's own table",
+      "section": "§17.4",
+      "requiredBy": "step 5 of the §17.4 escalation ladder, whose trigger is an elapsed fraction of sla.assignment_deadline",
+      "description": "Elapsed fraction of the ladder's total budget (sla.assignment_deadline) at which ladder step 5 fires: REQUEST_CROSS_REGION_CANDIDATES Request cross-region candidates where policy permits. §17.4 states the eight rungs are \"each individually configurable\", and §22.2 classes the relaxation ladder order as Policy, so each fraction is a register entry rather than a constant in the ladder. The default is the value §17.4's own table publishes; it is not a chosen number. §17.4 also requires the order to be *published* configuration — \"operations knows in advance exactly what the system will sacrifice under pressure and in what order\" — which is why the eight are registered and validated as a strictly increasing sequence rather than left to the caller."
+    },
+    {
+      "name": "ladder.step_6_manufacture_supply_fraction",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.85,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "sla_class",
+      "scopes": [
+        "global",
+        "sla_class",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "sla_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "observed queue-age distributions per SLA class; the defaults are §17.4's own table",
+      "section": "§17.4",
+      "requiredBy": "step 6 of the §17.4 escalation ladder, whose trigger is an elapsed fraction of sla.assignment_deadline",
+      "description": "Elapsed fraction of the ladder's total budget (sla.assignment_deadline) at which ladder step 6 fires: MANUFACTURE_SUPPLY Trigger a targeted reposition or an accelerated charge to manufacture supply. §17.4 states the eight rungs are \"each individually configurable\", and §22.2 classes the relaxation ladder order as Policy, so each fraction is a register entry rather than a constant in the ladder. The default is the value §17.4's own table publishes; it is not a chosen number. §17.4 also requires the order to be *published* configuration — \"operations knows in advance exactly what the system will sacrifice under pressure and in what order\" — which is why the eight are registered and validated as a strictly increasing sequence rather than left to the caller."
+    },
+    {
+      "name": "ladder.step_7_human_dispatcher_fraction",
+      "type": "number",
+      "unit": "ratio",
+      "default": 0.9,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "sla_class",
+      "scopes": [
+        "global",
+        "sla_class",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "sla_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "observed queue-age distributions per SLA class; the defaults are §17.4's own table",
+      "section": "§17.4",
+      "requiredBy": "step 7 of the §17.4 escalation ladder, whose trigger is an elapsed fraction of sla.assignment_deadline",
+      "description": "Elapsed fraction of the ladder's total budget (sla.assignment_deadline) at which ladder step 7 fires: ESCALATE_TO_HUMAN_DISPATCHER Escalate to a human dispatcher with the full rejection analysis and the ranked near-miss list. §17.4 states the eight rungs are \"each individually configurable\", and §22.2 classes the relaxation ladder order as Policy, so each fraction is a register entry rather than a constant in the ladder. The default is the value §17.4's own table publishes; it is not a chosen number. §17.4 also requires the order to be *published* configuration — \"operations knows in advance exactly what the system will sacrifice under pressure and in what order\" — which is why the eight are registered and validated as a strictly increasing sequence rather than left to the caller."
+    },
+    {
+      "name": "ladder.step_8_alternative_modality_fraction",
+      "type": "number",
+      "unit": "ratio",
+      "default": 1.0,
+      "range": {
+        "min": 0,
+        "max": 1
+      },
+      "specScope": "sla_class",
+      "scopes": [
+        "global",
+        "sla_class",
+        "region"
+      ],
+      "changeClass": "POLICY",
+      "owner": "Ops",
+      "blastRadius": "sla_class",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "observed queue-age distributions per SLA class; the defaults are §17.4's own table",
+      "section": "§17.4",
+      "requiredBy": "step 8 of the §17.4 escalation ladder, whose trigger is an elapsed fraction of sla.assignment_deadline",
+      "description": "Elapsed fraction of the ladder's total budget (sla.assignment_deadline) at which ladder step 8 fires: ALTERNATIVE_MODALITY_OR_DECLINE Fall back to an alternative modality where configured, or decline with a stated reason. §17.4 states the eight rungs are \"each individually configurable\", and §22.2 classes the relaxation ladder order as Policy, so each fraction is a register entry rather than a constant in the ladder. The default is the value §17.4's own table publishes; it is not a chosen number. §17.4 also requires the order to be *published* configuration — \"operations knows in advance exactly what the system will sacrifice under pressure and in what order\" — which is why the eight are registered and validated as a strictly increasing sequence rather than left to the caller."
     }
   ]
 }

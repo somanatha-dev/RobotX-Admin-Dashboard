@@ -134,6 +134,28 @@ const WORKERS = Object.freeze([
     blockedBy: null,
   },
   {
+    // REMEDIAL PHASE T1-04. §17.4's ladder and its capacity model are driven by a
+    // deadline — `ESCALATION_LADDER` is §4.3's expiry action for `QUEUED` — so the timer
+    // worker is their runtime caller and they need no row here. §17.5's detector is the
+    // exception: "zero completed missions in `fairness.idle_alert_period` while nominally
+    // available" is a statement about an *absence* over a window, which no event announces
+    // and no deadline expires on. A detector of "nothing happened" that only runs when
+    // something happens detects nothing, so it gets a tick of its own.
+    //
+    // The cadence is the alert period itself. No second parameter was registered for the
+    // interval: an alert whose window is a day is not improved by being recomputed every
+    // minute, and §22.1 admits no behavioural constant outside the register — so the
+    // alternative to reusing this one is inventing a cadence the specification never names.
+    id: "fairness",
+    module: "workers/fairness.worker",
+    section: "§17.5",
+    tier: 1,
+    readiness: READINESS.SCHEDULED,
+    cadenceParameter: "fairness.idle_alert_period",
+    purpose: "Detect agents that completed no mission in the idle-alert period while nominally available (§17.5).",
+    blockedBy: null,
+  },
+  {
     id: "rejection_aggregation",
     module: "workers/rejectionAggregation.worker",
     section: "§7.7",

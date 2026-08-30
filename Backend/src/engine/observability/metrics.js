@@ -714,10 +714,12 @@ async function derive(deps, input) {
      * to prevent, and it had happened again in the other direction.
      *
      * The §17.4 ladder metrics (`outstanding_escalations`, `escalation_saturation_time`,
-     * `ladder_step_distribution`) are deliberately **not** wired here: their producer is the
-     * anti-starvation ladder of §17.4, which is its own phase's, and `src/engine/fairness/`
-     * still holds no ladder. Wiring a plausible-looking query over the wrong rows is worse
-     * than a null with a correct reason.
+     * `ladder_step_distribution`) were deliberately **not** wired here, with the reason
+     * "their producer is the anti-starvation ladder of §17.4, which is its own phase's, and
+     * `src/engine/fairness/` still holds no ladder". The remedial phase has run: the ladder
+     * exists, it writes `LadderEscalation`, and the three are derived below from those rows.
+     * They are the same rows `operatorCapacity` decides admission from, so a dashboard
+     * cannot show a count the admission control disagrees with.
      */
     await attempt("degraded_mode_time", async () => {
       const closed = await deps.prisma.degradedModeEvent.findMany({
@@ -766,6 +768,119 @@ async function derive(deps, input) {
         "suspensions_over_time_box",
         Object.fromEntries([...counts.entries()].sort((a, b) => compareStrings(a[0], b[0]))),
         { overdueModes: overdue.length, mustBeZero: true, alertable: counts.size > 0 },
+      );
+    });
+
+    /* ── REMEDIAL PHASE T1-04 — §17.4's human capacity, from the ladder's own rows ──
+     *
+     * > Outstanding escalations against `ops.escalation_capacity` per region, and time
+     * > spent saturated (§17.4) — the ladder's guarantee is only as good as the capacity
+     * > behind its last two steps.
+     * > Ladder step distribution: how far Legs are getting before resolution, by class and
+     * > zone.
+     *
+     * All three come from `LadderEscalation`, which is what makes them consistent with each
+     * other and with the admission decision: a point count and an interval question over
+     * one set of `admittedAt`/`resolvedAt` pairs cannot disagree.
+     *
+     * Scoped by **region**, because `ops.escalation_capacity` is — a dispatch function is
+     * staffed per region, not per shard, and a count aggregated across regions would be
+     * compared against a capacity that does not exist.
+     */
+    await attempt("outstanding_escalations", async () => {
+      const open = await deps.prisma.ladderEscalation.findMany({
+        where: { humanStep: true, admittedAt: { not: null }, resolvedAt: null },
+        select: { regionId: true },
+      });
+      const byRegion = new Map();
+      for (const row of open) {
+        const key = row.regionId ?? "unassigned";
+        byRegion.set(key, (byRegion.get(key) || 0) + 1);
+      }
+      return reading(
+        "outstanding_escalations",
+        Object.fromEntries([...byRegion.entries()].sort((a, b) => compareStrings(a[0], b[0]))),
+        { total: open.length, dimensions: ["region"] },
+      );
+    });
+
+    await attempt("escalation_saturation_time", async () => {
+      // Seconds in the window during which at least one escalation was outstanding,
+      // per region — the interval half of the same rows. It is reported without a capacity
+      // comparison on purpose: `ops.escalation_capacity` is region-scoped configuration and
+      // this derivation runs over every region at once, so the *time* is the measurement
+      // and `operatorCapacity.assessSaturation` is what compares it against a capacity for
+      // the one region it is bound to. A comparison made here against a capacity read for
+      // some other region would be a number that looks authoritative and is not.
+      const rows = await deps.prisma.ladderEscalation.findMany({
+        where: {
+          humanStep: true,
+          admittedAt: { not: null, lt: to },
+          OR: [{ resolvedAt: null }, { resolvedAt: { gte: from } }],
+        },
+        select: { regionId: true, admittedAt: true, resolvedAt: true },
+      });
+
+      const byRegion = new Map();
+      for (const row of rows) {
+        const key = row.regionId ?? "unassigned";
+        const start = Math.max(row.admittedAt.getTime(), from.getTime());
+        const end = Math.min(row.resolvedAt ? row.resolvedAt.getTime() : to.getTime(), to.getTime());
+        if (!(end > start)) continue;
+        const spans = byRegion.get(key) || [];
+        spans.push([start, end]);
+        byRegion.set(key, spans);
+      }
+
+      // Union of the spans, not their sum: two escalations open at once is one second of
+      // "time spent with the human queue occupied", not two.
+      const seconds = new Map();
+      for (const [key, spans] of byRegion) {
+        spans.sort((left, right) => left[0] - right[0]);
+        let covered = 0;
+        let cursor = null;
+        for (const [start, end] of spans) {
+          if (cursor === null || start > cursor[1]) {
+            if (cursor !== null) covered += cursor[1] - cursor[0];
+            cursor = [start, end];
+          } else if (end > cursor[1]) {
+            cursor = [cursor[0], end];
+          }
+        }
+        if (cursor !== null) covered += cursor[1] - cursor[0];
+        seconds.set(key, covered / MS_PER_SECOND);
+      }
+
+      return reading(
+        "escalation_saturation_time",
+        Object.fromEntries([...seconds.entries()].sort((a, b) => compareStrings(a[0], b[0]))),
+        { escalationsInWindow: rows.length, windowMinutes, dimensions: ["region"] },
+      );
+    });
+
+    await attempt("ladder_step_distribution", async () => {
+      // "How far Legs are getting before resolution." The highest rung each Leg reached in
+      // the window, not every rung it crossed: a Leg that reached rung 7 also has rows for
+      // 1 through 6, and counting all of them would report a ladder that is mostly rung 1
+      // however badly the fleet is doing.
+      const rows = await deps.prisma.ladderEscalation.findMany({
+        where: { reachedAt: { gte: from, lt: to } },
+        select: { legId: true, step: true, slaClass: true, regionId: true },
+      });
+      const highest = new Map();
+      for (const row of rows) {
+        const current = highest.get(row.legId);
+        if (!current || row.step > current.step) highest.set(row.legId, row);
+      }
+      const counts = new Map();
+      for (const row of highest.values()) {
+        const key = `${row.step}|${row.slaClass ?? "unclassified"}|${row.regionId ?? "unassigned"}`;
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+      return reading(
+        "ladder_step_distribution",
+        Object.fromEntries([...counts.entries()].sort((a, b) => compareStrings(a[0], b[0]))),
+        { legsOnTheLadder: highest.size, rungsRecorded: rows.length, dimensions: ["step", "class", "region"] },
       );
     });
 

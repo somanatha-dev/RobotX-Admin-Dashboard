@@ -326,7 +326,26 @@ describe("the engine module tree", () => {
     "routing/inProcessCache.js",
   ];
 
+  // ── REMEDIAL PHASE T1-04 — §17.4's anti-starvation escalation ladder ───────
+  //
+  // Not a numbered phase, and that is the point. §1.8 places the ladder at **Tier 1**
+  // ("where the anti-starvation guarantee lives") and the plan's §0.2 says "Phases 0-15
+  // deliver Tier 0 + Tier 1. Phase 16 enables Tier 2." — so Phase 16 is excluded — while no
+  // authoritative source ever assigned it to one of Phases 0-15. `IMPLEMENTATION_EXECUTION_PLAN.md`
+  // §3/§6.3 resolved that by opening a **remedial phase** for it, with prerequisites Phases
+  // 11-14 and running parallel with Phase 15.
+  //
+  // The blocker register recorded the trap this list must not fall into: *"Registration is
+  // authorisation, not implementation."* The remedial phase has now run, so these three are
+  // owned **and** on disk, and the suite below asserts both halves rather than either alone.
+  const REMEDIAL_T1_04_OWNED = [
+    "fairness/ladder.js",
+    "fairness/operatorCapacity.js",
+    "fairness/agentStarvation.js",
+  ];
+
   const LANDED_PHASE_OWNED = [
+    ...REMEDIAL_T1_04_OWNED,
     ...PHASE_1_OWNED,
     ...PHASE_2_OWNED,
     ...PHASE_3_OWNED,
@@ -454,12 +473,28 @@ describe("the engine module tree", () => {
       expect([...t104.modules].sort()).toEqual(LADDER_MODULES.map((m) => `src/engine/${m}`).sort());
     });
 
-    test("no phase claims the ladder, and it is absent from disk — an open decision, recorded", () => {
-      // Both halves matter. Unowned-and-absent is the honest state of an unassigned obligation.
-      // Unowned-and-present would be work landing with no phase accountable for it; owned-by-some
-      // -phase would mean the decision was taken, and it has not been.
-      expect(unownedAmong(LADDER_MODULES).sort()).toEqual([...LADDER_MODULES].sort());
+    test("the remedial phase owns the ladder, and all three modules are on disk", () => {
+      // REMEDIAL PHASE T1-04. This test asserted the opposite — unowned **and** absent —
+      // which was the honest state of an unassigned obligation for as long as it was one.
+      // Both halves have moved together, and they must: owned-and-absent is a registration
+      // mistaken for an implementation, which is the exact confusion the blocker register
+      // names ("Registration is authorisation, not implementation"), and unowned-and-present
+      // is work landing with nothing accountable for it.
+      //
+      // Ownership is the **remedial** phase, not one of Phases 0-15. Nothing here decides
+      // which numbered phase owns it, because no authoritative source ever did.
+      expect([...REMEDIAL_T1_04_OWNED].sort()).toEqual([...LADDER_MODULES].sort());
+      expect(unownedAmong(LADDER_MODULES)).toEqual([]);
       for (const module of LADDER_MODULES) {
+        expect({ module, onDisk: fs.existsSync(path.join(ENGINE_ROOT, module)) }).toEqual({
+          module,
+          onDisk: true,
+        });
+      }
+      // The Tier 2 half of `fairness/` is still Phase 16's and still refused, so the
+      // directory has not been opened up by the remedial phase landing inside it.
+      expect(unownedAmong(TIER_TWO_FAIRNESS).sort()).toEqual([...TIER_TWO_FAIRNESS].sort());
+      for (const module of TIER_TWO_FAIRNESS) {
         expect({ module, onDisk: fs.existsSync(path.join(ENGINE_ROOT, module)) }).toEqual({
           module,
           onDisk: false,
@@ -470,7 +505,15 @@ describe("the engine module tree", () => {
     test("no phase list smuggles the ladder in under a directory prefix", () => {
       // `fairness/` as a bare prefix in any PHASE_*_OWNED list would silently admit all five
       // modules — the Tier 1 three and the Tier 2 two — and defeat both refusals at once.
-      expect(LANDED_PHASE_OWNED.filter((owned) => owned === "fairness/" || owned.startsWith("fairness/"))).toEqual([]);
+      // The remedial phase's three entries are named files, which is what keeps this
+      // refusal meaningful: a bare `fairness/` prefix would admit all five modules — the
+      // Tier 1 three and the Tier 2 two — and defeat the Tier 2 refusal above at a stroke.
+      expect(
+        LANDED_PHASE_OWNED.filter(
+          (owned) => owned.startsWith("fairness") && !REMEDIAL_T1_04_OWNED.includes(owned),
+        ),
+      ).toEqual([]);
+      expect(LANDED_PHASE_OWNED).not.toContain("fairness/");
     });
   });
 

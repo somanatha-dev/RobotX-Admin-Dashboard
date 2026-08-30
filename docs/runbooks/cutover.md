@@ -312,8 +312,19 @@ approved publish. Then append `stage.auditEventFor(authorisation.action)` to the
 stream. The pre-declaration travels in that event's payload, which is how
 `cutover/store.js` reads it back and how anyone can later verify the ordering.
 
+**As part of a complete set, not on its own.** *(Corrected 2026-08-30, alongside the same
+defect in [`rollback.md`](rollback.md) §2.)* A configuration version is a complete set:
+`publish()` writes exactly the bindings the request carries and inherits nothing, so a publish
+carrying this one binding reverts every other parameter in the deployment to its register
+default. Restate the in-force set with this region's binding replaced. `rollback.md` §2.1
+gives the recipe and it is the same one in both directions — only the binding's `value`
+differs, and for an enable you set it rather than clearing it.
+
 **Publish *and pin*.** A published version that is not pinned is not the version in force;
-`POST /api/config/versions` pins by default and `{"pin": false}` turns that off.
+**`POST /api/config/publish`** pins by default and `{"pin": false}` turns that off. *(This
+named `POST /api/config/versions`, which does not exist: `/versions` is the read-only version
+list, `GET`, and it returns no payloads. Corrected 2026-08-30.)* The route requires an
+elevated role and carries §23.4's `SAFETY_CONFIG_CHANGE` action class.
 
 **Then wait for propagation, and check.** A running process adopts a newly pinned version on
 `engine/cutover/configPropagation.js`'s pull, at `cutover.guardrail_check_interval` — not
