@@ -9,9 +9,23 @@
 > were corrected by later passes. Reading them to decide what to implement is the specific
 > failure this document exists to prevent.
 
-**Consolidated:** 2026-08-29 · **Last updated:** **2026-08-30** (closure item **V-9**, the Phase
-0–14 cross-phase re-verification; before it, the post-V-10 current-state audit and closure item
-**V-10**)
+**Consolidated:** 2026-08-29 · **Last updated:** **2026-08-31** — **B-M TLC execution**: all six
+checked-in configurations run for the first time. **B-M did NOT close** (1 of 6 closed), and **two
+new blockers opened, X4 and X5**. Before it: closure item **V-9**, the Phase 0–14 cross-phase
+re-verification (2026-08-30); the post-V-10 current-state audit; and closure item **V-10**.
+
+> ### ⚠ Two things happened on 2026-08-31 and they must not be conflated.
+>
+> | | |
+> |---|---|
+> | **Phase 15 implementation remains FROZEN** | The freeze commit `c27a75c` is intact. **No application source, `.tla`, `.cfg`, schema, migration, test or configuration was changed**, and the implementation verdict is unchanged. The source digest did not move |
+> | **Formal verification has uncovered a specification-level blocker** | **X4** — `lifecycle.tla`'s `CustodyMatchesState` is contradicted by its own `Strand` and `TimerFires` transitions, while `Recovered` is written to resolve the very state the invariant forbids. It is a **specification / formal-model / safety-engineering** finding, **not** a Phase 15 implementation defect, and **not** part of B-M |
+>
+> **Neither statement implies the other.** A frozen, unmodified implementation is entirely
+> consistent with a formal model that contradicts itself — the model transcribes the
+> *specification*, not the code. **The freeze is not evidence that X4 is benign, and X4 is not
+> evidence that the freeze was wrong.** Full record:
+> [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md).
 **Branch:** `feature/dashboard` · **HEAD:** **`7335260`** · **working tree: no application source
 modified — the only modified paths are these five canonical documents themselves, and `docs/` is
 outside the source-digest scope** — T1-04, the `Leg.slaDeadline` producer and V-10 were committed as
@@ -166,7 +180,7 @@ Full detail: **[`PHASE_15_IMPLEMENTATION_STATE.md`](PHASE_15_IMPLEMENTATION_STAT
 | Calibration | Gate implemented; **39 blocking findings** (B8, external) |
 | Simulator fidelity | Gate implemented; **no study supplied** — 7 models NOT_MEASURED |
 | Safety case | Assembler implemented; assembles cleanly. **The §24.7 gate is not thereby discharged** |
-| Formal verification | TLA+ modules + 6 TLC configs present; **`tla2tools.jar` absent, so TLC is not runnable on this tree.** `lifecycle.tla` has **never** been run under TLC at any capacity; `formal/README.md:34-45` records two completed `commitment.tla` runs from **2026-08-15** under TLA+ 1.8.0 (`commitment_c1.cfg` as checked in, plus a reduced capacity-2 form) — neither discharges the gate. **B-M = NOT MEASURED / OPEN** |
+| Formal verification | TLA+ modules + 6 TLC configs present. **TLC was EXECUTED for the first time on 2026-08-31 — all six checked-in configurations, on the frozen tree.** Result: **1 closed** (`commitment_c1`, exhaustive PASS), **2 UNKNOWN** (`commitment_c2/c3`, did not converge), **3 FAIL** (`lifecycle_c1/c2/c3`, deadlock abort). **B-M = NOT MEASURED / OPEN — it did NOT close.** The runs also uncovered **two new blockers: X4** (a `CustodyMatchesState` safety contradiction in `lifecycle.tla`) and **X5** (the lifecycle configs abort before evaluating any declared property). Full §7.3a record with raw output: [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md) |
 | Database | **28 migrations**; **6** live-DB harnesses (the four Phase 15 ones, plus T1-04's and V-10's), **167/167**, all green |
 | Runbooks | `docs/runbooks/cutover.md` and `rollback.md`. **Both traced against the current API 2026-08-30 (V-10) — 5 defects fixed**, and `rollback.md` §7 now records when that trace happened. P15-F7a (nothing *binds* a runbook to its API) is unchanged and still open |
 
@@ -196,10 +210,12 @@ but do not read the whole table as one date, which an earlier revision of this s
 
 | **Phase 0–14 cross-phase re-verification (V-9)** — 7 harnesses on disposable PostgreSQL | mixed | **315 / 317**, 2026-08-30. The 2 failures are `phase5ExpirySemantics` FINDING assertions whose premise T1-04 deliberately invalidated — **not regressions.** `PHASE_15_VERIFICATION_STATE.md` **§7c** |
 
-**NOT currently verified** (labelled honestly, not assumed): mutation testing, TLC model checking,
-and the soak/shadow/invariant observation windows. See `PHASE_15_VERIFICATION_STATE.md` §5.
+**NOT currently verified** (labelled honestly, not assumed): mutation testing and the
+soak/shadow/invariant observation windows. See `PHASE_15_VERIFICATION_STATE.md` §5.
 ***Phase 0–14 cross-phase re-verification was on this list until 2026-08-30 and is not any more —
-V-9 ran it.***
+V-9 ran it. TLC model checking was on this list until 2026-08-31 and is not any more — all six
+configurations were run (`PHASE_15_VERIFICATION_STATE.md` §7d). Being measured is not being
+discharged: one of the six closed, and B-M is still OPEN.***
 
 ---
 
@@ -207,10 +223,16 @@ V-9 ran it.***
 
 Full register with owners and closure conditions: **[`PHASE_15_BLOCKERS.md`](PHASE_15_BLOCKERS.md)**.
 
-**7 open blockers. 0 are repository-owned *and actionable*** — the one repository-owned entry (A9)
-is correctly deferred to Phase 8 and has no action available here. **X1/T1-04 was the eighth and
-was closed on 2026-08-30** by REMEDIAL PHASE T1-04 (§17.4's ladder, its human capacity model, and
-§17.5's detection — implemented, composed, and verified against live PostgreSQL).
+**9 open blockers. 0 are repository-owned *and actionable*** — the one repository-owned entry (A9)
+is correctly deferred to Phase 8 and has no action available here. **X1/T1-04 was closed on
+2026-08-30** by REMEDIAL PHASE T1-04 (§17.4's ladder, its human capacity model, and §17.5's
+detection — implemented, composed, and verified against live PostgreSQL).
+
+> **Was 7 until 2026-08-31. `tla2tools.jar` was provisioned and all six TLC configurations were
+> run — and the count went UP, not down.** B-M did not close (1 of 6 configurations closed), and
+> the runs uncovered **X4** and **X5**. **The §24 gate count is unchanged at 8 blocking gates not
+> green**, because neither new blocker is a gate row and `model_check_capacity_1_2_3` renders
+> exactly as it did before. See `PHASE_15_VERIFICATION_STATE.md` §7d.
 
 > **Two different quantities in this documentation used to both equal 8. They no longer do, and
 > that is itself worth stating.** **7 open blockers** (this table) is a programme count — it
@@ -226,8 +248,10 @@ was closed on 2026-08-30** by REMEDIAL PHASE T1-04 (§17.4's ladder, its human c
 | **B8** | 39 Safety-class parameters not `DERIVED` | **EXTERNAL** | §22.4 calibration owner |
 | **B-P** | 4 PRODUCTION gates NOT_EVALUATED — needs an operating fleet | **EVIDENCE / OPERATIONS** | Operations |
 | **B-O** | 3 ORGANISATIONAL gates NOT_EVALUATED — needs filed attestations | **EVIDENCE / OPERATIONS** | Named humans / release owner |
-| **B-M** | `model_check_capacity_1_2_3` is GREEN and **NOT PROVEN** — **NOT MEASURED / OPEN**. An independent release-evidence item, **not a B1 sub-step** | **EVIDENCE / OPERATIONS** (compute) | Release owner (provisioning + **final acceptance**) · Compute/Platform · Safety engineer (property coverage, boundedness) · Engineering (mechanical only) |
+| **B-M** | `model_check_capacity_1_2_3` is GREEN and **NOT PROVEN** — **NOT MEASURED / OPEN**. **All six configurations RUN 2026-08-31: 1 closed, 2 UNKNOWN, 3 FAIL, no acceptance.** An independent release-evidence item, **not a B1 sub-step** | **EVIDENCE / OPERATIONS** (compute) | Release owner (provisioning + **final acceptance**) · Compute/Platform · Safety engineer (property coverage, boundedness) · Engineering (mechanical only) |
 | **X3** | No `TASK` timer producer; §4.2 has no transition table | **SPECIFICATION / ADR** | Frozen-spec owner |
+| **X4** *(new 2026-08-31)* | `lifecycle.tla`'s `CustodyMatchesState` is contradicted by `Strand` and `TimerFires`, while `Recovered` is written to resolve the state it forbids. **Separate from B-M** | **SPECIFICATION / FORMAL MODEL / SAFETY** | Safety engineer · Frozen-spec owner · Release owner (acceptance) |
+| **X5** *(new 2026-08-31)* | The three checked-in `lifecycle_c*.cfg` abort on TLC's default deadlock check before any declared property is evaluated. **Separate from X4 and B-M** | **FORMAL-VERIFICATION CONFIGURATION** | Release owner · Safety engineer |
 | **A9** | `assertVersionInKey` implemented, tested, genuinely uncalled | **REPOSITORY-OWNED, correctly deferred** | Phase 8 |
 
 **Closed since the last revision — X1 / T1-04**, on 2026-08-30. §17.4's escalation ladder, its
@@ -333,9 +357,14 @@ attestation or a compute run that no commit in this repository can supply.
 3. **Operations answer D8** — extract identity, source, vintage (ISO), refresh cadence,
    re-contraction downtime budget, plus `extract.bbox` and `extract.marginDegrees`.
 4. **§22.4's calibration owner** derives the 39 Safety-class values (B8).
-5. **Release owner** provisions `tla2tools.jar` and runs the exhaustive TLC configurations (B-M),
-   recording the run's provenance per `B1_EXTERNAL_INPUT_HANDOFF.md` §7.3a and accepting it per
-   §7.6. **This is independent of 1–4 above and can start today.**
+5. **Release owner** closes B-M. **Partly advanced 2026-08-31 and still OPEN:** the jar was
+   provisioned and all six configurations were run and recorded per §7.3a
+   ([`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md)), but **only 1 of 6 closed**.
+   What remains: **Compute/Platform** supplies compute on which `commitment_c2/c3` can converge
+   (this workstation could not); the **safety engineer** accepts boundedness (§7.3a item 8) and
+   decides **X4**; the owner decides **X5**; a **named human** signs as operator (§7.3a item 4);
+   and the owner gives **final acceptance** (§7.6). **This is independent of 1–4 above.**
+   **Do not report B-M as advanced because a jar was downloaded** — three of the six runs FAILED.
 
 **For an AI coding agent, right now, in this repository:**
 
@@ -427,6 +456,7 @@ or came close to committing.
 | File | Answers |
 |---|---|
 | **[`B1_EXTERNAL_INPUT_HANDOFF.md`](B1_EXTERNAL_INPUT_HANDOFF.md)** | **The single operational handoff for the external inputs.** What D1, D3 and D8 require field by field, who owns each, what evidence substantiates it, the operator deployment-module contract, B1's execution order and stop conditions — and, in §7, **B-M**: its independence from B1, its `NOT MEASURED / OPEN` state, what must be recorded, and who accepts it. **Do not write a second handoff.** |
+| **[`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md)** | **The §7.3a run record for B-M, and the retained raw TLC output.** The tool artefact and its SHA-256, JDK/machine, the provenance discrepancy in the historical 2026-08-15 run, all six configuration results with the constants actually used, property coverage including the **G5** gap, boundedness, and the two new findings **X4** and **X5**. **The raw output is retained verbatim in its §12** — do not summarise it away, and do not read it as a discharge. It is *evidence input* to a §7.6 decision that has not been made |
 
 ### Upstream authorities — unchanged by this consolidation
 

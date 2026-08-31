@@ -112,7 +112,7 @@ corrected in place below and marked with what they used to say.
 | ID | Gate | Status | Evidence | Blocking? | Next action |
 |---|---|---|---|---|---|
 | G-08 | `lower_bound_admissibility` §6.4/§24.1 | **GREEN** | exit 0 | — | — |
-| **G-09** | `model_check_capacity_1_2_3` §24.2 | **GREEN ⚠ NOT PROVEN** | exit 0, **with the tool's own `[NOT PROVEN]` annotation**; `tla2tools.jar` absent; suite asserts `exhaustive: false` | **YES — B-M** | Provision `tla2tools.jar`; run TLC exhaustively; record the run's provenance and obtain release-owner acceptance (`B1_EXTERNAL_INPUT_HANDOFF.md` §7.3a, §7.6); **then** remove `establishedByCommand`. **The row's status does not move on discharge — it is GREEN before and after — so this gate cannot be used to track B-M** |
+| **G-09** | `model_check_capacity_1_2_3` §24.2 | **GREEN ⚠ NOT PROVEN** — **unchanged by the 2026-08-31 TLC runs, exactly as predicted** | exit 0, **with the tool's own `[NOT PROVEN]` annotation**; suite asserts `exhaustive: false`. **TLC was run on 2026-08-31 (all six configs): 1 closed, 2 UNKNOWN, 3 FAILED** — and **this row did not move**, because it never depended on TLC. `tla2tools.jar` remains absent *from the repository* (it was provisioned outside the tree) | **YES — B-M**, and the runs additionally opened **X4** and **X5** (neither is a gate row, so the blocking-gate count is unchanged) | Obtain compute on which `commitment_c2/c3` converge; resolve **X5** so the lifecycle configs can evaluate anything at all; resolve **X4**; record provenance and obtain release-owner acceptance (`B1_EXTERNAL_INPUT_HANDOFF.md` §7.3a, §7.6); **then** remove `establishedByCommand`. **The row's status does not move on discharge — it is GREEN before and after — so this gate cannot be used to track B-M.** The 2026-08-31 runs are the proof of that: six configurations were executed, three failed, and **not one character of this row changed** |
 | G-10 | `determinism_replay` §24.3 | **GREEN** | exit 0 | — | — |
 | G-11 | `snapshot_retention` §24.3 | **GREEN** | exit 0 | — | — |
 | G-12 | `chaos_capacity_1` §24.5 | **GREEN** | exit 0 | — | — |
@@ -156,7 +156,7 @@ corrected in place below and marked with what they used to say.
 | V-4 | Migration chain applies from empty | **GREEN** | **28/28**, 0 failed, 0 rolled back (27 + T1-04's `LadderEscalation`, re-applied 2026-08-30 for V-10). *(Recorded as "29/29" until 2026-08-30. **The chain and the result are unchanged — only the count was wrong**: 27 + 1 = 28, and a direct re-count on 2026-08-30 returns 28 migration directories and 28 `migration.sql` files.)* | No | — |
 | **V-5** | Release evidence bound to the current digest | **RED — the collection has aged out** | The checked-in collection is bound to `431010ace1…` and produced `2026-08-29T06:28:45Z`; the tree is now `d033038c…` and every record is **`[STALE]`** (~126 000 s against an 86 400 s bound). `release:verdict` → **0 green, 17 red, 7 not evaluated** | **No — it changes no blocker.** The verdict was BLOCKED and still is; every RED is staleness, not a gate failing | **Release owner: run `npm run release:gates` at a quiescent, committed tree.** Not done here, and **not by any subsequent pass** — it is a ~25-min collection, it is the release owner's step rather than a documentation act, and **the verdict is BLOCKED either way**: re-collecting changes the rendering, not the outcome. *(This cell also gave "the working tree is uncommitted" as a reason. **That premise expired** when the snapshot `7335260` was committed before V-9 — corrected 2026-08-31 by the freeze audit. **The conclusion is unchanged, and a committed tree is not an instruction to collect**: `engine_decision_path_wired` is RED on its own merits and the 7 `NOT_EVALUATED` rows have nothing filed, so a fresh collection would render 16/1/7 and still read BLOCKED.)* |
 | V-6 | Mutation testing on the current tree | **PARTIAL** | **V-10's three mutants: 3 built, 3 killed**, tree restored and the restoration byte-verified (`PHASE_15_VERIFICATION_STATE.md` §7a). The rest of the tree is unmeasured | No | Re-run per implementation pass, as V-10 did |
-| V-7 | Exhaustive TLC model checking | **NOT EVALUATED** — B-M evidence state **NOT MEASURED / OPEN** | `tla2tools.jar` absent, so not runnable here. `lifecycle.tla` never run under TLC at any capacity; two `commitment.tla` runs recorded 2026-08-15 (TLA+ 1.8.0) against a different tree — historical, not a discharge | **YES — B-M** | Provision, run all six as checked in, **record the provenance** (`B1_EXTERNAL_INPUT_HANDOFF.md` §7.3a), release owner accepts (§7.6) |
+| **V-7** | Exhaustive TLC model checking | **RED — EXECUTED 2026-08-31 and NOT SATISFIED.** B-M evidence state remains **NOT MEASURED / OPEN**. *(Was "NOT EVALUATED"; it has now been evaluated, and it did not pass)* | **All six checked-in configurations were run** on the frozen tree with TLA+ v1.8.0 (SHA-256 `eabd140a…533a`), JDK 20.0.2, on a 16 GB i5-1235U workstation. **1 closed** — `commitment_c1.cfg` exhaustive, 17 991 520 states / 2 375 660 distinct / diameter 21, no error. **2 UNKNOWN** — `commitment_c2/c3` did not converge (126 M and 21 M states left on queue; 23.6 GiB disk queue still growing on `c2`, whose machine also slept mid-run). **3 FAIL** — `lifecycle_c1/c2/c3` all abort on TLC's default deadlock check at depth 6, so **none of `Safety`, `TerminalIsFinal` or `Liveness` reached a verdict at any capacity**. §7.3a items 4 (named operator), 8 (boundedness) and 10 (acceptance) are all unsatisfied, and **G5 is covered by no TLC run**. Full record with raw output retained verbatim: [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md); summary at `PHASE_15_VERIFICATION_STATE.md` §7d | **YES — B-M**, and now **also X4 and X5** | **Compute/Platform** supply compute on which `commitment_c2/c3` converge — this workstation could not. **Safety engineer** accepts boundedness (§7.3a item 8) and decides **X4**. **Release owner** decides **X5**, names an operator, and gives **final acceptance** (§7.6). **Do not treat "TLC was provisioned" as progress against the compute requirement** — three of six runs FAILED |
 | V-8 | Production observation windows (soak / shadow / invariants / fidelity) | **NOT EVALUATED** | Require an operating fleet | **YES — B-P** | Operate the fleet. **Never simulate** |
 | **V-9** | Phase 0–14 cross-phase re-verification | **GREEN — executed 2026-08-30. CLOSED / VERIFIED** | **Scope derived, not asserted:** the transitive `require()` closure of all **22** Phase 0–14 harnesses was intersected with the **11** changed application-source files. **4 harnesses carry a changed module in their closure** (`phase5ExpirySemantics` 5, `phase9ProductionPath` 5, `phase14LiveDatabase` 3, `phase11LiveDatabase` 1); the other 18 carry **zero**. **7 harnesses executed** on disposable PostgreSQL 18.3 (port 55437, 28/28 migrations from empty, destroyed after use): **315 / 317 checks passed**. The **2 failures are both `phase5ExpirySemantics` FINDING assertions whose premise T1-04 deliberately invalidated** — they assert the ladder does *not* exist — and **neither is a regression**: proven by isolating the single variable (`stepTableFrom(harness VALUES)` → `ok=false`; the same map **plus the 8 register-published rung fractions** → `ok=true`, 8 strictly increasing rungs), and corroborated by `verify:t104` **72/72** live. **No regression found. No code changed** — digest still `d033038c…` / 573, working tree clean. Full record: `PHASE_15_VERIFICATION_STATE.md` **§7c** | No | **none — CLOSED.** *(This row previously read "NOT EVALUATED — and its trigger HAS FIRED … unrun, result UNKNOWN". The trigger did fire; the answer is now measured.)* V-9 surfaced one **incidental, pre-existing, out-of-scope** defect — `prisma/seed.js` silently partial-seeds and exits 0 — registered as residual observation **8** in `PHASE_15_BLOCKERS.md`. It is **not** a Phase 15 item and moves no gate |
 | **V-10** | `docs/runbooks/rollback.md` procedure executed against the current API | **GREEN — executed 2026-08-30** | Traced §0–§6 against the current API; **5 defects found and fixed**, one permissive and fleet-wide. 7 tests, 3 mutants/3 killed, **15/15 on live PostgreSQL** (`npm run verify:v10`). Full record: `PHASE_15_BLOCKERS.md` § **V-10** | No | none. **The structural exposure it sat on — P15-F7a, nothing binds a runbook to its API — is unchanged and still open**; `rollback.md` §7 now records the date of the last trace |
@@ -199,10 +199,23 @@ Blocking gates not green:                  8
                       does not appear in "8 blocking gates not green". It is
                       listed here so a reader does not mistake GREEN for a
                       discharge: the gate's statement is an exhaustive model
-                      check, and TLC has never been run.
+                      check, and only 1 of the 6 checked-in configurations
+                      has ever completed one.
+                      UPDATED 2026-08-31: TLC HAS now been run -- all six
+                      configurations, on the frozen tree. 1 closed (PASS),
+                      2 did not converge (UNKNOWN), 3 FAILED. The gate row
+                      is UNCHANGED by that: it was GREEN [NOT PROVEN] before
+                      and is GREEN [NOT PROVEN] after, exactly as the handoff
+                      SS7.0 warned it would be. Do not track B-M here.
+                      The runs opened two NEW blockers, X4 and X5, neither of
+                      which is a gate row -- so the "8 blocking gates not
+                      green" figure above is UNCHANGED.
 
-Open blockers (programme count):        7   — B1, B8, B-P, B-O, B-M, X3, A9
-                                            was 8; X1/T1-04 CLOSED 2026-08-30
+Open blockers (programme count):        9   — B1, B8, B-P, B-O, B-M, X3, X4, X5, A9
+                                            was 7. X1/T1-04 CLOSED 2026-08-30;
+                                            X4 and X5 OPENED 2026-08-31 by the
+                                            B-M TLC execution. The programme count
+                                            went UP when a blocker was worked on.
 Repository-owned AND actionable
   BLOCKERS:                             0   — A9 is repository-owned but deferred to Phase 8.
                                             No blocker is repository-owned and actionable.
@@ -217,10 +230,12 @@ Repository-owned AND actionable
                                             before that "0 … V-9 has no trigger". The
                                             trigger fired, the row was run, and it closed.)
                                             V-5 is the release owner's evidence
-                                            re-collection, V-7 is B-M (jar + compute),
-                                            V-8 is B-P (operating fleet), V-6 has no pass
-                                            to attach to — four external rows and no
-                                            internal one. Re-derive this; do not inherit it.
+                                            re-collection, V-7 is B-M (now RUN and NOT
+                                            satisfied -- it needs compute, plus the X4
+                                            and X5 owner decisions), V-8 is B-P (operating
+                                            fleet), V-6 has no pass to attach to -- four
+                                            external rows and no internal one.
+                                            Re-derive this; do not inherit it.
 
   CAUTION — this count is Phase-15-scoped, and V-9 demonstrated the limit of that.
                                             V-9 executed cleanly AND surfaced a genuine
@@ -264,10 +279,26 @@ Evidence currency (measured 2026-08-30):    docs/release-evidence.json is STALE 
 
 **Phase 15's implementation obligations are discharged.** What remains open is **not code**. B1, B8,
 B-P, B-O and B-M each require a decision, a measurement, an attestation or a compute run that no
-commit in this repository can supply; X3 requires a specification decision. **T1-04 was the last
-open item that *was* code, and it ran on 2026-08-30** — §17.4's ladder, its human capacity model
-and §17.5's detection are implemented, composed into the production path, and verified against a
-live database. The release verdict is unchanged by it, because T1-04 was never a §24 gate.
+commit in this repository can supply; X3, **X4** and **X5** require specification, safety or
+formal-verification decisions. **T1-04 was the last open item that *was* code, and it ran on
+2026-08-30** — §17.4's ladder, its human capacity model and §17.5's detection are implemented,
+composed into the production path, and verified against a live database. The release verdict is
+unchanged by it, because T1-04 was never a §24 gate.
+
+> ### ⚠ 2026-08-31 — distinguish these two statements. They are both true and neither implies the other.
+>
+> | Statement | Basis |
+> |---|---|
+> | **Phase 15 implementation remains FROZEN, and its verdict is unchanged** | The freeze commit `c27a75c` is intact. The TLC pass changed **no** application source, `.tla`, `.cfg`, schema, migration, test or configuration. The source digest `d033038c…` did not move. **Nothing found is a Phase 15 implementation defect** |
+> | **Formal verification has uncovered a specification-level blocker** | **X4** — `lifecycle.tla`'s `CustodyMatchesState` is contradicted by its own `Strand` and `TimerFires` transitions, while `Recovered` is written to resolve the very state the invariant forbids. Reached at depth 9 by the trace `Plan → Offer → Accept → Depart → ArrivePickup → Load → CancelWithCustody → TimerFires`, producing `ABORTING → STRANDED_OBSTRUCTING` with custody still `HELD`. **SPECIFICATION / FORMAL MODEL / SAFETY ENGINEERING** |
+>
+> **A frozen, unmodified implementation is entirely consistent with a formal model that contradicts
+> itself** — the model transcribes the *specification*, not the code. **The freeze is not evidence
+> that X4 is benign, and X4 is not evidence that the freeze was wrong.** Alongside it, **X5** records
+> that the checked-in lifecycle configurations abort before evaluating any declared property.
+> **B-M, X4 and X5 are three separate items with three different owners. Do not merge them, and do
+> not close any of them on the strength of another.** Full record:
+> [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md).
 
 **This verdict was computed from the gate table, not asserted.** Do not alter it to make the
 documentation look complete. If the repository changes, re-run `npm run release:verdict` and

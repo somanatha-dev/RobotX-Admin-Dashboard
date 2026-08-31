@@ -291,23 +291,44 @@ TLC configurations (`commitment_c1..c3.cfg`, `lifecycle_c1..c3.cfg`), plus `READ
 An executable lifecycle model checker exists in the engine test suite.
 
 **NOT implemented:** **`tla2tools.jar` is absent from the repository** — confirmed by filesystem
-search — so **TLC is not runnable on this tree**. The discharging suite asserts `exhaustive: false`
-for the lifecycle at capacities 1, 2 and 3; the commitment half is exhaustive only at capacity 1.
-This is blocker **B-M**, whose evidence state is **NOT MEASURED / OPEN**.
+search. **This no longer means TLC has not been run.** On **2026-08-31** a jar was provisioned
+**outside the tree** and **all six checked-in configurations were executed on the frozen tree**.
+The discharging suite still asserts `exhaustive: false` for the lifecycle at capacities 1, 2 and 3.
+This is blocker **B-M**, whose evidence state is **still NOT MEASURED / OPEN** — **the runs did not
+close it.**
 
-**What has and has not been run, precisely** — `formal/README.md` is the record, and a blanket "TLC
-has never been run" understates it:
+**What has and has not been run, precisely** — as of 2026-08-31, and a blanket "TLC has never been
+run" is now simply false:
 
 | Module | TLC execution |
 |---|---|
-| `lifecycle.tla` | **Never run under TLC, at any capacity, by any pass** (`formal/README.md:94-100`) |
-| `commitment.tla` | **Run on 2026-08-15 under TLA+ 1.8.0**, in an environment that then had the jar (`formal/README.md:34-45`): `commitment_c1.cfg` **as checked in** closed with no error (17 991 520 states / 2 375 660 distinct / diameter 21 / 48 s), and a **reduced** capacity-2 form closed (37 633 116 / 4 769 532 / diameter 21 / 69 s). `commitment_c2.cfg` as checked in did **not** converge (stopped past 1 h, 11 GB queue still growing); `commitment_c3.cfg` did not complete |
+| `lifecycle.tla` | **RUN for the first time 2026-08-31, at all three capacities — and it FAILED at all three.** Every configuration aborts on TLC's default deadlock check at depth 6, so **`Safety`, `TerminalIsFinal` and `Liveness` all reached NO VERDICT** (finding **X5**). Secondary `-deadlock` diagnostic runs then exposed an **`Invariant Safety is violated`** at depth 9 — the `CustodyMatchesState` contradiction, finding **X4**. *(This row read "Never run under TLC, at any capacity, by any pass" until 2026-08-31.)* |
+| `commitment.tla` | **RUN 2026-08-31 at all three capacities.** `commitment_c1.cfg` **as checked in** (`Legs={l1,l2}`, `Workers={w1,w2}`, `Capacity=1`, `MaxFence=4`) **closed exhaustively with no error** — 17 991 520 states / 2 375 660 distinct / diameter 21 / 25 s. `commitment_c2.cfg` **did not converge** (287 M distinct, 126 M on queue, 23.6 GiB disk queue still growing). `commitment_c3.cfg` **did not converge** (abnormal exit `-1` at 247 s, 21 M on queue). **Historically**, `formal/README.md:34-45` also records two runs dated 2026-08-15 — see below |
 
-Neither recorded run discharges the gate: it was executed against a different tree, without a
-recorded tool checksum, operator or hardware statement, and five of the six checked-in
-configurations remain uncompleted. **Whether the historical `commitment_c1.cfg` run counts toward
-the six is the release owner's acceptance decision**, not Engineering's — see
-[`B1_EXTERNAL_INPUT_HANDOFF.md`](B1_EXTERNAL_INPUT_HANDOFF.md) §7.
+**One of six configurations has ever closed.** Full §7.3a record with the raw TLC output retained
+verbatim, the tool SHA-256, JDK, machine and the constants actually used:
+**[`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md)**. Summary:
+`PHASE_15_VERIFICATION_STATE.md` §7d.
+
+**The historical 2026-08-15 record is now ambiguous on two independent grounds.** Its *constants*
+do not match the files it names (already recorded in the handoff §7.1), **and its tool cannot be
+what it says**: the v1.8.0 release was published **2026-08-21T16:05:58Z**, six days *after* the run
+is dated, and the preceding release v1.7.4 dates from 2024-08-05. **A run dated 2026-08-15 cannot
+have used the released v1.8.0 binary.** Partially offsetting this, the 2026-08-31 run of
+`commitment_c1.cfg` **as checked in** reproduced the historical row's state count, distinct count
+and diameter **exactly**, which is strong evidence the file name is right and the "3 / 2 / 5"
+annotation beside it is the transcription error. **Whether the historical run counts toward the six
+remains the release owner's acceptance decision**, not Engineering's — see
+[`B1_EXTERNAL_INPUT_HANDOFF.md`](B1_EXTERNAL_INPUT_HANDOFF.md) §7. **This pass does not count it.**
+
+> ### The two findings the runs produced are NOT Phase 15 implementation defects.
+> **X4** (the `CustodyMatchesState` / `Strand` / `TimerFires` / `Recovered` contradiction) and
+> **X5** (the deadlock-check configuration gap) are registered in
+> [`PHASE_15_BLOCKERS.md`](PHASE_15_BLOCKERS.md). **`lifecycle.tla` being checked in does not make
+> its contents Phase 15 implementation** — it is a transcription of the *specification* into a
+> modelling language (`formal/README.md:106-109`), which is precisely its stated value. **No
+> application source, `.tla`, `.cfg`, schema, test or configuration was changed by the run**, the
+> implementation freeze at `c27a75c` is intact, and the source digest did not move.
 
 **Two structural gaps, recorded and not to be fixed:** a completed TLC run has **no normal
 evidence-admission path** (the gate is `EVIDENCE.SUITE` and `evidence.admit()` refuses any run
@@ -497,7 +518,7 @@ gates" without naming this third absence; that discrepancy is registered in
 | `src/engine/lifecycle/preemption.js` | Phase 16. **Tier 2** — §17.4 rung 4 emits a `PERMIT_PREEMPTION_OF_LOWER_CLASS` directive rather than calling it, because §1.8 rule 2 forbids a Tier 1 guarantee from depending on a Tier 2 mechanism |
 | `src/engine/solve/setPartitioning.js`, `branchAndBound.js`, `localSearch.js` | Phase 16 |
 | `src/engine/routing/client.js` | Phase 8, blocked by N25/N26 and B1 |
-| `tla2tools.jar` | B-M — needs compute provisioning |
+| `tla2tools.jar` | B-M — **the jar is no longer the blocker.** It was provisioned outside the tree on 2026-08-31 and all six configurations were run: **1 closed, 2 did not converge, 3 failed.** What B-M needs now is **compute** on which `commitment_c2/c3` converge, the **X4** and **X5** owner decisions, a named operator, and release-owner acceptance |
 | Any Tier 2 mechanism | Phase 16. Every §22.5 kill switch remains thrown |
 | A `TASK`-entity timer producer | **X3** — §4.2 has no transition table. Specification-owned |
 | A production caller for `stage.authoriseEnable()` | By design — the operator procedure is the caller |

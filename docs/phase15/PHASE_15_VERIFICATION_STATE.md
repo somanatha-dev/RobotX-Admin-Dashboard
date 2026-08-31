@@ -394,7 +394,7 @@ unchanged by T1-04 and V-10.** *(This section's header previously dated every ro
 | **§24 gate table size** | `RELEASE_GATES.length`; `blockers({}).length` | **24** and **24**. Every row `blocking: true` — re-confirmed 2026-08-30 |
 | **28** Prisma migrations | `ls -d prisma/migrations/*/`; `ls prisma/migrations/*/migration.sql` | 27 on 2026-08-29; **28 on 2026-08-30** — T1-04 adds exactly one, `20260830120000_ladder_escalation_t1_04`. **Both methods return 28.** *(Recorded as "29" until 2026-08-30 — an arithmetic error against its own "27 + one")* |
 | Release evidence bound to this tree | JSON inspection | **NO — 2026-08-30.** 17 records, 0 VOID, but all 17 bound to the **superseded** `431010ace1…`; on `d033038c…` every one is `[STALE]`. See §3.0 |
-| `tla2tools.jar` absent | repo-wide `find -name "tla2tools*"` | **absent** |
+| `tla2tools.jar` absent **from the repository** | repo-wide `find -name "tla2tools*"` | **still absent — 2026-08-31.** The jar used for the §7d runs was provisioned **outside the tree** and deliberately not added to it. **"Absent from the repo" no longer implies "TLC has not been run"** — see §7d |
 | ~~`src/engine/fairness/` T1-04 modules absent~~ | `ls` | **NO LONGER TRUE (2026-08-30).** `ladder.js`, `operatorCapacity.js`, `agentStarvation.js` all present, composed, and live-verified. The directory holds exactly those three and no Tier 2 fairness module — asserted by four module-tree tests, which were flipped from "empty" rather than deleted |
 | `src/engine/lifecycle/preemption.js` absent | `ls` | absent — **and correctly so.** It is §4.8, Tier 2, Phase 16's. §17.4 rung 4 emits a directive and calls nothing, which `gate:tiers` enforces |
 | `src/engine/routing/client.js` absent | `ls` | absent |
@@ -414,7 +414,7 @@ as unverified, not as passing, and not as failing. Do not cite an archived numbe
 | Item | Why not run | Last archived claim (HISTORICAL — do not cite as current) |
 |---|---|---|
 | **Mutation testing** | **Partially executed 2026-08-30 by V-10** — see below. Not re-run across the rest of the tree | Archived third-pass report claims 8 distinct mutants across three concurrent sessions, all killed. **UNVERIFIED HERE.** V-10's own three are verified |
-| **TLC exhaustive model checking** | `tla2tools.jar` is absent — it is not runnable on this tree at all. **Evidence state: NOT MEASURED / OPEN** | **Not** "never run by any pass" — that phrasing was imprecise and is corrected here. `lifecycle.tla` has never been run under TLC at any capacity; `formal/README.md:34-45` records two completed `commitment.tla` runs on **2026-08-15** under TLA+ 1.8.0 (`commitment_c1.cfg` as checked in, plus a reduced capacity-2 form), and `commitment_c2.cfg` as checked in did not converge. **HISTORICAL — a different tree, no recorded tool checksum, operator or hardware; cited as neither current nor a discharge.** This is blocker **B-M** |
+| ~~**TLC exhaustive model checking**~~ | **EXECUTED 2026-08-31 — all six checked-in configurations were run. No longer unverified, and B-M did NOT close.** See **§7d**. **Evidence state remains NOT MEASURED / OPEN**: 1 of 6 closed, 2 UNKNOWN, 3 FAIL, no independent acceptance | **Was UNKNOWN; now measured — and four of the six outcomes are worse than "unmeasured".** The historical 2026-08-15 record is now known to be ambiguous on **two** independent grounds: its constants (already recorded in the handoff §7.1) **and its tool** — the v1.8.0 release was published **2026-08-21**, six days *after* the run is dated, so it cannot have used the released binary. Still cited as neither current nor a discharge. Blocker **B-M**, plus **two new blockers X4 and X5** |
 | ~~**Phase 0–14 cross-phase re-verification**~~ | **EXECUTED 2026-08-30 — closure item V-9. No longer unverified.** Scope derived by transitive-closure intersection; **7 harnesses run** on a disposable cluster, **315/317**, **no regression**, no code changed. See **§7c** | **Was UNKNOWN; now measured.** The archived premise — *"Phases 0–14, schema and migration history untouched"* — was indeed false on this tree, which is why the row was run. The schema movement turned out to be **purely additive** (one new table, one back-relation; **no pre-existing column changed**), so no Phase 0–14 subject table moved |
 | ~~**Phase 5 live harnesses** (`phase5ExpirySemantics.js`, `phase5LiveDatabase.js`)~~ | **EXECUTED 2026-08-30 under V-9 — the most directly affected slice, and it was run first.** `phase5LiveDatabase.js` **106/106, exit 0**. `phase5ExpirySemantics.js` **100/102, exit 1** — and **both failures are its own FINDING assertions that §17.4's ladder does not exist**, which T1-04 deliberately made false. **Not a regression:** proven by isolating the variable and corroborated by `verify:t104` 72/72. The `LADDER_EXHAUSTED → FAILED` row was **not** taken and the deadline **was** re-armed — the property those checks protect is intact. See **§7c.4** | The archived 102/102 + 106/106 are superseded. **Current: 100/102 and 106/106**, and the 2 are premise-invalidation, not defects. The harness was **deliberately not edited to go green**; what a Phase 5 maintainer would need to change is stated in §7c.4 |
 | **`npm run release:gates`** (`--collect`) | A ~25-minute serial collection that would overwrite `docs/release-evidence.json`. **Not run**, and deliberately so: re-collecting is the **release owner's step at a quiescent, committed tree** — not a documentation act, and never something to run to make the current tree look green. *(This cell also gave "the working tree is uncommitted, so the next source edit would void the collection" as a reason. **That premise expired** when the snapshot `7335260` was committed before V-9 — corrected 2026-08-31 by the freeze audit, and the conclusion is unchanged. **A committed tree is not an instruction to collect:** the verdict is BLOCKED either way, so a fresh collection would restore the 16/1/7 rendering and change no gate's standing.)* | **The checked-in collection is NOT current-tree evidence.** It is bound to the superseded `431010ace1…` and every record is `[STALE]` — see §0 and §3.0. *(This row previously read "the checked-in artefact is already bound to this exact digest … re-collection would add nothing", and "the checked-in collection **is** current-tree evidence". Both were true on 2026-08-29 and false from the moment T1-04 moved the digest; they contradicted §3.0 of this same document. Corrected 2026-08-30.)* |
@@ -647,6 +647,195 @@ not owed** — V-6's requirement is per *implementation* pass, and V-9 wrote no 
 
 **Conclusion: the current Phase 15 tree remains compatible with the affected Phase 0–14
 contracts. V-9 — CLOSED / VERIFIED.**
+
+---
+
+## 7d. B-M — TLC executed for the first time, 2026-08-31
+
+**Full §7.3a record with the raw TLC output retained verbatim:
+[`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md).** This section is the summary;
+that document is the evidence.
+
+> ### B-M REMAINS **OPEN**. Evidence state: **NOT MEASURED / OPEN**.
+> **1 of 6 configurations closed. 2 did not converge. 3 failed. No independent acceptance.**
+> **Do not report the compute requirement as satisfied because TLC was provisioned.**
+
+**No source file, `.tla`, `.cfg`, schema, migration, test or configuration was changed.** The
+Phase 15 implementation freeze at `c27a75c` is intact and its verdict is unchanged. `formal/` and
+`docs/` are outside the source-digest scope, so **the digest `d033038cb261c3de…` did not move.**
+
+### 7d.1 The tool artefact — §7.3a items 1–3
+
+| Field | Value |
+|---|---|
+| **Provenance** | `https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar` — the **v1.8.0 ("The Clarke")** release asset. **Provisioned outside the repository and not added to it** |
+| **SHA-256** | `eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a` (4 487 757 bytes) — re-verified 2026-08-31 against the artefact that produced the runs |
+| **TLC self-report** | `TLC2 Version 2026.08.21.155922 (rev: 9787e65)` · manifest `Implementation-Version: 2.0 2026-08-21`, `Build-TimeStamp: 2026-08-21T15:59:22.332Z`, `X-Git-Tag:` **empty** |
+| **JDK / runtime** | Oracle `20.0.2+9-78`, HotSpot 64-Bit Server VM. Flags `-Xmx6g -XX:+UseParallelGC`; TLC reports `5461MB heap and 64MB offheap`, `12 workers on 12 cores` |
+| **Machine** | LENOVO `21DJ` · 12th Gen Intel Core i5-1235U (10 physical / 12 logical) · **15.72 GB RAM** · `C:` 363 GB, **45 GB free**, Micron `MTFDKCD512TFK` NVMe · Windows 11 `10.0.26200` |
+| **Contended** | **YES.** A developer workstation, and **it slept mid-run** during `commitment_c2` |
+| **Operator (§7.3a item 4)** | **NOT SATISFIED** — an agent session under the owner's direction; **no named human has signed** |
+
+**The artefact never self-reports the string "1.8.0".** Its own version string is a build date and
+its manifest tag field is empty. **"TLA+ 1.8.0" identifies where the artefact came from, not
+something the tool printed** — which is precisely why §7.3a item 1 also requires the checksum.
+
+### 7d.2 The provenance discrepancy — the historical 2026-08-15 run
+
+| Fact | Source |
+|---|---|
+| The historical run is dated **2026-08-15** and labelled **TLA+ 1.8.0** | `formal/README.md:28-31` |
+| **v1.8.0 was published 2026-08-21T16:05:58Z**; the jar was built `2026-08-21T15:59:22Z` | GitHub release metadata + jar manifest |
+| The preceding release, **v1.7.4, was published 2024-08-05** | GitHub release metadata |
+
+**Therefore the released v1.8.0 artefact did not exist on 2026-08-15**, and a run dated then cannot
+be proven to have used it merely from its "1.8.0" label. **This does not make the historical run
+wrong** — a pre-release build, a nightly or a mislabelled string are all consistent with it. **It
+establishes that the historical run's tool is NOT identified**, which is exactly what §7.3a item 1
+exists to prevent, and the run recorded no checksum, so it cannot be closed from the record that
+exists.
+
+**Separately, the constants ambiguity is now partially resolved.** `commitment_c1.cfg` run **as
+checked in (2/2/4)** produced **17 991 520 states / 2 375 660 distinct / diameter 21** — an exact
+three-way match to the historical README row that names `commitment_c1.cfg` but annotates it
+**3/2/5**. That is strong evidence the file name is right and the annotation is the transcription
+error. **It does not resolve the second README row**, whose "reduced capacity-2 at 2/2/4 →
+37 633 116 states" cannot be right either, since 2/2/4 measured 17 991 520 here.
+
+> **Both findings are input to the release owner's §7.1 / §7.6 acceptance decision and neither is
+> that decision.** **This pass does not count the historical run toward the six**, and the six
+> results below stand without it. `formal/README.md` was **not edited** — §7.4 forbids editing
+> `.cfg`/`.tla`, and rewriting the README would destroy the historical record rather than correct it.
+
+### 7d.3 The six authoritative results — §7.3a items 5, 6, 9
+
+**Every run executed the configuration exactly as checked in.** Constants quoted verbatim from the
+`.cfg` files as §7.3a item 6 requires.
+
+| Configuration | Constants as checked in | Closed? | Generated | Distinct | Depth | Wall | Verdict |
+|---|---|---|---|---|---|---|---|
+| `commitment_c1.cfg` | `Legs={l1,l2}` `Workers={w1,w2}` `Capacity=1` `MaxFence=4` | **YES**, 0 on queue | 17 991 520 | 2 375 660 | 21 | 25 s | **PROVEN / PASS — exhaustive** |
+| `commitment_c2.cfg` | `Legs={l1,l2,l3}` `Workers={w1,w2}` `Capacity=2` `MaxFence=5` | **NO** | 1 650 642 056 | 287 362 834 | 20 | 31 204 s wall / **~6 500 s compute** | **UNKNOWN — did not converge.** 126 025 013 on queue, **23.6 GiB** disk queue still growing |
+| `commitment_c3.cfg` | `Legs={l1,l2,l3,l4}` `Workers={w1,w2}` `Capacity=3` `MaxFence=6` | **NO** | 107 713 972 | 32 163 551 | 15 | 247.4 s | **UNKNOWN — did not converge.** Abnormal exit `-1`, 21 066 205 on queue, **no TLC error and no completion line** |
+| `lifecycle_c1.cfg` | `Legs={l1,l2}` `Capacity=1` `MaxTicks=3` | **NO** | 220 | 79 | 6 | 2.1 s | **FAIL — `Error: Deadlock reached.`** |
+| `lifecycle_c2.cfg` | `Legs={l1,l2,l3}` `Capacity=2` `MaxTicks=3` | **NO** | 1 041 | 277 | 6 | 2.0 s | **FAIL — `Error: Deadlock reached.`** |
+| `lifecycle_c3.cfg` | `Legs={l1,l2,l3,l4}` `Capacity=3` `MaxTicks=3` | **NO** | 4 770 | 1 012 | 6 | 2.1 s | **FAIL — `Error: Deadlock reached.`** |
+
+**Capacity scope (§7.3a item 9):** `commitment.tla` **covered at capacity 1 only**;
+`lifecycle.tla` **covered at NO capacity**.
+
+**The `commitment_c2` machine-sleep disclosure.** Budget 7 200 s; wall clock **31 204 s**. TLC's own
+progress timestamps are continuous `03:35:47 → 05:22:13` local, then stop for ~7 hours, then resume
+at `Checkpointing completed at (2026-08-31 12:27:38)`. **The machine slept.** Actual search is
+roughly **6 500 s — the run did not consume its own budget**, and the kill was triggered by wall
+clock, not compute exhaustion. **This hardens rather than softens the UNKNOWN verdict:** after
+~108 minutes the queue was 126 M states and 23.6 GiB and still growing monotonically. A re-run on
+dedicated, sleep-inhibited compute would give a cleaner number — Compute/Platform's call (§7.6).
+
+**`commitment_c3` abnormal termination.** Exit `-1` at 247 s of a 7 200 s budget, 2.95 GiB metadir
+accumulated in ~4 minutes, **no TLC error line, no completion line, empty stderr, no `hs_err_pid`
+crash log**. **The cause is not established and is not guessed at.** It began immediately after
+`c2` was killed, while that run's 23.6 GiB metadir was still on disk; disk pressure is *consistent
+with* the observation and **not proven** — TLC reports disk exhaustion explicitly and printed
+nothing. **Either way the verdict is UNKNOWN.**
+
+### 7d.4 Property coverage — §7.3a item 7
+
+| Configuration | Declares | Reached a verdict? |
+|---|---|---|
+| `commitment_c{1,2,3}.cfg` | `INVARIANT Safety` only — **no liveness, by design** (`commitment.tla:380-386`) | **c1 yes** (all nine `Safety` conjuncts, exhaustively). **c2/c3 no** — partial search only |
+| `lifecycle_c{1,2,3}.cfg` | `INVARIANT Safety` · `PROPERTY TerminalIsFinal, Liveness` | **NONE.** All three abort at depth 6 |
+
+> **No lifecycle liveness property has ever been evaluated by TLC, at any capacity.** TLC printed
+> `Implied-temporal checking--satisfiability problem has 6 / 9 / 12 branches` — the tableau was
+> *constructed* — and every run then terminated before a liveness result was produced. **The absence
+> of a temporal-property error in these logs is the absence of a search, not the absence of a
+> counterexample.**
+
+**Guard G5 has no counterpart in either model** — neither `commitment.tla`'s `GuardsPass` nor
+`commitmentModel.js` models a cancelled Leg, so G5 is vacuous in both. **The one run that did
+complete does not cover it.** Unchanged by this pass; evidence remains `commitmentGuards.test.js`
+plus the live-database run (`formal/README.md:130-134`).
+
+**Boundedness (§7.3a item 8) is NOT ACCEPTED.** `MaxTicks = 3` in all three lifecycle
+configurations is a **global** timer budget, not per-Leg, and does not scale with `Capacity` while
+`Legs` does. Whether a three-tick lifecycle is still the system is a safety judgement and **no
+safety engineer has signed for it**.
+
+### 7d.5 Two new blockers — X4 and X5. Neither is B-M and neither is a Phase 15 implementation defect.
+
+**X4 — `CustodyMatchesState` is contradicted by `Strand` and `TimerFires`.**
+**SPECIFICATION / FORMAL MODEL / SAFETY ENGINEERING.** Under the secondary `-deadlock` diagnostic
+runs, all three capacities report `Error: Invariant Safety is violated.` at **depth 9** on this
+trace:
+
+```
+Plan → Offer → Accept → Depart → ArrivePickup → Load → CancelWithCustody → TimerFires
+```
+
+producing `ABORTING → STRANDED_OBSTRUCTING` **while custody remains `HELD`**.
+`CustodyMatchesState` (`:392-394`) permits `HELD` only in
+`{LOADED, EN_ROUTE_DROP, AT_DROP, ABORTING}`; **`TimerFires` (`:340-342`) and `Strand` (`:291-295`)
+are two independent transitions that carry `HELD` into a stranded state**; and `Recovered`
+(`:301-306`) is guarded on the Leg being stranded with an `IF custody[l] = "HELD"` branch —
+**it is written to resolve exactly the state the invariant forbids.**
+
+**Retaining `HELD` custody while stranded may well be semantically plausible** — a robot broken down
+mid-delivery is still holding the parcel. **This document does not decide that**, and it must not be
+decided by whichever repair is smaller. **It is safety-engineering and specification work requiring
+the safety engineer and the frozen-specification owner. No repository implementation change can
+legitimately close it.** `lifecycle.tla` being checked in does not make it Phase 15 implementation —
+it is a transcription of the *specification* (`formal/README.md:106-109`). **Whether the shipped
+`Backend/src/engine/lifecycle/` shares the disagreement is UNKNOWN and was not investigated.**
+
+**X5 — the lifecycle configurations abort on TLC's default deadlock check before evaluating
+anything.** **FORMAL-VERIFICATION CONFIGURATION / DOCUMENTATION GAP.** All Legs `Cancel` to terminal
+states, no action remains enabled, and TLC's default check fires at depth 6. No `.cfg` sets
+`CHECK_DEADLOCK FALSE`. **`CHECK_DEADLOCK` was not changed and no `.cfg` or README was edited.** The
+four available options are not equivalent and at least one is a specification statement — **the
+choice is an explicit owner decision** (`PHASE_15_BLOCKERS.md` § X5).
+
+> **The three `-deadlock` runs are SECONDARY DIAGNOSTIC EVIDENCE and are NOT authoritative.** They
+> add a flag the checked-in configuration does not specify, and §24.2's own argument is that *"the
+> configuration under check is itself part of the requirement"*. They are retained, labelled, at
+> `PHASE_15_BM_TLC_RUN_RECORD.md` §12.7–§12.9. **They discharge nothing** and must not be promoted
+> into proof.
+
+### 7d.6 Retention — and the convention gap that has to be reported rather than filled
+
+§7.3a requires *"the raw output of every run is kept as release evidence alongside items 1–10"*.
+**The repository prescribes NO evidence directory and NO file format for a TLC run**, and §7.5 gap 1
+says so by design: *"the six runs' evidence lives in the written record and its retained raw output
+— nothing admits, checks or ages it."* `evidence.admit()` refuses any record whose `run.command` is
+not `npm run test:engine -- ModelCheck`, and the schema **has no field for any of §7.3a items 1–10**.
+
+**No new retention convention was invented.** No `evidence/` directory, no `formal/runs/`, no JSON
+schema, and no change to `evidence.js`, `gates.js` or `sourceDigest.js`. The raw output is retained
+**verbatim in the written record** — `PHASE_15_BM_TLC_RUN_RECORD.md` §12, in `docs/phase15/`, the
+existing directory and naming convention that the handoff names three times as where B-M's evidence
+lives. **That location is PROVISIONAL and is the release owner's to confirm or redirect (§7.6).**
+
+**Four classes of run are kept explicitly apart** and must not be conflated: **authoritative**
+(the six checked-in configs), **secondary diagnostic** (the three `-deadlock` runs),
+**interrupted / budget-limited** (`commitment_c2` killed at budget after a machine sleep;
+`commitment_c3` abnormal exit), and the **historical 2026-08-15 run** whose provenance is ambiguous
+and whose raw output this repository never held.
+
+### 7d.7 What did NOT change
+
+| | |
+|---|---|
+| `establishedByCommand` / `notEstablishedReason` on `model_check_capacity_1_2_3` | **Intact. Not removed.** §7.4 permits removal only after all six complete; one did |
+| The gate algebra and the `[NOT PROVEN]` annotation | **Unchanged** |
+| `release-evidence.json` | **NOT re-collected.** Still bound to `431010ace1…`, still `[STALE]` |
+| The source digest | **`d033038cb261c3de…` — unmoved.** All edits are under `docs/` |
+| B1, B8, B-P, B-O, X3, A9 | **Not touched** |
+
+> **One correction owed to `gates.js` and deliberately NOT made.** Its `notEstablishedReason` says
+> *"`lifecycle.tla` has never been run under TLC"*. That is now false — it has been run, and it
+> failed. Correcting it is a source change inside the digest scope and inside the frozen
+> implementation, and the sentence **understates** the gap rather than overstating it, so leaving it
+> is conservative. Recorded here and in the blocker register for whoever next has authority.
 
 ---
 
