@@ -9,10 +9,47 @@
 > were corrected by later passes. Reading them to decide what to implement is the specific
 > failure this document exists to prevent.
 
-**Consolidated:** 2026-08-29 · **Last updated:** **2026-08-31** — **B-M TLC execution**: all six
-checked-in configurations run for the first time. **B-M did NOT close** (1 of 6 closed), and **two
-new blockers opened, X4 and X5**. Before it: closure item **V-9**, the Phase 0–14 cross-phase
-re-verification (2026-08-30); the post-V-10 current-state audit; and closure item **V-10**.
+**Consolidated:** 2026-08-29 · **Last updated:** **2026-08-31 (second pass)** — the **X4/X5
+decision pass**: both were **decided by the sole project owner/reviewer, implemented in
+`formal/lifecycle.tla`, and verified**; a new blocker **X6** was opened by the verification.
+Earlier the same day, the **B-M TLC execution** ran all six checked-in configurations for the first
+time — **B-M did NOT close** and opened X4 and X5. Before it: closure item **V-9**, the Phase 0–14
+cross-phase re-verification (2026-08-30); the post-V-10 current-state audit; and closure item
+**V-10**.
+
+> ### ⚠ 2026-08-31 (second pass) — X4 and X5 are DECIDED, IMPLEMENTED and VERIFIED. X6 is OPEN.
+>
+> | | |
+> |---|---|
+> | **X4 — CLOSED** | `STRANDED_SAFE` / `STRANDED_OBSTRUCTING` are **custody-bearing**; `custody = "HELD"` is lawful while stranded. Implemented by separating `CustodyLawfulStates` (the invariant's domain) from `CustodyBearingStates` (a **guard** used by `Dispute` and `TimerFires`, deliberately left untouched so no transition changed) |
+> | **X5 — CLOSED** | Terminal deadlock freedom treated as a genuine §24.2 obligation; satisfied by an explicit `TaskQuiescent` stuttering action. **`CHECK_DEADLOCK FALSE` REJECTED. No `.cfg` edited.** |
+> | **X6 — NEW, OPEN** | `Liveness` now fails at all three capacities. **Pre-existing and previously masked** — no lifecycle liveness property had ever been evaluated. Deliberately not decided in the same pass |
+>
+> **Only `formal/lifecycle.tla` changed. No `Backend/` file, `.cfg`, schema, migration, test or
+> configuration was touched. The source digest is unmoved at `d033038cb261c3de…` / 573 files and the
+> Phase 15 implementation freeze at `c27a75c` is intact.**
+>
+> **X4 turned out to be a transcription defect, not an open safety question.** §4.4's own
+> `EN_ROUTE_DROP` row enters a stranded state under the guard **"custody `HELD`"**, §4.4's recovery
+> row makes custody discharge a precondition of terminating a stranded Leg, and
+> `lifecycleModel.js` — the §24.2 *executable* checker, running against the **shipped** modules —
+> had listed both stranded states as custody-bearing since Phase 15. **The two checkers had
+> contradicted each other all along, and `lifecycle.tla` was the one that was not updated.**
+>
+> **Verification:** `Safety` exhaustive and clean at all three capacities under a labelled secondary
+> diagnostic (c3: 16 557 136 states / 1 680 163 distinct / depth 47 / 0 on queue); **4 model
+> mutants built, 4 killed**, including M1 — reverting *only* the X4 widening reproduces the original
+> depth-9 `STRANDED_OBSTRUCTING`-with-`HELD` counterexample **exactly**.
+>
+> ### NO INDEPENDENT SIGN-OFF EXISTS AND NONE IS CLAIMED.
+> This is a solo project. The separate **safety engineer**, **frozen-specification owner** and
+> **release owner** of §7.6 **do not exist as distinct individuals**. **No independent
+> safety-engineering or release-owner acceptance was obtained, simulated or inferred.** §7.3a items
+> 4, 8 and 10 remain formally unsatisfied.
+>
+> **B-M did NOT close.** `commitment_c2`/`c3` were not re-run and are still UNKNOWN; the lifecycle
+> half now fails on **X6** rather than aborting on X5. Full record:
+> [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md) **§15**.
 
 > ### ⚠ Two things happened on 2026-08-31 and they must not be conflated.
 >
@@ -223,16 +260,24 @@ discharged: one of the six closed, and B-M is still OPEN.***
 
 Full register with owners and closure conditions: **[`PHASE_15_BLOCKERS.md`](PHASE_15_BLOCKERS.md)**.
 
-**9 open blockers. 0 are repository-owned *and actionable*** — the one repository-owned entry (A9)
+**8 open blockers. 0 are repository-owned *and actionable*** — the one repository-owned entry (A9)
 is correctly deferred to Phase 8 and has no action available here. **X1/T1-04 was closed on
 2026-08-30** by REMEDIAL PHASE T1-04 (§17.4's ladder, its human capacity model, and §17.5's
 detection — implemented, composed, and verified against live PostgreSQL).
 
-> **Was 7 until 2026-08-31. `tla2tools.jar` was provisioned and all six TLC configurations were
-> run — and the count went UP, not down.** B-M did not close (1 of 6 configurations closed), and
-> the runs uncovered **X4** and **X5**. **The §24 gate count is unchanged at 8 blocking gates not
-> green**, because neither new blocker is a gate row and `model_check_capacity_1_2_3` renders
-> exactly as it did before. See `PHASE_15_VERIFICATION_STATE.md` §7d.
+> **Was 7, then 9, now 8 — and the arithmetic is worth reading rather than trusting.**
+> On 2026-08-31 `tla2tools.jar` was provisioned and all six TLC configurations were run; B-M did not
+> close and the runs uncovered **X4** and **X5**, taking 7 → 9. Later the same day both were
+> **decided and implemented**, and the verification opened **X6**: 9 − 2 + 1 = **8**.
+>
+> **The §24 gate count is unchanged at 8 blocking gates not green** through all of it, because none
+> of X4, X5 or X6 is a gate row and `model_check_capacity_1_2_3` renders exactly as it did before.
+> See `PHASE_15_VERIFICATION_STATE.md` §7d and §7e.
+>
+> **Two blockers resolved and one opened is not net progress of one.** X4 and X5 were decidable
+> because the frozen specification answered X4 outright; **X6 is a genuinely new open question about
+> the model's fairness statement and its missing §17.4 ladder**, and it is the reason the lifecycle
+> half of B-M still does not pass.
 
 > **Two different quantities in this documentation used to both equal 8. They no longer do, and
 > that is itself worth stating.** **7 open blockers** (this table) is a programme count — it
@@ -250,8 +295,9 @@ detection — implemented, composed, and verified against live PostgreSQL).
 | **B-O** | 3 ORGANISATIONAL gates NOT_EVALUATED — needs filed attestations | **EVIDENCE / OPERATIONS** | Named humans / release owner |
 | **B-M** | `model_check_capacity_1_2_3` is GREEN and **NOT PROVEN** — **NOT MEASURED / OPEN**. **All six configurations RUN 2026-08-31: 1 closed, 2 UNKNOWN, 3 FAIL, no acceptance.** An independent release-evidence item, **not a B1 sub-step** | **EVIDENCE / OPERATIONS** (compute) | Release owner (provisioning + **final acceptance**) · Compute/Platform · Safety engineer (property coverage, boundedness) · Engineering (mechanical only) |
 | **X3** | No `TASK` timer producer; §4.2 has no transition table | **SPECIFICATION / ADR** | Frozen-spec owner |
-| **X4** *(new 2026-08-31)* | `lifecycle.tla`'s `CustodyMatchesState` is contradicted by `Strand` and `TimerFires`, while `Recovered` is written to resolve the state it forbids. **Separate from B-M** | **SPECIFICATION / FORMAL MODEL / SAFETY** | Safety engineer · Frozen-spec owner · Release owner (acceptance) |
-| **X5** *(new 2026-08-31)* | The three checked-in `lifecycle_c*.cfg` abort on TLC's default deadlock check before any declared property is evaluated. **Separate from X4 and B-M** | **FORMAL-VERIFICATION CONFIGURATION** | Release owner · Safety engineer |
+| ~~**X4**~~ | ~~`CustodyMatchesState` is contradicted by `Strand` and `TimerFires`~~ **DECIDED AND IMPLEMENTED 2026-08-31.** The `STRANDED_*` states are custody-bearing; `HELD` is lawful while stranded. **The frozen §4.4 table already entered a stranded state under the guard "custody `HELD`" — it was a transcription defect** | **CLOSED** | Sole project owner/reviewer. **No independent sign-off exists** |
+| ~~**X5**~~ | ~~The three `lifecycle_c*.cfg` abort on the deadlock check~~ **DECIDED AND IMPLEMENTED 2026-08-31.** Terminal deadlock freedom is a genuine §24.2 obligation; an explicit `TaskQuiescent` action satisfies it. **`CHECK_DEADLOCK FALSE` was REJECTED; no `.cfg` was edited** | **CLOSED** | Sole project owner/reviewer. **No independent sign-off exists** |
+| **X6** *(new 2026-08-31)* | **`Liveness` FAILS** at all three capacities: a Leg can be re-planned forever (`Plan → Offer → Reject`) and never settle, so `EveryLegSettles` is violated. **Pre-existing and masked by X5** — the lifecycle liveness properties had never been evaluated before. Likely cause: the module never transcribed §4.4's `QUEUED` → `FAILED` *"ladder exhausted"* row that T1-04 shipped | **SPECIFICATION / FORMAL MODEL** | Specification/verification authority — **deliberately not decided in the pass that found it** |
 | **A9** | `assertVersionInKey` implemented, tested, genuinely uncalled | **REPOSITORY-OWNED, correctly deferred** | Phase 8 |
 
 **Closed since the last revision — X1 / T1-04**, on 2026-08-30. §17.4's escalation ladder, its
@@ -357,14 +403,19 @@ attestation or a compute run that no commit in this repository can supply.
 3. **Operations answer D8** — extract identity, source, vintage (ISO), refresh cadence,
    re-contraction downtime budget, plus `extract.bbox` and `extract.marginDegrees`.
 4. **§22.4's calibration owner** derives the 39 Safety-class values (B8).
-5. **Release owner** closes B-M. **Partly advanced 2026-08-31 and still OPEN:** the jar was
+5. **Release owner** closes B-M. **Advanced twice on 2026-08-31 and still OPEN.** The jar was
    provisioned and all six configurations were run and recorded per §7.3a
-   ([`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md)), but **only 1 of 6 closed**.
+   ([`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md)); then **X4 and X5 were decided
+   and implemented** (§15 of the same record), which took the lifecycle configurations from
+   *aborting before any verdict* to *reaching verdicts*. **2 of 6 now close, was 1.**
    What remains: **Compute/Platform** supplies compute on which `commitment_c2/c3` can converge
-   (this workstation could not); the **safety engineer** accepts boundedness (§7.3a item 8) and
-   decides **X4**; the owner decides **X5**; a **named human** signs as operator (§7.3a item 4);
-   and the owner gives **final acceptance** (§7.6). **This is independent of 1–4 above.**
-   **Do not report B-M as advanced because a jar was downloaded** — three of the six runs FAILED.
+   (this workstation could not, and they were **not re-run** by the decision pass); the boundedness
+   judgement (§7.3a item 8) is **still unsigned**; **X6** — the newly-visible `Liveness` failure —
+   must be decided before the lifecycle half can pass; a **named human** signs as operator (§7.3a
+   item 4); and **final acceptance** (§7.6) is given. **This is independent of 1–4 above.**
+   **Do not report B-M as advanced because a jar was downloaded, and do not report it as advanced
+   because X4 and X5 are decided** — the lifecycle half still fails, now on X6, and the two
+   commitment configurations are exactly where they were.
 
 **For an AI coding agent, right now, in this repository:**
 

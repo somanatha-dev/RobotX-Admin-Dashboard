@@ -764,6 +764,11 @@ safety engineer has signed for it**.
 
 ### 7d.5 Two new blockers — X4 and X5. Neither is B-M and neither is a Phase 15 implementation defect.
 
+> ### ⚠ BOTH WERE DECIDED AND IMPLEMENTED LATER ON 2026-08-31. See **§7e**.
+> The two entries below are retained as the record of the findings **as they stood when they were
+> opened**, against the previous `formal/lifecycle.tla`. They are not rewritten. **§7e records the
+> decisions, the model change, the after-evidence, and the new finding X6 that the fix exposed.**
+
 **X4 — `CustodyMatchesState` is contradicted by `Strand` and `TimerFires`.**
 **SPECIFICATION / FORMAL MODEL / SAFETY ENGINEERING.** Under the secondary `-deadlock` diagnostic
 runs, all three capacities report `Error: Invariant Safety is violated.` at **depth 9** on this
@@ -836,6 +841,133 @@ and whose raw output this repository never held.
 > failed. Correcting it is a source change inside the digest scope and inside the frozen
 > implementation, and the sentence **understates** the gap rather than overstating it, so leaving it
 > is conservative. Recorded here and in the blocker register for whoever next has authority.
+> *(**Stale in a second way after §7e** — the module has since been changed and `lifecycle_c1` now
+> closes. Still not corrected, for the same reason, and it still understates rather than overstates.)*
+
+---
+
+## 7e. The X4 / X5 decision pass — 2026-08-31, second pass
+
+**Trigger:** the sole project owner/reviewer, acting as the project's specification and verification
+authority, took the two decisions §7d.5 referred out.
+**Scope:** `formal/lifecycle.tla` and the Phase 15 documentation. **Nothing else.**
+
+> ### NO INDEPENDENT SIGN-OFF EXISTS AND NONE IS CLAIMED.
+> Solo project — one developer, one tester, one reviewer. The separate **safety engineer**,
+> **frozen-specification owner** and **release owner** that §7.6 names **do not exist as distinct
+> individuals here.** **No independent safety-engineering or release-owner acceptance was obtained,
+> simulated or inferred.** §7.3a items 4, 8 and 10 remain formally unsatisfied.
+
+### 7e.1 The decisions
+
+| | Decision | Basis |
+|---|---|---|
+| **X4** | `STRANDED_SAFE` and `STRANDED_OBSTRUCTING` **are custody-bearing**; `HELD` is lawful while stranded; recovery accounts for it | **The frozen specification already said so.** §4.4's `EN_ROUTE_DROP` row enters a stranded state under the guard **"custody `HELD`"**; §4.4's recovery row makes custody discharge a precondition of terminating a stranded Leg; §4.3 calls stranding *"an agent with goods aboard"*; §18.6 pages a *"custody manifest"*. **A transcription defect, not an open safety question** |
+| **X5** | **Terminal deadlock freedom is a genuine §24.2 obligation**; the model is changed to satisfy the check | A **judgement**, recorded as such: §24.2 does not enumerate deadlock freedom. It rests on §4.1 rule 1 + §24.2's *"every non-terminal state eventually leaves"*. **`CHECK_DEADLOCK FALSE` was REJECTED** |
+
+**The executable checker had already been on the decided side of X4.**
+`Backend/tests/engine/helpers/lifecycleModel.js:64-72` has listed both stranded states in
+`CUSTODY_BEARING` since Phase 15 and records that it found them **by counterexample**. **The two
+§24.2 checkers had contradicted each other since Phase 15**; `lifecycle.tla` was the one not updated.
+
+### 7e.2 The model change
+
+| # | Change |
+|---|---|
+| 1 | `CustodyBearingStates` — **value unchanged**; comment now states it is a **guard** (used by `Dispute` `:223` and `TimerFires` `:333`), not a classification |
+| 2 | **NEW** `StrandedLegStates` |
+| 3 | **NEW** `CustodyLawfulStates == CustodyBearingStates \cup { "ABORTING" } \cup StrandedLegStates` |
+| 4 | `CustodyMatchesState` → `legState[l] \in CustodyLawfulStates` |
+| 5 | **NEW** `AllLegsTerminal`, `TaskQuiescent == AllLegsTerminal /\ UNCHANGED vars` |
+| 6 | `TaskQuiescent` added to `Next` |
+
+**`CustodyBearingStates` was deliberately NOT widened**, though it is a guard in two actions:
+widening it would have made a stranded Leg disputable and let a timer drag it back to `ABORTING`,
+contradicting §4.3 — **changing a shipped transition's meaning to make the model pass.**
+
+**`TaskQuiescent` is a stuttering step on `vars`**, so it is not a `<<Next>>_vars` step:
+`WF_vars(Next)` is unaffected and it **cannot discharge a liveness obligation.** §7e.5 is the proof.
+
+**No shipped-implementation change was required.** §10.7 of the run record left open whether
+`Backend/src/engine/lifecycle/` shared the disagreement. **It does not** —
+`transitions.js:499-506` already routes `STRANDED_*` → terminal under `CUSTODY_ACCOUNTED_FOR`.
+
+### 7e.3 After-evidence — the checked-in configurations, same jar, same machine
+
+| Configuration | BEFORE | AFTER |
+|---|---|---|
+| `lifecycle_c1.cfg` | `Deadlock reached`, depth 6, 79 distinct, **no property reached a verdict** | **Graph CLOSES:** 8 030 / **1 909** / **depth 27** / **0 on queue**. `Safety` **PASS** · `TerminalIsFinal` **PASS** · **`Liveness` FAIL** |
+| `lifecycle_c2.cfg` | `Deadlock reached`, depth 6, 277 distinct | 78 471 / 11 886 / depth 16 / 2 474 on queue. **`Liveness` FAIL**; run ends there |
+| `lifecycle_c3.cfg` | `Deadlock reached`, depth 6, 1 012 distinct | 66 908 / 9 934 / depth 11 / 3 722 on queue. **`Liveness` FAIL**; run ends there |
+
+**`c2`/`c3` did not complete.** TLC stops at the first temporal violation, so their `Safety` result
+is *"no violation found in a partial search"* — **not exhaustive.** Only `c1` closed.
+
+### 7e.4 Secondary diagnostic — `INVARIANT Safety` only
+
+| Configuration | Result |
+|---|---|
+| c1 (2/1/3) | **Completed. No error.** 8 030 / 1 909 / depth 27 / 0 on queue |
+| c2 (3/2/3) | **Completed. No error.** 419 171 / **60 079** / depth 37 / 0 on queue |
+| c3 (4/3/3) | **Completed. No error.** **16 557 136 / 1 680 163** / depth 47 / 0 on queue |
+
+> **NOT AUTHORITATIVE.** These use configurations **that are not checked in**, written to a scratch
+> directory outside the repository. They have exactly the standing the `-deadlock` runs have.
+> **Do not cite them as a result for `lifecycle_c{1,2,3}.cfg`.** Their value: they establish that
+> **X4 is fixed exhaustively at all three capacities**, and that **X6 is the only thing left**
+> between the lifecycle half and a pass.
+
+### 7e.5 Mutation testing — **4 built, 4 killed** (V-6, "re-run per implementation pass")
+
+| # | Mutation | Actual | Killed |
+|---|---|---|---|
+| **M1** | Revert **only** the X4 widening | **`Invariant Safety is violated`** — the **original X4 trace**: depth 9, `l1 :> "STRANDED_OBSTRUCTING"` with `custody = "HELD"`, `l2` untouched in `QUEUED` | ✅ |
+| **M2** | Remove **only** `TaskQuiescent` | **`Deadlock reached`** returns | ✅ |
+| **M3** | `Recovered` no longer accounts for custody | `Invariant Safety is violated` | ✅ |
+| **M4** | `Cancel` may carry custody | `Invariant Safety is violated` | ✅ |
+
+**Tree restored and byte-verified** — scratch copy SHA-256 `BA893389ED40…8B59`, identical to the
+repository file. No mutant reached the tree.
+
+**M1 and M2 are the load-bearing ones:** M1 proves the **X4** change is what eliminated the X4
+counterexample (not a side effect of X5), and M2 proves the **X5** change is what eliminated the
+deadlock (not a side effect of X4). **The §10 counterexample is gone for the intended reason.**
+
+### 7e.6 The new finding — **X6**, and it is not a regression
+
+`Liveness` fails at all three capacities. The `c1` counterexample is a lasso on a **closed** graph:
+`QUEUED → Plan → PLANNED → Offer → OFFERED → Reject → QUEUED → …` forever at `ticks = 3 = MaxTicks`,
+so `l1` never reaches a terminal or stranded state and **`EveryLegSettles` is violated**.
+`QueuedLegsProgress` holds; `CustodyNeverLost` is vacuous on the trace.
+
+> **Pre-existing and previously masked.** §7d.4 recorded that **no lifecycle liveness property had
+> ever been evaluated by TLC at any capacity.** Fixing X5 did not create X6 — **it made it
+> visible**, which is exactly what distinguishes the fix from a `CHECK_DEADLOCK FALSE` that would
+> have hidden this too.
+
+Two candidate causes, **deliberately not decided in the pass that found them**: `WF_vars(Next)` is
+weak fairness on the whole disjunction; and the module never transcribed §4.4's `QUEUED` → `FAILED`
+*"ladder exhausted"* row — **the §17.4 ladder T1-04 shipped on 2026-08-30 has no counterpart in this
+model.** Registered as **X6**.
+
+### 7e.7 What did NOT change
+
+| | |
+|---|---|
+| **`Backend/` — any file** | **Untouched.** Source digest **`d033038cb261c3de…` / 573 — unmoved**, re-computed after the change |
+| Any `.cfg`; `CHECK_DEADLOCK` | **Untouched.** `CHECK_DEADLOCK` is still ON in all three lifecycle configurations |
+| `commitment.tla`, `commitment_c{1,2,3}.cfg` | **Untouched and NOT re-run.** Still 1 closed / 2 UNKNOWN |
+| `establishedByCommand` / `[NOT PROVEN]` / gate algebra | **Intact** |
+| `release-evidence.json` | **NOT re-collected**, by instruction. V-5's RED staleness unchanged |
+| B1, B8, B-P, B-O, X3, A9, Phase 16 | **Not touched** |
+| Build gates | **Re-run: 7 PASS, `gate:composition` FAIL with 1 violation across 19 workers — identical to V-2's pre-existing record** |
+| Jest | `lifecycle` / `ModelCheck` / `phase0Scaffold` — **5 suites, 157 tests, all passing** |
+
+> **Why no broader JS re-run was needed.** No JavaScript reads the *contents* of `lifecycle.tla` —
+> the only reference anywhere is `phase0Scaffold.test.js` asserting that `commitment.tla` **exists**.
+> The digest is byte-identical to the tree V-1 measured green (162 suites / 7 275 tests) and V-2
+> measured gates against, so **those results stand unchanged by construction**; the five suites
+> above were run anyway as the topically closest.
 
 ---
 

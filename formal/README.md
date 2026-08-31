@@ -31,6 +31,52 @@ java -jar tla2tools.jar -config lifecycle_c2.cfg  -workers auto lifecycle.tla
 implementation environment carries Java 20, and TLA+ 1.8.0 (`tla2tools.jar`) was fetched
 and executed against this module.
 
+> ### Updated 2026-08-31 — `lifecycle.tla` HAS now been run under TLC, twice, and the module was changed between the two runs.
+>
+> The sentence above ("it has not been run on `lifecycle.tla`") **was true when written and is no
+> longer.** It is left in place because the paragraph is dated and the correction belongs beside it,
+> not on top of it.
+>
+> **First pass.** All three `lifecycle_c*.cfg` were run as checked in. **All three aborted on TLC's
+> default deadlock check at depth 6**, so `INVARIANT Safety` and `PROPERTY TerminalIsFinal, Liveness`
+> **never reached a verdict at any capacity.** That opened two blockers — **X4** (a real safety
+> violation the abort was hiding: `CustodyMatchesState` forbade the stranded-with-custody states
+> that §4.4 enters under the guard "custody `HELD`") and **X5** (the abort itself).
+>
+> **Second pass — both were decided by the sole project owner/reviewer and `lifecycle.tla` was
+> changed.** There is **no independent safety-engineering or release-owner sign-off**; this is a
+> solo project and none was obtained or is claimed.
+>
+> | Decision | Change |
+> |---|---|
+> | **X4** — the `STRANDED_*` states **are** custody-bearing | `CustodyLawfulStates` (new) is the invariant's domain; `CustodyBearingStates` keeps its old value and is documented as the **guard** it always was in `Dispute` and `TimerFires`. **No transition changed** |
+> | **X5** — terminal deadlock freedom is a genuine §24.2 obligation | New `TaskQuiescent == AllLegsTerminal /\ UNCHANGED vars`, added to `Next`. **`CHECK_DEADLOCK FALSE` was REJECTED and no `.cfg` was edited** |
+>
+> **Current status of the three lifecycle configurations, run as checked in:**
+>
+> | Configuration | Result |
+> |---|---|
+> | `lifecycle_c1.cfg` | **State graph CLOSES** — 8 030 states, 1 909 distinct, depth 27, 0 on queue. `Safety` **PASS**, `TerminalIsFinal` **PASS**, **`Liveness` VIOLATED** |
+> | `lifecycle_c2.cfg` | **`Liveness` VIOLATED**; run ends there with 2 474 states on queue. `Safety` clean **in a partial search** |
+> | `lifecycle_c3.cfg` | **`Liveness` VIOLATED**; run ends there with 3 722 states on queue. `Safety` clean **in a partial search** |
+>
+> **The `Liveness` failure is blocker X6**: a Leg can cycle `QUEUED → Plan → Offer → Reject → QUEUED`
+> forever and never settle, violating `EveryLegSettles`. **It is pre-existing** — the deadlock abort
+> had prevented any liveness property from ever being evaluated — and it is **not** decided yet. The
+> likely cause is that this module never transcribed §4.4's `QUEUED` → `FAILED` *"ladder exhausted"*
+> row, so there is no bound on re-planning; the §17.4 ladder exists in
+> `Backend/src/engine/fairness/` and has **no counterpart here**.
+>
+> **So `lifecycle.tla` still produces no passing evidence for `model_check_capacity_1_2_3`**, and
+> B-M remains open. Full record, with raw output and the before/after retained separately:
+> `docs/phase15/PHASE_15_BM_TLC_RUN_RECORD.md` §15.
+>
+> **A correspondence defect this found, worth stating where the obligation is stated (below).** The
+> two checkers had disagreed since Phase 15: `lifecycleModel.js`'s `CUSTODY_BEARING` listed both
+> `STRANDED_*` states; `lifecycle.tla`'s `CustodyMatchesState` forbade them. **The review obligation
+> at the end of this file is what should have caught it, and it did not, because nothing enforces
+> it.** That gap is unchanged.
+
 ### `commitment.tla` — executed
 
 | Configuration | `Legs` / `Workers` / `MaxFence` | Result |

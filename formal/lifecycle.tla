@@ -74,10 +74,67 @@ LegStates ==
 TerminalLegStates == { "SETTLED", "WITHDRAWN", "CANCELLED", "FAILED" }
 
 (***************************************************************************)
-(* Sec 4.3 -- the states in which the agent physically holds the goods.     *)
-(* Custody is HELD from LOADED until RELEASED (Sec 2.5).                    *)
+(* Sec 4.3 -- the states in which the agent is physically TRANSPORTING the  *)
+(* goods along the nominal path. Custody is HELD from LOADED until          *)
+(* RELEASED (Sec 2.5).                                                      *)
+(*                                                                          *)
+(* This set is a GUARD, not a classification: `Dispute` and `TimerFires`    *)
+(* use it to decide which Legs may be disputed and which a timer may drive  *)
+(* into ABORTING. It is deliberately NOT the set of states in which custody *)
+(* may lawfully be HELD -- see CustodyLawfulStates below.                   *)
 (***************************************************************************)
 CustodyBearingStates == { "LOADED", "EN_ROUTE_DROP", "AT_DROP" }
+
+(***************************************************************************)
+(* Sec 4.3 -- the two stranding states.                                     *)
+(***************************************************************************)
+StrandedLegStates == { "STRANDED_SAFE", "STRANDED_OBSTRUCTING" }
+
+(***************************************************************************)
+(* Sec 2.5 / Sec 4.4 -- the states in which custody = HELD is LAWFUL.       *)
+(*                                                                          *)
+(* Decision X4, recorded 2026-08-31 by the sole project owner/reviewer      *)
+(* acting as the project's specification and verification authority:        *)
+(* STRANDED_SAFE and STRANDED_OBSTRUCTING are custody-bearing, so a         *)
+(* stranded Leg may lawfully still be holding the goods. See                *)
+(* docs/phase15/PHASE_15_BLOCKERS.md (X4) for the decision and its basis.   *)
+(*                                                                          *)
+(* This is what the FROZEN specification already says, and the invariant    *)
+(* below was an unfaithful transcription of it:                             *)
+(*                                                                          *)
+(*   - Sec 4.4 gives EN_ROUTE_DROP -> STRANDED_SAFE / STRANDED_OBSTRUCTING  *)
+(*     under the explicit guard "custody HELD", so the specification's own  *)
+(*     transition table enters a stranded state CARRYING the goods.         *)
+(*   - Sec 4.4's lease-expiry row selects between REASSIGNING and the two   *)
+(*     STRANDED_* states "by custody state".                                *)
+(*   - Sec 4.4's recovery row terminates a stranded Leg only once "custody  *)
+(*     accounted for (Sec 4.9)", noting "Leg terminates only once custody   *)
+(*     is discharged (I7, I8)" -- an obligation that is vacuous unless a    *)
+(*     stranded Leg can hold custody in the first place.                    *)
+(*   - Sec 4.3 describes stranding as "an agent with goods aboard,          *)
+(*     immobilised, out of communication".                                  *)
+(*   - Sec 18.6 step 1 pages the responder with a "custody manifest".       *)
+(*                                                                          *)
+(* ABORTING was already permitted, and remains so for the same reason:      *)
+(* Sec 4.6 routes a custodial cancellation through it precisely SO THAT the *)
+(* goods stay accounted for.                                                *)
+(*                                                                          *)
+(* The executable equivalent, Backend/tests/engine/helpers/lifecycleModel.js *)
+(* CUSTODY_BEARING, has listed both STRANDED_* states since Phase 15 and    *)
+(* found them by counterexample. Until this change the two checkers         *)
+(* contradicted each other, and per formal/README.md the defect was in      *)
+(* whichever was not updated -- this module.                                *)
+(*                                                                          *)
+(* KNOWN REMAINING DIVERGENCE, recorded rather than closed: lifecycleModel  *)
+(* also lists REASSIGNING, for Sec 12.2's lease-expiry route that keeps a   *)
+(* LOADED Leg reassignable. This module does not model that route at all    *)
+(* -- `Reassign` requires custody = "NONE" -- so REASSIGNING is deliberately *)
+(* NOT included here: widening the invariant to admit a state the           *)
+(* transition relation cannot reach would weaken it for no coverage. The    *)
+(* missing route is a COVERAGE gap in this module, separate from X4.        *)
+(***************************************************************************)
+CustodyLawfulStates ==
+    CustodyBearingStates \cup { "ABORTING" } \cup StrandedLegStates
 
 (***************************************************************************)
 (* Sec 4.2 -- the Task states.                                             *)
@@ -346,6 +403,48 @@ TimerFires(l) ==
        \/ /\ legState[l] \in { "STRANDED_SAFE", "STRANDED_OBSTRUCTING" }
           /\ UNCHANGED << legState, custody, hardCommitted, taskState, everHeld >>
 
+(***************************************************************************)
+(* TERMINAL QUIESCENCE -- the end of a behaviour, stated explicitly.        *)
+(*                                                                          *)
+(* Decision X5, recorded 2026-08-31 by the sole project owner/reviewer      *)
+(* acting as the project's specification and verification authority:        *)
+(* terminal deadlock freedom is treated as a genuine Sec 24.2 obligation of *)
+(* this model. The model is therefore changed to SATISFY TLC's deadlock     *)
+(* check, NOT to switch the check off. No .cfg sets CHECK_DEADLOCK FALSE    *)
+(* and none may: see docs/phase15/PHASE_15_BLOCKERS.md (X5).                *)
+(*                                                                          *)
+(* WHAT WENT WRONG WITHOUT IT. Every action in `Next` requires some Leg to  *)
+(* be non-terminal. Once every Leg is terminal -- reachable in as few as    *)
+(* two steps by cancelling each Leg in turn -- no successor state existed,  *)
+(* and TLC reported "Deadlock reached" at depth 6. All three lifecycle      *)
+(* configurations aborted there, so INVARIANT Safety and PROPERTY           *)
+(* TerminalIsFinal, Liveness never reached a verdict at any capacity.       *)
+(*                                                                          *)
+(* WHY THIS IS THE SPECIFICATION-CONSISTENT REPAIR. Sec 4.1 rule 1 says "no *)
+(* state is both terminal and modifiable" and Sec 24.2's liveness clause is *)
+(* that "every NON-terminal state eventually leaves". Together they say a   *)
+(* state in which every Leg is terminal has ENDED rather than stalled --    *)
+(* TLC's default check cannot tell those two apart, and this action is what *)
+(* tells it. Sec 24.2 does not enumerate deadlock freedom itself; treating  *)
+(* it as an obligation of this model is the recorded X5 decision.           *)
+(*                                                                          *)
+(* WHY IT CANNOT HIDE A LIVENESS DEFECT. This is a stuttering step on       *)
+(* `vars`, so it is NOT a <<Next>>_vars step. WF_vars(Next) is therefore    *)
+(* unaffected by it: it cannot starve any enabled action, and it cannot     *)
+(* discharge any liveness obligation. It is enabled ONLY when every Leg is  *)
+(* already terminal, which is exactly the state Sec 4.1 rule 1 declares     *)
+(* unmodifiable.                                                            *)
+(*                                                                          *)
+(* Note it does NOT touch taskState. Resolving the Task's own state when    *)
+(* its Legs end other than by settlement is Sec 4.2 territory, and Sec 4.2  *)
+(* has no transition table -- that is blocker X3, which is untouched here.  *)
+(***************************************************************************)
+AllLegsTerminal == \A l \in Legs : legState[l] \in TerminalLegStates
+
+TaskQuiescent ==
+    /\ AllLegsTerminal
+    /\ UNCHANGED vars
+
 Next ==
     \/ \E l \in Legs :
          \/ Plan(l) \/ Defer(l) \/ Offer(l) \/ Accept(l) \/ Reject(l)
@@ -356,6 +455,7 @@ Next ==
          \/ AbortResolved(l) \/ Recovered(l)
          \/ TimerFires(l)
     \/ \E l \in Legs, c \in ObstructionClasses : Strand(l, c)
+    \/ TaskQuiescent
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
@@ -388,10 +488,17 @@ CustodyNeverCancelled ==
 NoCommitmentOnTerminal ==
     \A l \in Legs : legState[l] \in TerminalLegStates => ~hardCommitted[l]
 
-\* Sec 2.5: custody is HELD only while the Leg is in a state that bears it.
+\* Sec 2.5 / Sec 4.4: custody is HELD only while the Leg is in a state in which
+\* holding it is lawful. Decision X4 (2026-08-31) settled which states those are;
+\* the reasoning and its specification basis are at CustodyLawfulStates above.
+\*
+\* What this still forbids -- and it is the whole point of keeping it -- is custody
+\* in a state that has not reached the pickup (QUEUED, DEFERRED, PLANNED, OFFERED,
+\* ACCEPTED, EN_ROUTE_PICKUP, AT_PICKUP) and custody in ANY terminal state. Those
+\* are the two ways goods are lost rather than carried, and neither was relaxed.
 CustodyMatchesState ==
     \A l \in Legs :
-        custody[l] = "HELD" => legState[l] \in (CustodyBearingStates \cup { "ABORTING" })
+        custody[l] = "HELD" => legState[l] \in CustodyLawfulStates
 
 \* Sec 4.3: an INDETERMINATE obstruction class resolves to the MORE serious
 \* stranding state (Sec 7.3 DENY). Checked as a property of the resolution function
