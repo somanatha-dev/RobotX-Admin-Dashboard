@@ -2049,3 +2049,290 @@ file format for a TLC run**, and that location remains **PROVISIONAL and the rel
 confirm or redirect (§7.6)**.
 
 **The figures quoted in §15.6–§15.8 are transcribed from those captures**, not written from memory.
+
+---
+
+# 16. The X6 pass — 2026-08-31, third pass of the day
+
+**Nothing in §1–§15 is rewritten by this section.** The historical TLC results stand exactly as
+recorded, including the ones this pass reproduced and the two factual claims it corrects (§16.2).
+
+## 16.1 Scope, authority and what was NOT touched
+
+This pass **investigated X6 against the frozen specification, the shipped implementation and the
+executable checker before changing anything**, then classified it as a **transcription defect** and
+fixed it in `formal/lifecycle.tla`.
+
+| | |
+|---|---|
+| Tool | The same artefact: `tla2tools.jar`, **SHA-256 `eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a`**, re-verified at the start of this pass. TLC2 Version 2026.08.21.155922 (rev 9787e65) |
+| JDK | Oracle 20.0.2+9-78, 64-bit |
+| Machine | Same workstation, 12 cores, Windows 11 |
+| Changed | **`formal/lifecycle.tla` only** |
+| **Not** changed | **No `Backend/` file. No schema, no migration. No `.cfg` — the three `lifecycle_c*.cfg` are byte-identical to the ones §15 used, so `CHECK_DEADLOCK FALSE` is still absent and X5's solution is still in force. No release evidence. B1, B8, B-P, B-O, X3, A9 and Phase 16 untouched. No previous commit amended** |
+| Authority | The sole project owner/reviewer. **No independent safety-engineering or release-owner acceptance exists, was obtained, or is claimed.** §7.3a items 4, 8 and 10 remain unsatisfied |
+
+## 16.2 The pre-fix run, reproduced — and two corrections to §15.9
+
+`lifecycle_c1.cfg` **as checked in**, on the unmodified `22411e8` module, reproduces §15.6 exactly:
+**8 030 states generated / 1 909 distinct / depth 27 / 0 on queue**, `Error: Temporal property
+Liveness was violated.`
+
+**Correction 1 — the counterexample is not the `Reject` cycle.** The lasso TLC emits is a
+*reassignment* cycle (states 11→15, back to 11):
+
+```
+ACCEPTED --Reassign--> REASSIGNING --ReassignComplete--> QUEUED
+        --Plan--> PLANNED --Offer--> OFFERED --Accept--> ACCEPTED --> ...
+```
+
+with `l1` already `CANCELLED` and `ticks = 3 = MaxTicks`. The `QUEUED → Plan → Offer → Reject →
+QUEUED` cycle §15.9 describes **is** a real cycle of the model, but it is not what TLC reported.
+This matters only because it shows the defect is not specific to `Reject`: **every unbounded cycle
+in this model passes through `QUEUED`**, which is why one ladder addresses all of them.
+
+**Correction 2 — all three `Liveness` conjuncts fail independently.** §15.9 says
+`QueuedLegsProgress` and `CustodyNeverLost` were satisfied. Checked one at a time on the same
+closed 8 030 / 1 909 graph, all three are violated:
+
+| Conjunct | Pre-fix | Counterexample |
+|---|---|---|
+| `EveryLegSettles` | **VIOLATED** | the reassignment lasso above |
+| `CustodyNeverLost` | **VIOLATED** | `ABORTING --Strand--> STRANDED_* --CancelWithCustody--> ABORTING`, custody `HELD` throughout |
+| `QueuedLegsProgress` | **VIOLATED** | `l2` parked in `QUEUED` for ever while `l1` spins in that cycle — **no ladder involved** |
+
+The counts in §15 are **not** amended. Only the reading of what they mean is.
+
+## 16.3 The trace: frozen specification → shipped implementation → executable checker → TLA+ module
+
+| Layer | State of the §17.4 ladder-exhaustion path |
+|---|---|
+| **Frozen specification** | **PRESENT, verbatim.** §4.4 `:1123` — <code>\| `QUEUED` \| ladder exhausted \| `FAILED` \| — \| task `FAILED`, operator notification \|</code>; partner row `:1122` — <code>\| `QUEUED` \| assignment deadline \| `QUEUED` \| ladder step available \| relaxation applied and recorded (§17.4) \|</code>. §4.3 `:1041` gives `QUEUED` the deadline `sla.assignment_deadline` with on-expiry "escalation ladder (§17.4)". §17.4 `:3967-3969`: "the ladder is **finite and terminates in a decision** … A task cannot wait forever". §18.4 `:4071`: "A task reaches `FAILED` **only** through the §17.4 ladder". I13 `:5485` |
+| **Shipped implementation** | **PRESENT, wired end to end.** `lifecycle/transitions.js:203-217` — both rows, the second with **no guards** and effects `["TASK_FAILED","OPERATOR_NOTIFICATION"]`; guard evaluator `LADDER_STEP_AVAILABLE` at `:582`. `fairness/ladder.js` (T1-04) — eight rungs in `STEPS`, four verdicts, `EXHAUSTED` reachable only once a dispatcher has actually seen rung 8. `supervision/expiryActions.js:373-425` — `escalationLadder`, mapping `EXHAUSTED → LADDER_EXHAUSTED` and everything else to the re-queue row, refusing to fail a Leg on a missing input. `workers/leaderWorkers.js:416` injects the ladder into the timer handler map. **Nothing here needed changing and nothing was changed** |
+| **Executable checker** | **MODELS the transition; does not VERIFY the property.** `lifecycleModel.js:successors` enumerates every `transitions.EVENT`, so it emits `leg-1:QUEUED--LADDER_EXHAUSTED-->FAILED` and `leg-1:QUEUED--ASSIGNMENT_DEADLINE-->QUEUED` from the initial state (verified by running it). But its only liveness check is `checkNoDeadEnds` — "no reachable non-terminal state is a dead end" — with **no `EveryLegSettles` and no fairness**, so it could not have caught this |
+| **TLA+ module** | **ABSENT — both rows.** `TimerFires` had **no `QUEUED` case at all**, so the one state whose exit *is* the anti-starvation guarantee was the one state in the module with no supervised exit |
+| **Liveness property** | `EveryLegSettles` is **stronger** than §24.2's literal text — but see §16.6: §24.2's own weaker clause fails on the fixed model too, so weakening it would not have rescued the verdict |
+
+**This is the same correspondence failure as X4**, and `formal/README.md`'s rule applies the same
+way: "An action added to one without a matching action in the other is a defect in whichever was
+not updated." The executable checker had it; **this module did not.**
+
+## 16.4 The exact change to `formal/lifecycle.tla`
+
+| Added | Transcribes |
+|---|---|
+| `VARIABLE ladder`, typed `[Legs -> 0..LadderSteps]`, initialised to 0, added to `vars`, `TypeOK` and every `UNCHANGED` tuple | §17.4's rung, per Leg |
+| `LadderSteps == 8` — a **definition**, not a CONSTANT, and no `.cfg` supplies it | §17.4's table has exactly eight rungs; `fairness/ladder.js`'s `STEPS` carries the same eight |
+| `LadderAdvance(l) == legState[l] = "QUEUED" ∧ ladder[l] < LadderSteps ∧ ladder' = …+1` (state unchanged) | §4.4 `:1122` |
+| `LadderExhausted(l) == legState[l] = "QUEUED" ∧ ladder[l] = LadderSteps ∧ legState' = … "FAILED"` | §4.4 `:1123` |
+| `Fairness == WF_vars(Next) ∧ ∀l ∈ Legs : SF_vars(LadderAdvance(l)) ∧ ∀l ∈ Legs : SF_vars(LadderExhausted(l))` | §24.2's "given fair timer firing", per Leg. **`WF_vars(Next)` is kept, not replaced** |
+
+Three deliberate properties of the transcription:
+
+1. **The rung never resets.** No transition into `QUEUED` clears `ladder`. This is not an
+   abstraction — the shipped ladder reads queue age from `WorkQueue.enqueuedAt`, which in
+   `ladder.js`'s own words "survives a Leg leaving and re-entering `QUEUED` (a NACK, a failed
+   hardening) … a queue age that resets on every requeue is a starvation clock that starvation
+   resets." **The monotonicity is the guarantee.**
+2. **The rungs do not consume `ticks`.** `MaxTicks` bounds actions with no intrinsic bound; §17.4's
+   ladder is finite in the *specification*. Charging rungs against `MaxTicks = 3` would have capped
+   the ladder at three rungs and made §4.4's second row unreachable — a boundedness artefact
+   masquerading as a model.
+3. **`LadderExhausted` leaves `taskState` UNCHANGED**, although §4.4's side-effect column reads
+   "task `FAILED`". §4.2 has no transition table and that is **X3**; modelling it needs a rule for
+   the case where one Leg fails the ladder and a sibling later settles, and no such rule exists.
+   Same reasoning X5's `TaskQuiescent` used. **Recorded in §16.8 as a limitation.**
+
+### The one modelling judgement, named
+
+**Strong fairness rather than weak, on the two ladder actions, is a judgement.** Adding a fairness
+condition assumes more and therefore makes liveness *easier* to satisfy, which is the direction that
+deserves scrutiny — so it is stated rather than buried. Its basis is §17.4's own sentence: "It is
+finite, it advances on elapsed SLA budget **regardless of cost dynamics** … **No amount of cost
+arithmetic can prevent it from advancing**." For an action that is repeatedly but not *continuously*
+enabled — a Leg in a re-plan cycle leaves `QUEUED` between rungs — that is the definition of strong
+fairness. Weak fairness was measured and is **not** sufficient (§16.7, M6). The condition is
+confined to the two ladder actions and nothing else.
+
+## 16.5 After-evidence — the checked-in configurations, run AS CHECKED IN
+
+| Configuration | Result |
+|---|---|
+| `lifecycle_c1.cfg` | **`Liveness` VIOLATED** — 64 835 generated / 15 486 distinct / depth 14 / **4 260 left on queue**. The search does **not** close: TLC stops at the first temporal violation, so `Safety` here is a **partial** verdict |
+| `lifecycle_c2.cfg` | **`Liveness` VIOLATED** — 2 856 353 generated / 480 326 distinct / depth 16 / **159 266 left on queue**. `Safety` partial |
+| `lifecycle_c3.cfg` | **NO VERDICT — did not converge; INTERRUPTED AT BUDGET.** See §16.5a |
+
+**Read this table with §16.6.** `Liveness` is a conjunction of three properties; the one X6 is about
+now passes on a closed graph, and the two that fail do so on **X7**.
+
+> ### ⚠ Partial-search state counts are NOT reproducible run to run. Closed-graph counts are.
+>
+> TLC stops at the *first* temporal violation found by twelve concurrent workers, so where a
+> failing run stops is a scheduling artefact. The same `lifecycle_c1.cfg` run twice in this pass
+> reported **64 835 / 15 486 / depth 14** and **82 429 / 19 275 / depth 15**; `lifecycle_c2.cfg`
+> reported **2 856 353 / 480 326** and **2 611 156 / 444 026**. **The verdicts were identical every
+> time; only the stopping point moved.** Every figure recorded in §16 is transcribed from the
+> retained capture named in §16.10 — but a reader who re-runs these configurations should expect
+> the same *verdicts* and different *counts*.
+>
+> **The closed-graph figures are exact and did reproduce byte-for-byte**: 8 030 / 1 909 / depth 27
+> (pre-fix), 676 854 / 156 941 / depth 43 (`QueuedLegsProgress` PASS), 662 454 / 156 941 / depth 43
+> (X7-isolated). **Those are the ones that carry evidentiary weight**, and it is the closed ones
+> that the passing claims rest on.
+
+### 16.5a `lifecycle_c3.cfg` — **did not converge. NO VERDICT, and it must not be reported as a failure.**
+
+| | |
+|---|---|
+| Command | `java -XX:+UseParallelGC -Xmx10g -jar tla2tools.jar -config lifecycle_c3.cfg -workers auto lifecycle.tla` |
+| Started / terminated | 2026-08-31 20:40:09 → ~21:34, **≈54 minutes wall clock**, then **terminated at a stated budget** |
+| Last recorded progress | **16 247 475 states generated / 2 388 556 distinct / depth 15 / 1 014 936 left on queue** |
+| Outcome | **UNKNOWN / non-convergent.** **No `Liveness` violation had been reported when it was stopped**, and the search was still expanding |
+
+**Why it did not converge, stated as arithmetic rather than as an excuse.** The `ladder` variable
+multiplies the reachable state space by up to `(LadderSteps + 1)^|Legs|` — **81× at capacity 1,
+729× at capacity 2, 6 561× at capacity 3**. That prediction is confirmed at capacity 1: the closed
+graph went from **1 909** distinct pre-fix to **156 941** after, a factor of **82.2**. On top of
+that, TLC's periodic liveness check is the binding cost at this size: **one such check over
+1 559 707 states took 21 minutes 19 seconds**, and the run needs one every time the state space
+grows materially.
+
+**Three things this specifically does NOT license saying:**
+
+1. **Not "`lifecycle_c3` fails."** It reached no verdict. `c1` and `c2` fail; `c3` is UNKNOWN, in
+   exactly the sense `commitment_c2`/`c3` are UNKNOWN in §12.2 and §12.3.
+2. **Not "the X6 change broke `c3`."** No configuration of this module has ever converged at
+   capacity 3 with liveness evaluated — before the X6 change `c3` stopped at a `Liveness` violation
+   with states still queued, which is also not a completed search.
+3. **Not "boundedness needs relaxing."** `MaxTicks` is untouched and `LadderSteps == 8` is §17.4's
+   own rung count. **Reducing either to make `c3` converge would be manufacturing a passing result**
+   and was not done.
+
+**What would close it: compute.** This is the same requirement B-M already carries for
+`commitment_c2`/`c3` (§7.3a), and it is Compute/Platform's, not Engineering's.
+
+## 16.6 After-evidence — one conjunct at a time, capacity 1
+
+Checked-in `Legs = {l1,l2}` / `Capacity = 1` / `MaxTicks = 3`, with `INVARIANT Safety` and `PROPERTY
+TerminalIsFinal` retained in every run:
+
+| Conjunct | Verdict | States / distinct / depth / queue |
+|---|---|---|
+| **`QueuedLegsProgress`** | **PASS — COMPLETE STATE GRAPH.** `Safety` **PASS**, `TerminalIsFinal` **PASS** | 676 854 / 156 941 / **43** / **0 left** |
+| `EveryLegSettles` | **VIOLATED — X7.** `l2` frozen in `REASSIGNING` for ever while `l1` spins in the `ABORTING ↔ STRANDED_*` cycle | 174 320 / 39 036 / 18 / 7 684 left |
+| `CustodyNeverLost` | **VIOLATED — X7.** Custody `HELD` around the whole lasso | 159 731 / 35 834 / 17 / 7 276 left |
+
+**The X7 isolation — a diagnostic, not a proposed change.** With the X6 fix in place and the
+`STRANDED_* → ABORTING` edge blocked, **every declared property passes exhaustively**: `Safety`
+PASS, `TerminalIsFinal` PASS, `Liveness` PASS, **662 454 states / 156 941 distinct / depth 43 / 0
+left on queue**. So **X7 is the single remaining cause of the lifecycle `Liveness` failure**, and
+the X6 change is what made that provable. **That mutation is not checked in and decides nothing** —
+see `PHASE_15_BLOCKERS.md` § **X7**, which reports the specification ambiguity rather than resolving
+it.
+
+**Question E, answered by measurement rather than argument.** `EveryLegSettles` is stronger than
+§24.2's literal wording. A diagnostic property `NonTerminalStatesLeave`, transcribing §24.2's
+*literal, weaker* clause "every non-terminal state eventually leaves" (with the same `STRANDED_*`
+exemption), was checked on the fixed model and is **also VIOLATED** — 20 355 generated / 5 405
+distinct / 1 947 left on queue. **Weakening `EveryLegSettles` to the specification's own wording
+would not have produced a passing verdict**, so it was not weakened.
+
+### 16.6a The same per-conjunct check at capacity 2 — **it does not converge either**
+
+The `QueuedLegsProgress` result above is a **capacity-1** result and must not be generalised. The
+identical configuration at capacity 2 (`Legs = {l1,l2,l3}`, `Capacity = 2`, `MaxTicks = 3`,
+`INVARIANT Safety` + `PROPERTY TerminalIsFinal, QueuedLegsProgress`) was run and **did not
+converge**:
+
+| | |
+|---|---|
+| Budget | 1 500 s (25 minutes), `-Xmx10g` |
+| Outcome | **NO VERDICT — terminated at budget**, `timeout` exit 124 |
+| Last recorded progress | **7 809 667 states generated / 1 238 659 distinct / depth 19 / 358 738 left on queue**, then a liveness check over **5 382 357** states was still running when the budget expired |
+
+**So the honest scope of the one passing liveness verdict is: capacity 1 only.** Reduced from three
+capacities to one, and §24.2 is explicit that the configuration under check is itself part of the
+requirement — "a fencing model checked only at `capacity = 1` cannot exhibit the defect that fencing
+at `capacity > 1` exists to prevent". **`QueuedLegsProgress` passing at capacity 1 therefore does
+not discharge §24.2's liveness clause**, and no claim here should be read as saying it does.
+
+**Neither `MaxTicks` nor `LadderSteps` was reduced to bring capacity 2 or 3 inside the budget.**
+Both would have produced a green result that meant less than the red one it replaced.
+
+## 16.7 Mutation testing — 7 built, 7 killed
+
+All at `Legs = {l1,l2}` / `Capacity = 1` / `MaxTicks = 3`, `INVARIANT Safety` + `PROPERTY
+TerminalIsFinal, QueuedLegsProgress`, unless noted.
+
+| # | Mutation — exactly one thing each | Result |
+|---|---|---|
+| **M3** | remove `LadderExhausted` from `Next` (and its fairness) | **KILLED** — `Temporal property QueuedLegsProgress was violated`, 217 291 / 47 957 / 8 520 left |
+| **M4** | drop the `legState[l] = "QUEUED"` guard from `LadderExhausted` | **KILLED** — `Action property TerminalIsFinal is violated`, 24 098 / 6 290 / 2 201 left |
+| **M5** | `LadderExhausted` targets `"QUEUED"` instead of `"FAILED"` | **KILLED** — `QueuedLegsProgress` violated, 213 359 / 47 096 / 8 382 left |
+| **M7** | remove `LadderAdvance` from `Next` (and its fairness) | **KILLED** — `QueuedLegsProgress` violated, **8 030 / 1 909 / depth 27 / 0 left** — *exactly* the pre-X6 graph, which independently confirms the new variable adds no states when it cannot advance |
+| **M6** | `SF_vars(LadderAdvance(l))` → `WF_vars(...)` | **SURVIVED** under this oracle (676 854 / 156 941 / 0 left, no error) and **KILLED** under the X7-isolated oracle with `Liveness` (violated, 66 489 / 15 885 / depth 15 / 4 292 left). **Recorded honestly:** `QueuedLegsProgress` cannot distinguish weak from strong fairness, because its only need is a Leg *parked* in `QUEUED`, where `LadderAdvance` is continuously enabled. The distinction is what the *cycling* case needs. **This is the measurement behind the §16.4 judgement** |
+| **M1** | revert **only** the X4 widening of `CustodyLawfulStates` | **KILLED** — `Invariant Safety is violated`, 4 294 / 1 349 / 614 left. *The X4 custody invariant is still enforced* |
+| **M2** | remove **only** X5's `TaskQuiescent` from `Next` | **KILLED** — `Deadlock reached`, 530 / 214 / 126 left. *X5 terminal quiescence is still necessary and still works* |
+
+**No mutant was built that merely manufactures an artificial failure.** Each changes one element of
+the transcription — the transition, its guard, its target state, its fairness, or a previously
+decided change — and each oracle is a declared property of the module.
+
+## 16.8 Limitations this pass introduces or leaves standing
+
+1. **`Liveness` still FAILS**, on X7. The lifecycle half of `model_check_capacity_1_2_3` does not
+   pass and **X6's closure must not be read as B-M progress**.
+2. **`c1`/`c2` `Safety` is a partial verdict in the authoritative runs**, because TLC stops at the
+   first temporal violation. §15.11 item 1 said resolving X6 would let the checked-in
+   configurations produce an exhaustive `Safety` directly — **that is now blocked on X7 instead.**
+   The exhaustive `Safety` evidence at capacity 1 exists in the §16.6 per-conjunct run.
+3. **`LadderExhausted` does not set `taskState = "FAILED"`** although §4.4's side-effect column says
+   so. Deferred to **X3**, deliberately, and not silently.
+4. **The residual `REASSIGNING` coverage gap is unchanged and was deliberately not addressed.**
+   `lifecycleModel.js` still lists `REASSIGNING` as custody-bearing for §12.2's lease-expiry route;
+   `lifecycle.tla` still does not model that route (`Reassign` requires `custody = "NONE"`). §15.11
+   item 2 stands verbatim — the specification does not require it as part of X6, so widening the
+   model for it would have been exactly the silent scope creep this pass was told not to commit.
+5. **`gates.js`'s `notEstablishedReason` is now stale in a third way** and is still deliberately not
+   corrected: it is inside the digest scope and the frozen implementation, and it continues to
+   **understate** rather than overstate the gap.
+6. **`MaxTicks = 3` is unchanged and still unaccepted** (§7.3a item 8). `LadderSteps == 8` is **not**
+   a new boundedness constant — it is §17.4's own rung count — but it has had no independent review
+   either.
+7. **Running TLC from inside `formal/` leaves `*_TTrace_*.tla`/`.bin` files and a `states/`
+   directory in the working tree**, and **`.gitignore` covers none of them**. They were deleted
+   before commit. §15's runs did not hit this because they ran from a scratch copy. Recorded so the
+   next pass does not commit one by accident.
+
+## 16.9 B-M after this pass — **STILL OPEN, and it did not move**
+
+| §7.3a item | State |
+|---|---|
+| 1–3 tool / JDK / machine | **Unchanged.** Same jar, same checksum, same workstation |
+| **4 named human operator** | **STILL NOT SATISFIED** |
+| 5 whether each graph closed | **Unchanged at 1 of 6 authoritative closures** (`commitment_c1`). `lifecycle_c1` closed under §15 and **no longer closes as checked in**, because the search now stops at the `Liveness` violation instead of exhausting. It closes under the §16.6 per-conjunct run, which is not a checked-in configuration |
+| 6 states / distinct / diameter / constants | Recorded in §16.5–§16.7 |
+| 7 property coverage | **`QueuedLegsProgress` now has an exhaustive PASS at capacity 1** — the first passing lifecycle liveness verdict this project has ever had. `EveryLegSettles` and `CustodyNeverLost` **FAIL**. **G5 is still covered by no TLC run** |
+| **8 boundedness accepted** | **STILL NOT ACCEPTED** |
+| 9 capacity scope | Capacity 2 and 3 are **not** exhaustive for anything in this pass |
+| **10 release-owner acceptance** | **STILL NOT GIVEN** |
+
+**`commitment_c1/c2/c3` were NOT re-run — deliberately, and the scope decision is stated rather than
+assumed.** `commitment.tla` is a **separate module**. The X6 change is confined to
+`formal/lifecycle.tla`, which `commitment.tla` neither `EXTENDS` nor `INSTANCE`s, and no `.cfg` was
+edited. **There is therefore no path by which this change can affect a commitment result**, and
+re-running them would consume the compute B-M is actually short of while producing a result already
+recorded in §12. `commitment_c2`/`c3` remain **UNKNOWN / non-convergent**; `commitment_c1` remains
+the one exhaustive PASS.
+
+**`establishedByCommand` was NOT removed and must not be.**
+
+**No release evidence was re-collected** — by instruction, and V-5's RED staleness is unchanged.
+
+## 16.10 Raw output
+
+Captured under the same convention as §12 and §15.12, **outside the repository**, in the
+session scratch location. The §11.2 finding is unchanged: **the repository still prescribes no
+evidence directory and no file format for a TLC run**, and that location remains **PROVISIONAL and
+the release owner's to confirm or redirect (§7.6)**. **Every figure in §16.2 and §16.5–§16.7 is
+transcribed from those captures**, not written from memory.

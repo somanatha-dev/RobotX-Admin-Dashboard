@@ -160,15 +160,37 @@ CustodyStates == { "NONE", "HELD", "RELEASED", "DISPUTED" }
 (***************************************************************************)
 ObstructionClasses == { "CLEAR", "RESTRICTIVE", "BLOCKING_CRITICAL", "INDETERMINATE" }
 
+(***************************************************************************)
+(* Sec 17.4 -- the escalation ladder has exactly eight rungs.               *)
+(*                                                                          *)
+(* This is a DEFINITION rather than a CONSTANT because Sec 17.4 fixes the   *)
+(* number: its table enumerates rungs 1 to 8, and the shipped               *)
+(* Backend/src/engine/fairness/ladder.js `STEPS` carries the same eight     *)
+(* rows verbatim. It is not a tunable bound, no .cfg supplies it, and that  *)
+(* also keeps the three checked-in configurations byte-identical to the     *)
+(* ones the X4 and X5 runs used.                                            *)
+(*                                                                          *)
+(* It is NOT a "boundedness constant" in the sense MaxTicks is. MaxTicks    *)
+(* exists to make an otherwise unbounded action finite. The ladder is       *)
+(* finite in the SPECIFICATION -- "It is finite, it advances on elapsed SLA *)
+(* budget regardless of cost dynamics, and it terminates in a decision" --  *)
+(* so this transcribes a stated property rather than imposing an artificial *)
+(* one. That is also why the ladder rungs do NOT consume `ticks`: `ticks`   *)
+(* bounds timer firings that have no intrinsic bound, and Sec 17.4's own    *)
+(* rung count already bounds these.                                         *)
+(***************************************************************************)
+LadderSteps == 8
+
 VARIABLES
     legState,        \* [Legs -> LegStates]
     custody,         \* [Legs -> CustodyStates]
     hardCommitted,   \* [Legs -> BOOLEAN]  TRUE once the agent has ACKed
     taskState,       \* the Task's state (Sec 4.2)
     ticks,           \* how many timer firings have occurred; bounds the search
-    everHeld         \* [Legs -> BOOLEAN]  custody was HELD at some point
+    everHeld,        \* [Legs -> BOOLEAN]  custody was HELD at some point
+    ladder           \* [Legs -> 0..LadderSteps]  the Sec 17.4 rung this Leg has reached
 
-vars == << legState, custody, hardCommitted, taskState, ticks, everHeld >>
+vars == << legState, custody, hardCommitted, taskState, ticks, everHeld, ladder >>
 
 (***************************************************************************)
 (* Sec 4.3 -- the obstruction class resolves to a stranding state.          *)
@@ -187,6 +209,7 @@ Init ==
     /\ custody = [ l \in Legs |-> "NONE" ]
     /\ hardCommitted = [ l \in Legs |-> FALSE ]
     /\ everHeld = [ l \in Legs |-> FALSE ]
+    /\ ladder = [ l \in Legs |-> 0 ]
     /\ taskState = "WAITING"
     /\ ticks = 0
 
@@ -204,12 +227,12 @@ HardCount == Cardinality({ l \in Legs : hardCommitted[l] })
 Plan(l) ==
     /\ legState[l] \in { "QUEUED", "DEFERRED" }
     /\ legState' = [ legState EXCEPT ![l] = "PLANNED" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
 
 Defer(l) ==
     /\ legState[l] = "QUEUED"
     /\ legState' = [ legState EXCEPT ![l] = "DEFERRED" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
 
 Offer(l) ==
     /\ legState[l] = "PLANNED"
@@ -217,7 +240,7 @@ Offer(l) ==
     \* offer that cannot lawfully be accepted is an offer that should not be sent.
     /\ HardCount < Capacity
     /\ legState' = [ legState EXCEPT ![l] = "OFFERED" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
 
 Accept(l) ==
     /\ legState[l] = "OFFERED"
@@ -225,7 +248,7 @@ Accept(l) ==
     /\ legState' = [ legState EXCEPT ![l] = "ACCEPTED" ]
     /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = TRUE ]
     /\ taskState' = "IN_EXECUTION"
-    /\ UNCHANGED << custody, ticks, everHeld >>
+    /\ UNCHANGED << custody, ticks, everHeld, ladder >>
 
 (***************************************************************************)
 (* Sec 11.2 -- the agent may refuse. The offer is withdrawn, the agent is   *)
@@ -235,41 +258,93 @@ Accept(l) ==
 Reject(l) ==
     /\ legState[l] = "OFFERED"
     /\ legState' = [ legState EXCEPT ![l] = "QUEUED" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
+
+(***************************************************************************)
+(* Sec 4.4 -- the two `QUEUED` assignment-deadline rows, and Sec 4.3's      *)
+(* `QUEUED` row whose on-expiry action is "escalation ladder (Sec 17.4)".   *)
+(*                                                                          *)
+(* Blocker X6. Until this change the module transcribed NEITHER row, and    *)
+(* `TimerFires` had no `QUEUED` case at all -- so the one state whose exit  *)
+(* IS the anti-starvation guarantee was the one state with no supervised    *)
+(* exit. Verbatim from Sec 4.4:                                             *)
+(*                                                                          *)
+(*   | `QUEUED` | assignment deadline | `QUEUED` | ladder step available |  *)
+(*   |          |                     |          | relaxation applied and  *)
+(*   |          |                     |          | recorded (Sec 17.4)     *)
+(*   | `QUEUED` | ladder exhausted    | `FAILED` | -- | task `FAILED`,      *)
+(*   |          |                     |          | operator notification   *)
+(*                                                                          *)
+(* The guard "ladder step available" is `ladder[l] < LadderSteps`, and the  *)
+(* event "ladder exhausted" is `ladder[l] = LadderSteps`. In the shipped    *)
+(* system those are the two verdicts of fairness/ladder.js -- STEP_AVAILABLE *)
+(* and EXHAUSTED -- read by supervision/expiryActions.js escalationLadder,  *)
+(* and applied through lifecycle/transitions.js's ASSIGNMENT_DEADLINE and   *)
+(* LADDER_EXHAUSTED rows.                                                   *)
+(*                                                                          *)
+(* WHY THE RUNG NEVER RESETS -- this is the whole guarantee. Sec 17.4 makes *)
+(* the rung a function of elapsed SLA budget, and the shipped ladder reads  *)
+(* that budget from the queue row's `enqueuedAt`, which in ladder.js's own  *)
+(* words "survives a Leg leaving and re-entering `QUEUED` (a NACK, a failed *)
+(* hardening) ... a queue age that resets on every requeue is a starvation  *)
+(* clock that starvation resets". So `ladder` is monotone for the lifetime  *)
+(* of the Leg and NO transition into `QUEUED` clears it. That monotonicity  *)
+(* is what makes the re-plan cycle finite.                                  *)
+(*                                                                          *)
+(* WHAT IS DELIBERATELY NOT MODELLED HERE. Sec 4.4's side-effect column for *)
+(* the second row reads "task `FAILED`, operator notification", and this    *)
+(* action leaves `taskState` UNCHANGED. Resolving the Task's own state when *)
+(* its Legs end other than by settlement is Sec 4.2 territory, Sec 4.2 has  *)
+(* no transition table, and that is blocker X3 -- untouched here for the    *)
+(* same reason `TaskQuiescent` (X5) does not touch `taskState` either.      *)
+(* Modelling it would need a rule for the case where one Leg fails the      *)
+(* ladder and a sibling later settles, and no such rule is specified.       *)
+(***************************************************************************)
+LadderAdvance(l) ==
+    /\ legState[l] = "QUEUED"
+    /\ ladder[l] < LadderSteps
+    /\ ladder' = [ ladder EXCEPT ![l] = ladder[l] + 1 ]
+    /\ UNCHANGED << legState, custody, hardCommitted, taskState, ticks, everHeld >>
+
+LadderExhausted(l) ==
+    /\ legState[l] = "QUEUED"
+    /\ ladder[l] = LadderSteps
+    /\ legState' = [ legState EXCEPT ![l] = "FAILED" ]
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
 
 Depart(l) ==
     /\ legState[l] = "ACCEPTED"
     /\ legState' = [ legState EXCEPT ![l] = "EN_ROUTE_PICKUP" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
 
 ArrivePickup(l) ==
     /\ legState[l] = "EN_ROUTE_PICKUP"
     /\ legState' = [ legState EXCEPT ![l] = "AT_PICKUP" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
 
 Load(l) ==
     /\ legState[l] = "AT_PICKUP"
     /\ legState' = [ legState EXCEPT ![l] = "LOADED" ]
     /\ custody' = [ custody EXCEPT ![l] = "HELD" ]
     /\ everHeld' = [ everHeld EXCEPT ![l] = TRUE ]
-    /\ UNCHANGED << hardCommitted, taskState, ticks >>
+    /\ UNCHANGED << hardCommitted, taskState, ticks, ladder >>
 
 DepartDrop(l) ==
     /\ legState[l] = "LOADED"
     /\ legState' = [ legState EXCEPT ![l] = "EN_ROUTE_DROP" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
 
 ArriveDrop(l) ==
     /\ legState[l] = "EN_ROUTE_DROP"
     /\ legState' = [ legState EXCEPT ![l] = "AT_DROP" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
 
 Release(l) ==
     /\ legState[l] = "AT_DROP"
     /\ legState' = [ legState EXCEPT ![l] = "RELEASED" ]
     /\ custody' = [ custody EXCEPT ![l] = "RELEASED" ]
     /\ taskState' = "VERIFYING"
-    /\ UNCHANGED << hardCommitted, ticks, everHeld >>
+    /\ UNCHANGED << hardCommitted, ticks, everHeld, ladder >>
 
 (***************************************************************************)
 (* Sec 15.6 -- custody may end in dispute rather than in release. Sec 24.2  *)
@@ -280,7 +355,7 @@ Dispute(l) ==
     /\ legState[l] \in CustodyBearingStates
     /\ custody' = [ custody EXCEPT ![l] = "DISPUTED" ]
     /\ legState' = [ legState EXCEPT ![l] = "ABORTING" ]
-    /\ UNCHANGED << hardCommitted, taskState, ticks, everHeld >>
+    /\ UNCHANGED << hardCommitted, taskState, ticks, everHeld, ladder >>
 
 (***************************************************************************)
 (* Sec 12.5 -- settlement releases the commitment. This is the ONLY action  *)
@@ -296,7 +371,7 @@ Settle(l) ==
     /\ taskState' = IF \A m \in Legs : (m = l \/ legState[m] \in TerminalLegStates)
                     THEN "COMPLETED"
                     ELSE taskState
-    /\ UNCHANGED << custody, ticks, everHeld >>
+    /\ UNCHANGED << custody, ticks, everHeld, ladder >>
 
 (***************************************************************************)
 (* Sec 4.7 -- reassignment. The commitment is released BEFORE the Leg       *)
@@ -308,12 +383,12 @@ Reassign(l) ==
     /\ custody[l] = "NONE"
     /\ legState' = [ legState EXCEPT ![l] = "REASSIGNING" ]
     /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = FALSE ]
-    /\ UNCHANGED << custody, taskState, ticks, everHeld >>
+    /\ UNCHANGED << custody, taskState, ticks, everHeld, ladder >>
 
 ReassignComplete(l) ==
     /\ legState[l] = "REASSIGNING"
     /\ legState' = [ legState EXCEPT ![l] = "QUEUED" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
 
 (***************************************************************************)
 (* Sec 4.6 -- cancellation. Sec 4.1 rule 4: a Leg carrying custody may NOT  *)
@@ -326,13 +401,13 @@ Cancel(l) ==
     /\ custody[l] # "HELD"
     /\ legState' = [ legState EXCEPT ![l] = "CANCELLED" ]
     /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = FALSE ]
-    /\ UNCHANGED << custody, taskState, ticks, everHeld >>
+    /\ UNCHANGED << custody, taskState, ticks, everHeld, ladder >>
 
 CancelWithCustody(l) ==
     /\ legState[l] \notin TerminalLegStates
     /\ custody[l] = "HELD"
     /\ legState' = [ legState EXCEPT ![l] = "ABORTING" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
 
 (***************************************************************************)
 (* Sec 18 -- recovery. ABORTING either resolves the custody and fails the   *)
@@ -343,13 +418,13 @@ AbortResolved(l) ==
     /\ custody' = [ custody EXCEPT ![l] = IF custody[l] = "HELD" THEN "RELEASED" ELSE custody[l] ]
     /\ legState' = [ legState EXCEPT ![l] = "FAILED" ]
     /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = FALSE ]
-    /\ UNCHANGED << taskState, ticks, everHeld >>
+    /\ UNCHANGED << taskState, ticks, everHeld, ladder >>
 
 Strand(l, class) ==
     /\ legState[l] = "ABORTING"
     /\ class \in ObstructionClasses
     /\ legState' = [ legState EXCEPT ![l] = StrandingStateFor(class) ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
 
 (***************************************************************************)
 (* Sec 18.6 -- a stranding is resolved by physical intervention. The Leg     *)
@@ -360,7 +435,7 @@ Recovered(l) ==
     /\ custody' = [ custody EXCEPT ![l] = IF custody[l] = "HELD" THEN "RELEASED" ELSE custody[l] ]
     /\ legState' = [ legState EXCEPT ![l] = "FAILED" ]
     /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = FALSE ]
-    /\ UNCHANGED << taskState, ticks, everHeld >>
+    /\ UNCHANGED << taskState, ticks, everHeld, ladder >>
 
 (***************************************************************************)
 (* Sec 4.5 -- a durable timer fires. Sec 12.1: something must be            *)
@@ -375,33 +450,33 @@ TimerFires(l) ==
     /\ ticks' = ticks + 1
     /\ \/ /\ legState[l] = "OFFERED"          \* dispatch.offer_ttl -> withdraw, exclude, re-plan
           /\ legState' = [ legState EXCEPT ![l] = "QUEUED" ]
-          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld >>
+          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder >>
        \/ /\ legState[l] = "PLANNED"          \* commit.hardening_deadline -> re-plan
           /\ legState' = [ legState EXCEPT ![l] = "QUEUED" ]
-          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld >>
+          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder >>
        \/ /\ legState[l] = "DEFERRED"         \* assign.max_deferral_time -> force widen
           /\ legState' = [ legState EXCEPT ![l] = "QUEUED" ]
-          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld >>
+          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder >>
        \/ /\ legState[l] \in { "ACCEPTED", "EN_ROUTE_PICKUP", "AT_PICKUP" }
           /\ custody[l] = "NONE"              \* execute.start_grace -> probe, then reassign
           /\ legState' = [ legState EXCEPT ![l] = "REASSIGNING" ]
           /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = FALSE ]
-          /\ UNCHANGED << custody, taskState, everHeld >>
+          /\ UNCHANGED << custody, taskState, everHeld, ladder >>
        \/ /\ legState[l] \in CustodyBearingStates
           /\ legState' = [ legState EXCEPT ![l] = "ABORTING" ]
-          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld >>
+          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder >>
        \/ /\ legState[l] = "RELEASED"         \* verify.evidence_deadline -> escalate
           /\ legState' = [ legState EXCEPT ![l] = "SETTLED" ]
           /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = FALSE ]
-          /\ UNCHANGED << custody, taskState, everHeld >>
+          /\ UNCHANGED << custody, taskState, everHeld, ladder >>
        \/ /\ legState[l] = "ABORTING"         \* recover.abort_budget -> force STRANDED
           /\ legState' = [ legState EXCEPT ![l] = "STRANDED_OBSTRUCTING" ]
-          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld >>
+          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder >>
        \/ /\ legState[l] = "REASSIGNING"      \* recover.reassign_budget -> escalate
           /\ legState' = [ legState EXCEPT ![l] = "QUEUED" ]
-          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld >>
+          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder >>
        \/ /\ legState[l] \in { "STRANDED_SAFE", "STRANDED_OBSTRUCTING" }
-          /\ UNCHANGED << legState, custody, hardCommitted, taskState, everHeld >>
+          /\ UNCHANGED << legState, custody, hardCommitted, taskState, everHeld, ladder >>
 
 (***************************************************************************)
 (* TERMINAL QUIESCENCE -- the end of a behaviour, stated explicitly.        *)
@@ -448,6 +523,7 @@ TaskQuiescent ==
 Next ==
     \/ \E l \in Legs :
          \/ Plan(l) \/ Defer(l) \/ Offer(l) \/ Accept(l) \/ Reject(l)
+         \/ LadderAdvance(l) \/ LadderExhausted(l)
          \/ Depart(l) \/ ArrivePickup(l) \/ Load(l) \/ DepartDrop(l) \/ ArriveDrop(l)
          \/ Release(l) \/ Dispute(l) \/ Settle(l)
          \/ Reassign(l) \/ ReassignComplete(l)
@@ -457,7 +533,52 @@ Next ==
     \/ \E l \in Legs, c \in ObstructionClasses : Strand(l, c)
     \/ TaskQuiescent
 
-Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
+(***************************************************************************)
+(* FAIRNESS -- Sec 24.2's own hypothesis, "given fair timer firing".        *)
+(*                                                                          *)
+(* Blocker X6, second half. `WF_vars(Next)` ALONE does not transcribe that  *)
+(* hypothesis, and it is very nearly vacuous for liveness: weak fairness on *)
+(* the whole disjunction only forbids the system stuttering while some step *)
+(* is enabled. It places no obligation on any particular Leg or any         *)
+(* particular timer, so one Leg may sit in `QUEUED` for ever while another  *)
+(* Leg cycles -- which is exactly the counterexample TLC produced for       *)
+(* `QueuedLegsProgress`, with no ladder involved in it at all.              *)
+(*                                                                          *)
+(* It is KEPT, because it is what stops the whole system freezing while an  *)
+(* action is enabled. What is ADDED is fairness on the two ladder actions,  *)
+(* per Leg. Nothing is removed and nothing is weakened.                     *)
+(*                                                                          *)
+(* WHY STRONG FAIRNESS AND NOT WEAK. A Leg in the re-plan cycle             *)
+(* `QUEUED -> PLANNED -> OFFERED -> QUEUED` leaves `QUEUED` between rungs,  *)
+(* so `LadderAdvance` is enabled infinitely often but never CONTINUOUSLY,   *)
+(* and weak fairness would impose nothing on it at all. Sec 17.4 says what  *)
+(* the ladder does in exactly that situation, in these words:               *)
+(*                                                                          *)
+(*   "It is finite, it advances on elapsed SLA budget regardless of cost    *)
+(*    dynamics, and it terminates in a decision. No amount of cost          *)
+(*    arithmetic can prevent it from advancing."                            *)
+(*                                                                          *)
+(* "Advances regardless", for an action that is repeatedly but not          *)
+(* continuously enabled, is strong fairness. The shipped ladder has that    *)
+(* property mechanically, because the rung is a monotone function of a      *)
+(* queue age that no requeue resets.                                        *)
+(*                                                                          *)
+(* THIS IS THE ONE MODELLING JUDGEMENT IN THE X6 CHANGE, and it is recorded *)
+(* as such in docs/phase15/PHASE_15_BM_TLC_RUN_RECORD.md. Adding a fairness *)
+(* condition ASSUMES more, and therefore makes a liveness property easier   *)
+(* to satisfy -- which is the direction that deserves scrutiny, so it is    *)
+(* named rather than buried. Two things bound it: it is confined to the two *)
+(* ladder actions and to nothing else, and the mutations in the run record  *)
+(* show both properties failing again as soon as the ladder transition is   *)
+(* removed or its guard or its terminal state is broken. Fairness on an     *)
+(* action that does not exist proves nothing, and M3/M4 demonstrate that.   *)
+(***************************************************************************)
+Fairness ==
+    /\ WF_vars(Next)
+    /\ \A l \in Legs : SF_vars(LadderAdvance(l))
+    /\ \A l \in Legs : SF_vars(LadderExhausted(l))
+
+Spec == Init /\ [][Next]_vars /\ Fairness
 
 (***************************************************************************)
 (* SAFETY PROPERTIES -- Sec 24.2                                           *)
@@ -468,6 +589,7 @@ TypeOK ==
     /\ custody \in [ Legs -> CustodyStates ]
     /\ taskState \in TaskStates
     /\ ticks \in 0..MaxTicks
+    /\ ladder \in [ Legs -> 0..LadderSteps ]
 
 \* Sec 10.1 / Sec 24.2: at most `capacity` HARD commitments per agent.
 CapacityRespected == HardCount =< Capacity

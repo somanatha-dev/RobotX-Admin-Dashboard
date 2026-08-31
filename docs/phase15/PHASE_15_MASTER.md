@@ -9,13 +9,45 @@
 > were corrected by later passes. Reading them to decide what to implement is the specific
 > failure this document exists to prevent.
 
-**Consolidated:** 2026-08-29 · **Last updated:** **2026-08-31 (second pass)** — the **X4/X5
-decision pass**: both were **decided by the sole project owner/reviewer, implemented in
-`formal/lifecycle.tla`, and verified**; a new blocker **X6** was opened by the verification.
-Earlier the same day, the **B-M TLC execution** ran all six checked-in configurations for the first
-time — **B-M did NOT close** and opened X4 and X5. Before it: closure item **V-9**, the Phase 0–14
-cross-phase re-verification (2026-08-30); the post-V-10 current-state audit; and closure item
-**V-10**.
+**Consolidated:** 2026-08-29 · **Last updated:** **2026-08-31 (third pass)** — the **X6 pass**: X6
+was investigated against the frozen specification, the shipped implementation and the executable
+checker, classified as a **transcription defect**, fixed in `formal/lifecycle.tla` only, and
+verified; a new blocker **X7** was opened by that verification. Earlier the same day: the **X4/X5
+decision pass**, and before it the **B-M TLC execution**, which ran all six checked-in
+configurations for the first time — **B-M did NOT close** and opened X4 and X5. Before those:
+closure item **V-9**, the Phase 0–14 cross-phase re-verification (2026-08-30); the post-V-10
+current-state audit; and closure item **V-10**.
+
+> ### ⚠ 2026-08-31 (THIRD pass) — X6 is CLOSED as a transcription defect. X7 is OPEN. `Liveness` still fails.
+>
+> | | |
+> |---|---|
+> | **X6 — CLOSED** | `formal/lifecycle.tla` transcribed **neither** of §4.4's two `QUEUED` assignment-deadline rows (`:1122` `ladder step available → QUEUED`, `:1123` `ladder exhausted → FAILED`) — `TimerFires` had no `QUEUED` case at all — **and** `WF_vars(Next)` does not transcribe §24.2's own hypothesis, "given fair timer firing". Both fixed: a monotone per-Leg `ladder`, `LadderAdvance`/`LadderExhausted`, and **strong** fairness on those two actions. **The shipped engine already implemented all of it end to end and no `Backend/` file changed** |
+> | **X7 — NEW, OPEN** | A `STRANDED_*` Leg can be cancelled back into `ABORTING` and re-stranded for ever, holding custody throughout. **`CustodyNeverLost` and `EveryLegSettles` fail on this and on nothing else.** §4.4's cancel row says "any non-terminal"; its stranded rows enumerate exits that exclude `ABORTING`; §24.2 states the custody clause unconditionally. **A genuine specification ambiguity — reported, not decided** |
+>
+> **Only `formal/lifecycle.tla` changed.** No `Backend/` file, `.cfg`, schema, migration, test or
+> configuration was touched; `CHECK_DEADLOCK FALSE` is still absent; `EveryLegSettles` was not
+> weakened; no boundedness or timeout constant was added (`LadderSteps == 8` is §17.4's own rung
+> count, written as a definition so no configuration supplies it). **The source digest is unmoved
+> and the freeze at `c27a75c` is intact.**
+>
+> **X6 was a transcription defect for the same reason X4 was.** The shipped engine has both rows
+> (`lifecycle/transitions.js:203-217` → `fairness/ladder.js` → `supervision/expiryActions.js` →
+> `workers/leaderWorkers.js`), and **`lifecycleModel.js` traverses both** — it emits
+> `QUEUED--LADDER_EXHAUSTED-->FAILED` from its initial state. **The two checkers disagreed on the
+> transition relation and `lifecycle.tla` was again the one not updated.**
+>
+> **Verification:** **`QueuedLegsProgress` now PASSES on a complete state graph** at capacity 1 —
+> 676 854 states / 156 941 distinct / depth 43 / **0 on queue**, with `Safety` and `TerminalIsFinal`
+> passing there too. **That is the first passing lifecycle liveness verdict this project has ever
+> produced.** **7 model mutants built, 7 killed**, including M1 and M2, which re-confirm that the X4
+> widening and X5's `TaskQuiescent` are each still load-bearing.
+>
+> **B-M did NOT close and did not move.** `Liveness` is a conjunction and it still FAILS, now on X7.
+> `commitment_c1/c2/c3` were **not re-run** — `commitment.tla` neither `EXTENDS` nor `INSTANCE`s
+> `lifecycle.tla` and no `.cfg` changed, so no commitment result can be affected. **No independent
+> safety-engineering or release-owner acceptance exists for X6 and none is claimed.** Full record:
+> [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md) **§16**.
 
 > ### ⚠ 2026-08-31 (second pass) — X4 and X5 are DECIDED, IMPLEMENTED and VERIFIED. X6 is OPEN.
 >
@@ -217,7 +249,7 @@ Full detail: **[`PHASE_15_IMPLEMENTATION_STATE.md`](PHASE_15_IMPLEMENTATION_STAT
 | Calibration | Gate implemented; **39 blocking findings** (B8, external) |
 | Simulator fidelity | Gate implemented; **no study supplied** — 7 models NOT_MEASURED |
 | Safety case | Assembler implemented; assembles cleanly. **The §24.7 gate is not thereby discharged** |
-| Formal verification | TLA+ modules + 6 TLC configs present. **TLC was EXECUTED for the first time on 2026-08-31 — all six checked-in configurations, on the frozen tree.** Result: **1 closed** (`commitment_c1`, exhaustive PASS), **2 UNKNOWN** (`commitment_c2/c3`, did not converge), **3 FAIL** (`lifecycle_c1/c2/c3`, deadlock abort). **B-M = NOT MEASURED / OPEN — it did NOT close.** The runs also uncovered **two new blockers: X4** (a `CustodyMatchesState` safety contradiction in `lifecycle.tla`) and **X5** (the lifecycle configs abort before evaluating any declared property). Full §7.3a record with raw output: [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md) |
+| Formal verification | TLA+ modules + 6 TLC configs present. **TLC was EXECUTED for the first time on 2026-08-31 — all six checked-in configurations, on the frozen tree**, then `lifecycle.tla` was changed twice the same day (**X4/X5**, then **X6**) and re-run. Commitment half **unchanged throughout**: **1 closed** (`commitment_c1`, exhaustive PASS), **2 UNKNOWN** (`commitment_c2/c3`, did not converge) — **not re-run by either later pass, deliberately**, since `commitment.tla` neither `EXTENDS` nor `INSTANCE`s `lifecycle.tla`. Lifecycle half: the deadlock abort (**X5**) and the `CustodyMatchesState` contradiction (**X4**) are fixed; **`QueuedLegsProgress` now PASSES on a complete state graph at capacity 1** (676 854 / 156 941 / depth 43 / 0 on queue, with `Safety` and `TerminalIsFinal`) — the first passing lifecycle liveness verdict — while `EveryLegSettles` and `CustodyNeverLost` **still FAIL**, on **X7** and on nothing else. **B-M = NOT MEASURED / OPEN — it did NOT close and did not move.** Full §7.3a record with raw output: [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md) §12, §15, **§16** |
 | Database | **28 migrations**; **6** live-DB harnesses (the four Phase 15 ones, plus T1-04's and V-10's), **167/167**, all green |
 | Runbooks | `docs/runbooks/cutover.md` and `rollback.md`. **Both traced against the current API 2026-08-30 (V-10) — 5 defects fixed**, and `rollback.md` §7 now records when that trace happened. P15-F7a (nothing *binds* a runbook to its API) is unchanged and still open |
 
@@ -265,19 +297,26 @@ is correctly deferred to Phase 8 and has no action available here. **X1/T1-04 wa
 2026-08-30** by REMEDIAL PHASE T1-04 (§17.4's ladder, its human capacity model, and §17.5's
 detection — implemented, composed, and verified against live PostgreSQL).
 
-> **Was 7, then 9, now 8 — and the arithmetic is worth reading rather than trusting.**
+> **Was 7, then 9, then 8, and still 8 — and the arithmetic is worth reading rather than trusting.**
 > On 2026-08-31 `tla2tools.jar` was provisioned and all six TLC configurations were run; B-M did not
 > close and the runs uncovered **X4** and **X5**, taking 7 → 9. Later the same day both were
-> **decided and implemented**, and the verification opened **X6**: 9 − 2 + 1 = **8**.
+> **decided and implemented**, and the verification opened **X6**: 9 − 2 + 1 = **8**. On the third
+> pass **X6 was closed** as a transcription defect and its verification opened **X7**:
+> 8 − 1 + 1 = **8**. The open set is now **B1, B8, B-P, B-O, B-M, X3, X7, A9**.
 >
 > **The §24 gate count is unchanged at 8 blocking gates not green** through all of it, because none
-> of X4, X5 or X6 is a gate row and `model_check_capacity_1_2_3` renders exactly as it did before.
-> See `PHASE_15_VERIFICATION_STATE.md` §7d and §7e.
+> of X4, X5, X6 or X7 is a gate row and `model_check_capacity_1_2_3` renders exactly as it did
+> before. See `PHASE_15_VERIFICATION_STATE.md` §7d, §7e and §7f.
 >
-> **Two blockers resolved and one opened is not net progress of one.** X4 and X5 were decidable
-> because the frozen specification answered X4 outright; **X6 is a genuinely new open question about
-> the model's fairness statement and its missing §17.4 ladder**, and it is the reason the lifecycle
-> half of B-M still does not pass.
+> **A closed blocker replaced by a new one is not standing still, and it is not progress either —
+> read what actually moved.** X6 was answerable from the frozen document: §4.4 states the
+> ladder-exhaustion row verbatim and the shipped engine already implements it, so the only defect
+> was in the transcription. **What that bought is one real verdict** — `QueuedLegsProgress` passes
+> on a complete state graph at capacity 1, the first passing lifecycle liveness result this project
+> has produced — **and one isolated cause**: `EveryLegSettles` and `CustodyNeverLost` now fail on
+> **X7 alone**, which the X6 fix is what made provable. **X7 is a genuine specification ambiguity
+> about whether §4.4's "any non-terminal" cancel row governs a `STRANDED_*` Leg**, and it is now the
+> reason the lifecycle half of B-M still does not pass.
 
 > **Two different quantities in this documentation used to both equal 8. They no longer do, and
 > that is itself worth stating.** **7 open blockers** (this table) is a programme count — it

@@ -971,6 +971,139 @@ model.** Registered as **X6**.
 
 ---
 
+## 7f. The X6 pass — 2026-08-31, third pass
+
+**X6 was investigated before it was touched, classified as a TRANSCRIPTION defect on both counts it
+was suspected of, and fixed in `formal/lifecycle.tla` only. `Liveness` still fails — on a new and
+different cause, X7.** Full record: [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md)
+**§16**. Same jar (SHA-256 `eabd140a…533a`, re-verified), same JDK 20.0.2, same workstation.
+
+### 7f.1 The trace that decided the classification
+
+| Layer | The §17.4 ladder-exhaustion path |
+|---|---|
+| Frozen specification | **PRESENT, verbatim** — §4.4 `:1123` `QUEUED \| ladder exhausted \| FAILED`, with its partner row `:1122`; §4.3 `:1041`; §17.4 "finite and terminates in a decision"; §18.4 "a task reaches `FAILED` **only** through the §17.4 ladder"; I13 |
+| Shipped implementation | **PRESENT, wired end to end** — `transitions.js:203-217`, `fairness/ladder.js` (T1-04, eight rungs, four verdicts), `expiryActions.js:373-425`, `leaderWorkers.js:416`. **No `Backend/` change was needed and none was made** |
+| Executable checker | **Models the transition, does not verify the property.** `lifecycleModel.js` emits `QUEUED--LADDER_EXHAUSTED-->FAILED` from the initial state; its only liveness check is `checkNoDeadEnds`, with no `EveryLegSettles` and no fairness |
+| TLA+ module | **ABSENT — both rows.** `TimerFires` had no `QUEUED` case at all |
+
+**Same correspondence failure as X4, and the same rule applies** (`formal/README.md`): the defect is
+in whichever checker was not updated — this module.
+
+### 7f.2 Two corrections to §7e.6, without touching its numbers
+
+1. The `c1` counterexample is the **reassignment** lasso `ACCEPTED → REASSIGNING → QUEUED → PLANNED
+   → OFFERED → ACCEPTED`, not the `Reject` cycle. (The `Reject` cycle is real; it is just not what
+   TLC emitted.) Every unbounded cycle in the model passes through `QUEUED`, which is why one
+   ladder addresses all of them.
+2. **All three `Liveness` conjuncts failed independently**, not one. §7e.6 records
+   `QueuedLegsProgress` as holding and `CustodyNeverLost` as vacuous; checked one at a time on the
+   same closed 8 030 / 1 909 graph, **both are violated**.
+
+### 7f.3 The change, and the one judgement in it
+
+`formal/lifecycle.tla` only: a monotone per-Leg `ladder` variable (`0..LadderSteps`, never reset by
+any transition into `QUEUED`, not charged against `MaxTicks`), `LadderSteps == 8` as a **definition**
+rather than a CONSTANT so no `.cfg` supplies it, the two §4.4 actions `LadderAdvance` and
+`LadderExhausted`, and `Fairness == WF_vars(Next) ∧ ∀l : SF_vars(LadderAdvance(l)) ∧ ∀l :
+SF_vars(LadderExhausted(l))` — **`WF_vars(Next)` kept, not replaced.**
+
+> **The judgement, named:** strong rather than weak fairness on the two ladder actions. Adding a
+> fairness condition assumes more and makes liveness *easier* to satisfy, so it is stated rather
+> than buried. Basis: §17.4's "it advances on elapsed SLA budget **regardless of cost dynamics** …
+> **No amount of cost arithmetic can prevent it from advancing**", which for a repeatedly-but-not-
+> continuously-enabled action is strong fairness. **Weak fairness was measured and is not
+> sufficient** (M6). **No independent safety-engineering or release-owner acceptance exists for
+> this, and none is claimed.**
+
+### 7f.4 After-evidence
+
+**As checked in:** `lifecycle_c1` `Liveness` VIOLATED (64 835 / 15 486 / depth 14 / 4 260 queued);
+`lifecycle_c2` `Liveness` VIOLATED (2 856 353 / 480 326 / depth 16 / 159 266 queued); **`lifecycle_c3`
+reached NO VERDICT — it did not converge and was interrupted at a stated budget** after ≈54 minutes,
+last progress 16 247 475 / 2 388 556 / depth 15 / **1 014 936 left on queue**, with no violation
+reported (§16.5a). **`c3` is UNKNOWN, not FAIL** — the same category `commitment_c2`/`c3` are in.
+**All three are partial searches**: TLC stops at the first temporal violation, and where a failing
+run stops varies between runs, so **partial counts are not reproducible while closed-graph counts
+are** (§16.5).
+
+> **The `c3` non-convergence is arithmetic, not a surprise.** `ladder` multiplies the state space by
+> up to `(LadderSteps + 1)^|Legs|` — 81× / 729× / 6 561× at capacity 1 / 2 / 3 — and capacity 1
+> confirms it: 1 909 distinct pre-fix → 156 941 after, a factor of 82.2. One periodic liveness
+> check over 1 559 707 states took **21 min 19 s**. **`MaxTicks` was not reduced and `LadderSteps`
+> was not reduced to make it converge**; that would have been manufacturing a result. What closes
+> it is compute — B-M's existing requirement.
+
+**One conjunct at a time, capacity 1, `INVARIANT Safety` + `TerminalIsFinal` retained:**
+
+| Conjunct | Verdict | States / distinct / depth / queue |
+|---|---|---|
+| **`QueuedLegsProgress`** | **PASS — complete state graph.** `Safety` PASS, `TerminalIsFinal` PASS | 676 854 / 156 941 / 43 / **0** |
+| `EveryLegSettles` | VIOLATED — **X7** | 174 320 / 39 036 / 18 / 7 684 |
+| `CustodyNeverLost` | VIOLATED — **X7** | 159 731 / 35 834 / 17 / 7 276 |
+
+**This is the first passing lifecycle liveness verdict this project has ever produced — and it is
+a CAPACITY-1 result only.** The identical per-conjunct configuration at capacity 2 was run and
+**did not converge** (terminated at a 1 500 s budget; last progress 7 809 667 / 1 238 659 / depth 19
+/ 358 738 queued). §24.2 makes the configuration under check part of the requirement, so
+**`QueuedLegsProgress` passing at capacity 1 does not discharge §24.2's liveness clause** (§16.6a).
+
+**X7 isolated (diagnostic, not checked in, decides nothing):** with the `STRANDED_* → ABORTING` edge
+blocked, **every declared property passes exhaustively** — 662 454 / 156 941 / depth 43 / **0 on
+queue**. X7 is therefore the sole remaining cause of the lifecycle `Liveness` failure.
+
+**Question E, measured:** a diagnostic property transcribing §24.2's *literal, weaker* clause
+"every non-terminal state eventually leaves" is **also violated** (20 355 / 5 405). So weakening
+`EveryLegSettles` to the specification's own wording would not produce a pass. **It was not
+weakened.**
+
+### 7f.5 Mutation testing — **7 built, 7 killed** (V-6, "re-run per implementation pass")
+
+M3 (remove `LadderExhausted`) → `QueuedLegsProgress` violated. M4 (drop its `QUEUED` guard) →
+`TerminalIsFinal` violated. M5 (target `"QUEUED"` not `"FAILED"`) → `QueuedLegsProgress` violated.
+M7 (remove `LadderAdvance`) → `QueuedLegsProgress` violated, **and the graph collapses to exactly
+the pre-X6 8 030 / 1 909 / depth 27**. M6 (`SF`→`WF`) → survives the `QueuedLegsProgress` oracle,
+**killed** under the X7-isolated `Liveness` oracle — recorded honestly, and it is the measurement
+behind §7f.3. **M1 (revert only the X4 widening) → `Invariant Safety is violated`** and **M2 (remove
+only `TaskQuiescent`) → `Deadlock reached`**, so both previously decided changes are still
+load-bearing.
+
+### 7f.6 The new finding — **X7**, and it is a specification ambiguity, not a defect to fix
+
+`STRANDED_* --CancelWithCustody--> ABORTING --Strand--> STRANDED_*` cycles for ever holding custody
+`HELD`. §4.4 `:1145`'s cancel row says "any non-terminal" and `STRANDED_*` is non-terminal; §4.4's
+stranded rows `:1147`–`:1149` enumerate exits that do **not** include `ABORTING`; §4.3 gives
+`STRANDED_*` an on-expiry action of "page operations", not a transition; and §24.2 `:5216` states
+the custody clause **unconditionally**, under *Safety*. **Three defensible readings, each producing
+a different model. Reported and left open** — `PHASE_15_BLOCKERS.md` § **X7**.
+
+### 7f.7 What did NOT change
+
+| | |
+|---|---|
+| **`Backend/` — any file** | **Untouched.** Source digest re-computed after the change |
+| Any `.cfg`; `CHECK_DEADLOCK` | **Untouched.** `CHECK_DEADLOCK` still ON in all three lifecycle configurations; X5's `TaskQuiescent` solution still in force |
+| `commitment.tla`, `commitment_c{1,2,3}.cfg` | **Untouched and NOT re-run — scope decision stated in §16.9.** `commitment.tla` neither `EXTENDS` nor `INSTANCE`s `lifecycle.tla` and no `.cfg` changed, so no commitment result can be affected. Still 1 closed / 2 UNKNOWN |
+| `EveryLegSettles`; fairness on anything but the two ladder actions | **Not weakened, not removed, not broadened** |
+| The residual `REASSIGNING` model/checker divergence | **Deliberately preserved.** The specification does not require it as part of X6 |
+| `establishedByCommand` / `[NOT PROVEN]` / gate algebra | **Intact** |
+| `release-evidence.json` | **NOT re-collected**, by instruction. V-5's RED staleness unchanged |
+| B1, B8, B-P, B-O, X3, A9, Phase 16 | **Not touched.** No previous commit amended |
+| Source digest | **`d033038cb261c3de…` / 573 — re-computed after the change and UNMOVED**, as expected: `formal/` is outside the digest scope and no `Backend/` file was edited |
+| Build gates | **Re-run: 7 PASS, `gate:composition` FAIL with 1 violation across 19 registered workers** (`coordinator`, `LEADER_ONLY_NOT_COMPOSABLE`, blocked on B1) — **identical to the pre-existing V-2 record.** No gate moved |
+| Jest | `lifecycle` / `ModelCheck` / `phase0Scaffold` / `fairnessLadder` / `supervisionExpiryActions` — **7 suites, 295 tests, all passing** |
+| TLC working-tree artefacts | Running TLC from inside `formal/` writes `*_TTrace_*.tla`/`.bin` and a `states/` directory, and **`.gitignore` covers none of them**. **Deleted before commit; `git status` verified clean of them.** §15's runs did not hit this because they ran from a scratch copy |
+
+> **Why no broader JS re-run was needed, restated for this pass.** No JavaScript reads the
+> *contents* of `lifecycle.tla`; the only reference anywhere is `phase0Scaffold.test.js` asserting
+> that `commitment.tla` **exists**. The digest is byte-identical to the tree V-1 measured green, so
+> those results stand unchanged by construction. The five suites above were run anyway as the
+> topically closest — and `fairnessLadder` and `supervisionExpiryActions` were added to that set on
+> purpose this time, because they are the shipped modules the X6 investigation asserted were
+> already correct.
+
+---
+
 ## 8. Verification integrity notes
 
 1. **The tree did not change during verification** *except by the change under verification*.

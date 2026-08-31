@@ -302,7 +302,7 @@ run" is now simply false:
 
 | Module | TLC execution |
 |---|---|
-| `lifecycle.tla` | **RUN for the first time 2026-08-31, at all three capacities — and it FAILED at all three.** Every configuration aborts on TLC's default deadlock check at depth 6, so **`Safety`, `TerminalIsFinal` and `Liveness` all reached NO VERDICT** (finding **X5**). Secondary `-deadlock` diagnostic runs then exposed an **`Invariant Safety is violated`** at depth 9 — the `CustodyMatchesState` contradiction, finding **X4**. *(This row read "Never run under TLC, at any capacity, by any pass" until 2026-08-31.)* |
+| `lifecycle.tla` | **RUN for the first time 2026-08-31, at all three capacities — and it FAILED at all three.** Every configuration aborts on TLC's default deadlock check at depth 6, so **`Safety`, `TerminalIsFinal` and `Liveness` all reached NO VERDICT** (finding **X5**). Secondary `-deadlock` diagnostic runs then exposed an **`Invariant Safety is violated`** at depth 9 — the `CustodyMatchesState` contradiction, finding **X4**. *(This row read "Never run under TLC, at any capacity, by any pass" until 2026-08-31.)* **— The module was then CHANGED TWICE the same day and re-run.** The X4/X5 decision pass removed the abort and the safety contradiction; the **X6 pass** transcribed §4.4's two `QUEUED` assignment-deadline rows (`:1122`, `:1123`) and replaced `WF_vars(Next)` alone with `WF_vars(Next)` **plus** strong fairness on the two ladder actions. **Current state: `QueuedLegsProgress` PASSES on a complete state graph at capacity 1** — 676 854 states / 156 941 distinct / depth 43 / **0 on queue**, with `Safety` and `TerminalIsFinal` also passing — **the first passing lifecycle liveness verdict this project has produced.** `EveryLegSettles` and `CustodyNeverLost` **still FAIL**, on the new finding **X7** and on nothing else. **Run as checked in, `c1` and `c2` report `Liveness` violated and are partial searches; `c3` reached NO VERDICT** — it did not converge and was interrupted at a stated budget (**UNKNOWN, not FAIL**). `commitment_c1/c2/c3` were **not re-run** by either later pass — `commitment.tla` neither `EXTENDS` nor `INSTANCE`s this module. Full record: [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md) §15, **§16** |
 | `commitment.tla` | **RUN 2026-08-31 at all three capacities.** `commitment_c1.cfg` **as checked in** (`Legs={l1,l2}`, `Workers={w1,w2}`, `Capacity=1`, `MaxFence=4`) **closed exhaustively with no error** — 17 991 520 states / 2 375 660 distinct / diameter 21 / 25 s. `commitment_c2.cfg` **did not converge** (287 M distinct, 126 M on queue, 23.6 GiB disk queue still growing). `commitment_c3.cfg` **did not converge** (abnormal exit `-1` at 247 s, 21 M on queue). **Historically**, `formal/README.md:34-45` also records two runs dated 2026-08-15 — see below |
 
 **One of six configurations has ever closed.** Full §7.3a record with the raw TLC output retained
@@ -329,6 +329,14 @@ remains the release owner's acceptance decision**, not Engineering's — see
 > modelling language (`formal/README.md:106-109`), which is precisely its stated value. **No
 > application source, `.tla`, `.cfg`, schema, test or configuration was changed by the run**, the
 > implementation freeze at `c27a75c` is intact, and the source digest did not move.
+>
+> **The same holds for X6 and X7, and X6 makes the point unusually well.** X6 was the module
+> failing to transcribe two rows of §4.4 that **the shipped engine already implements end to end** —
+> `lifecycle/transitions.js:203-217` → `fairness/ladder.js` (T1-04) →
+> `supervision/expiryActions.js:373-425` → `workers/leaderWorkers.js:416`. The specification
+> investigation was run *before* anything was changed precisely so that a shipped-implementation
+> defect would have been found if one existed; **none was, and no `Backend/` file was touched.**
+> **X7** is a specification ambiguity about §4.4's cancel row, not an implementation defect either.
 
 **Two structural gaps, recorded and not to be fixed:** a completed TLC run has **no normal
 evidence-admission path** (the gate is `EVIDENCE.SUITE` and `evidence.admit()` refuses any run
