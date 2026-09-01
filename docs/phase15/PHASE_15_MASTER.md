@@ -9,14 +9,51 @@
 > were corrected by later passes. Reading them to decide what to implement is the specific
 > failure this document exists to prevent.
 
-**Consolidated:** 2026-08-29 · **Last updated:** **2026-08-31 (third pass)** — the **X6 pass**: X6
-was investigated against the frozen specification, the shipped implementation and the executable
-checker, classified as a **transcription defect**, fixed in `formal/lifecycle.tla` only, and
-verified; a new blocker **X7** was opened by that verification. Earlier the same day: the **X4/X5
-decision pass**, and before it the **B-M TLC execution**, which ran all six checked-in
-configurations for the first time — **B-M did NOT close** and opened X4 and X5. Before those:
-closure item **V-9**, the Phase 0–14 cross-phase re-verification (2026-08-30); the post-V-10
-current-state audit; and closure item **V-10**.
+**Consolidated:** 2026-08-29 · **Last updated:** **2026-09-01 (fourth pass)** — the **X7 pass**: X7
+was re-investigated against the frozen specification, the shipped implementation and a controlled
+`D3 → D6` experiment, **reclassified from a specification ambiguity to a transcription defect**
+(§4.6's cancellation latch was never modelled), fixed in `formal/lifecycle.tla` only, and verified —
+**`lifecycle_c1` now closes with every declared property PASS**. **No new blocker was opened.**
+**B-M remains OPEN.** Before it: the **X6 pass** (2026-08-31, third pass), which opened X7; the
+**X4/X5 decision pass**; and the **B-M TLC execution**, which ran all six checked-in configurations
+for the first time — **B-M did NOT close** and opened X4 and X5. Before those: closure item **V-9**,
+the Phase 0–14 cross-phase re-verification (2026-08-30); the post-V-10 current-state audit; and
+closure item **V-10**.
+
+> ### ⚠ 2026-09-01 (FOURTH pass) — X7 is CLOSED as a TRANSCRIPTION DEFECT. `lifecycle_c1` PASSES on a closed graph. **B-M is STILL OPEN.**
+>
+> | | |
+> |---|---|
+> | **X7 — CLOSED** | **Reclassified from SPECIFICATION AMBIGUITY to TRANSCRIPTION DEFECT.** The defect is **not** that `STRANDED_*` is necessarily non-cancellable — it is that `formal/lifecycle.tla` **never modelled §4.6 step 1's `cancel_requested_at`**, making `Cancel` and `CancelWithCustody` indefinitely repeatable against the same Leg. §4.6 makes cancellation a **latch**: step 1 writes it and increments the version in one transaction, step 2 guards every subsequent transition on it, **nothing clears it**, step 5 forbids a requester cancelling the Legs cancellation creates. Fixed in `formal/lifecycle.tla` **only** |
+> | **The shipped implementation already had the latch** | `lifecycle/cancellation.js:119-130` writes `cancelRequestedAt` under a version-conditional `updateMany`; `lifecycle/transitions.js:664-669` `cancellationGuard` reads it; **nothing in `Backend/src/` clears it**. The shipped system forbids the X7 cycle **through the latch**, not through a `STRANDED_*` rule. **No `Backend/` file changed** |
+> | **`lifecycleModel.js` — separate permissive-model observation** | `tests/engine/helpers/lifecycleModel.js:350` exempts `CANCEL_REQUEST` itself from `cancellationGuard`, so the executable checker still admits a repeat the engine refuses. **Recorded, not fixed; no test changed** |
+> | **The `STRANDED_*` cancellation question is NON-BLOCKING** | Retained as *Question A*. It did **not** need resolving to fix X7 and was **not** resolved. The repair adds **no** `STRANDED_*` special case |
+>
+> **The controlled experiment.** D1/D2 reproduced the previous graph exactly. **D3** pristine, 1 Leg:
+> `Liveness` **VIOLATED** by the `CancelWithCustody ↔ Strand` lasso. **D4** add *only* the latch:
+> all properties **PASS**. **D5** at the `c1` shape: **COMPLETE graph, PASS**, 777 942 / 187 289 /
+> depth 43 / **0 on queue**. **D6** remove *only* the latch guard: **VIOLATED**, mutant killed.
+>
+> **Verification, repository as checked in.** `lifecycle_c1.cfg` **unmodified**, same TLC artefact
+> (SHA-256 `eabd140a…533a`), JDK 20.0.2: **777 942 states / 187 289 distinct / depth 43 / 0 on queue,
+> exit 0, "No error has been found"** — **reproducing D5 exactly**. `Safety` **PASS**,
+> `TerminalIsFinal` **PASS**, `Liveness` **PASS** (all three conjuncts). **The X7 lasso is gone.**
+> **X7 mutant re-run against the checked-in config: KILLED** (exit 13, lasso restored).
+>
+> **Only `formal/lifecycle.tla` changed.** No `Backend/` file, `.cfg`, test, specification, ADR,
+> schema or migration was touched. `CHECK_DEADLOCK FALSE` is still absent and deadlock checking ran
+> at its default; **`EveryLegSettles` and `CustodyNeverLost` are byte-identical**; **no fairness was
+> added on `Recovered`**; no boundedness, timeout or artificial-progress constant was added.
+> X4/X5/X6 modelling is intact and byte-identical.
+>
+> ### B-M did NOT close. X7 closing is not B-M closing.
+> B-M needs the complete capacity 1/2/3 evidence and its acceptance: **`commitment_c1` PASS ·
+> `commitment_c2` UNKNOWN · `commitment_c3` UNKNOWN · `lifecycle_c1` PASS (new) · `lifecycle_c2` and
+> `lifecycle_c3` still require authoritative treatment.** The commitment UNKNOWNs are **deliberately
+> unaffected** and were not re-run — `commitment.tla` neither `EXTENDS` nor `INSTANCE`s
+> `lifecycle.tla` and no `.cfg` changed. **2 of 6 configurations close, was 1.** **No independent
+> safety-engineering or release-owner acceptance exists for X7 and none is claimed.** Full record:
+> [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md) **§17**.
 
 > ### ⚠ 2026-08-31 (THIRD pass) — X6 is CLOSED as a transcription defect. X7 is OPEN. `Liveness` still fails.
 >
@@ -249,7 +286,7 @@ Full detail: **[`PHASE_15_IMPLEMENTATION_STATE.md`](PHASE_15_IMPLEMENTATION_STAT
 | Calibration | Gate implemented; **39 blocking findings** (B8, external) |
 | Simulator fidelity | Gate implemented; **no study supplied** — 7 models NOT_MEASURED |
 | Safety case | Assembler implemented; assembles cleanly. **The §24.7 gate is not thereby discharged** |
-| Formal verification | TLA+ modules + 6 TLC configs present. **TLC was EXECUTED for the first time on 2026-08-31 — all six checked-in configurations, on the frozen tree**, then `lifecycle.tla` was changed twice the same day (**X4/X5**, then **X6**) and re-run. Commitment half **unchanged throughout**: **1 closed** (`commitment_c1`, exhaustive PASS), **2 UNKNOWN** (`commitment_c2/c3`, did not converge) — **not re-run by either later pass, deliberately**, since `commitment.tla` neither `EXTENDS` nor `INSTANCE`s `lifecycle.tla`. Lifecycle half: the deadlock abort (**X5**) and the `CustodyMatchesState` contradiction (**X4**) are fixed; **`QueuedLegsProgress` now PASSES on a complete state graph at capacity 1** (676 854 / 156 941 / depth 43 / 0 on queue, with `Safety` and `TerminalIsFinal`) — the first passing lifecycle liveness verdict — while `EveryLegSettles` and `CustodyNeverLost` **still FAIL**, on **X7** and on nothing else. **B-M = NOT MEASURED / OPEN — it did NOT close and did not move.** Full §7.3a record with raw output: [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md) §12, §15, **§16** |
+| Formal verification | TLA+ modules + 6 TLC configs present. **TLC was EXECUTED for the first time on 2026-08-31 — all six checked-in configurations, on the frozen tree**, then `lifecycle.tla` was changed twice the same day (**X4/X5**, then **X6**) and re-run. Commitment half **unchanged throughout**: **1 closed** (`commitment_c1`, exhaustive PASS), **2 UNKNOWN** (`commitment_c2/c3`, did not converge) — **not re-run by either later pass, deliberately**, since `commitment.tla` neither `EXTENDS` nor `INSTANCE`s `lifecycle.tla`. Lifecycle half: the deadlock abort (**X5**) and the `CustodyMatchesState` contradiction (**X4**) are fixed; **`QueuedLegsProgress` now PASSES on a complete state graph at capacity 1** (676 854 / 156 941 / depth 43 / 0 on queue, with `Safety` and `TerminalIsFinal`) — the first passing lifecycle liveness verdict — while `EveryLegSettles` and `CustodyNeverLost` **still FAIL**, on **X7** and on nothing else. **— SUPERSEDED by the X7 pass, 2026-09-01.** X7 was reclassified as a **transcription defect** (§4.6's `cancel_requested_at` latch was never modelled, making cancellation indefinitely repeatable) and fixed in `formal/lifecycle.tla` only. **`lifecycle_c1` now CLOSES with every declared property PASS** — 777 942 states / 187 289 distinct / depth 43 / **0 on queue**, exit 0, `Safety` + `TerminalIsFinal` + `Liveness` (all three conjuncts) — and the X7 mutant is **KILLED**. **2 of 6 configurations now close, was 1.** `lifecycle_c2`/`c3` still require authoritative treatment and `commitment_c2`/`c3` remain **UNKNOWN, deliberately unaffected and not re-run**. **B-M = NOT MEASURED / OPEN — it did NOT close.** Full §7.3a record with raw output: [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md) §12, §15, §16, **§17** |
 | Database | **28 migrations**; **6** live-DB harnesses (the four Phase 15 ones, plus T1-04's and V-10's), **167/167**, all green |
 | Runbooks | `docs/runbooks/cutover.md` and `rollback.md`. **Both traced against the current API 2026-08-30 (V-10) — 5 defects fixed**, and `rollback.md` §7 now records when that trace happened. P15-F7a (nothing *binds* a runbook to its API) is unchanged and still open |
 
@@ -292,21 +329,24 @@ discharged: one of the six closed, and B-M is still OPEN.***
 
 Full register with owners and closure conditions: **[`PHASE_15_BLOCKERS.md`](PHASE_15_BLOCKERS.md)**.
 
-**8 open blockers. 0 are repository-owned *and actionable*** — the one repository-owned entry (A9)
+**7 open blockers. 0 are repository-owned *and actionable*** — the one repository-owned entry (A9)
 is correctly deferred to Phase 8 and has no action available here. **X1/T1-04 was closed on
 2026-08-30** by REMEDIAL PHASE T1-04 (§17.4's ladder, its human capacity model, and §17.5's
 detection — implemented, composed, and verified against live PostgreSQL).
 
-> **Was 7, then 9, then 8, and still 8 — and the arithmetic is worth reading rather than trusting.**
+> **Was 7, then 9, then 8, still 8, and now 7 — and the arithmetic is worth reading rather than trusting.**
 > On 2026-08-31 `tla2tools.jar` was provisioned and all six TLC configurations were run; B-M did not
 > close and the runs uncovered **X4** and **X5**, taking 7 → 9. Later the same day both were
 > **decided and implemented**, and the verification opened **X6**: 9 − 2 + 1 = **8**. On the third
 > pass **X6 was closed** as a transcription defect and its verification opened **X7**:
-> 8 − 1 + 1 = **8**. The open set is now **B1, B8, B-P, B-O, B-M, X3, X7, A9**.
+> 8 − 1 + 1 = **8**. On the fourth pass (2026-09-01) **X7 was closed** as a transcription defect
+> — the missing §4.6 cancellation latch — and its verification opened **nothing**:
+> 8 − 1 + 0 = **7**. The open set is now **B1, B8, B-P, B-O, B-M, X3, A9**.
 >
 > **The §24 gate count is unchanged at 8 blocking gates not green** through all of it, because none
 > of X4, X5, X6 or X7 is a gate row and `model_check_capacity_1_2_3` renders exactly as it did
-> before. See `PHASE_15_VERIFICATION_STATE.md` §7d, §7e and §7f.
+> before — **X7 closing does not change it either**, because that gate needs all six configurations
+> and only two now close. See `PHASE_15_VERIFICATION_STATE.md` §7d, §7e, §7f and **§7g**.
 >
 > **A closed blocker replaced by a new one is not standing still, and it is not progress either —
 > read what actually moved.** X6 was answerable from the frozen document: §4.4 states the

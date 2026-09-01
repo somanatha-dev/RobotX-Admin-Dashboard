@@ -188,9 +188,11 @@ VARIABLES
     taskState,       \* the Task's state (Sec 4.2)
     ticks,           \* how many timer firings have occurred; bounds the search
     everHeld,        \* [Legs -> BOOLEAN]  custody was HELD at some point
-    ladder           \* [Legs -> 0..LadderSteps]  the Sec 17.4 rung this Leg has reached
+    ladder,          \* [Legs -> 0..LadderSteps]  the Sec 17.4 rung this Leg has reached
+    cancelRequested  \* [Legs -> BOOLEAN]  Sec 4.6 step 1's `cancel_requested_at`, as a latch
 
-vars == << legState, custody, hardCommitted, taskState, ticks, everHeld, ladder >>
+vars == << legState, custody, hardCommitted, taskState, ticks, everHeld, ladder,
+           cancelRequested >>
 
 (***************************************************************************)
 (* Sec 4.3 -- the obstruction class resolves to a stranding state.          *)
@@ -210,6 +212,8 @@ Init ==
     /\ hardCommitted = [ l \in Legs |-> FALSE ]
     /\ everHeld = [ l \in Legs |-> FALSE ]
     /\ ladder = [ l \in Legs |-> 0 ]
+    \* Sec 4.6 step 1: `cancel_requested_at` is NULL on a Leg nobody has asked to cancel.
+    /\ cancelRequested = [ l \in Legs |-> FALSE ]
     /\ taskState = "WAITING"
     /\ ticks = 0
 
@@ -227,12 +231,12 @@ HardCount == Cardinality({ l \in Legs : hardCommitted[l] })
 Plan(l) ==
     /\ legState[l] \in { "QUEUED", "DEFERRED" }
     /\ legState' = [ legState EXCEPT ![l] = "PLANNED" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder, cancelRequested >>
 
 Defer(l) ==
     /\ legState[l] = "QUEUED"
     /\ legState' = [ legState EXCEPT ![l] = "DEFERRED" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder, cancelRequested >>
 
 Offer(l) ==
     /\ legState[l] = "PLANNED"
@@ -240,7 +244,7 @@ Offer(l) ==
     \* offer that cannot lawfully be accepted is an offer that should not be sent.
     /\ HardCount < Capacity
     /\ legState' = [ legState EXCEPT ![l] = "OFFERED" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder, cancelRequested >>
 
 Accept(l) ==
     /\ legState[l] = "OFFERED"
@@ -248,7 +252,7 @@ Accept(l) ==
     /\ legState' = [ legState EXCEPT ![l] = "ACCEPTED" ]
     /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = TRUE ]
     /\ taskState' = "IN_EXECUTION"
-    /\ UNCHANGED << custody, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, ticks, everHeld, ladder, cancelRequested >>
 
 (***************************************************************************)
 (* Sec 11.2 -- the agent may refuse. The offer is withdrawn, the agent is   *)
@@ -258,7 +262,7 @@ Accept(l) ==
 Reject(l) ==
     /\ legState[l] = "OFFERED"
     /\ legState' = [ legState EXCEPT ![l] = "QUEUED" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder, cancelRequested >>
 
 (***************************************************************************)
 (* Sec 4.4 -- the two `QUEUED` assignment-deadline rows, and Sec 4.3's      *)
@@ -304,47 +308,47 @@ LadderAdvance(l) ==
     /\ legState[l] = "QUEUED"
     /\ ladder[l] < LadderSteps
     /\ ladder' = [ ladder EXCEPT ![l] = ladder[l] + 1 ]
-    /\ UNCHANGED << legState, custody, hardCommitted, taskState, ticks, everHeld >>
+    /\ UNCHANGED << legState, custody, hardCommitted, taskState, ticks, everHeld, cancelRequested >>
 
 LadderExhausted(l) ==
     /\ legState[l] = "QUEUED"
     /\ ladder[l] = LadderSteps
     /\ legState' = [ legState EXCEPT ![l] = "FAILED" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder, cancelRequested >>
 
 Depart(l) ==
     /\ legState[l] = "ACCEPTED"
     /\ legState' = [ legState EXCEPT ![l] = "EN_ROUTE_PICKUP" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder, cancelRequested >>
 
 ArrivePickup(l) ==
     /\ legState[l] = "EN_ROUTE_PICKUP"
     /\ legState' = [ legState EXCEPT ![l] = "AT_PICKUP" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder, cancelRequested >>
 
 Load(l) ==
     /\ legState[l] = "AT_PICKUP"
     /\ legState' = [ legState EXCEPT ![l] = "LOADED" ]
     /\ custody' = [ custody EXCEPT ![l] = "HELD" ]
     /\ everHeld' = [ everHeld EXCEPT ![l] = TRUE ]
-    /\ UNCHANGED << hardCommitted, taskState, ticks, ladder >>
+    /\ UNCHANGED << hardCommitted, taskState, ticks, ladder, cancelRequested >>
 
 DepartDrop(l) ==
     /\ legState[l] = "LOADED"
     /\ legState' = [ legState EXCEPT ![l] = "EN_ROUTE_DROP" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder, cancelRequested >>
 
 ArriveDrop(l) ==
     /\ legState[l] = "EN_ROUTE_DROP"
     /\ legState' = [ legState EXCEPT ![l] = "AT_DROP" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder, cancelRequested >>
 
 Release(l) ==
     /\ legState[l] = "AT_DROP"
     /\ legState' = [ legState EXCEPT ![l] = "RELEASED" ]
     /\ custody' = [ custody EXCEPT ![l] = "RELEASED" ]
     /\ taskState' = "VERIFYING"
-    /\ UNCHANGED << hardCommitted, ticks, everHeld, ladder >>
+    /\ UNCHANGED << hardCommitted, ticks, everHeld, ladder, cancelRequested >>
 
 (***************************************************************************)
 (* Sec 15.6 -- custody may end in dispute rather than in release. Sec 24.2  *)
@@ -355,7 +359,7 @@ Dispute(l) ==
     /\ legState[l] \in CustodyBearingStates
     /\ custody' = [ custody EXCEPT ![l] = "DISPUTED" ]
     /\ legState' = [ legState EXCEPT ![l] = "ABORTING" ]
-    /\ UNCHANGED << hardCommitted, taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << hardCommitted, taskState, ticks, everHeld, ladder, cancelRequested >>
 
 (***************************************************************************)
 (* Sec 12.5 -- settlement releases the commitment. This is the ONLY action  *)
@@ -371,7 +375,7 @@ Settle(l) ==
     /\ taskState' = IF \A m \in Legs : (m = l \/ legState[m] \in TerminalLegStates)
                     THEN "COMPLETED"
                     ELSE taskState
-    /\ UNCHANGED << custody, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, ticks, everHeld, ladder, cancelRequested >>
 
 (***************************************************************************)
 (* Sec 4.7 -- reassignment. The commitment is released BEFORE the Leg       *)
@@ -383,22 +387,79 @@ Reassign(l) ==
     /\ custody[l] = "NONE"
     /\ legState' = [ legState EXCEPT ![l] = "REASSIGNING" ]
     /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = FALSE ]
-    /\ UNCHANGED << custody, taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, taskState, ticks, everHeld, ladder, cancelRequested >>
 
 ReassignComplete(l) ==
     /\ legState[l] = "REASSIGNING"
     /\ legState' = [ legState EXCEPT ![l] = "QUEUED" ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder, cancelRequested >>
 
 (***************************************************************************)
 (* Sec 4.6 -- cancellation. Sec 4.1 rule 4: a Leg carrying custody may NOT  *)
 (* be cancelled outright; it goes through ABORTING so that the goods are     *)
 (* accounted for. This guard is the whole reason cancellation is two        *)
 (* actions rather than one.                                                 *)
+(*                                                                          *)
+(* ------------------------------------------------------------------------ *)
+(* Blocker X7 -- THE SEC 4.6 CANCELLATION LATCH.                            *)
+(*                                                                          *)
+(* Until this change the module modelled cancellation as an event that      *)
+(* could be raised against the same Leg an unbounded number of times, and   *)
+(* Sec 4.6 step 1 says it is not one. Verbatim:                             *)
+(*                                                                          *)
+(*   "1. Cancellation writes `cancel_requested_at` and increments the       *)
+(*       version in a transaction. It does not attempt to reach a terminal  *)
+(*       state directly."                                                   *)
+(*                                                                          *)
+(* and step 2 makes every subsequent transition conditional on that write:  *)
+(*                                                                          *)
+(*   "cancel_requested_at IS NULL   OR   leg.purpose \in custodial_purposes" *)
+(*                                                                          *)
+(* Nothing in Sec 4.6 -- or anywhere else in the frozen specification --    *)
+(* clears `cancel_requested_at`. It is a LATCH: written once, never reset,  *)
+(* and thereafter the guard of step 2 rather than the event itself is what  *)
+(* decides whether the Leg may still move. Step 5 closes the loop for the   *)
+(* Legs cancellation creates: "A requester may not cancel a RECOVERY or     *)
+(* TRANSFER Leg at all".                                                    *)
+(*                                                                          *)
+(* WHAT THE OMISSION COST. Without the latch, `CancelWithCustody` and       *)
+(* `Strand` formed a lasso: a Leg holding custody is cancelled into         *)
+(* ABORTING, stranded, cancelled again out of the stranded state into       *)
+(* ABORTING, stranded again, for ever. `EveryLegSettles` is satisfied by    *)
+(* that cycle -- it reaches a STRANDED state -- but `CustodyNeverLost` is   *)
+(* not: custody stays HELD around the whole loop while `AbortResolved` and  *)
+(* `Recovered`, both continuously enabled, are never taken. WF_vars(Next)   *)
+(* cannot force either of them, because the cycle itself is an unbroken     *)
+(* stream of <<Next>>_vars steps. That is blocker X7.                       *)
+(*                                                                          *)
+(* WHY THE LATCH IS THE FAITHFUL REPAIR AND NOT A CONVENIENT ONE. The fix   *)
+(* transcribes a mechanism the frozen specification already states and the  *)
+(* shipped system already implements -- Backend/src/engine/lifecycle/       *)
+(* cancellation.js writes `cancelRequestedAt` under a version-conditional   *)
+(* update and nothing anywhere clears it, and transitions.js               *)
+(* `cancellationGuard` reads it. The X7 cycle is unreachable in the shipped *)
+(* system for exactly this reason, and was reachable here only because the  *)
+(* transcription omitted the latch. In particular the repair adds NO rule   *)
+(* about STRANDED_SAFE or STRANDED_OBSTRUCTING: a stranded Leg that has     *)
+(* never been cancelled may still be cancelled, once, which is what makes   *)
+(* this a transcription of Sec 4.6 rather than a special case aimed at the  *)
+(* counterexample. Whether STRANDED_* should be cancellable AT ALL is a     *)
+(* separate, non-blocking modelling question, recorded in                    *)
+(* docs/phase15/PHASE_15_BLOCKERS.md and deliberately not settled here.     *)
+(*                                                                          *)
+(* NOT MODELLED, and it is the purpose exemption of step 2. This module has *)
+(* no `purpose` attribute and creates no RECOVERY Leg, so every Leg here is *)
+(* effectively PRIMARY and the exemption has nothing to apply to. Modelling *)
+(* the recovery Leg that step 3 mandates would add a Leg to a fixed `Legs`  *)
+(* set mid-behaviour, which this module's shape does not admit. That is a   *)
+(* COVERAGE gap, recorded, not a weakening of the latch.                    *)
 (***************************************************************************)
 Cancel(l) ==
     /\ legState[l] \notin TerminalLegStates
     /\ custody[l] # "HELD"
+    \* Sec 4.6 step 1/2: cancellation is requested at most once per Leg.
+    /\ ~cancelRequested[l]
+    /\ cancelRequested' = [ cancelRequested EXCEPT ![l] = TRUE ]
     /\ legState' = [ legState EXCEPT ![l] = "CANCELLED" ]
     /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = FALSE ]
     /\ UNCHANGED << custody, taskState, ticks, everHeld, ladder >>
@@ -406,6 +467,9 @@ Cancel(l) ==
 CancelWithCustody(l) ==
     /\ legState[l] \notin TerminalLegStates
     /\ custody[l] = "HELD"
+    \* Sec 4.6 step 1/2: the same latch. This is the disjunct that closed the X7 lasso.
+    /\ ~cancelRequested[l]
+    /\ cancelRequested' = [ cancelRequested EXCEPT ![l] = TRUE ]
     /\ legState' = [ legState EXCEPT ![l] = "ABORTING" ]
     /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
 
@@ -418,13 +482,13 @@ AbortResolved(l) ==
     /\ custody' = [ custody EXCEPT ![l] = IF custody[l] = "HELD" THEN "RELEASED" ELSE custody[l] ]
     /\ legState' = [ legState EXCEPT ![l] = "FAILED" ]
     /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = FALSE ]
-    /\ UNCHANGED << taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << taskState, ticks, everHeld, ladder, cancelRequested >>
 
 Strand(l, class) ==
     /\ legState[l] = "ABORTING"
     /\ class \in ObstructionClasses
     /\ legState' = [ legState EXCEPT ![l] = StrandingStateFor(class) ]
-    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << custody, hardCommitted, taskState, ticks, everHeld, ladder, cancelRequested >>
 
 (***************************************************************************)
 (* Sec 18.6 -- a stranding is resolved by physical intervention. The Leg     *)
@@ -435,7 +499,7 @@ Recovered(l) ==
     /\ custody' = [ custody EXCEPT ![l] = IF custody[l] = "HELD" THEN "RELEASED" ELSE custody[l] ]
     /\ legState' = [ legState EXCEPT ![l] = "FAILED" ]
     /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = FALSE ]
-    /\ UNCHANGED << taskState, ticks, everHeld, ladder >>
+    /\ UNCHANGED << taskState, ticks, everHeld, ladder, cancelRequested >>
 
 (***************************************************************************)
 (* Sec 4.5 -- a durable timer fires. Sec 12.1: something must be            *)
@@ -450,33 +514,33 @@ TimerFires(l) ==
     /\ ticks' = ticks + 1
     /\ \/ /\ legState[l] = "OFFERED"          \* dispatch.offer_ttl -> withdraw, exclude, re-plan
           /\ legState' = [ legState EXCEPT ![l] = "QUEUED" ]
-          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder >>
+          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder, cancelRequested >>
        \/ /\ legState[l] = "PLANNED"          \* commit.hardening_deadline -> re-plan
           /\ legState' = [ legState EXCEPT ![l] = "QUEUED" ]
-          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder >>
+          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder, cancelRequested >>
        \/ /\ legState[l] = "DEFERRED"         \* assign.max_deferral_time -> force widen
           /\ legState' = [ legState EXCEPT ![l] = "QUEUED" ]
-          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder >>
+          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder, cancelRequested >>
        \/ /\ legState[l] \in { "ACCEPTED", "EN_ROUTE_PICKUP", "AT_PICKUP" }
           /\ custody[l] = "NONE"              \* execute.start_grace -> probe, then reassign
           /\ legState' = [ legState EXCEPT ![l] = "REASSIGNING" ]
           /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = FALSE ]
-          /\ UNCHANGED << custody, taskState, everHeld, ladder >>
+          /\ UNCHANGED << custody, taskState, everHeld, ladder, cancelRequested >>
        \/ /\ legState[l] \in CustodyBearingStates
           /\ legState' = [ legState EXCEPT ![l] = "ABORTING" ]
-          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder >>
+          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder, cancelRequested >>
        \/ /\ legState[l] = "RELEASED"         \* verify.evidence_deadline -> escalate
           /\ legState' = [ legState EXCEPT ![l] = "SETTLED" ]
           /\ hardCommitted' = [ hardCommitted EXCEPT ![l] = FALSE ]
-          /\ UNCHANGED << custody, taskState, everHeld, ladder >>
+          /\ UNCHANGED << custody, taskState, everHeld, ladder, cancelRequested >>
        \/ /\ legState[l] = "ABORTING"         \* recover.abort_budget -> force STRANDED
           /\ legState' = [ legState EXCEPT ![l] = "STRANDED_OBSTRUCTING" ]
-          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder >>
+          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder, cancelRequested >>
        \/ /\ legState[l] = "REASSIGNING"      \* recover.reassign_budget -> escalate
           /\ legState' = [ legState EXCEPT ![l] = "QUEUED" ]
-          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder >>
+          /\ UNCHANGED << custody, hardCommitted, taskState, everHeld, ladder, cancelRequested >>
        \/ /\ legState[l] \in { "STRANDED_SAFE", "STRANDED_OBSTRUCTING" }
-          /\ UNCHANGED << legState, custody, hardCommitted, taskState, everHeld, ladder >>
+          /\ UNCHANGED << legState, custody, hardCommitted, taskState, everHeld, ladder, cancelRequested >>
 
 (***************************************************************************)
 (* TERMINAL QUIESCENCE -- the end of a behaviour, stated explicitly.        *)
@@ -590,6 +654,7 @@ TypeOK ==
     /\ taskState \in TaskStates
     /\ ticks \in 0..MaxTicks
     /\ ladder \in [ Legs -> 0..LadderSteps ]
+    /\ cancelRequested \in [ Legs -> BOOLEAN ]
 
 \* Sec 10.1 / Sec 24.2: at most `capacity` HARD commitments per agent.
 CapacityRespected == HardCount =< Capacity

@@ -2336,3 +2336,231 @@ session scratch location. The §11.2 finding is unchanged: **the repository stil
 evidence directory and no file format for a TLC run**, and that location remains **PROVISIONAL and
 the release owner's to confirm or redirect (§7.6)**. **Every figure in §16.2 and §16.5–§16.7 is
 transcribed from those captures**, not written from memory.
+
+---
+
+# 17. THE X7 PASS — 2026-09-01 (FOURTH pass)
+
+**X7 reclassified from SPECIFICATION AMBIGUITY to TRANSCRIPTION DEFECT, fixed in
+`formal/lifecycle.tla` only, and verified on the repository's own `lifecycle_c1` as checked in.**
+
+> **B-M did NOT close and must not be reported as closed.** `lifecycle_c1` passing is one
+> configuration of six. See §17.9.
+
+## 17.1 Scope, authority and what was NOT touched
+
+**Decided and implemented by the sole project owner/reviewer**, acting as the project's
+specification and verification authority. **No independent safety-engineering or release-owner
+sign-off exists for X7, and none is claimed** — the same standing limitation as the X4/X5 and X6
+passes (§15.1).
+
+**Exactly one file changed: `formal/lifecycle.tla`.** Verified by `git status --porcelain`, which
+reported `M formal/lifecycle.tla` and nothing else, before and after the runs below.
+
+| Not touched | Evidence |
+|---|---|
+| Any `Backend/` file | `git diff --name-only -- Backend/` empty |
+| Any test | `git diff --name-only -- '*.test.js'` empty; `lifecycleModel.js` unchanged |
+| Any `.cfg` | All six `formal/*.cfg` reported `IDENTICAL-TO-HEAD` |
+| The frozen specification | `git diff --name-only -- NEXT_GENERATION_ASSIGNMENT_ENGINE.md` empty |
+| Any ADR | empty |
+| Release evidence | not re-collected, by instruction; V-5's RED staleness unchanged |
+
+**`CHECK_DEADLOCK` unchanged and still absent from every `.cfg`** — deadlock checking therefore ran
+at TLC's default (ON) and reported no deadlock. **No `-deadlock` flag was passed.**
+
+**These definitions are byte-identical to their pre-pass text**, confirmed by extracting each from
+`git show HEAD:formal/lifecycle.tla` and from the working tree and comparing:
+`EveryLegSettles`, `CustodyNeverLost`, `QueuedLegsProgress`, `Liveness`, `TerminalIsFinal`,
+`CustodyMatchesState`, `Next`, `Spec`, `Fairness`, `TaskQuiescent`, `AllLegsTerminal`,
+`CustodyLawfulStates`. **X4/X5/X6 modelling is intact.**
+
+## 17.2 The classification, and why the previous framing is superseded
+
+§16.9 and the original X7 entry framed X7 as a genuine ambiguity about whether §4.4's "any
+non-terminal" cancel row governs a `STRANDED_*` Leg. **That framing asked a question that did not
+need answering.** The defect is one layer earlier:
+
+**`formal/lifecycle.tla` did not model §4.6 step 1's `cancel_requested_at` at all**, so `Cancel` and
+`CancelWithCustody` were **indefinitely repeatable against the same Leg**. §4.6 (`:1185`–`:1231`)
+makes cancellation a **latch**:
+
+1. it "writes `cancel_requested_at` and increments the version in a transaction" and "does **not**
+   attempt to reach a terminal state directly" (`:1185`–`:1186`);
+2. every subsequent transition is guarded on it —
+   `cancel_requested_at IS NULL OR leg.purpose ∈ custodial_purposes` (`:1190`);
+3. **nothing in the frozen document clears it**, and step 5 (`:1228`) forbids a requester cancelling
+   a `RECOVERY` or `TRANSFER` Leg at all.
+
+**The shipped implementation already had the latch**, and forbids the X7 cycle *through it* rather
+than through any `STRANDED_*` rule — `cancellation.js:119`–`:130` (version-conditional
+`updateMany` writing `cancelRequestedAt`), `transitions.js:664`–`:669` (`cancellationGuard`), and
+**no clearing write anywhere in `Backend/src/`**; the sole `cancelRequestedAt: null` is
+`domain/mappers/legacyTask.js:139`, constructing a fresh Leg at `version: 0`.
+
+**This is the same shape of finding as X4 and X6:** the two checkers disagreed on the transition
+relation, and `lifecycle.tla` was again the one not updated.
+
+## 17.3 The controlled D3 → D6 experiment
+
+D1/D2 reproduced the previous graph exactly, confirming the scratchpad copy faithful.
+
+| | Variant | Result |
+|---|---|---|
+| **D3** | pristine `Spec`, 1 Leg | `Liveness` **VIOLATED** — `CancelWithCustody ↔ Strand` lasso |
+| **D4** | add **only** the §4.6 cancellation latch | `Safety` + `TerminalIsFinal` + `Liveness` **PASS** |
+| **D5** | D4 at the `c1` shape | **COMPLETE graph, PASS** — 777 942 / 187 289 / depth 43 / **0 on queue** |
+| **D6** | remove **only** the latch guard | `Liveness` **VIOLATED** — mutant killed |
+
+**D4 is the load-bearing row.** The latch *alone* — no `STRANDED_*` rule, no fairness on
+`Recovered`, no weakened property — discharges every declared property. That is what makes the
+repair a transcription rather than a fix aimed at the counterexample.
+
+## 17.4 The exact change to `formal/lifecycle.tla`
+
+| | |
+|---|---|
+| `VARIABLES` | `+ cancelRequested` — `[Legs -> BOOLEAN]`, §4.6 step 1's `cancel_requested_at` as a latch; added to the `vars` tuple |
+| `Init` | `cancelRequested` initialised to `FALSE` for every Leg |
+| `Cancel(l)` | `+ /\ ~cancelRequested[l]` and `+ /\ cancelRequested' = [ cancelRequested EXCEPT ![l] = TRUE ]` |
+| `CancelWithCustody(l)` | the same two conjuncts — **this is the disjunct that closed the lasso** |
+| Every other action | `cancelRequested` added to its `UNCHANGED` tuple — **all 31 tuples**, verified by grepping for `UNCHANGED <<` lines lacking `cancelRequested` and getting none |
+| `TypeOK` | `+ /\ cancelRequested \in [ Legs -> BOOLEAN ]` |
+
+**The latch is never cleared** — no action assigns it `FALSE`.
+
+**Deliberately NOT done, each checked:** no `STRANDED_*` special case added merely to kill X7; no
+fairness added on `Recovered`; no property weakened; no `.cfg` changed; no boundedness, timeout or
+artificial-progress constant added. Under the latch a stranded Leg that has **never** been cancelled
+may still be cancelled, once — the repair carries no `STRANDED_*` rule at all.
+
+## 17.5 Tool provenance — the same artefact as the previous controlled experiment
+
+| | |
+|---|---|
+| **Tool** | TLA+ tools `tla2tools.jar`, **v1.8.0 ("The Clarke")**; banner `TLC2 Version 2026.08.21.155922 (rev: 9787e65)` |
+| **SHA-256** | `eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a` — **re-verified by `sha256sum` on the jar on disk immediately before the run**, and identical to §1's recorded value and to the artefact used by every run in §12, §15 and §16 |
+| **JDK** | `java version "20.0.2" 2023-07-18`; Java(TM) SE Runtime Environment build `20.0.2+9-78`; Java HotSpot(TM) 64-Bit Server VM build `20.0.2+9-78`, mixed mode, sharing |
+| **JVM flags** | `-Xmx6g -XX:+UseParallelGC` |
+| **TLC runtime, as it reported itself** | 12 workers on 12 cores, 5461 MB heap, 64 MB offheap, `MSBDiskFPSet`, `DiskStateQueue`, `fp 91`, seed `3729978615005106769`, Windows 11 10.0 amd64 |
+| **TLC flags** | `-config lifecycle_c1.cfg -workers auto -metadir <scratch> -noTE lifecycle.tla` — **the same flags as §12.4's primary run.** No `-deadlock` |
+| **Inputs under check** | `lifecycle.tla` SHA-256 `13b8edd88f54d06009052c0860e1ddb18e59ec85b75ff1ba1d242e105570b8b1` (changed) · `lifecycle_c1.cfg` SHA-256 `ff9d3cda687c8705131dbb7f9b7d9f9b28d24fec8b0bceccb2721508df1e1cf8` (**unmodified, `IDENTICAL-TO-HEAD`**) |
+
+## 17.6 After-evidence — `lifecycle_c1` AS CHECKED IN
+
+**Configuration constants, from the unmodified `lifecycle_c1.cfg`:**
+`Legs = {l1,l2}` · `Capacity = 1` · `MaxTicks = 3` · `SPECIFICATION Spec` · `INVARIANT Safety` ·
+`PROPERTY TerminalIsFinal, Liveness`. **`LadderSteps == 8` is a module definition, not a CONSTANT —
+no configuration supplies it.**
+
+| Measurement | Value |
+|---|---|
+| **States generated** | **777 942** |
+| **Distinct states** | **187 289** |
+| **Depth of the complete state graph** | **43** |
+| **States left on queue** | **0** |
+| **Graph closed?** | **YES — exhaustive** |
+| **Wall time** | **03 min 47 s** as reported by TLC (`17:00:46` → `17:04:33`); **229 s** measured by the harness including JVM start |
+| **Exit code** | **0** |
+| **Terminating line** | `Model checking completed. No error has been found.` |
+| Temporal-check detail | `Implied-temporal checking--satisfiability problem has 6 branches`; final temporal check over **1 123 734** total distinct states, finished in **03 min 25 s** |
+| Average outdegree | 1 (min 0, max 9, 95th percentile 4) |
+| Fingerprint-collision estimate | optimistic `6.0E-9`; from actual fingerprints `8.7E-9` |
+
+**Every declared property verdict:**
+
+| Declared property | Verdict |
+|---|---|
+| `INVARIANT Safety` (`TypeOK`, `CapacityRespected`, `CustodyNeverCancelled`, `NoCommitmentOnTerminal`, `CustodyMatchesState`, `IndeterminateEscalates`, `TaskCompletionIsHonest`) | **PASS** |
+| `PROPERTY TerminalIsFinal` | **PASS** |
+| `PROPERTY Liveness` → `EveryLegSettles` | **PASS** — *was VIOLATED (X7)* |
+| `PROPERTY Liveness` → `CustodyNeverLost` | **PASS** — *was VIOLATED (X7)* |
+| `PROPERTY Liveness` → `QueuedLegsProgress` | **PASS** — unchanged from the X6 pass |
+| Deadlock (TLC default, `CHECK_DEADLOCK` absent → ON) | **PASS** — no deadlock reported |
+
+**This reproduces D5 exactly** — 777 942 / 187 289 / depth 43 / 0 on queue. **The purpose of this
+run was to confirm that the in-repository configuration reproduces D5 and that the X7 lasso is gone,
+and it did both.**
+
+## 17.7 Mutation check — the minimal X7 mutation, KILLED
+
+**Built in the session scratch location. The repository was NOT modified for the mutant** —
+`git status --porcelain` reported `M formal/lifecycle.tla` and nothing else throughout, and a `diff`
+of the mutant against the repository file showed **exactly two removed lines and nothing else**.
+
+**Mutation:** remove **only** the two new latch-**guard** conjuncts (`/\ ~cancelRequested[l]`) from
+`Cancel` and `CancelWithCustody`. The variable, its `Init`, its two writes and all 31 `UNCHANGED`
+tuples were left intact — so the mutation bypasses the guard without removing the modelling, which
+is what isolates the guard as the load-bearing part.
+
+| Measurement | Value |
+|---|---|
+| **Result** | **KILLED** — `Error: Temporal property Liveness was violated.` |
+| **Exit code** | **13** |
+| States generated / distinct | 96 961 / 22 606 |
+| Depth / queue | 16 / **5 720 left** (search abandoned at the violation — partial, as expected) |
+| Wall time | 04 s (TLC); 5 s harness |
+| TLC runtime | `fp 60`, seed `-46361896845296172`, same jar, same flags, same **unmodified** `lifecycle_c1.cfg` |
+
+**The counterexample is the X7 lasso, verbatim from the trace:** states 1–13 drive `l1` to
+`STRANDED_OBSTRUCTING` holding custody, then
+
+```
+State 14: <CancelWithCustody(l1)>   legState = (l1 :> "ABORTING" @@ l2 :> "REASSIGNING")
+State 15: <Strand(l1,"BLOCKING_CRITICAL")>  legState = (l1 :> "STRANDED_OBSTRUCTING" @@ ...)
+Back to state 14: <CancelWithCustody(l1)>
+```
+
+with `custody = (l1 :> "HELD" @@ l2 :> "NONE")` and `everHeld[l1] = TRUE` at **every** state of the
+lasso — so `CustodyNeverLost` fails, and `l2` frozen in `REASSIGNING` fails `EveryLegSettles`.
+Note `cancelRequested = (l1 :> TRUE @@ l2 :> FALSE)` from state 14 onward: **the latch is set and
+being ignored**, which is precisely the ability the mutation removes.
+
+**The mutant behaved exactly as expected. It creates NO new repository blocker.**
+
+## 17.8 Limitations this pass introduces or leaves standing
+
+1. **Only capacity 1 was run.** `lifecycle_c2` and `lifecycle_c3` were **not** run by this pass and
+   remain as §16.5 left them — `c2` a partial search, `c3` **UNKNOWN / non-convergent**. Their
+   non-convergence is arithmetic (`ladder` multiplies the space by up to `(LadderSteps+1)^|Legs|`)
+   and **nothing in this pass changes that**; the latch adds a further `2^|Legs|` factor.
+2. **`commitment_c1/c2/c3` were NOT re-run — deliberately.** `commitment.tla` neither `EXTENDS` nor
+   `INSTANCE`s `lifecycle.tla`, and no `.cfg` changed, so **no commitment result can be affected**.
+   `c2`/`c3` remain **UNKNOWN**; `c1` remains the one exhaustive PASS.
+3. **The §4.6 purpose exemption is not modelled**, and cannot be in this module's shape: there is no
+   `purpose` attribute and no `RECOVERY` Leg, because step 3's mandated recovery Leg would have to be
+   added to a fixed `Legs` set mid-behaviour. **A COVERAGE gap, recorded, not a weakening** — every
+   Leg here is effectively `PRIMARY`, which is the case the latch governs unconditionally.
+4. **`lifecycleModel.js` remains permissive here.** Its line `:350` exempts `CANCEL_REQUEST` itself
+   from `cancellationGuard`, so the executable checker still admits a repeated cancellation request
+   the shipped engine refuses. **Recorded as a separate observation; no test was changed.**
+5. **Question A is open and non-blocking** — whether `STRANDED_*` should be cancellable at all. It
+   was **not** resolved, and does not need to be.
+6. **No independent sign-off.** As §15.1.
+7. **G5 is still covered by no TLC run**, unchanged.
+
+## 17.9 B-M after this pass — **STILL OPEN, and X7 closing is not B-M closing**
+
+**Do not report "X7 fixed = B-M closed".** B-M requires the complete six-configuration evidence and
+its acceptance:
+
+| Configuration | State after this pass |
+|---|---|
+| `commitment_c1` | **PASS** — exhaustive, unchanged, not re-run |
+| `commitment_c2` | **UNKNOWN** — did not converge; **deliberately unaffected** |
+| `commitment_c3` | **UNKNOWN** — did not converge; **deliberately unaffected** |
+| **`lifecycle_c1`** | **PASS — NEW.** Complete graph, every declared property |
+| `lifecycle_c2` | **Still requires authoritative treatment** |
+| `lifecycle_c3` | **Still requires authoritative treatment** |
+
+**2 of 6 configurations now close, was 1.** §7.3a items **4** (named operator), **8** (boundedness
+acceptance) and **10** (final acceptance) remain **unsatisfied**. **B-M = NOT MEASURED / OPEN.**
+
+## 17.10 Raw output
+
+Captured under the same convention as §12, §15.12 and §16.10 — **outside the repository**, in the
+session scratch location (`x7/lifecycle_c1_x7.log` and `x7/lifecycle_c1_x7_mutant.log`). §11.2's
+finding is unchanged: **the repository still prescribes no evidence directory and no file format for
+a TLC run**, and that location remains **PROVISIONAL and the release owner's to confirm or redirect
+(§7.6)**. **Every figure in §17.5–§17.7 is transcribed from those captures**, not written from
+memory.

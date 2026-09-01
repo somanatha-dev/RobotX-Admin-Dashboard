@@ -38,14 +38,61 @@ the current repository; blocker count and classifications unchanged. The audit a
 
 | Count | |
 |---:|---|
-| **8** | Open blockers — **still 8; X6 CLOSED 2026-08-31 (third pass) and X7 opened by the same pass** |
+| **7** | Open blockers — **was 8; X7 CLOSED 2026-09-01 (fourth pass) as a transcription defect, and no new blocker was opened** |
 | **0** | REPOSITORY-OWNED and actionable |
 | **2** | EXTERNAL (B1, B8) |
-| **2** | SPECIFICATION / ADR / SAFETY (X3, **X7**) — X1/T1-04, **X4** and now **X6** are closed |
+| **1** | SPECIFICATION / ADR / SAFETY (X3) — X1/T1-04, **X4**, **X6** and now **X7** are closed |
 | **0** | FORMAL-VERIFICATION CONFIGURATION — **X5 is decided and implemented** |
 | **3** | EVIDENCE / OPERATIONS (B-P, B-O, B-M) |
 | **1** | REPOSITORY-OWNED but correctly deferred to another phase (A9) |
 | **0** | NOT EVALUATED |
+
+> ### ⚠ Updated 2026-09-01 (FOURTH pass) — **X7 CLOSED as a transcription defect: the §4.6 cancellation latch was never modelled. `lifecycle_c1` now closes with every declared property PASS. B-M REMAINS OPEN.**
+>
+> X7 was re-investigated against the frozen specification, the shipped implementation and a
+> controlled `D3 → D6` experiment before anything was changed. **The previous three-reading framing
+> was wrong about where the defect lived**, and is superseded — not because a reading was chosen,
+> but because the question it asked turned out not to be the one that mattered.
+>
+> | | |
+> |---|---|
+> | **X7 — CLOSED** | **Reclassified from SPECIFICATION AMBIGUITY to TRANSCRIPTION DEFECT.** The defect is **not** that `STRANDED_*` is necessarily non-cancellable. It is that `formal/lifecycle.tla` **did not model §4.6 step 1's `cancel_requested_at` at all**, which made `Cancel` and `CancelWithCustody` indefinitely repeatable against the same Leg. §4.6 makes cancellation a **latch**: step 1 writes `cancel_requested_at` and increments the version in one transaction, step 2 guards every subsequent transition on it, **nothing anywhere clears it**, and step 5 forbids a requester cancelling the Legs cancellation itself creates. Fixed in `formal/lifecycle.tla` only |
+> | **The shipped implementation already had the latch** | `Backend/src/engine/lifecycle/cancellation.js:119-130` writes `cancelRequestedAt` under a version-conditional `updateMany`; `lifecycle/transitions.js:664-669` `cancellationGuard` reads it; **no write anywhere in `Backend/src/` clears it** — the sole `cancelRequestedAt: null` is `domain/mappers/legacyTask.js:139`, constructing a fresh Leg at `version: 0`. The shipped system therefore forbids the X7 cycle **through the latch**, not through any `STRANDED_*`-specific rule. **No `Backend/` file changed** |
+> | **`lifecycleModel.js` remains a separate, permissive-model observation** | `tests/engine/helpers/lifecycleModel.js:350` exempts `CANCEL_REQUEST` itself from `cancellationGuard` (`if (event !== transitions.EVENT.CANCEL_REQUEST)`), so the executable checker still admits a repeated cancellation request that the shipped engine does not. **Recorded, not fixed here** — no test changed |
+> | **The `STRANDED_*` cancellation question is now NON-BLOCKING** | It survives as *Question A*, a recorded modelling question. It does **not** need to be resolved to fix X7, and it was **not** resolved. The repair adds **no** `STRANDED_*` special case: a stranded Leg that has never been cancelled may still be cancelled, once |
+>
+> **The controlled experiment (D1–D6).** D1/D2 reproduced the previous graph exactly, confirming the
+> scratchpad copy faithful. **D3** — pristine `Spec`, 1 Leg: `Liveness` **VIOLATED** by the
+> `CancelWithCustody ↔ Strand` lasso. **D4** — add *only* the §4.6 latch: `Safety`,
+> `TerminalIsFinal` and `Liveness` all **PASS**. **D5** — D4 at the `c1` shape: **COMPLETE graph,
+> PASS**, 777 942 states / 187 289 distinct / depth 43 / **0 on queue**. **D6** — remove *only* the
+> latch guard: `Liveness` **VIOLATED**; mutant killed.
+>
+> **Verification on the repository as checked in.** `formal/lifecycle_c1.cfg`, **unmodified**,
+> against the changed module: **777 942 / 187 289 / depth 43 / 0 on queue, exit 0, "No error has
+> been found"** — reproducing D5 exactly. `Safety` **PASS**, `TerminalIsFinal` **PASS**, `Liveness`
+> **PASS** (all three conjuncts). **The X7 lasso is gone.** **X7 mutant re-run against the checked-in
+> `c1` config: KILLED** (exit 13, `Liveness` violated, lasso `CancelWithCustody(l1) ↔ Strand(l1)`
+> with `custody = HELD` throughout). Full record: **§17** of
+> [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md).
+>
+> **`EveryLegSettles` and `CustodyNeverLost` are byte-identical to their previous text — neither was
+> weakened.** No `.cfg` changed; `CHECK_DEADLOCK FALSE` is still absent and deadlock checking ran at
+> its default; **no fairness was added on `Recovered`**; no boundedness, timeout or artificial
+> progress constant was added. X4/X5/X6 modelling is intact and byte-identical.
+>
+> ### B-M REMAINS OPEN. X7 closing is NOT B-M closing.
+>
+> B-M requires the complete capacity 1/2/3 evidence and its acceptance. Current state:
+> **`commitment_c1` PASS · `commitment_c2` UNKNOWN · `commitment_c3` UNKNOWN · `lifecycle_c1` now
+> PASS · `lifecycle_c2` and `lifecycle_c3` still require authoritative treatment.** `commitment_c2`
+> and `c3` are **deliberately unaffected and were not re-run** — `commitment.tla` neither `EXTENDS`
+> nor `INSTANCE`s `lifecycle.tla` and no `.cfg` changed, so no commitment result can move. **2 of 6
+> configurations now close, was 1.** §7.3a items 4 (named operator), 8 (boundedness) and 10
+> (acceptance) remain unsatisfied and **G5 is still covered by no TLC run**.
+>
+> **No `Backend/` file, test, `.cfg`, specification or ADR changed. No independent safety-engineering
+> or release-owner approval exists for X7, and none is claimed.**
 
 > ### ⚠ Updated 2026-08-31 (THIRD pass of the day) — **X6 CLOSED as a transcription defect. X7 opened. `Liveness` still fails.**
 >
@@ -1050,7 +1097,129 @@ diagnostic as a decision; or read "`QueuedLegsProgress` passes" as "`Liveness` p
 
 ---
 
-## X7 — a stranded Leg can be cancelled back into `ABORTING` for ever, and custody is never discharged
+## X7 — cancellation was modelled as an indefinitely repeatable event; §4.6's cancellation latch was never transcribed
+
+**Status:** ~~**OPEN — NEW, opened 2026-08-31 by the X6 pass**~~ → **CLOSED 2026-09-01 (fourth
+pass), decided and implemented by the sole project owner/reviewer acting as the project's
+specification and verification authority.**
+**Classification:** ~~**SPECIFICATION — the frozen document is genuinely ambiguous here**~~ →
+**TRANSCRIPTION DEFECT in `formal/lifecycle.tla`.** *Not* a specification ambiguity, and *not* a
+shipped-implementation defect
+**Decided:** 2026-09-01 · **Implemented:** 2026-09-01 in `formal/lifecycle.tla` **only**
+**Verified:** 2026-09-01 — `lifecycle_c1.cfg` as checked in, complete graph, every declared property
+PASS; X7 mutant killed
+
+### The decision
+
+**X7 is a transcription defect. The exact reason: the missing §4.6 cancellation latch.**
+
+The defect is **NOT** that `STRANDED_*` is necessarily non-cancellable. The actual frozen-spec
+requirement is §4.6's **one-cancellation-per-Leg latch** (`:1185`–`:1231`):
+
+1. cancellation **writes `cancel_requested_at` and increments the version in a transaction** — and
+   "does **not** attempt to reach a terminal state directly" (`:1185`–`:1186`);
+2. every subsequent transition is guarded by that cancellation state —
+   `cancel_requested_at IS NULL OR leg.purpose ∈ custodial_purposes` (`:1190`);
+3. **nothing clears that cancellation request**, anywhere in the frozen document, so cancellation is
+   **not an indefinitely repeatable event against the same Leg**. Step 5 (`:1228`–`:1231`) closes the
+   loop for the Legs cancellation itself creates: "A requester may not cancel a `RECOVERY` or
+   `TRANSFER` Leg at all".
+
+`formal/lifecycle.tla` **did not model `cancel_requested_at` at all**, which made `Cancel` and
+`CancelWithCustody` repeatable — and *that*, not any property of `STRANDED_*`, is what produced the
+lasso.
+
+**The shipped Backend implementation already has the latch**, and therefore forbids the X7 cycle
+**through the latch** rather than through a `STRANDED_*`-specific rule:
+
+| Shipped artefact | What it does |
+|---|---|
+| `Backend/src/engine/lifecycle/cancellation.js:119`–`:130` | Writes `cancelRequestedAt` in a **version-conditional** `updateMany`; a lost race returns `LOST_RACE`, not a second write |
+| `Backend/src/engine/lifecycle/transitions.js:664`–`:669` `cancellationGuard` | Reads it; returns `CANCELLATION_REQUESTED` (not ok) once set, with the narrow custodial-purpose exemption of §4.6 step 2 |
+| `Backend/src/engine/lifecycle/cancellation.js:101`–`:116` | Refuses a terminal Leg, and refuses a requester cancelling a custodial-purpose Leg — §4.6 step 5 |
+| **Nothing in `Backend/src/` clears it** | The only `cancelRequestedAt: null` write is `domain/mappers/legacyTask.js:139`, constructing a **fresh** Leg at `version: 0` — initialisation, not a reset |
+
+### The controlled D3 → D6 experiment
+
+D1/D2 reproduce the previous graph exactly, confirming the scratchpad copy is faithful.
+
+| | Variant | Result |
+|---|---|---|
+| **D3** | pristine `Spec`, 1 Leg | `Liveness` **VIOLATED** by the `CancelWithCustody ↔ Strand` lasso |
+| **D4** | add **only** the §4.6 cancellation latch | `Safety` + `TerminalIsFinal` + `Liveness` **PASS** |
+| **D5** | D4 at the `c1` shape | **COMPLETE graph, PASS** — 777 942 states / 187 289 distinct / depth 43 / **0 on queue** |
+| **D6** | remove **only** the latch guard | `Liveness` **VIOLATED** — **mutant killed** |
+
+D4 is the load-bearing row: adding the latch *alone* — with no `STRANDED_*` rule, no fairness on
+`Recovered`, and no weakening of any property — discharges every declared property.
+
+### What was implemented
+
+`formal/lifecycle.tla` **only**. A per-Leg `cancelRequested` variable, `[Legs -> BOOLEAN]`,
+initialised to `FALSE`; `Cancel` and `CancelWithCustody` each gain the guard `~cancelRequested[l]`
+and the write `cancelRequested' = [cancelRequested EXCEPT ![l] = TRUE]`; every other action carries
+it through `UNCHANGED`; `TypeOK` gains its domain. The latch is **never cleared**.
+
+**Explicitly NOT done, and each was checked:** no `STRANDED_*` special case was added merely to kill
+X7; no fairness was added on `Recovered`; `EveryLegSettles`, `CustodyNeverLost`,
+`QueuedLegsProgress`, `Liveness`, `TerminalIsFinal`, `CustodyMatchesState`, `Next`, `Spec`,
+`Fairness`, `TaskQuiescent`, `AllLegsTerminal` and `CustodyLawfulStates` are **byte-identical** to
+their previous text; `CHECK_DEADLOCK` is unchanged and still absent from every `.cfg`; no `.cfg`
+changed; no boundedness, timeout or artificial-progress constant was added. **X4/X5/X6 modelling is
+intact.**
+
+### Verification — the repository's own `lifecycle_c1`, as checked in
+
+TLA+ v1.8.0, SHA-256 `eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a` — the same
+artefact as the previous controlled experiment — JDK 20.0.2, `-Xmx6g -XX:+UseParallelGC`,
+`-workers auto -noTE`, `lifecycle_c1.cfg` **unmodified** (`Legs = {l1,l2}`, `Capacity = 1`,
+`MaxTicks = 3`):
+
+**777 942 states generated / 187 289 distinct / depth 43 / 0 left on queue · exit code 0 · "Model
+checking completed. No error has been found." · graph CLOSED** — reproducing **D5 exactly**.
+`Safety` **PASS**, `TerminalIsFinal` **PASS**, `Liveness` **PASS** (all three conjuncts, including
+the two that defined X7). **The X7 lasso is gone.**
+
+**Mutation check.** The minimal X7 mutation — remove **only** the two new latch-guard conjuncts, in
+a scratchpad copy, leaving the variable, its `Init`, its writes and every `UNCHANGED` intact; the
+repository was not modified — **KILLED the mutant**: exit 13, `Temporal property Liveness was
+violated`, counterexample lasso `CancelWithCustody(l1) → STRANDED_OBSTRUCTING → Strand(l1) → back to
+state 14` with `custody = HELD` throughout. **Behaving as expected; this creates no new repository
+blocker.** Full record: **§17** of [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md).
+
+### Question A — recorded, non-blocking, deliberately NOT resolved
+
+Whether a `STRANDED_*` Leg should be cancellable **at all** remains an open *modelling* question. It
+is **non-blocking**: it does not need to be resolved to fix X7, and it was not. Under the latch, a
+stranded Leg that has never been cancelled may still be cancelled — once — which is exactly what
+makes this repair a transcription of §4.6 rather than a special case aimed at the counterexample.
+**Do not re-open the previous three-reading framing of `STRANDED_*` cancellation to settle it.**
+
+### Known remaining divergence — `lifecycleModel.js`, recorded not fixed
+
+`Backend/tests/engine/helpers/lifecycleModel.js:347`–`:353` applies `cancellationGuard` to every
+event **except `CANCEL_REQUEST` itself**. The executable checker therefore still admits a repeated
+cancellation request that the shipped engine refuses. This is a **separate permissive-model
+observation**, not part of X7's closure: **no test was changed by this pass**, and it does not
+affect the shipped implementation, which has the latch.
+
+### Consequence for B-M — it REMAINS OPEN
+
+`lifecycle_c1` now passes on a closed graph. **That is not B-M.** B-M requires the complete
+capacity 1/2/3 evidence and its acceptance: **`commitment_c1` PASS · `commitment_c2` UNKNOWN ·
+`commitment_c3` UNKNOWN · `lifecycle_c1` PASS (new) · `lifecycle_c2` and `lifecycle_c3` still
+require authoritative treatment.** The two commitment UNKNOWNs are **deliberately unaffected** and
+were not re-run. **2 of 6 configurations close, was 1.**
+
+---
+
+## X7 — the original entry, retained verbatim below
+
+*(Superseded by the decision above. Retained because the register's own convention is that a
+correction belongs beside the record, not on top of it. **Its central classification is corrected
+above**: X7 is a transcription defect — the missing §4.6 cancellation latch — not the specification
+ambiguity about `STRANDED_*` cancellability that this entry frames it as. The **cycle it describes
+is real and was reproduced**; what changed is the diagnosis of its cause.)*
 
 **Status:** **OPEN — NEW, opened 2026-08-31 by the X6 pass. Deliberately NOT decided by the pass
 that found it.**

@@ -1104,6 +1104,124 @@ a different model. Reported and left open** — `PHASE_15_BLOCKERS.md` § **X7**
 
 ---
 
+## 7g. The X7 pass — 2026-09-01, fourth pass
+
+**X7 was re-investigated before it was touched, RECLASSIFIED from a specification ambiguity to a
+TRANSCRIPTION defect, and fixed in `formal/lifecycle.tla` only. `lifecycle_c1` now passes on a
+complete state graph with every declared property, and no new blocker was opened.** Full record:
+[`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md) **§17**. Same jar (SHA-256
+`eabd140a…533a`, re-verified by `sha256sum` immediately before the run), same JDK 20.0.2, same
+workstation, same flags as §12.4's primary run.
+
+### 7g.1 The trace that decided the classification
+
+| Layer | §4.6's `cancel_requested_at` cancellation latch |
+|---|---|
+| Frozen specification | **PRESENT, verbatim** — §4.6 step 1 `:1185` "writes `cancel_requested_at` and increments the version in a transaction"; step 2 `:1190` guards every subsequent transition on it; **no clearing rule anywhere**; step 5 `:1228` forbids a requester cancelling a `RECOVERY`/`TRANSFER` Leg at all |
+| Shipped implementation | **PRESENT, wired end to end** — `lifecycle/cancellation.js:119-130` writes `cancelRequestedAt` in a **version-conditional** `updateMany` (a lost race returns `LOST_RACE`, not a second write); `lifecycle/transitions.js:664-669` `cancellationGuard` reads it; `cancellation.js:101-116` refuses a terminal Leg and a requester-cancelled custodial Leg. **Nothing in `Backend/src/` clears it** — the only `cancelRequestedAt: null` is `domain/mappers/legacyTask.js:139`, constructing a fresh Leg at `version: 0`. **No `Backend/` change was needed and none was made** |
+| Executable checker | **PERMISSIVE — records as a separate observation.** `tests/engine/helpers/lifecycleModel.js:347-353` applies `cancellationGuard` to every event **except `CANCEL_REQUEST` itself**, so it still admits a repeated cancellation request the shipped engine refuses. **No test was changed** |
+| TLA+ module | **ABSENT.** `cancel_requested_at` was not modelled at all, so `Cancel` and `CancelWithCustody` were indefinitely repeatable |
+
+**Same correspondence failure as X4 and X6, and the same rule applies** (`formal/README.md`): the
+defect is in whichever checker was not updated — this module. The shipped system forbids the X7
+cycle **through the latch**, not through any `STRANDED_*`-specific rule.
+
+### 7g.2 The correction to §7f.4 / §16.9's framing of X7
+
+§7f and the original X7 entry framed X7 as a genuine ambiguity about whether §4.4's "any
+non-terminal" cancel row governs a `STRANDED_*` Leg, with three candidate readings. **The cycle they
+describe is real and was reproduced. Their diagnosis of its cause is superseded.** The defect is one
+layer earlier — the missing latch — and **none of the three readings had to be chosen** to fix it.
+**Their numbers are not touched.**
+
+### 7g.3 The controlled D3 → D6 experiment
+
+D1/D2 reproduced the previous graph exactly, confirming the scratchpad copy faithful.
+
+| | Variant | Result |
+|---|---|---|
+| **D3** | pristine `Spec`, 1 Leg | `Liveness` **VIOLATED** — `CancelWithCustody ↔ Strand` lasso |
+| **D4** | add **only** the §4.6 latch | `Safety` + `TerminalIsFinal` + `Liveness` **PASS** |
+| **D5** | D4 at the `c1` shape | **COMPLETE graph, PASS** — 777 942 / 187 289 / depth 43 / **0 on queue** |
+| **D6** | remove **only** the latch guard | `Liveness` **VIOLATED** — mutant killed |
+
+**D4 is the load-bearing row:** the latch alone, with no `STRANDED_*` rule, no fairness on
+`Recovered` and no weakened property, discharges every declared property.
+
+### 7g.4 After-evidence — `lifecycle_c1.cfg` AS CHECKED IN
+
+`Legs = {l1,l2}` · `Capacity = 1` · `MaxTicks = 3`, from the **unmodified** config
+(SHA-256 `ff9d3cda…1cf8`, `IDENTICAL-TO-HEAD`) against the changed module
+(SHA-256 `13b8edd8…b8b1`):
+
+| | |
+|---|---|
+| States generated / distinct | **777 942 / 187 289** |
+| Depth / queue / closed? | **43 / 0 / YES — exhaustive** |
+| Wall time / exit code | **03 min 47 s (TLC), 229 s (harness) / 0** |
+| Terminating line | `Model checking completed. No error has been found.` |
+| `INVARIANT Safety` | **PASS** |
+| `PROPERTY TerminalIsFinal` | **PASS** |
+| `Liveness` → `EveryLegSettles` | **PASS** — *was VIOLATED (X7)* |
+| `Liveness` → `CustodyNeverLost` | **PASS** — *was VIOLATED (X7)* |
+| `Liveness` → `QueuedLegsProgress` | **PASS** — unchanged from §7f |
+| Deadlock (TLC default, ON) | **PASS** — none reported |
+
+**Reproduces D5 exactly. The X7 lasso is gone.**
+
+### 7g.5 Mutation — 1 built, 1 killed; the repository was not modified for it
+
+The minimal X7 mutation — remove **only** the two new latch-**guard** conjuncts
+(`/\ ~cancelRequested[l]`), leaving the variable, its `Init`, its writes and all 31 `UNCHANGED`
+tuples intact — built in the session scratch location. `diff` against the repository file showed
+**exactly two removed lines and nothing else**, and `git status --porcelain` reported
+`M formal/lifecycle.tla` and nothing else throughout.
+
+**KILLED.** Exit **13**, `Error: Temporal property Liveness was violated`, 96 961 / 22 606 / depth
+16 / 5 720 left on queue (partial, as expected at a violation). The counterexample is the X7 lasso
+verbatim: `State 14 <CancelWithCustody(l1)> → State 15 <Strand(l1,"BLOCKING_CRITICAL")> → Back to
+state 14`, with `custody = (l1 :> "HELD" @@ l2 :> "NONE")` at every state and
+`cancelRequested = (l1 :> TRUE @@ l2 :> FALSE)` — **the latch set and being ignored**, which is
+exactly the ability the mutation removes. **Behaved as expected; creates no new repository
+blocker.**
+
+### 7g.6 What this pass did NOT touch
+
+| | |
+|---|---|
+| Any `Backend/` file | **Untouched.** `git diff --name-only -- Backend/` empty |
+| Any test, including `lifecycleModel.js` | **Untouched.** Its permissive `CANCEL_REQUEST` exemption is **recorded, not fixed** |
+| Any `.cfg`; `CHECK_DEADLOCK` | **Untouched.** All six reported `IDENTICAL-TO-HEAD`; `CHECK_DEADLOCK FALSE` still absent, deadlock checking ran at TLC's default and passed; no `-deadlock` flag was passed |
+| The frozen specification; any ADR | **Untouched** |
+| `EveryLegSettles`, `CustodyNeverLost`, `QueuedLegsProgress`, `Liveness`, `TerminalIsFinal`, `CustodyMatchesState`, `Next`, `Spec`, `Fairness`, `TaskQuiescent`, `AllLegsTerminal`, `CustodyLawfulStates` | **BYTE-IDENTICAL**, proven by extracting each from `git show HEAD:formal/lifecycle.tla` and from the working tree and comparing. **X4/X5/X6 modelling intact** |
+| Fairness on `Recovered`; any `STRANDED_*` special case; any boundedness, timeout or artificial-progress constant | **NOT ADDED** |
+| `commitment.tla`, `commitment_c{1,2,3}.cfg` | **Untouched and NOT re-run — deliberately.** `commitment.tla` neither `EXTENDS` nor `INSTANCE`s `lifecycle.tla` and no `.cfg` changed, so no commitment result can be affected. Still 1 PASS / 2 UNKNOWN |
+| `lifecycle_c2`, `lifecycle_c3` | **NOT run by this pass.** Still require authoritative treatment |
+| Question A (`STRANDED_*` cancellability) | **Open, non-blocking, deliberately NOT resolved** |
+| `establishedByCommand` / `[NOT PROVEN]` / gate algebra | **Intact** |
+| `release-evidence.json` | **NOT re-collected**, by instruction. V-5's RED staleness unchanged |
+| B1, B8, B-P, B-O, X3, A9, Phase 16 | **Not touched.** No previous commit amended |
+| TLC working-tree artefacts | **None left.** `-noTE` suppressed the `*_TTrace_*.tla`, and `-metadir` sent `states/` to the scratch location. `git status --porcelain` verified clean of them |
+
+### 7g.7 B-M after this pass — **STILL OPEN**
+
+**`lifecycle_c1` passing is one configuration of six, and X7 closing is not B-M closing.**
+
+| Configuration | State |
+|---|---|
+| `commitment_c1` | **PASS** — exhaustive, unchanged, not re-run |
+| `commitment_c2` | **UNKNOWN** — did not converge; deliberately unaffected |
+| `commitment_c3` | **UNKNOWN** — did not converge; deliberately unaffected |
+| **`lifecycle_c1`** | **PASS — NEW.** Complete graph, every declared property |
+| `lifecycle_c2` | **Still requires authoritative treatment** |
+| `lifecycle_c3` | **Still requires authoritative treatment** |
+
+**2 of 6 configurations now close, was 1.** §7.3a items **4** (named operator), **8** (boundedness
+acceptance) and **10** (final acceptance) remain **unsatisfied**, and **G5 is still covered by no
+TLC run**. **B-M = NOT MEASURED / OPEN.** The §24 gate `model_check_capacity_1_2_3` renders exactly
+as before and **did not move**. **No independent safety-engineering or release-owner acceptance
+exists for X7, and none is claimed.**
+
 ## 8. Verification integrity notes
 
 1. **The tree did not change during verification** *except by the change under verification*.

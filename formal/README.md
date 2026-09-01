@@ -151,6 +151,82 @@ and executed against this module.
 > `TaskQuiescent` → deadlock), so both earlier changes are still load-bearing. Full record: §16 of
 > the run record.
 
+> ### Updated 2026-09-01, FOURTH pass — **X7 was a TRANSCRIPTION DEFECT and is CLOSED. `lifecycle_c1` now closes with every declared property PASS. B-M is STILL OPEN.**
+>
+> **The block above is superseded in its diagnosis of X7, not in its observation.** The cycle it
+> describes is real and was reproduced. What was wrong is *where the defect lived*: it is **not**
+> that `STRANDED_*` is necessarily non-cancellable, and **none of its three readings had to be
+> chosen**.
+>
+> **X7 = the missing §4.6 cancellation latch.** `lifecycle.tla` did not model `cancel_requested_at`
+> **at all**, so `Cancel` and `CancelWithCustody` were indefinitely repeatable against the same Leg.
+> §4.6 makes cancellation a **latch**: step 1 (`:1185`) "writes `cancel_requested_at` and increments
+> the version in a transaction"; step 2 (`:1190`) guards every subsequent transition on it;
+> **nothing anywhere clears it**; step 5 (`:1228`) forbids a requester cancelling a
+> `RECOVERY`/`TRANSFER` Leg at all.
+>
+> **Same correspondence failure as X4 and X6 — and again this module was the one not updated.** The
+> shipped engine already had the latch end to end: `lifecycle/cancellation.js:119-130` writes
+> `cancelRequestedAt` under a **version-conditional** `updateMany`; `lifecycle/transitions.js:664-669`
+> `cancellationGuard` reads it; and **no write in `Backend/src/` clears it** — the sole
+> `cancelRequestedAt: null` is `domain/mappers/legacyTask.js:139`, constructing a fresh Leg at
+> `version: 0`. **The shipped system forbids the X7 cycle through the latch, not through any
+> `STRANDED_*` rule. No `Backend/` file changed.**
+>
+> | Change to `lifecycle.tla` | |
+> |---|---|
+> | `VARIABLE cancelRequested`, `[Legs -> BOOLEAN]`, `FALSE` in `Init`, **never cleared** | §4.6 step 1's `cancel_requested_at`, as a latch |
+> | `Cancel(l)` and `CancelWithCustody(l)` each gain the guard `~cancelRequested[l]` and the write `cancelRequested' = [cancelRequested EXCEPT ![l] = TRUE]` | §4.6 steps 1–2: cancellation is requested **at most once** per Leg |
+> | All 31 other `UNCHANGED` tuples carry it; `TypeOK` gains its domain | bookkeeping |
+>
+> **No `STRANDED_*` special case was added, no fairness was added on `Recovered`, `EveryLegSettles`
+> and `CustodyNeverLost` are byte-identical, no `.cfg` was edited, `CHECK_DEADLOCK FALSE` is still
+> absent, and no boundedness, timeout or artificial-progress constant was added.** A stranded Leg
+> that has never been cancelled may still be cancelled — **once**. **X4/X5/X6 modelling is intact.**
+>
+> **The controlled experiment.** **D3** pristine, 1 Leg: `Liveness` **VIOLATED**. **D4** add *only*
+> the latch: `Safety` + `TerminalIsFinal` + `Liveness` **PASS**. **D5** at the `c1` shape: **complete
+> graph, PASS**. **D6** remove *only* the latch guard: **VIOLATED**. **D4 is the load-bearing row** —
+> the latch alone discharges every declared property.
+>
+> **Current status, run AS CHECKED IN** (same jar SHA-256 `eabd140a…533a`, JDK 20.0.2,
+> `lifecycle_c1.cfg` unmodified):
+>
+> | Configuration | Result |
+> |---|---|
+> | `lifecycle_c1.cfg` | **STATE GRAPH CLOSES** — **777 942 states / 187 289 distinct / depth 43 / 0 on queue**, exit **0**. `Safety` **PASS**, `TerminalIsFinal` **PASS**, **`Liveness` PASS — all three conjuncts**, including `EveryLegSettles` and `CustodyNeverLost`. **The X7 lasso is gone.** Reproduces D5 exactly |
+> | `lifecycle_c2.cfg` | **NOT RUN by this pass.** Still requires authoritative treatment |
+> | `lifecycle_c3.cfg` | **NOT RUN by this pass.** Still **UNKNOWN / non-convergent** |
+>
+> **Mutation: 1 built, 1 KILLED.** Removing **only** the two latch-*guard* conjuncts, in a scratch
+> copy — the repository was not modified — returns exit **13**, `Liveness` violated, with the
+> `CancelWithCustody(l1) ↔ Strand(l1)` lasso restored and `custody = HELD` throughout.
+>
+> **KNOWN REMAINING DIVERGENCE, recorded rather than closed — and this time it is the OTHER
+> checker.** `lifecycleModel.js:347-353` applies `cancellationGuard` to every event **except
+> `CANCEL_REQUEST` itself**, so the executable checker still admits a repeated cancellation request
+> the shipped engine refuses. Per this file's own rule the defect is in whichever checker was not
+> updated — here that is `lifecycleModel.js`. **A separate permissive-model observation: filed, not
+> fixed, and no test was changed.**
+>
+> **§4.6's purpose exemption is NOT modelled**, and cannot be in this module's shape: there is no
+> `purpose` attribute and no `RECOVERY` Leg, since step 3's mandated recovery Leg would have to join
+> a fixed `Legs` set mid-behaviour. **A COVERAGE gap, recorded, not a weakening** — every Leg here is
+> effectively `PRIMARY`, the case the latch governs unconditionally. **This does NOT close the G5
+> correspondence gap stated at the end of this file:** G5 is the *purpose-conditioned* guard, and it
+> is the purpose condition that is still unmodelled everywhere.
+>
+> **Question A remains open and NON-BLOCKING:** whether a `STRANDED_*` Leg should be cancellable at
+> all. It did not need resolving to fix X7 and was **not** resolved.
+>
+> ### **B-M DID NOT CLOSE. "X7 fixed" is not "B-M closed".**
+> `commitment_c1` **PASS** · `commitment_c2` **UNKNOWN** · `commitment_c3` **UNKNOWN** ·
+> **`lifecycle_c1` PASS (new)** · `lifecycle_c2` and `lifecycle_c3` **still require authoritative
+> treatment**. The commitment configurations were **deliberately not re-run** — `commitment.tla`
+> neither `EXTENDS` nor `INSTANCE`s this module and no `.cfg` changed. **2 of 6 close, was 1.**
+> **No independent safety-engineering or release-owner sign-off exists for X7 and none is claimed.**
+> Full record: `docs/phase15/PHASE_15_BM_TLC_RUN_RECORD.md` **§17**.
+
 ### `commitment.tla` — executed
 
 | Configuration | `Legs` / `Workers` / `MaxFence` | Result |
