@@ -555,4 +555,46 @@ after the fact. If a new defect is found on the V1 core path, it is a V1 bug aga
 
 ---
 
+## SECTION J — FINAL VERIFICATION OF THIS PASS
+
+Executed after the changes, on the tree they produced.
+
+| Check | Result |
+|---|---|
+| `npm test` | **exit 0 — 163 suites / 7 291 tests / 0 failures / 0 skips** *(was 162 / 7 275)* |
+| New regression suite | `tests/engine/solveRoundSearchGapProvenance.test.js` — **14 passed** |
+| `tests/engine/workerRegistry.test.js` | **15 passed** — the three tests that *pinned* N13 replaced by five that assert it closed |
+| Mutation testing | **3 built, 3 killed.** M1 reverts only `candidatesFor`'s coercion → 6 failures. M2 makes `finish()` fold unproven Legs into the sum → 1 failure. M3 makes `metrics.js` fold NULL rounds back to `"0"` → 2 failures. **Tree restored and byte-verified** (`diff -q`) against pre-mutation copies of all three files |
+| `npm run gates` | **exit 1 — 7 PASS, 1 FAIL** (`gate:composition`, `coordinator`, B1). **Unchanged** |
+| `gate:params` | **PASS** — 192 modules against 250 registered parameters, no bare behavioural constants. The N13 correction introduced none |
+| `npm run routing:readiness` | **OVERALL: BLOCKED**, D1/D3/D8 all BLOCKED, exit 0. **Unchanged** |
+| Registry | 19 workers · **9 named cadence parameters, all of which exist** · **0 fictional** *(was 11)* · 10 with a `cadenceNote` |
+| Source digest | **`4d94ef18e52b59532837d86fc34ac12f496251f446226693def982070a0e2ab5` / 574 files** *(was `d033038cb261c3de…` / 573)* |
+| Working tree | **Clean.** Two commits: `9e1d871` (the X7 pass, previously uncommitted) and `2b367e4` (this work). Nothing pushed |
+| §24 gate table | **Untouched.** 8 blocking gates still not green; B1, B8, B-P, B-O, B-M, X3, A9 all where they were. **RELEASE: BLOCKED** |
+
+### J.1 The truthfulness audit — *does the repository now do what we claim V1 does?*
+
+**Not yet, and the claim is not being made.** V1 is defined in §I.1 as a request traversing the
+engine end to end, and it cannot: the coordinator's solve path is not composed. **Three of eight
+stop conditions are met** (S-1, S-2, S-8). What this pass did was remove every V1 obstacle that was
+*this repository's to remove*, and establish that exactly one thing now stands in the way.
+
+**What would have been false to claim, and is not claimed:** that V1 works end to end; that
+`gate:composition` can be made to pass from here; that B-M, B1, B8, B-P or B-O moved; that the
+release evidence is current; that a routing source exists; or that any independent sign-off was
+obtained. **On a solo project the separate safety engineer, frozen-specification owner and release
+owner of §7.6 do not exist as distinct individuals, and none was simulated or inferred.**
+
+### J.2 The exact finite remaining V1 blocker
+
+> **S-3.** Four values, in a decision record, from the owner:
+> **a `route(parts)` source · a `travelSdSeconds` source · a per-profile `speedMetresPerSecond` ·
+> `candidate.max_radius_by_sla_class`.**
+>
+> S-4 and S-6 are mechanical consequences of S-3. S-5 is a configuration act requiring no code.
+> S-7 follows from S-4. **There is no other V1 work, and none may be added.**
+
+---
+
 **TRUTH > GREEN.** V1 is a smaller, honest claim than Phase 15's release — not a weaker one.
