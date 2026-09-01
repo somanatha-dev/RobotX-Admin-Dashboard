@@ -350,7 +350,18 @@ async function recordRound(deps, input) {
       },
       // §9.3: reported separately, never summed. Carried as strings because int64
       // milli-CU does not survive a JSON number.
-      searchGapMilliCU: String(result.searchGapMilliCU),
+      //
+      // I20: `result.searchGapMilliCU` is `null` when the round proved no search bound,
+      // and `Round.searchGapMilliCU` is `String?` precisely so that absence is
+      // representable. `String(null)` would write the four characters `"null"` into that
+      // column — a value `metrics.js` would then read back through `BigInt(...)` and
+      // throw on, and which no reader could tell from a real figure. The column is left
+      // NULL instead, which is what "this round reported no bound" already means to every
+      // consumer: `checkI20` skips it, and `metrics.search_gap` excludes it from the
+      // median rather than counting it as zero.
+      searchGapMilliCU: result.searchGapMilliCU === null || result.searchGapMilliCU === undefined
+        ? null
+        : String(result.searchGapMilliCU),
       lpIpGapMilliCU: String(result.lpIpGapMilliCU),
       completedAt: input.storeTime,
     },

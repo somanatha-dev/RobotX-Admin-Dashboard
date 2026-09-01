@@ -39,6 +39,31 @@
  * `blockedBy` is mandatory on a `DEFERRED` row and `assertRegistry()` refuses a row
  * without it, for the same reason `@structural` demands a reason: an unexplained
  * exemption is how a register rots.
+ *
+ * ── `cadenceParameter`, and the claim it used to make falsely (N13) ─────────
+ * Every row states where its cadence comes from. Until this was audited, **11 of the 19
+ * rows named a parameter the configuration register does not define** — five of them for
+ * workers this process actually starts. Nothing read the field, no gate checked it, and no
+ * test asserted it, so the rot was invisible: a register field that is wrong more often
+ * than it is right is worse than no field, because a reader who checks one row and finds
+ * it correct will trust the rest.
+ *
+ * The field now carries exactly one of two truths, and `tests/engine/workerRegistry`
+ * asserts it:
+ *
+ *   - **`cadenceParameter: "<name>"`** — a register entry that **exists**, and that the
+ *     code composing this worker actually reads. `timer`'s row moved from the fictional
+ *     `supervision.timer_tick` to `supervise.max_timer_lag`, which is what the composer
+ *     has always used.
+ *   - **`cadenceParameter: null` plus a mandatory `cadenceNote`** — no register entry
+ *     governs this worker's cadence, and the note says what does instead (an
+ *     `@structural` module constant, a composer fallback, or nothing at all because the
+ *     module exposes no scheduler).
+ *
+ * **No parameter was registered, no default was invented, and no cadence changed** by that
+ * correction. Registering an entry means choosing its value, and for every one of these
+ * that is §22.4's calibration owner's decision or a future phase's — not a documentation
+ * act. What changed is only that the rows now say which of the two states they are in.
  */
 
 /** @structural the three dispositions a worker can have in this process */
@@ -89,7 +114,14 @@ const WORKERS = Object.freeze([
     section: "§12.4",
     tier: 0,
     readiness: READINESS.LEADER_ONLY,
-    cadenceParameter: "reconciler.sweep_interval",
+    cadenceParameter: null,
+    cadenceNote:
+      "`reconciler.sweep_interval` is NOT in the register. `leaderWorkers.COMPOSERS.reconciler` reads that name " +
+      "and, finding nothing, falls back to `reconciler.worker.MAX_SWEEP_INTERVAL_MS − 1` — the worker's own " +
+      "@structural ceiling, which it refuses to run slower than because 'a slower sweep still looks like it is " +
+      "working'. The effective cadence is therefore bounded and declared, but it is not governed by the register. " +
+      "The composer still reads the name, so publishing the entry would take effect without a code change; no " +
+      "entry and no default is invented here, because choosing the number is §22.4's calibration owner's.",
     purpose: "The full sweep: every divergence category, repaired by conditional write and rate-counted.",
     blockedBy: null,
   },
@@ -99,7 +131,12 @@ const WORKERS = Object.freeze([
     section: "§4.5, §12.2",
     tier: 0,
     readiness: READINESS.LEADER_ONLY,
-    cadenceParameter: "supervision.timer_tick",
+    // This row said `supervision.timer_tick`, which is not in the register and which no
+    // code reads. `leaderWorkers.COMPOSERS.timer` resolves the interval from
+    // `supervise.max_timer_lag` — registered, DERIVED — and runs at half of it, so the
+    // sweep is never slower than the lag bound it reports an SLI against. The row named
+    // the wrong parameter for a worker whose cadence *is* governed.
+    cadenceParameter: "supervise.max_timer_lag",
     purpose: "Fire durable timers: lease expiry, progress deadlines, offer TTLs.",
     blockedBy: null,
   },
@@ -161,7 +198,12 @@ const WORKERS = Object.freeze([
     section: "§7.7",
     tier: 1,
     readiness: READINESS.SCHEDULED,
-    cadenceParameter: "feasibility.rejection_flush_interval",
+    cadenceParameter: null,
+    cadenceNote:
+      "`feasibility.rejection_flush_interval` is NOT in the register and nothing reads it. `server.js` starts this " +
+      "worker with no interval, so it runs at `rejectionAggregation.worker.FLUSH_INTERVAL_MS` (30 s), annotated " +
+      "@structural: 'a batching choice, not a behavioural threshold'. The aggregate feeds a dashboard, not a " +
+      "control loop, so seconds of staleness cost nothing.",
     purpose: "Flush the exact, unsampled binding-constraint distribution into RejectionAggregate.",
     blockedBy: null,
   },
@@ -181,7 +223,11 @@ const WORKERS = Object.freeze([
     section: "§21.5",
     tier: 1,
     readiness: READINESS.SCHEDULED,
-    cadenceParameter: "observability.calibration_score_interval",
+    cadenceParameter: null,
+    cadenceNote:
+      "`observability.calibration_score_interval` is NOT in the register and nothing reads it. `server.js` starts " +
+      "this worker without an interval, so it runs at `calibration.worker.SCORE_INTERVAL_MS` (5 min), annotated " +
+      "@structural: 'a batching choice, not a behavioural threshold'.",
     purpose: "Score predictions against realised outcomes and publish the calibration SLIs.",
     blockedBy: null,
   },
@@ -191,7 +237,11 @@ const WORKERS = Object.freeze([
     section: "§21.6",
     tier: 1,
     readiness: READINESS.SCHEDULED,
-    cadenceParameter: "observability.counterfactual_interval",
+    cadenceParameter: null,
+    cadenceNote:
+      "`observability.counterfactual_interval` is NOT in the register and nothing reads it. `server.js` starts this " +
+      "worker without an interval, so it runs at `counterfactual.worker.RUN_INTERVAL_MS` (24 h), annotated " +
+      "@structural: 'a scheduling choice, not a behavioural threshold'. Its output is a trend rather than an alarm.",
     purpose: "Re-solve recent rounds with relaxed bounds and report the realised gap.",
     blockedBy: null,
   },
@@ -201,7 +251,11 @@ const WORKERS = Object.freeze([
     section: "§21.6",
     tier: 1,
     readiness: READINESS.DEFERRED,
-    cadenceParameter: "observability.shadow_interval",
+    cadenceParameter: null,
+    cadenceNote:
+      "`observability.shadow_interval` is NOT in the register. Nothing starts this worker (see `blockedBy`), and " +
+      "`shadow.worker.RUN_INTERVAL_MS` (60 s) is what its own `start()` would use. Registering a cadence for a " +
+      "worker blocked on B1 would be a parameter with no consumer.",
     purpose: "Run a candidate configuration on live inputs, record the decisions, execute none of them.",
     blockedBy:
       "needs a constructed solve path (round, expandCandidates, pricedCandidateFor, budgetsFor, deferPriceFor). " +
@@ -230,7 +284,10 @@ const WORKERS = Object.freeze([
     section: "§6.2",
     tier: 1,
     readiness: READINESS.DEFERRED,
-    cadenceParameter: "index.sweep_interval",
+    cadenceParameter: null,
+    cadenceNote:
+      "`index.sweep_interval` is NOT in the register. Nothing starts this worker (see `blockedBy`); its own " +
+      "`start()` would use `indexMaintainer.worker.SWEEP_INTERVAL_MS` (5 s).",
     purpose: "Keep the cell-partitioned availability index consistent with agent state.",
     blockedBy:
       "needs the capability/container and charging classifiers (capabilityAndContainerClassesFor, " +
@@ -243,7 +300,10 @@ const WORKERS = Object.freeze([
     section: "§8.3, §5.2",
     tier: 2,
     readiness: READINESS.DEFERRED,
-    cadenceParameter: "pricing.refresh_interval",
+    cadenceParameter: null,
+    cadenceNote:
+      "`pricing.refresh_interval` is NOT in the register, and this module exposes no scheduler at all — it has no " +
+      "`start()`. Tier 2, behind a kill switch thrown at launch; Phase 16a owns both the scheduler and its cadence.",
     purpose: "Publish live λ_zone from the solve's duals.",
     blockedBy:
       "Tier 2. killswitch.opportunity_cost_term is thrown at launch (§1.8 rule 3), so C_opportunity reads static " +
@@ -255,7 +315,11 @@ const WORKERS = Object.freeze([
     section: "§14.5, §20.3",
     tier: 1,
     readiness: READINESS.DEFERRED,
-    cadenceParameter: "route.charger_cache_refresh",
+    cadenceParameter: null,
+    cadenceNote:
+      "`route.charger_cache_refresh` is NOT in the register, and this module exposes a pass function rather than a " +
+      "scheduler — there is no `start()` and therefore no interval to govern. A cadence would be named by whoever " +
+      "writes the scheduler, which needs the routing client (B1 → Phase 8).",
     purpose: "Warm the charger-reachability cache E_return reads per candidate.",
     blockedBy:
       "exposes a pass function rather than a scheduler; it is driven by the routing layer's cache miss path today. " +
@@ -267,7 +331,11 @@ const WORKERS = Object.freeze([
     section: "§14.2, §21.5",
     tier: 1,
     readiness: READINESS.DEFERRED,
-    cadenceParameter: "energy.calibration_interval",
+    cadenceParameter: null,
+    cadenceNote:
+      "`energy.calibration_interval` is NOT in the register, and this module exposes a pass function rather than a " +
+      "scheduler — there is no `start()` and therefore no interval to govern. The cadence is one of the values " +
+      "execution-plan item B8's calibration owner would set, alongside the coefficients themselves.",
     purpose: "Re-fit per-class consumption coefficients against realised energy.",
     blockedBy:
       "exposes a pass function rather than a scheduler, and its inputs are the realised-outcome rows the fleet " +
@@ -279,7 +347,11 @@ const WORKERS = Object.freeze([
     section: "§13.2",
     tier: 1,
     readiness: READINESS.DEFERRED,
-    cadenceParameter: "plan.service_time_refit_interval",
+    cadenceParameter: null,
+    cadenceNote:
+      "`plan.service_time_refit_interval` is NOT in the register, and this module exposes a pass function rather " +
+      "than a scheduler — there is no `start()` and therefore no interval to govern. §22.4 names per-site " +
+      "service-time models among the values that 'require data the fleet does not yet produce'.",
     purpose: "Re-fit per-site, per-stop-type service-time models.",
     blockedBy:
       "exposes a pass function rather than a scheduler, and §22.4 names per-site service-time models among the " +
@@ -316,8 +388,28 @@ function assertRegistry() {
     if (worker.readiness !== READINESS.DEFERRED && worker.blockedBy) {
       throw new Error(`worker ${worker.id} is ${worker.readiness} but names a blocker`);
     }
-    if (!worker.cadenceParameter || !worker.section || !worker.purpose) {
-      throw new Error(`worker ${worker.id} is missing its cadence parameter, section or purpose`);
+    if (!worker.section || !worker.purpose) {
+      throw new Error(`worker ${worker.id} is missing its section or purpose`);
+    }
+    // N13. This read `!worker.cadenceParameter`, which demanded a *name* and checked
+    // nothing about it — so 11 of 19 rows satisfied it with a parameter the register does
+    // not define. The obligation is now the same one `blockedBy` imposes on a DEFERRED
+    // row: name the register parameter that governs the cadence, or say what governs it
+    // instead. Whether a named parameter actually *exists* is asserted in
+    // `tests/engine/workerRegistry.test.js`, which may read the register; this module
+    // deliberately takes no configuration dependency.
+    if (!worker.cadenceParameter && !worker.cadenceNote) {
+      throw new Error(
+        `worker ${worker.id} names no cadence parameter and gives no cadenceNote. A row that neither names the ` +
+          "register entry governing its cadence nor states what governs it instead is an unchecked claim, and an " +
+          "unchecked claim is how a register rots (N13).",
+      );
+    }
+    if (worker.cadenceParameter && worker.cadenceNote) {
+      throw new Error(
+        `worker ${worker.id} names both a cadence parameter and a cadenceNote. The note is for rows that have no ` +
+          "governing parameter; two answers to one question is how the two drift apart.",
+      );
     }
   }
   return true;

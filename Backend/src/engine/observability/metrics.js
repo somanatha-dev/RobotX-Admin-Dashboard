@@ -613,14 +613,32 @@ async function derive(deps, input) {
         select: { searchGapMilliCU: true, lpIpGapMilliCU: true },
       });
       if (rounds.length === 0) return reading("search_gap", null, { rounds: 0 });
+      // I20: a round that proved no search bound writes NULL, and it must be **excluded**
+      // from this statistic rather than folded in. This read `BigInt(row.searchGapMilliCU
+      // || "0")`, which counted every unproven round as a proven zero — so the median of a
+      // window in which nothing was proven was `0`, the most reassuring number available,
+      // published as an SLI. Excluding them makes the reading a statistic over the rounds
+      // that actually carry a bound, and `roundsWithoutProvenGap` says how many did not,
+      // so a reader can tell a quiet window from an unproven one.
+      const bounded = rounds.filter((row) => row.searchGapMilliCU !== null && row.searchGapMilliCU !== undefined);
+      if (bounded.length === 0) {
+        return reading("search_gap", null, {
+          rounds: rounds.length,
+          roundsWithProvenGap: 0,
+          roundsWithoutProvenGap: rounds.length,
+          why: "no round in this window reported a proven search bound (§6.4, I20)",
+        });
+      }
       // Kept as integer milli-CU strings all the way out. §9.6 requirement 1.
-      const gaps = rounds.map((row) => BigInt(row.searchGapMilliCU || "0")).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      const gaps = bounded.map((row) => BigInt(row.searchGapMilliCU)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
       // @structural the divisor in the definition of a median, not a threshold
       const MEDIAN_DIVISOR = 2;
       return reading("search_gap", gaps[Math.floor(gaps.length / MEDIAN_DIVISOR)].toString(), {
         rounds: gaps.length,
+        roundsWithProvenGap: gaps.length,
+        roundsWithoutProvenGap: rounds.length - gaps.length,
         maxMilliCU: gaps[gaps.length - 1].toString(),
-        statistic: "median, in milli-CU",
+        statistic: "median over rounds with a proven bound, in milli-CU",
         reportedSeparatelyFrom: "column_generation_gap",
       });
     });

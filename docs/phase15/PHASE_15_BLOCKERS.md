@@ -5,11 +5,16 @@
 > Current source of truth for navigation and verdict: **[`PHASE_15_MASTER.md`](PHASE_15_MASTER.md)**.
 > Evidence for every "last verified" line below: [`PHASE_15_VERIFICATION_STATE.md`](PHASE_15_VERIFICATION_STATE.md).
 
-**Last verified:** **2026-08-30** · **Tree:** digest `d033038cb261c3de…` (**573 files**), HEAD
-**`7335260`** — the T1-04 / `Leg.slaDeadline` / V-10 work was **committed as a snapshot** before V-9
-ran, and **the digest did not move**. *(This line read "HEAD `67b7c7c` + uncommitted …", which
-describes the same content under its previous git identity; corrected 2026-08-31 by the freeze
-audit. Previously 2026-08-29 at `431010ace188c4b1…` / 565 files / HEAD `b68dc5d` — superseded.)*
+**Last verified:** **2026-09-01** · **Tree:** digest **`4d94ef18e52b5953…` (574 files)**, HEAD
+**`9e1d871`** + the V1 audit's source edits. **`d033038cb261c3de…` / 573 is superseded** — it held
+through four commits (`ef0d65f`, `22411e8`, `09e91a5`, `9e1d871`), all of which touch only `docs/`
+and `formal/`, and was then moved by the V1 audit's I20 and N13 fixes. **No blocker in this register
+moved with it**: B1, B8, B-P, B-O, B-M, X3 and A9 are exactly where they were, and neither I20 nor
+N13 was ever a blocker here — which is the fourth consecutive pass in which the genuine item was
+outside this table. *(This line said HEAD **`7335260`** and was three commits stale, and before that
+"`67b7c7c` + uncommitted"; earlier still, 2026-08-29 at `431010ace188c4b1…` / 565 / `b68dc5d`. **The
+digest, not the hash, is what makes a number on this page transferable** — it has held through four
+consecutive HEAD corrections.)*
 **Re-verified 2026-08-29** by the documentation-integrity audit: every blocker below re-derived from
 the current repository; blocker count and classifications unchanged. The audit added the
 § *Cross-phase documentation discrepancies* register at the end and found **no new blocker**.

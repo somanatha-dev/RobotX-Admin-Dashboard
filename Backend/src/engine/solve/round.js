@@ -242,10 +242,41 @@ async function candidatesFor(deps, input) {
     decisionTimeMs: input.decisionTimeMs,
   });
 
+  // ── I20: an unproven gap is `null`, never `0n` ──────────────────────────────
+  //
+  // This line read `expansion.achievedGapMilliCU ?? 0n`, and that coercion was a false
+  // optimality claim. `candidates/expansion.js` sets `achievedGapMilliCU` to **`null`**
+  // in exactly two cases and says why at each of them:
+  //
+  //   · no unexplored floor resolved — *"No floor resolved, so no bound was proven.
+  //     Saying 'gap 0' here would be the false guarantee §6.4 calls worse than no bound."*
+  //   · nothing was priced — *"there is no `C*` to bound a gap against. `0n` here would
+  //     read as 'proven optimal' in the decision record."*
+  //
+  // `?? 0n` turned each of those into **zero — the strongest optimality claim the engine
+  // can make** — and I20 is precisely *"every reported optimality gap is a true bound"*
+  // (§26.1). `invariantChecker.checkI20` audits for a *combined* or a *negative* gap and
+  // cannot see this one, because a fabricated zero is neither: the lie is about the
+  // number's provenance, not about the number.
+  //
+  // `null` is carried through instead, and it is the honest value the whole chain already
+  // accepts: `Round.searchGapMilliCU` is `String?`, `decisionRecord` writes
+  // `decision.searchGapMilliCU ?? null`, `explanation.js` reads `?? null`, and `checkI20`
+  // skips a null rather than counting it. "Not reported" and "proven zero" are different
+  // facts and only one of them is a guarantee.
+  //
+  // `achievedGapProven` — which the expansion computes and this function used to
+  // discard — is carried beside it so a reader never has to infer provenance from the
+  // absence of a number. A `bigint` gap accompanied by an explicit `achievedGapProven:
+  // false` is a contradiction in the producer's contract and is read the conservative
+  // way: unproven.
+  const proven = typeof expansion.achievedGapMilliCU === "bigint" && expansion.achievedGapProven !== false;
+
   return {
     legId: String(input.leg.legId),
     candidates: expansion.candidates || [],
-    searchGapMilliCU: expansion.achievedGapMilliCU ?? 0n,
+    searchGapMilliCU: proven ? expansion.achievedGapMilliCU : null,
+    searchGapProven: proven,
     truncatedBy: expansion.truncatedBy ?? null,
     cellsExplored: expansion.cellsExplored ?? 0,
     agentsEvaluated: expansion.agentsEvaluated ?? 0,
@@ -314,6 +345,8 @@ async function plan(deps, input) {
         cellsExplored: discovered.cellsExplored,
         agentsEvaluated: discovered.agentsEvaluated,
         truncatedBy: discovered.truncatedBy,
+        searchGapMilliCU: discovered.searchGapMilliCU,
+        searchGapProven: discovered.searchGapProven,
         detail:
           "the hierarchical expansion found no agent that survived the feasibility gate. This is a priced " +
           "outcome, not an error: the Leg remains queued and the §17.4 ladder widens the option set on its own " +
@@ -338,6 +371,7 @@ async function plan(deps, input) {
       agentsEvaluated: discovered.agentsEvaluated,
       truncatedBy: discovered.truncatedBy,
       searchGapMilliCU: discovered.searchGapMilliCU,
+      searchGapProven: discovered.searchGapProven,
     });
   }
 
@@ -583,7 +617,22 @@ function finish(context) {
 
   // §9.3: the two approximations are reported **separately** and never summed, because
   // they bound different things and summing them would bound neither.
-  const searchGapMilliCU = sumMilliCU(context.searchGaps || []);
+  //
+  // I20: the round's gap is a bound only if **every** Leg in it contributed a proven one.
+  // A sum over `n − 1` proven bounds and one unproven contribution bounds nothing, and
+  // reporting it as the round's gap would reintroduce, one layer up, exactly the false
+  // guarantee `candidatesFor` above refuses to make per Leg. So a single unproven Leg
+  // makes the round's search gap `null` — "not reported" — rather than a smaller number
+  // than the truth. `null` is the value `Round.searchGapMilliCU` (`String?`) and
+  // `checkI20` already accept; a *number* here is a claim, and this is where the claim is
+  // either earned or withheld.
+  //
+  // An empty batch sums to `0n` and is proven vacuously: a round that considered no Leg
+  // truncated no candidate set, and that has always been the value the EMPTY and
+  // REGIME_UNSOLVABLE exits reported.
+  const searchGaps = context.searchGaps || [];
+  const searchGapProven = searchGaps.every((value) => typeof value === "bigint");
+  const searchGapMilliCU = searchGapProven ? sumMilliCU(searchGaps) : null;
   const lpIpGapMilliCU = sumMilliCU(
     (context.partitions || []).filter((part) => part.ok).map((part) => part.lpIpGapMilliCU ?? 0n),
   );
@@ -619,7 +668,12 @@ function finish(context) {
 
     // Never summed. §9.3: "the specification reports them **separately** because they
     // bound different things and summing them would bound neither."
+    //
+    // `searchGapMilliCU` is `null` when the round proved no search bound (I20). Read
+    // `searchGapProven` rather than testing the number: `0n` is a *proven* zero gap and
+    // `null` is the absence of a bound, and those are opposite facts.
     searchGapMilliCU,
+    searchGapProven,
     lpIpGapMilliCU,
 
     budgets: budgetResult,

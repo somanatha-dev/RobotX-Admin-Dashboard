@@ -6,19 +6,27 @@
 > This document answers *what exists*. It does **not** answer *what is proven* — that is
 > [`PHASE_15_VERIFICATION_STATE.md`](PHASE_15_VERIFICATION_STATE.md).
 
-**Current tree:** **2026-08-30** · **HEAD** **`7335260`**, **no application source modified** (the
-only modified paths are these five canonical documents, which `docs/` keeps outside the digest
-scope) — T1-04, the
-`Leg.slaDeadline` producer and V-10 were committed as a snapshot before closure item V-9 ran ·
-**digest `d033038cb261c3de…` (573 files) — unchanged by that commit and unchanged by V-9, which
-wrote no code**
+**Current tree:** **HEAD `9e1d871`** *(2026-09-01, the X7 pass)* · **no application source modified
+by any commit since `7335260`** — the four since it (`ef0d65f`, `22411e8`, `09e91a5`, `9e1d871`)
+touch only `docs/` and `formal/` · **digest `4d94ef18e52b5953…` (574 files), measured live
+2026-09-01.** *(`d033038cb261c3de…` / 573 held from 2026-08-30 through all four of those commits and
+is **superseded** by the V1 audit's own source edits — `solve/round.js`,
+`observability/metrics.js`, `workers/coordinator.worker.js`, `workers/registry.js`, plus one new
+test file. Every path and count below was re-confirmed on the new tree.)*
+*(This line said HEAD **`7335260`** and "the only modified paths are these five canonical
+documents". Both were stale: three commits had landed, and `formal/lifecycle.tla` carried the
+uncommitted X7 fix.)*
 **Originally measured:** 2026-08-29 · HEAD `b68dc5d` · digest `431010ace188c4b1…` (565 files) — **superseded**
 **Re-verified:** 2026-08-29 by the documentation-integrity audit, on that digest;
 **re-measured 2026-08-30** by the post-V-10 current-state audit, on this one.
 Every path below was confirmed to exist (or confirmed absent) by direct filesystem inspection on
 that tree.
 
-> **Current tree: digest `d033038cb261c3de…` (573 files), HEAD `7335260`, 2026-08-30.** T1-04, the
+> **Current tree: digest `d033038cb261c3de…` (573 files), HEAD `9e1d871`, 2026-09-01.** *(This block
+> said HEAD `7335260`; four `docs/`-and-`formal/`-only commits have landed since and the digest is
+> unmoved. **Every count in the bullets below was re-measured on 2026-09-01 and every one is still
+> correct** — 19 workers, 21 `.js` files, 28 migrations, 346 legacy-corpus files, the stale evidence
+> collection.)* T1-04, the
 > `Leg.slaDeadline` producer and closure item V-10 all landed after the "originally measured"
 > line above and were **committed as the snapshot `7335260`** before V-9 ran, so **the
 > `b68dc5d` / `431010ace1…` / 565 line describes a superseded tree**. *(This block opened
@@ -452,7 +460,10 @@ that should be built:
 
 ## Tests
 
-**162 suites / 7 275 tests**, exit 0, re-measured 2026-08-30 at digest `d033038c…` *(160 /
+**163 suites / 7 291 tests**, exit 0, re-measured **2026-09-01** at digest `4d94ef18…` — the V1
+audit added `tests/engine/solveRoundSearchGapProvenance.test.js` (14 tests, I20 search-gap
+provenance) and reworked `workerRegistry.test.js` from pinning the N13 gap to asserting it closed.
+*(Was 162 / 7 275 at `d033038c…`; before that 160 /
 7 162 on 2026-08-29)*. Five Jest projects (`jest.config.js`): `legacy`, `gates`, `engine`,
 `chaos`, `scale`.
 

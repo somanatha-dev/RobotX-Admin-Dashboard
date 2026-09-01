@@ -20,6 +20,33 @@ for the first time — **B-M did NOT close** and opened X4 and X5. Before those:
 the Phase 0–14 cross-phase re-verification (2026-08-30); the post-V-10 current-state audit; and
 closure item **V-10**.
 
+> ### ⚠ 2026-09-01 (FIFTH pass) — THE V1 AUDIT. **The source digest MOVED, and the Phase 15 verdict did not.** Read both halves.
+>
+> **A V1/V2 boundary now exists** — [`../v1/V1_CONTRACT_AND_STOP_CONDITION.md`](../v1/V1_CONTRACT_AND_STOP_CONDITION.md).
+> Before it, this programme had no exit condition smaller than the §24 gate table, which is a
+> **production release** condition. V1 is a smaller, honest claim beneath it. **No §24 gate was
+> weakened, reclassified or set aside; no blocker moved; the verdict is unchanged.**
+>
+> | | |
+> |---|---|
+> | **The digest MOVED** | **`4d94ef18e52b5953…` / 574 files** *(was `d033038cb261c3de…` / 573, which had held since 2026-08-30)*. **Application source changed for the first time since T1-04**, so **every measurement on this page dated 2026-08-30 was taken against a tree that no longer exists** — the *digest-scope* tree, not merely its git identity. Historical rows below keep `d033038c…` deliberately: that is the tree they were measured against, and rewriting them would sever the measurement from its subject |
+> | **The Phase 15 implementation freeze was broken, by owner direction** | Not by a pass hunting for work. The owner directed that a genuine V1 correctness defect be **fixed rather than documented**. The freeze bars manufactured work; it does not bar an owner decision |
+> | **What changed, and why each is V1** | **I20 — `solve/round.js:248` reported an *unproven* search gap as `0n`.** `candidates/expansion.js` sets `achievedGapMilliCU = null` in two cases and says at each of them that zero would be *"the false guarantee §6.4 calls worse than no bound"*; `?? 0n` converted that into **the strongest optimality claim the engine can make**, and pushed it into the `Round` row, the §21.2 decision record, the operator explanation and the §21.4 SLI. Fixed at all three layers (`round.js`, `coordinator.worker.js`, `metrics.js`), with `achievedGapProven` carried rather than discarded. **`invariantChecker.checkI20` could not catch it**: it audits for a *combined* or a *negative* gap, and a fabricated zero is neither |
+> | | **N13 — `workers/registry.js` published a false `cadenceParameter` on 11 of 19 rows**, five of them workers this process starts. Corrected to the parameter actually read, or to `null` plus a mandatory `cadenceNote`; `assertRegistry()` now enforces exactly-one-of. **`timer` was simply wrong** — it named `supervision.timer_tick`, which no code reads, while the composer has always used the registered `supervise.max_timer_lag`. **No parameter was registered, no default invented, no cadence changed** |
+> | **Evidence: 14 new tests, 3 mutants built, 3 killed** | The mutants revert **only** the coercion in each of the three layers; the tree was restored and byte-verified against the pre-mutation copies. Full record: [`../v1/V1_CONTRACT_AND_STOP_CONDITION.md`](../v1/V1_CONTRACT_AND_STOP_CONDITION.md) §E |
+> | **What this does NOT change** | **`release-evidence.json` was already `[STALE]` and is now bound to a superseded digest as well.** `engine_decision_path_wired` is still RED; the 7 `NOT_EVALUATED` rows still have nothing filed; **8 blocking gates are still not green**; B1, B8, B-P, B-O, B-M, X3 and A9 are all exactly where they were. **RELEASE: BLOCKED** |
+>
+> **The audit also disproved two claims a prior V1 review had made**, and both matter because acting
+> on either would have caused harm. **(1)** *"`service.defaultSnapshot()` returns `spatial: null`,
+> `shards: null`, `bindings: {}`, so no valid default operating configuration exists."* — It is a
+> **boot fallback that a live engine never reaches**: `server.js` replaces it with
+> `configService.bootstrap(...)`, which **throws** if `ENGINE_ENABLED` is true and no version is
+> pinned. The cutover gate refuses on `cutover.engine_enabled = false`, §22.4's designed fail-closed
+> staging — not on a null field. **"Fixing" it would have manufactured a production configuration.**
+> **(2)** *"N13 cadence parameters are absent from the register."* — True as measured, and **not a V1
+> correctness defect**: the one cadence a correctness invariant depends on (§4.5's timer lag) was
+> governed all along. See §C.2 and §C.5 of the V1 document.
+
 > ### ⚠ 2026-09-01 (FOURTH pass) — X7 is CLOSED as a TRANSCRIPTION DEFECT. `lifecycle_c1` PASSES on a closed graph. **B-M is STILL OPEN.**
 >
 > | | |
@@ -132,15 +159,32 @@ closure item **V-10**.
 > *specification*, not the code. **The freeze is not evidence that X4 is benign, and X4 is not
 > evidence that the freeze was wrong.** Full record:
 > [`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md).
-**Branch:** `feature/dashboard` · **HEAD:** **`7335260`** · **working tree: no application source
-modified — the only modified paths are these five canonical documents themselves, and `docs/` is
-outside the source-digest scope** — T1-04, the `Leg.slaDeadline` producer and V-10 were committed as
-a snapshot before V-9 ran. *Text below that says "`67b7c7c` + uncommitted" describes the same content
-under its previous git identity; **the digest did not move** — re-measured `d033038c…` / 573 on
-2026-08-31 by the freeze audit — which is the binding fact.*
+**Branch:** `feature/dashboard` · **HEAD:** **`9e1d871`** — *"spec(phase15): close X7 as a TLA+
+transcription defect (the missing §4.6 latch)"*, the X7 pass committed on 2026-09-01 by the V1
+audit. *(This line read **`7335260`** and was stale by three commits: `ef0d65f` recorded the TLC
+findings, `22411e8` decided and implemented X4/X5, `09e91a5` closed X6 — and the X7 pass's own work
+sat uncommitted on top of all three, so **the tree's most recent verification result was reproducible
+from no commit at all**. That is why the HEAD row is worth re-reading rather than trusting; it had
+been correct when written and had silently stopped being so four times.)*
+**Source-digest scope: unchanged by any of it.** `ef0d65f`, `22411e8`, `09e91a5` and `9e1d871` touch
+only `docs/` and `formal/`, both of which are outside the scope — **the digest below is the same
+`d033038c…` / 573 the freeze audit measured on 2026-08-31**, re-measured live again on 2026-09-01.
+*Text below that says "`67b7c7c` + uncommitted" describes `7335260`'s content under its previous git
+identity.*
 **Source digest of the current tree:**
-`d033038cb261c3de0efe13796af9aa26d190ea113a5a2bfe5971480f72bdca00` (**573 files**)
-— computed live via `node -e "require('./tools/release/sourceDigest.js').sourceDigest()"` from `Backend/`.
+**`4d94ef18e52b59532837d86fc34ac12f496251f446226693def982070a0e2ab5` (574 files)**
+— computed live via `node -e "require('./tools/release/sourceDigest.js').sourceDigest()"` from `Backend/`,
+2026-09-01, after the V1 audit's four source edits and one new test file.
+
+> **`d033038cb261c3de…` / 573 is SUPERSEDED, and this is the first digest move since 2026-08-30.**
+> It is not a cosmetic change of identity: **application source moved**, so every measurement on this
+> page dated 2026-08-30 was taken against a tree that no longer exists. Those rows keep `d033038c…`
+> **on purpose** — a measurement is only meaningful attached to the tree it was taken on, and
+> back-dating them would destroy exactly the binding that makes this page usable.
+> **Re-measured on the new tree and unchanged: 19 workers · 9/4/6 · 28 migrations · 346 legacy-corpus
+> files · 250 register entries / 39 findings / 54 Safety-class · `routing:readiness` BLOCKED ·
+> `gates` 7 PASS 1 FAIL.** Digests seen earlier and now superseded: `d033038c…` (573),
+> `431010ace1…` (565).
 
 > **Digest `431010ace1…` (565 files) is the 2026-08-29 consolidation's tree and is superseded.**
 > Measurements below still dated 2026-08-29 were taken against it; the ones re-executed on
@@ -256,10 +300,10 @@ failure mode this file's §10 exists to prevent.*
 | | |
 |---|---|
 | Branch | `feature/dashboard` |
-| HEAD | **`7335260`** — "before: Execute V-9: Phase 0–14 cross-phase re-verification triggered by the material Phase 15 changes" *(re-read 2026-08-31 by the freeze audit. **This row said `67b7c7c` and contradicted this file's own header**, which the snapshot commit before V-9 had already superseded; an earlier revision named `b68dc5d`, the consolidation's HEAD. `67b7c7c` is this commit's parent and carries the same digest-scope content.)* |
-| Working tree | **No application source is modified.** T1-04, the `Leg.slaDeadline` producer and V-10 touched application source, tests, schema, a migration and `package.json` — which is **why the digest moved** from `431010ace1…`/565 — and all of it was **committed as the snapshot `7335260`** before V-9 ran. The only paths modified now are **these five canonical documents themselves**, and `docs/` is outside the source-digest scope, so the digest is unmoved. *(This row read "Not clean, and deliberately so … all uncommitted", which described the pre-snapshot tree.)* |
-| Source digest | **`d033038cb261c3de0efe13796af9aa26d190ea113a5a2bfe5971480f72bdca00`** *(2026-08-29's `431010ace1…` is superseded)* — re-verified live 2026-08-30 |
-| Files in digest scope | **573** *(was 565)* |
+| HEAD | **`9e1d871`** — "spec(phase15): close X7 as a TLA+ transcription defect (the missing §4.6 latch)", 2026-09-01. Its four predecessors, newest first: `09e91a5` (X6 closed, X7 opened), `22411e8` (X4/X5 decided and implemented), `ef0d65f` (TLC findings recorded), `7335260` (the snapshot before V-9). **Every one of the four touches only `docs/` and `formal/`, so the digest has not moved since `7335260`.** *(This row said `7335260`, and before that `67b7c7c`, and before that `b68dc5d`. It has now been stale three times, which is why the digest — not the hash — is this table's binding fact.)* |
+| Working tree | **Was not clean at the start of the V1 audit, and the reason mattered:** `formal/lifecycle.tla` carried the **X7 fix itself**, uncommitted, alongside `formal/README.md` and six of these documents. The X4/X5 and X6 passes had each committed their own work; the X7 pass had not, so the tree's most recent formal-verification result was reproducible from no commit. **Committed as `9e1d871`.** T1-04, the `Leg.slaDeadline` producer and V-10 — which are **why the digest moved** from `431010ace1…`/565 — were committed earlier, as the snapshot `7335260`. *(This row read "No application source is modified. … The only paths modified now are these five canonical documents themselves", which was true of `docs/` and silently untrue of `formal/`.)* |
+| Source digest | **`4d94ef18e52b59532837d86fc34ac12f496251f446226693def982070a0e2ab5`** — measured live 2026-09-01 by the V1 audit. *(`d033038cb261c3de…` and `431010ace1…` are both **superseded**. The move is the V1 audit's four source edits — `solve/round.js`, `observability/metrics.js`, `workers/coordinator.worker.js`, `workers/registry.js` — plus one new test file.)* |
+| Files in digest scope | **574** *(was 573; +1 is `tests/engine/solveRoundSearchGapProvenance.test.js`)* |
 | Digest scope | `Backend/{src,tools,tests}`, `Backend/package.json`, `Backend/jest.config.js` — **`docs/` is deliberately excluded** |
 | Registered workers | **19 registered** · **12 actually start** (9 `SCHEDULED` + 3 of 4 `LEADER_ONLY`) · 6 `DEFERRED` · 1 refused (`coordinator`, B1). *Was 18/11 before T1-04 added `fairness.worker.js`; re-measured 2026-08-30 via `registry.report({running:[]})` → total 19, scheduled 9, leaderOnly 4, deferred 6.* `src/workers/` holds **21** `.js` files (19 `*.worker.js` + `registry.js` + `leaderWorkers.js`) |
 | Prisma migrations | **28** *(27 before T1-04, which added exactly one — `20260830120000_ladder_escalation_t1_04`)*. **Re-counted directly 2026-08-30: 28 directories, 28 `migration.sql` files.** *An earlier revision said "29 (was 27; T1-04 added one)", which contradicts its own arithmetic; the 29 was wrong wherever it appeared* |
@@ -303,8 +347,8 @@ but do not read the whole table as one date, which an earlier revision of this s
 
 | Command | Exit | Result |
 |---|---|---|
-| `npm test` | **0** | **162 suites / 7 275 tests / 0 failures / 0 skips** — re-measured 2026-08-30 |
-| `npm run gates` | **1** | 7 PASS, 1 FAIL (`gate:composition` — B1, 1 violation of **19** workers) — re-measured 2026-08-30 |
+| `npm test` | **0** | **163 suites / 7 291 tests / 0 failures / 0 skips** — re-measured **2026-09-01** at digest `4d94ef18…` *(was 162 / 7 275 at `d033038c…`; the V1 audit added `solveRoundSearchGapProvenance.test.js` and reworked `workerRegistry.test.js`)* |
+| `npm run gates` | **1** | 7 PASS, 1 FAIL (`gate:composition` — B1, 1 violation of **19** workers) — **re-measured 2026-09-01, unchanged.** `gate:params` still PASS at 192 modules / 250 parameters, so the N13 registry correction introduced no bare behavioural constant |
 | `npm run release:verdict` | **1** | **2026-08-30: 0 GREEN, 17 RED, 7 NOT_EVALUATED** — every extra RED is `[STALE]`, not a gate failing. *(2026-08-29, when the collection was current: 16 GREEN, 1 RED, 7 NOT_EVALUATED.)* **RELEASE: BLOCKED**, both times |
 | `npm run gate:calibration` | **1** | 39 blocking findings; **250** entries (52 DERIVED / **160** PROVISIONAL / 38 UNCALIBRATED), 54 Safety-class — **re-measured 2026-08-30**. *(Was 242 / 152; T1-04 added 8 `PROVISIONAL` ladder-rung fractions, **none Safety-class**, so the 39 and the 54 did not move — see `PHASE_15_BLOCKERS.md` § B8)* |
 | `npm run routing:readiness` | **0** *(by design)* | **OVERALL: BLOCKED** — D1, D3, D8 all BLOCKED; Steps 1/3/4/5 BLOCKED, Step 2 PASS — **re-run 2026-08-30, unchanged** |
@@ -354,9 +398,17 @@ detection — implemented, composed, and verified against live PostgreSQL).
 > was in the transcription. **What that bought is one real verdict** — `QueuedLegsProgress` passes
 > on a complete state graph at capacity 1, the first passing lifecycle liveness result this project
 > has produced — **and one isolated cause**: `EveryLegSettles` and `CustodyNeverLost` now fail on
-> **X7 alone**, which the X6 fix is what made provable. **X7 is a genuine specification ambiguity
+> **X7 alone**, which the X6 fix is what made provable. ~~**X7 is a genuine specification ambiguity
 > about whether §4.4's "any non-terminal" cancel row governs a `STRANDED_*` Leg**, and it is now the
-> reason the lifecycle half of B-M still does not pass.
+> reason the lifecycle half of B-M still does not pass.~~
+>
+> **SUPERSEDED by the X7 pass, 2026-09-01 (`9e1d871`) — and the struck sentence was wrong about the
+> defect, not merely out of date.** X7 was not a specification ambiguity at all. `lifecycle.tla`
+> never modelled §4.6 step 1's `cancel_requested_at`, so `Cancel` and `CancelWithCustody` were
+> indefinitely repeatable against one Leg; the `STRANDED_*` question never had to be answered and was
+> not. It survives as *Question A*, non-blocking. **The lifecycle half of B-M now passes at capacity
+> 1**, and what B-M still lacks is compute for `c2`/`c3` and acceptance — **not any open model
+> defect.** The `STRANDED_*` three-reading framing must not be re-opened to settle Question A.
 
 > **Two different quantities in this documentation used to both equal 8. They no longer do, and
 > that is itself worth stating.** **7 open blockers** (this table) is a programme count — it
@@ -376,7 +428,8 @@ detection — implemented, composed, and verified against live PostgreSQL).
 | **X3** | No `TASK` timer producer; §4.2 has no transition table | **SPECIFICATION / ADR** | Frozen-spec owner |
 | ~~**X4**~~ | ~~`CustodyMatchesState` is contradicted by `Strand` and `TimerFires`~~ **DECIDED AND IMPLEMENTED 2026-08-31.** The `STRANDED_*` states are custody-bearing; `HELD` is lawful while stranded. **The frozen §4.4 table already entered a stranded state under the guard "custody `HELD`" — it was a transcription defect** | **CLOSED** | Sole project owner/reviewer. **No independent sign-off exists** |
 | ~~**X5**~~ | ~~The three `lifecycle_c*.cfg` abort on the deadlock check~~ **DECIDED AND IMPLEMENTED 2026-08-31.** Terminal deadlock freedom is a genuine §24.2 obligation; an explicit `TaskQuiescent` action satisfies it. **`CHECK_DEADLOCK FALSE` was REJECTED; no `.cfg` was edited** | **CLOSED** | Sole project owner/reviewer. **No independent sign-off exists** |
-| **X6** *(new 2026-08-31)* | **`Liveness` FAILS** at all three capacities: a Leg can be re-planned forever (`Plan → Offer → Reject`) and never settle, so `EveryLegSettles` is violated. **Pre-existing and masked by X5** — the lifecycle liveness properties had never been evaluated before. Likely cause: the module never transcribed §4.4's `QUEUED` → `FAILED` *"ladder exhausted"* row that T1-04 shipped | **SPECIFICATION / FORMAL MODEL** | Specification/verification authority — **deliberately not decided in the pass that found it** |
+| ~~**X6**~~ | ~~**`Liveness` FAILS** at all three capacities; the module never transcribed §4.4's `QUEUED` → `FAILED` *"ladder exhausted"* row that T1-04 shipped~~ **CLOSED 2026-08-31 (third pass), committed as `09e91a5`.** A transcription defect: **both** of §4.4's `QUEUED` assignment-deadline rows were missing, **and** `WF_vars(Next)` does not transcribe §24.2's own hypothesis, "given fair timer firing". Fixed with a monotone per-Leg `ladder` and strong fairness on the two ladder actions. **The shipped engine already implemented all of it end to end and no `Backend/` file changed** | **CLOSED** | Sole project owner/reviewer. **No independent sign-off exists** |
+| ~~**X7**~~ | ~~A `STRANDED_*` Leg can be cancelled back into `ABORTING` for ever, holding custody~~ **CLOSED 2026-09-01 (fourth pass), committed as `9e1d871`.** Reclassified from *specification ambiguity* to **transcription defect**: `lifecycle.tla` never modelled §4.6 step 1's `cancel_requested_at`, so cancellation was indefinitely repeatable against one Leg. **The shipped engine already had the latch** and no `Backend/` file changed. `lifecycle_c1` now closes with every declared property PASS | **CLOSED** | Sole project owner/reviewer. **No independent sign-off exists** |
 | **A9** | `assertVersionInKey` implemented, tested, genuinely uncalled | **REPOSITORY-OWNED, correctly deferred** | Phase 8 |
 
 **Closed since the last revision — X1 / T1-04**, on 2026-08-30. §17.4's escalation ladder, its
@@ -487,14 +540,22 @@ attestation or a compute run that no commit in this repository can supply.
    ([`PHASE_15_BM_TLC_RUN_RECORD.md`](PHASE_15_BM_TLC_RUN_RECORD.md)); then **X4 and X5 were decided
    and implemented** (§15 of the same record), which took the lifecycle configurations from
    *aborting before any verdict* to *reaching verdicts*. **2 of 6 now close, was 1.**
+   **Advanced twice more since, and STILL OPEN** — X6 closed on 2026-08-31 (`09e91a5`) and X7 on
+   2026-09-01 (`9e1d871`), both as transcription defects. **X4, X5, X6 and X7 are ALL closed.**
    What remains: **Compute/Platform** supplies compute on which `commitment_c2/c3` can converge
-   (this workstation could not, and they were **not re-run** by the decision pass); the boundedness
-   judgement (§7.3a item 8) is **still unsigned**; **X6** — the newly-visible `Liveness` failure —
-   must be decided before the lifecycle half can pass; a **named human** signs as operator (§7.3a
-   item 4); and **final acceptance** (§7.6) is given. **This is independent of 1–4 above.**
+   (this workstation could not, and they were **not re-run** by any later pass, deliberately);
+   `lifecycle_c2`/`c3` still require authoritative treatment; the boundedness judgement (§7.3a item
+   8) is **still unsigned**; a **named human** signs as operator (§7.3a item 4); and **final
+   acceptance** (§7.6) is given. ~~**X6** — the newly-visible `Liveness` failure — must be decided
+   before the lifecycle half can pass~~ — *superseded: X6 and X7 are both decided, the lifecycle
+   half **passes at capacity 1**, and **B-M is now blocked on COMPUTE and ACCEPTANCE, not on any open
+   model defect.*** **This is independent of 1–4 above.**
    **Do not report B-M as advanced because a jar was downloaded, and do not report it as advanced
-   because X4 and X5 are decided** — the lifecycle half still fails, now on X6, and the two
-   commitment configurations are exactly where they were.
+   because X4, X5, X6 and X7 are all decided** — *(this read "because X4 and X5 are decided — the
+   lifecycle half still fails, now on X6"; the failure it names is gone and the caution is not)* —
+   **two of six configurations close, four do not, and the two commitment configurations are exactly
+   where they were.** Closing four model defects moved the lifecycle half from *no verdict* to
+   *passing at capacity 1*. It moved B-M's evidence state not at all.
 
 **For an AI coding agent, right now, in this repository:**
 
@@ -570,6 +631,12 @@ or came close to committing.
 ---
 
 ## 11. Documentation map
+
+### The V1 boundary — read this before deciding whether a piece of work is Phase 15's
+
+| File | Answers |
+|---|---|
+| **[`../v1/V1_CONTRACT_AND_STOP_CONDITION.md`](../v1/V1_CONTRACT_AND_STOP_CONDITION.md)** | **The V1/V2 boundary and the finite V1 stop condition** (2026-09-01). Before it, this programme's only exit condition was the §24 gate table — a **production release** condition — and there was no smaller milestone to aim at, which is most of why "what remains" has read as unbounded. V1 is a *smaller* claim that sits below Phase 15, not an alternative route through it: **it weakens no §24 gate and moves no blocker.** Read §D for the traced request→dispatch call graph and where it actually breaks, §F.1 for which B1 decisions V1 genuinely needs (four values) and which are strictly production, and §I for the eight-condition stop condition. **Phase 15's verdict is unchanged: IMPLEMENTATION CLOSED · RELEASE BLOCKED.** |
 
 ### Canonical — read these
 

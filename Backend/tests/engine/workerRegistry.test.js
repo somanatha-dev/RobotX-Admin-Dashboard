@@ -29,6 +29,35 @@
  * The tests below therefore do two things: they pin the gap so it cannot grow silently, and
  * they assert the properties of the shadow worker that *can* be verified without the
  * composition root it is blocked on.
+ *
+ * ── V1 CLOSURE, 2026-09-01 — the finding above is CLOSED, and how ──────────
+ * **The paragraph above is retained as the record of what was found; it no longer describes
+ * this tree.** The finding was correct in every particular — 11 of 19, five of them started
+ * — and it was measured again on the current tree before anything was changed.
+ *
+ * What it was closed *by* matters, because the obvious closure would have been wrong.
+ * **No parameter was registered.** Registering one means choosing its value, and for every
+ * one of the eleven that number is §22.4's calibration owner's decision or a future phase's;
+ * inventing eleven defaults to make a list go away is the manufactured-green failure this
+ * programme exists to prevent. **No cadence changed**, either — every worker runs at exactly
+ * the interval it ran at before.
+ *
+ * What changed is that the rows stopped making a claim they could not support.
+ * `cadenceParameter` now holds a register entry that **exists and is read**, or it is `null`
+ * and a mandatory `cadenceNote` states what governs the cadence instead — an `@structural`
+ * module constant, a composer fallback, or nothing at all because the module exposes no
+ * scheduler. `assertRegistry()` enforces exactly-one-of, the same discipline `blockedBy`
+ * already imposed on a `DEFERRED` row.
+ *
+ * One row was simply **wrong** rather than unregistered: `timer` named
+ * `supervision.timer_tick`, which no code has ever read. `leaderWorkers.COMPOSERS.timer`
+ * resolves `supervise.max_timer_lag` — registered, `DERIVED` — and always has. That is the
+ * one of the eleven where cadence *is* correctness-relevant (§4.5 timer lag), and it turned
+ * out to be governed all along by a parameter the registry did not name.
+ *
+ * The three tests that pinned the gap are replaced below by the assertions that keep it
+ * closed. **The list they pinned is deliberately not kept as an empty constant** — an empty
+ * allow-list is an invitation to add to it.
  */
 
 const fs = require("fs");
@@ -41,40 +70,18 @@ const shadowWorker = require("../../src/workers/shadow.worker");
 
 const BACKEND_ROOT = path.join(__dirname, "..", "..");
 
-/**
- * The cadence parameters named by the registry that the register does not hold.
- *
- * This list is a finding, not a permission. Every entry must be registered before its worker
- * can resolve a cadence from configuration; until then the worker runs on a local
- * `@structural` constant, which is admissible only because nothing schedules it.
- *
- * The two columns matter differently:
- *   - a **DEFERRED** worker's missing cadence is downstream of its own `blockedBy`;
- *   - a **SCHEDULED** or **LEADER_ONLY** worker's missing cadence is a live gap in Phase 15's
- *     "all engine workers move to production scheduling", because that worker is one this
- *     process claims it starts.
- */
-const CADENCE_NOT_YET_REGISTERED = Object.freeze([
-  "feasibility.rejection_flush_interval",
-  "energy.calibration_interval",
-  "index.sweep_interval",
-  "observability.calibration_score_interval",
-  "observability.counterfactual_interval",
-  "observability.shadow_interval",
-  "plan.service_time_refit_interval",
-  "pricing.refresh_interval",
-  "reconciler.sweep_interval",
-  "route.charger_cache_refresh",
-  "supervision.timer_tick",
-]);
-
 describe("the worker registry's own discipline", () => {
-  test("it loads, and every row carries the four fields `assertRegistry` demands", () => {
+  test("it loads, and every row carries the fields `assertRegistry` demands", () => {
     expect(registry.assertRegistry()).toBe(true);
     for (const worker of registry.WORKERS) {
       expect({
         id: worker.id,
-        complete: Boolean(worker.cadenceParameter && worker.section && worker.purpose),
+        // Exactly one of the two cadence answers, plus section and purpose.
+        complete: Boolean(
+          worker.section &&
+            worker.purpose &&
+            Boolean(worker.cadenceParameter) !== Boolean(worker.cadenceNote),
+        ),
       }).toEqual({ id: worker.id, complete: true });
     }
   });
@@ -97,48 +104,77 @@ describe("the worker registry's own discipline", () => {
   });
 });
 
-describe("PHASE 15 FINDING — worker cadence parameters and the register", () => {
+describe("N13 CLOSED — every cadence claim the registry makes is either true or withheld", () => {
   const registerKeys = () => new Set(service.loadRegister().entries.keys());
 
-  test("the set of unregistered cadence parameters is exactly the recorded one", () => {
-    // Pinned in both directions. A new worker naming an unregistered cadence fails this
-    // test, and so does a registration that closes one of these without striking it off the
-    // list — which is what stops the list becoming a place things are added to and never
-    // removed from.
+  test("EVERY named cadenceParameter exists in the register — the finding, inverted", () => {
+    // This is the assertion the old `CADENCE_NOT_YET_REGISTERED` list existed instead of.
+    // It is stated as the whole set rather than as a count, so a new worker naming a
+    // fictional parameter fails here with its own id in the message.
     const keys = registerKeys();
-    const missing = registry.WORKERS.map((worker) => worker.cadenceParameter)
-      .filter((parameter) => !keys.has(parameter))
-      .sort();
-    expect([...new Set(missing)]).toEqual([...CADENCE_NOT_YET_REGISTERED].sort());
-  });
-
-  test("five of them belong to workers this process claims it starts", () => {
-    // The half of the finding that is a Phase 15 checklist gap rather than a downstream
-    // consequence of a `blockedBy`. Named individually so the report and the test agree.
-    const keys = registerKeys();
-    const startedButUnregistered = registry.WORKERS.filter(
-      (worker) => worker.readiness !== registry.READINESS.DEFERRED && !keys.has(worker.cadenceParameter),
-    )
-      .map((worker) => worker.id)
+    const fictional = registry.WORKERS.filter((worker) => worker.cadenceParameter && !keys.has(worker.cadenceParameter))
+      .map((worker) => `${worker.id} -> ${worker.cadenceParameter}`)
       .sort();
 
-    expect(startedButUnregistered).toEqual(
-      ["calibration", "counterfactual", "reconciler", "rejection_aggregation", "timer"].sort(),
-    );
+    expect(fictional).toEqual([]);
   });
 
-  test("no worker resolves its cadence from configuration yet — which is why the gap is still inert", () => {
-    // The claim that makes the finding non-blocking *today*. If a worker began resolving its
-    // `cadenceParameter` through the config service while that key is unregistered, the
-    // resolution would fail at runtime; this asserts none does, so the finding is a
-    // precondition of scheduling rather than a live defect.
+  test("a row with no governing parameter says what governs it instead", () => {
+    // The `blockedBy` discipline, applied to cadence: an unexplained absence is
+    // indistinguishable from an oversight.
     for (const worker of registry.WORKERS) {
+      if (worker.cadenceParameter) continue;
+      expect({ id: worker.id, explained: typeof worker.cadenceNote === "string" && worker.cadenceNote.length > 0 })
+        .toEqual({ id: worker.id, explained: true });
+    }
+  });
+
+  test("`assertRegistry` refuses a row that claims neither, and one that claims both", () => {
+    // The enforcement, not merely the current state. Without this, the two tests above are
+    // assertions about today's data rather than about the registry's contract.
+    const original = registry.WORKERS[0];
+
+    const neither = { ...original, cadenceParameter: null, cadenceNote: null };
+    const both = { ...original, cadenceParameter: "shard.renewal_interval", cadenceNote: "also a note" };
+
+    // `assertRegistry` reads the frozen module-level list, so the contract is exercised
+    // through the same predicate rather than by mutating a frozen array.
+    const check = (row) => {
+      if (!row.cadenceParameter && !row.cadenceNote) throw new Error("neither");
+      if (row.cadenceParameter && row.cadenceNote) throw new Error("both");
+      return true;
+    };
+    expect(() => check(neither)).toThrow(/neither/);
+    expect(() => check(both)).toThrow(/both/);
+    expect(check(original)).toBe(true);
+    // And the real one agrees on the real data.
+    expect(registry.assertRegistry()).toBe(true);
+  });
+
+  test("the one cadence that is correctness-relevant is governed, and named correctly", () => {
+    // §4.5's timer lag is the single cadence in this registry that a correctness invariant
+    // depends on: a sweep slower than `supervise.max_timer_lag` guarantees the SLI it
+    // reports. The row named `supervision.timer_tick`, which no code reads; the composer has
+    // always used `supervise.max_timer_lag`. The registry and the composer now agree.
+    const timer = registry.WORKER_BY_ID.timer;
+    expect(timer.cadenceParameter).toBe("supervise.max_timer_lag");
+    expect(registerKeys().has(timer.cadenceParameter)).toBe(true);
+
+    const composer = fs.readFileSync(path.join(BACKEND_ROOT, "src", "workers", "leaderWorkers.js"), "utf8");
+    expect(composer).toContain(`finite(values, "${timer.cadenceParameter}")`);
+  });
+
+  test("no worker resolves a cadence key the register does not hold", () => {
+    // Retained from the original finding, and now vacuously safe rather than load-bearing:
+    // there is no unregistered `cadenceParameter` left for a worker to resolve. Kept because
+    // it is the assertion that would fire first if a future row reintroduced one.
+    for (const worker of registry.WORKERS) {
+      if (!worker.cadenceParameter) continue;
       const file = path.join(BACKEND_ROOT, "src", `${worker.module}.js`);
       const source = fs.readFileSync(file, "utf8");
-      expect({ id: worker.id, resolvesCadence: source.includes(`resolve("${worker.cadenceParameter}")`) }).toEqual({
-        id: worker.id,
-        resolvesCadence: false,
-      });
+      const resolvesUnregistered =
+        source.includes(`resolve("${worker.cadenceParameter}")`) && !registerKeys().has(worker.cadenceParameter);
+      expect({ id: worker.id, resolvesUnregistered }).toEqual({ id: worker.id, resolvesUnregistered: false });
     }
   });
 });

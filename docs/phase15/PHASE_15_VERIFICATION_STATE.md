@@ -8,12 +8,23 @@
 
 ## 0. The tree every result below refers to
 
-> ### ⚠ The tree has moved twice since the 2026-08-29 consolidation
+> ### ⚠ The tree has moved THREE times since the 2026-08-29 consolidation
 >
-> **REMEDIAL PHASE T1-04 + the `Leg.slaDeadline` producer (2026-08-30)** and **closure item
-> V-10 (2026-08-30)** both changed files inside the source-digest scope. Digest
-> `431010ace1…` (565 files) is **no longer this tree.** Where a row below is still dated
-> 2026-08-29 and was not re-executed, it says so.
+> **REMEDIAL PHASE T1-04 + the `Leg.slaDeadline` producer (2026-08-30)**, **closure item
+> V-10 (2026-08-30)**, and now **the V1 audit (2026-09-01)** each changed files inside the
+> source-digest scope. Digest `431010ace1…` (565 files) and digest `d033038c…` (573 files)
+> are **both no longer this tree.**
+>
+> **Current: `4d94ef18e52b59532837d86fc34ac12f496251f446226693def982070a0e2ab5` (574 files).**
+> The V1 audit changed `solve/round.js`, `observability/metrics.js`,
+> `workers/coordinator.worker.js` and `workers/registry.js`, and added one test file — the I20
+> search-gap-provenance fix and the N13 registry correction. See
+> [`../v1/V1_CONTRACT_AND_STOP_CONDITION.md`](../v1/V1_CONTRACT_AND_STOP_CONDITION.md) §E.
+> **Re-measured on the new tree and unchanged:** `npm run gates` 7 PASS / 1 FAIL,
+> `gate:params` 192 modules against **250** parameters with no bare behavioural constants,
+> `gate:legacy` 346 files, 19 workers, 28 migrations, `routing:readiness` BLOCKED.
+>
+> Where a row below is still dated 2026-08-29 or 2026-08-30 and was not re-executed, it says so.
 >
 > **The single most consequential consequence, measured and stated up front:**
 > `Backend/docs/release-evidence.json` is bound to `431010ace1…` and was produced
@@ -50,17 +61,22 @@ cd Backend && node -e "console.log(JSON.stringify(require('./tools/release/sourc
 ## 1. Test suite
 
 **Command:** `npm test` (from `Backend/`; = `jest --runInBand --forceExit`, all five projects)
-**Result:** `Test Suites: 162 passed, 162 total` · `Tests: 7275 passed, 7275 total` · `Snapshots: 0`
+**Result:** `Test Suites: 163 passed, 163 total` · `Tests: 7291 passed, 7291 total` · `Snapshots: 0`
 **Exit code:** `0`
-**Date:** **2026-08-30**, at digest `d033038c…` (573 files)
-**Repository state:** HEAD `67b7c7c` **plus T1-04, the `Leg.slaDeadline` producer and V-10, all uncommitted**
+**Date:** **2026-09-01**, at digest **`4d94ef18e52b5953…` (574 files)** — the V1 audit's tree
+**Repository state:** HEAD `9e1d871` **plus the V1 audit's four source edits and one new test file, uncommitted at the time of the run**
+
+> *(This block read "162 / 7 275, 2026-08-30, at digest `d033038c…`", and that figure is retained in
+> the table below as the row it belongs to. It was measured twice, independently, and was correct
+> for its tree.)*
 
 | Measured | Suites | Tests | What moved |
 |---|---:|---:|---|
 | 2026-08-29 consolidation, digest `431010ace1…` | 160 | 7 162 | — |
 | T1-04 closure, 2026-08-30 | 161 | 7 261 | `tests/engine/fairnessLadder.test.js` (93) + the ladder contract tests + four flipped module-tree assertions |
 | `Leg.slaDeadline` producer, 2026-08-30 | 161 | **7 268** | +7 in `intakeStranglerSeam.test.js`. **Recorded at the time against the engine lane only (130 → 130 suites / 6 920 → 6 927 tests); the full-suite figure was never restated, which is why "161 / 7 261" appeared above** |
-| **V-10, 2026-08-30 — current** | **162** | **7 275** | `tests/engine/phase15RollbackRunbook.test.js` (7) |
+| V-10, 2026-08-30, digest `d033038c…` | 162 | 7 275 | `tests/engine/phase15RollbackRunbook.test.js` (7) |
+| **V1 audit, 2026-09-01, digest `4d94ef18…` — current** | **163** | **7 291** | `tests/engine/solveRoundSearchGapProvenance.test.js` (**14** — I20 search-gap provenance, end to end from `expansion.js`'s producer contract through `round.finish()` to the §21.4 SLI) **+2 net in `workerRegistry.test.js`**, where the three tests that *pinned* the N13 gap became five that assert it closed |
 
 Engine lane alone, re-measured 2026-08-30 after V-10: **131 suites / 6 934 tests**, exit 0
 (`npx jest --selectProjects engine`), from 130 / 6 927.
