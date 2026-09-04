@@ -15,7 +15,7 @@
 > source-digest scope. Digest `431010ace1…` (565 files) and digest `d033038c…` (573 files)
 > are **both no longer this tree.**
 >
-> **Current: `4d94ef18e52b59532837d86fc34ac12f496251f446226693def982070a0e2ab5` (574 files).**
+> **Current: `1b301e285ad7dcd056439c83d24275a9a30a7e2900b1828855ee940250e32ff5` (576 files).**
 > The V1 audit changed `solve/round.js`, `observability/metrics.js`,
 > `workers/coordinator.worker.js` and `workers/registry.js`, and added one test file — the I20
 > search-gap-provenance fix and the N13 registry correction. See
@@ -61,9 +61,9 @@ cd Backend && node -e "console.log(JSON.stringify(require('./tools/release/sourc
 ## 1. Test suite
 
 **Command:** `npm test` (from `Backend/`; = `jest --runInBand --forceExit`, all five projects)
-**Result:** `Test Suites: 163 passed, 163 total` · `Tests: 7291 passed, 7291 total` · `Snapshots: 0`
+**Result:** `Test Suites: 164 passed, 164 total` · `Tests: 7307 passed, 7307 total` · `Snapshots: 0`
 **Exit code:** `0`
-**Date:** **2026-09-01**, at digest **`4d94ef18e52b5953…` (574 files)** — the V1 audit's tree
+**Date:** **2026-09-01**, at digest **`1b301e285ad7dcd0…` (576 files)** — the V1 audit's tree, after E-7
 **Repository state:** HEAD `9e1d871` **plus the V1 audit's four source edits and one new test file, uncommitted at the time of the run**
 
 > *(This block read "162 / 7 275, 2026-08-30, at digest `d033038c…`", and that figure is retained in

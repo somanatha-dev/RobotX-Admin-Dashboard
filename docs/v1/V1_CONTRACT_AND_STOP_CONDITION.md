@@ -384,7 +384,81 @@ An item is here only if V1 cannot truthfully be called a working engineering rel
 | **E-4** | `registry.js` publishes a false `cadenceParameter` on 11 of 19 rows (**N13**) | V1 must honestly represent itself. No parameter is registered, no default invented, no cadence changed | **FIXED in this task** |
 | **E-5** | The X7 formal-verification result is uncommitted, so the tree's latest verification is not reproducible from any commit | Reproducibility is part of the V1 contract | **FIXED in this task** |
 | **E-6** | Canonical documents present a stale HEAD, a stale working-tree claim, and three stale X6/X7 status rows | §15's document-maintenance rule | **FIXED in this task** |
-| **E-7** | **The coordinator solve-path composition does not exist** — `expandCandidates`, `pricedCandidateFor`, `expansionInputFor`, and the injection of `route`, `commit`, `planState` and `deferPriceFor` at `server.js` | Without it no request is ever assigned. This is *the* V1 gap | **BLOCKED on F-1. Not written.** Writing it against no traversal source would produce an assembly with nothing to inject, and against a fabricated one is forbidden outright |
+| **E-7** | **The coordinator solve-path composition does not exist** — `expandCandidates`, `pricedCandidateFor`, `expansionInputFor`, and the injection of `route`, `commit`, `planState` and `deferPriceFor` at `server.js` | Without it no request is ever assigned. This is *the* V1 gap | **PARTIALLY CLOSED — the requirements probe is built; the assembly is deliberately not.** See §E.1 |
+
+### E.1 — E-7, as built: the requirements probe
+
+**Owner decision, 2026-09-01:** build the conditional composer first, as a requirements
+*reporter* rather than as the full assembly. That decision is what made S-3 measurable instead of
+estimable — and §F.0 records that two successive hand-audits of S-3 had already produced two
+different, confidently-stated, wrong answers.
+
+**What was wrong with the old composer, and it is not a style point.** `COMPOSERS.coordinator()`
+took **no argument** and returned a fixed object. Supplying a routing engine, a region and every
+calibrated value would not have changed its answer by one character, because it never looked at the
+context it was handed. **A refusal that cannot be satisfied is a constant, not a dependency check**
+— and it flattened a distinction that matters: some of what the coordinator lacks is an external
+decision, and some of it is code nobody has written.
+
+**What exists now.** `Backend/src/workers/coordinatorPipeline.js` declares the contract as **14
+inputs**, each with an id, a class, an owner, the reason it is needed *named at the function that
+fails without it*, and a probe. `requirements(context)` runs every probe and returns the missing
+set. `COMPOSERS.coordinator(context)` reports that list; `UNCOMPOSABLE.coordinator.requires` is
+**derived** from the same list rather than restated, so the declarative table a build gate reads
+and the probe a promotion runs cannot drift apart.
+
+**The measured S-3 list** — produced by the code, at digest `4d94ef18…`, against a snapshot-only
+context (a real promotion supplies `prisma`, `kv` and `commit`, leaving nine):
+
+| Class | Count | Inputs |
+|---|---:|---|
+| `EXTERNAL_ROUTING` | **3** | `route`, `travelSdSeconds source (N29)`, `speedMetresPerSecond (per routing profile)` |
+| `REGISTER_UNRESOLVED` | **3** | `candidate.max_radius_by_sla_class`, `plan.service_time_prior`, `energy.model_residual_cv` |
+| `NO_PRODUCER` | **3** | `terrainByStop`, `environment.ambientC / packC`, `masses.vehicleMassKg` |
+| `PROCESS_DEPENDENCY` | **3** | `prisma`, `kv`, `commit` — supplied at promotion |
+| `ADMISSIBILITY` | **0 missing** | The Ω correction **resolves** on the current register |
+
+**The classes are the deliverable, not the count.** A `REGISTER_UNRESOLVED` entry is `null` *by
+declaration* and §22.3 forbids an automated process from choosing it — §22.4's calibration owner's.
+A `NO_PRODUCER` family is **nobody's withheld decision**: it is missing code against a data source
+nobody has named. Both used to read as "blocked on B1", and sending the owner to look for a
+decision that does not exist is precisely what the flat list caused.
+
+**What was deliberately not built, and why that is not laziness.** No `expandCandidates`, no
+`evaluateExact`, no `pricedCandidateFor`. With the real inputs absent, several hundred lines of
+assembly would be exercised only by an injected complete context — *written, tested, and never
+called*, which `registry.js`'s own header names as the failure mode and which this programme has
+hit at least four times. **The composer says so explicitly**: with every input satisfied it still
+refuses, with `COLLABORATOR_NOT_IMPLEMENTED`, `external: false`, and a blocker naming the assembly
+— so the last obstacle is attributed to this repository rather than left implying it is external.
+
+**`gate:composition` is unchanged and still RED.** The gate reads `UNCOMPOSABLE` declaratively and
+that row remains; it is removed when the coordinator actually starts, which is the rule the table
+sets for itself. Making the *composer* conditional did not make the *gate* conditional.
+
+**One existing test broke, and it broke for the right reason — recorded because the reason is the
+finding.** `tests/engine/leaderWorkerLifecycle.test.js` asserted
+`refusal.requires === ["expandCandidates", "pricedCandidateFor", "commit"]`. Those are the three
+*collaborators* `round.execute` takes: the assertion pinned the **shape** of the gap and said
+nothing about its contents, **which is exactly how "the coordinator is blocked on B1" survived
+unexamined across six passes**. Re-pinning a literal list would have recreated the same drift one
+layer along, so the assertion now checks the **derivation** (`requires` *is*
+`coordinatorPipeline.REQUIREMENT_IDS`) and that the refusal is genuinely measured against the
+context it was handed — that fixture supplies `prisma` and `kv`, so those report satisfied while the
+routing inputs do not. The contract's *contents* are owned by one suite, not restated in two.
+
+**It was caught by the full suite and not by the targeted one**, which is the standing argument for
+running `npm test` rather than the files you think you touched.
+
+**Evidence: 16 tests; 2 mutants built, 1 killed on the first run, 1 survived and is recorded.**
+**M4** — revert the composer to unconditional — killed (3 failures). **M5** — make the probe's
+outer `catch` fail-*open* — **SURVIVED**, and is recorded as a survival rather than presented as a
+kill. The cause was a real gap in the test, not in the code: `resolved()` has its own inner
+try/catch, so the register probes returned `false` cleanly and never reached the outer catch. The
+test was strengthened with a throwing `Proxy` context that makes every probe raise, **M5 was re-run
+against it and killed**, and both files were restored and byte-verified. *(The X6 pass set this
+precedent with its own M6, and the reason to follow it is that a mutant reported as killed when it
+survived is worse evidence than no mutation testing at all.)*
 
 ---
 
@@ -400,6 +474,45 @@ as the smallest thing that unblocks V1 — not as its full production form.
 | **F-3** | **`speedMetresPerSecond` per routing profile** | One declared value per profile in use — required by `applyIntraCellOffset`, which refuses without it | D3's full §2.2 six-element mobility model per class, from a real fleet measurement | Owner (Fleet) |
 | **F-4** | **`candidate.max_radius_by_sla_class`** | A bound. `required: true`, **no default**, `UNCALIBRATED` — the register deliberately refuses to invent a containment limit | Derivation from measured SLA attainment | Owner (Ops) |
 | **F-5** | **A staged operating region** — publish a config version binding `cutover.engine_enabled = true` at `region` scope, pin it, and set `ENGINE_ENABLED=true` | An ordinary versioned, audited configuration act. **No code change, no fabrication** | The full D1 declaration: signed boundary, CRS, cover, charger estate, governance sign-off | Owner |
+
+### F.0 CORRECTION, same day — **S-3 is NOT four values.** The table above is incomplete.
+
+**Found while starting E-7, and stated here rather than absorbed into a widening scope.** §F above
+was derived from the `route(parts)` seam and `expandCandidates`'s own input contract, and it is
+correct *about those*. It is **incomplete about `evaluateExact`**, which is the other half of what
+the coordinator needs and which reaches `plan/planBuilder.build()` and `cost/phi.evaluate()`.
+
+`planBuilder.buildVariant` fails closed on **each** of service times, hops, payload, energy model,
+environment, masses and terrain — every one returns `{ ok: false, problems }`. Measured against the
+current tree:
+
+| Input | State | Class |
+|---|---|---|
+| `plan.service_time_prior` | **`null`, `UNCALIBRATED`** — required by `resolveServiceTimes` | **V1-EXTERNAL-INPUT** (calibration owner) |
+| `energy.model_residual_cv` | **`null`, `UNCALIBRATED`** — required by `consumption.predictiveDistribution` | **V1-EXTERNAL-INPUT** (calibration owner) |
+| `candidate.max_radius_by_sla_class` | **`null`, `UNCALIBRATED`** — already **F-4** | V1-EXTERNAL-INPUT |
+| `terrainByStop` (`climbM`, `descentM`, `stopStartCycles`) | **No schema column and no producer anywhere in `src/`** | **V1-MUST-FIX (code) + external data** |
+| `environment` (`ambientC`, `packC`) | **No schema column and no producer anywhere in `src/`.** Consumed by `energy/consumption.betaThermal` | **V1-MUST-FIX (code) + a telemetry/forecast source** |
+| `masses.vehicleMassKg` | `AgentClass.totalMassLimitKg` is a **limit**, not a mass. No mass column exists | **V1-MUST-FIX (code) + external data** |
+| `payload` (container, items per stop) | Schema-backed (`PayloadSpec`, `massKg`, `massToleranceKg`) — **assembly code absent** | V1-MUST-FIX (code) |
+| `energy.model`, `energy.kappa`, `usableWh` | Schema-backed (`AgentClass.energyModelParams`, pack state) — **assembly code absent** | V1-MUST-FIX (code) |
+| `charging.chargerCandidates` | Empty is survivable — a charging stop is attempted only when reserves fail, and the outcome `NO_FEASIBLE_INSERTION` is a priced result, not a crash. **The owner has declared no production chargers exist at either campus** | RESIDUAL for V1 |
+
+**So the corrected shape of S-3 is: three `UNCALIBRATED` register values (not one), plus the four
+routing values, plus three input families that have no producer at all.** The last three are not
+external decisions — they are **missing code and missing data sources**, and they were invisible to
+§F because §F stopped at the routing seam.
+
+**What this changes, and what it does not.** It does not change the V1 *contract* (§I.1), the eight
+stop conditions (§I.2), or anything already fixed. It changes **S-3's content** and it makes the
+E-7 estimate materially larger. **It is recorded rather than quietly absorbed**, because a scope
+that grows without being announced is how "what remains" became unbounded in the first place.
+
+**How S-3 will be made exact rather than re-estimated by hand.** The owner's decision on 2026-09-01
+was to build the conditional assembly first: a composer that *attempts* the real assembly and
+**reports, by name, every input it cannot resolve**. That replaces this hand-audit — and the
+hand-audit it corrects — with a list the code produces. Until that runs, **treat the table above as
+the best current measurement and not as a closed set.**
 
 ### F.1 Answers to the routing questions, precisely
 
@@ -542,12 +655,25 @@ S-4  ⬜ blocked by S-3                S-8  ✅ this document
 
 ### I.4 The single thing standing between this repository and V1
 
-> **S-3 — four values: a `route(parts)` source, a `travelSdSeconds` source, a per-profile
-> `speedMetresPerSecond`, and `candidate.max_radius_by_sla_class`.**
+> ~~**S-3 — four values: a `route(parts)` source, a `travelSdSeconds` source, a per-profile
+> `speedMetresPerSecond`, and `candidate.max_radius_by_sla_class`.**~~
+>
+> **CORRECTED the same day — see §F.0. S-3 is larger than four values**, and the correction was
+> found on starting E-7 rather than by re-reading §F. It is at least: **three `UNCALIBRATED`
+> register values** (`candidate.max_radius_by_sla_class`, `plan.service_time_prior`,
+> `energy.model_residual_cv`), **the four routing values**, and **three input families with no
+> producer anywhere** (`terrainByStop`, `environment.ambientC`/`packC`, `masses.vehicleMassKg`) —
+> the last of which are missing *code and data sources*, not missing decisions.
+>
+> **S-3 is therefore not yet an exact list, and this document will not pretend it is.** It is being
+> made exact by **E-7**, the conditional assembly, which attempts the real composition and reports
+> by name every input it cannot resolve — the owner's decision of 2026-09-01. **A list the code
+> produces, replacing two successive hand-audits that each stopped at a different seam.**
 
-Everything else in V1 is either done or is a mechanical consequence of those four. They cannot be
-derived, defaulted, or inferred from anything in this repository — every one of them is explicitly
-refused by the code that would otherwise invent it, and that refusal is correct.
+The routing values cannot be derived, defaulted, or inferred from anything in this repository —
+every one is explicitly refused by the code that would otherwise invent it, and that refusal is
+correct. **The same is now known to be true of `plan.service_time_prior` and
+`energy.model_residual_cv`**, which are `null` by declaration rather than by omission.
 
 **When S-1…S-8 hold, V1 is complete and work stops.** No further item may be added to this list
 after the fact. If a new defect is found on the V1 core path, it is a V1 bug against a shipped V1
@@ -561,16 +687,16 @@ Executed after the changes, on the tree they produced.
 
 | Check | Result |
 |---|---|
-| `npm test` | **exit 0 — 163 suites / 7 291 tests / 0 failures / 0 skips** *(was 162 / 7 275)* |
+| `npm test` | **exit 0 — 164 suites / 7 307 tests / 0 failures / 0 skips**, 643 s *(162 / 7 275 before this pass; 163 / 7 291 after I20+N13; 164 / 7 307 after E-7)* |
 | New regression suite | `tests/engine/solveRoundSearchGapProvenance.test.js` — **14 passed** |
 | `tests/engine/workerRegistry.test.js` | **15 passed** — the three tests that *pinned* N13 replaced by five that assert it closed |
-| Mutation testing | **3 built, 3 killed.** M1 reverts only `candidatesFor`'s coercion → 6 failures. M2 makes `finish()` fold unproven Legs into the sum → 1 failure. M3 makes `metrics.js` fold NULL rounds back to `"0"` → 2 failures. **Tree restored and byte-verified** (`diff -q`) against pre-mutation copies of all three files |
-| `npm run gates` | **exit 1 — 7 PASS, 1 FAIL** (`gate:composition`, `coordinator`, B1). **Unchanged** |
+| Mutation testing | **5 built, 4 killed on first run, 1 survived and was re-killed after the test was strengthened.** I20: M1 reverts only `candidatesFor`'s coercion → 6 failures; M2 makes `finish()` fold unproven Legs into the sum → 1; M3 makes `metrics.js` fold NULL rounds back to `"0"` → 2. E-7: **M4** makes the composer unconditional again → 3 failures; **M5** makes the probe's outer `catch` fail-*open* → **SURVIVED**, because `resolved()`'s inner try/catch meant no register probe ever reached that catch — recorded, test strengthened with a throwing `Proxy` context, **M5 re-run and killed**. **Every file restored and byte-verified** (`diff -q`) |
+| `npm run gates` | **exit 1 — 7 PASS, 1 FAIL** (`gate:composition`, `coordinator`). **Unchanged**, and still RED after E-7 by design. `gate:tiers` 290 modules / 434 edges, `gate:tenets` 287, `gate:legacy` 347 files *(was 289 / 432 / 286 / 346 — one new module, one new test file)* |
 | `gate:params` | **PASS** — 192 modules against 250 registered parameters, no bare behavioural constants. The N13 correction introduced none |
 | `npm run routing:readiness` | **OVERALL: BLOCKED**, D1/D3/D8 all BLOCKED, exit 0. **Unchanged** |
-| Registry | 19 workers · **9 named cadence parameters, all of which exist** · **0 fictional** *(was 11)* · 10 with a `cadenceNote` |
-| Source digest | **`4d94ef18e52b59532837d86fc34ac12f496251f446226693def982070a0e2ab5` / 574 files** *(was `d033038cb261c3de…` / 573)* |
-| Working tree | **Clean.** Two commits: `9e1d871` (the X7 pass, previously uncommitted) and `2b367e4` (this work). Nothing pushed |
+| Registry | 19 workers · **9 named cadence parameters, all of which exist** · **0 fictional** *(was 11)* · 10 with a `cadenceNote`. `src/workers/` now holds **22** `.js` files *(was 21)*; `coordinatorPipeline.js` registers no worker, so the registry count is unmoved |
+| Source digest | **`1b301e285ad7dcd056439c83d24275a9a30a7e2900b1828855ee940250e32ff5` / 576 files** *(`d033038cb261c3de…` / 573 → `4d94ef18…` / 574 at commit `2b367e4` → this, after E-7)* |
+| Working tree | Commits so far: `9e1d871` (the X7 pass, previously uncommitted), `2b367e4` (I20 + N13 + this document), `cb6517b` (§J), and E-7 pending commit. **Nothing pushed** |
 | §24 gate table | **Untouched.** 8 blocking gates still not green; B1, B8, B-P, B-O, B-M, X3, A9 all where they were. **RELEASE: BLOCKED** |
 
 ### J.1 The truthfulness audit — *does the repository now do what we claim V1 does?*
@@ -578,7 +704,21 @@ Executed after the changes, on the tree they produced.
 **Not yet, and the claim is not being made.** V1 is defined in §I.1 as a request traversing the
 engine end to end, and it cannot: the coordinator's solve path is not composed. **Three of eight
 stop conditions are met** (S-1, S-2, S-8). What this pass did was remove every V1 obstacle that was
-*this repository's to remove*, and establish that exactly one thing now stands in the way.
+*this repository's to remove*, and make the rest **measurable instead of estimable**.
+
+**The most useful thing this pass produced is not a fix.** It is that S-3 — the one remaining V1
+blocker — went from a hand-audit that said *"four values"*, to a second hand-audit that corrected it
+to *"four plus five more"*, to **a list the code computes and a future reader can re-run**. Both
+hand-audits were confident and both were wrong, in the same direction, for the same reason: they
+stopped at whichever seam they happened to reach. **A programme that has mis-stated its own
+remaining work twice in one day should stop asserting it and start measuring it**, and
+`coordinatorPipeline.requirements()` is that measurement.
+
+**A correction this pass made to a claim the canonical documents had carried since Phase 15:**
+*"the remaining composition-root work is released by B1, not by a commit."* B1 releases **three of
+nine**. Three more are `null` register entries belonging to §22.4's calibration owner, and three are
+input families with no schema column and no code — **released by no external decision at all**.
+Anyone acting on the old sentence would have waited for B1 and then found the gate still red.
 
 **What would have been false to claim, and is not claimed:** that V1 works end to end; that
 `gate:composition` can be made to pass from here; that B-M, B1, B8, B-P or B-O moved; that the
@@ -588,12 +728,25 @@ owner of §7.6 do not exist as distinct individuals, and none was simulated or i
 
 ### J.2 The exact finite remaining V1 blocker
 
-> **S-3.** Four values, in a decision record, from the owner:
-> **a `route(parts)` source · a `travelSdSeconds` source · a per-profile `speedMetresPerSecond` ·
-> `candidate.max_radius_by_sla_class`.**
+> **S-3 — MEASURED, not estimated.** E-7's probe produces it; §E.1 carries the table. Nine
+> inputs, in three classes, and **the class is the actionable part**:
+>
+> | Class | Who closes it | Inputs |
+> |---|---|---|
+> | `EXTERNAL_ROUTING` | **the owner** | `route(parts)` · `travelSdSeconds` source (N29) · per-profile `speedMetresPerSecond` |
+> | `REGISTER_UNRESOLVED` | **§22.4's calibration owner** | `candidate.max_radius_by_sla_class` · `plan.service_time_prior` · `energy.model_residual_cv` |
+> | `NO_PRODUCER` | **Engineering + a named data source** | `terrainByStop` · `environment.ambientC`/`packC` · `masses.vehicleMassKg` |
+>
+> Plus **E-7's own remaining half**: the assembly bodies, which are repository-owned and
+> deliberately unwritten until the inputs exist.
+>
+> *(This row first said "four values", then "at least four plus five more". Both were hand-audits
+> and both were wrong. **The list above is the one the code computes**, and re-running
+> `coordinatorPipeline.requirements()` is how a future reader checks it rather than trusting it.)*
 >
 > S-4 and S-6 are mechanical consequences of S-3. S-5 is a configuration act requiring no code.
-> S-7 follows from S-4. **There is no other V1 work, and none may be added.**
+> S-7 follows from S-4. **There is no V1 work outside S-1…S-8**, and the boundary did not move
+> when S-3's contents turned out to be larger than the first measurement of them.
 
 ---
 

@@ -8,7 +8,7 @@
 
 **Current tree:** **HEAD `9e1d871`** *(2026-09-01, the X7 pass)* · **no application source modified
 by any commit since `7335260`** — the four since it (`ef0d65f`, `22411e8`, `09e91a5`, `9e1d871`)
-touch only `docs/` and `formal/` · **digest `4d94ef18e52b5953…` (574 files), measured live
+touch only `docs/` and `formal/` · **digest `1b301e285ad7dcd0…` (576 files), measured live
 2026-09-01.** *(`d033038cb261c3de…` / 573 held from 2026-08-30 through all four of those commits and
 is **superseded** by the V1 audit's own source edits — `solve/round.js`,
 `observability/metrics.js`, `workers/coordinator.worker.js`, `workers/registry.js`, plus one new
@@ -22,11 +22,12 @@ uncommitted X7 fix.)*
 Every path below was confirmed to exist (or confirmed absent) by direct filesystem inspection on
 that tree.
 
-> **Current tree: digest `d033038cb261c3de…` (573 files), HEAD `9e1d871`, 2026-09-01.** *(This block
-> said HEAD `7335260`; four `docs/`-and-`formal/`-only commits have landed since and the digest is
-> unmoved. **Every count in the bullets below was re-measured on 2026-09-01 and every one is still
-> correct** — 19 workers, 21 `.js` files, 28 migrations, 346 legacy-corpus files, the stale evidence
-> collection.)* T1-04, the
+> **Current tree: digest `1b301e285ad7dcd0…` (576 files), HEAD `9e1d871` + the V1 audit, 2026-09-01.**
+> *(This block said `d033038cb261c3de…` / 573 and HEAD `7335260`. The four commits after `7335260`
+> touch only `docs/` and `formal/` and left the digest alone; **the V1 audit's own source edits then
+> moved it**. **Every count in the bullets below was re-measured on 2026-09-01** — 19 workers and 28
+> migrations unchanged, `src/workers/` now **22** files, `gate:legacy`'s corpus now **347**, and the
+> evidence collection staler still.)* T1-04, the
 > `Leg.slaDeadline` producer and closure item V-10 all landed after the "originally measured"
 > line above and were **committed as the snapshot `7335260`** before V-9 ran, so **the
 > `b68dc5d` / `431010ace1…` / 565 line describes a superseded tree**. *(This block opened
@@ -37,11 +38,12 @@ that tree.
 >
 > - the registry registers **19** workers, not 18 (T1-04 added `fairness.worker.js`), which starts
 >   at boot — so `SCHEDULED` is **9** and **12 of 19** workers start, not 11 of 18;
-> - `src/workers/` holds **21** `.js` files, not 20;
+> - `src/workers/` held **21** `.js` files at that measurement, not 20 — **it now holds 22**;
+>   the V1 audit added `coordinatorPipeline.js` on 2026-09-01, which registers no worker;
 > - **28** Prisma migrations, not 29 — the "29" was arithmetically inconsistent with its own
 >   "27 + T1-04's one" and is corrected everywhere it appeared;
-> - `gate:legacy`'s corpus is **346** files, not 340 (the load-bearing number, *4 absent*, is
->   unchanged);
+> - `gate:legacy`'s corpus was **346** files at that measurement, not 340, and is **347** now (the
+>   load-bearing number, *4 absent*, is unchanged throughout — the corpus size is not the check);
 > - **`Backend/docs/release-evidence.json` is STALE** and is no longer current-tree evidence —
 >   see *Release gates and evidence* below;
 > - the runbook section is rewritten, and V-10 added `tests/engine/phase15RollbackRunbook.test.js`
@@ -112,7 +114,8 @@ distinction is load-bearing because two of them are outside the source-digest sc
 release evidence and must not be cited as any gate's discharge.**
 - producer `tools/release/collectEvidence.js`, produced `2026-08-29T06:28:45.657Z`
 - `sourceDigest` = `431010ace188c4b1…` — **a tree that no longer exists.** The current tree is
-  `d033038c…` (573 files). *(This line previously read "**matches the current tree**". That was
+  `1b301e28…` (576 files), **two digest moves further on** (`431010ace1…` → `d033038c…` →
+  `4d94ef18…` → this). *(This line previously read "**matches the current tree**". That was
   true when written on 2026-08-29 and is false now; it also contradicted
   `PHASE_15_VERIFICATION_STATE.md` §3.0, which is the correct account.)*
 - **17 evidence records, 0 VOID, 17/17 bound to that superseded digest** — and on the current tree
@@ -144,8 +147,20 @@ classes — BUILD, SUITE, PRODUCTION, ORGANISATIONAL.
 PHASE T1-04 added `fairness.worker.js` for §17.5; re-measured 2026-08-30 —
 `require('./src/workers/registry.js').WORKERS.length` → 19)*, exporting `READINESS`, `WORKERS`,
 `WORKER_BY_ID`, `assertRegistry`, `scheduledAtBoot`, `scheduledOnLeadership`, `report`.
-The directory holds **21 `.js` files**: 19 `*.worker.js` modules, `registry.js`, and
-`leaderWorkers.js` (the LEADER_ONLY wiring).
+The directory holds **22 `.js` files**: 19 `*.worker.js` modules, `registry.js`,
+`leaderWorkers.js` (the LEADER_ONLY wiring), and **`coordinatorPipeline.js`** — the
+coordinator's solve-path **requirements probe**, added 2026-09-01 by the V1 audit
+*(was 21 files)*. **It registers no worker**, so the registry count stays 19.
+
+> **`coordinatorPipeline.js` enumerates what the coordinator's solve path needs — 14 inputs,
+> each with a class, an owner and a probe — and `COMPOSERS.coordinator(context)` now reports
+> what this deployment is actually missing instead of a fixed paragraph.** Before it, the
+> composer took no argument and returned a constant: supplying a routing engine and every
+> calibrated value would not have changed its answer. **It builds no assembly and starts
+> nothing**, and `gate:composition` is unchanged and still RED — the gate reads
+> `UNCOMPOSABLE` declaratively and that row is removed only when the worker actually starts.
+> Its measured output, and why the three classes matter more than the count, is in
+> [`../v1/V1_CONTRACT_AND_STOP_CONDITION.md`](../v1/V1_CONTRACT_AND_STOP_CONDITION.md) §E.1.
 
 > **`gate:composition` prints "1 violation(s) across 19 registered worker(s)"** — re-run and
 > re-read 2026-08-30. The violation count did not move: it is `coordinator`, and it is B1's.
@@ -189,10 +204,24 @@ publishes automatic rollbacks, and runs the configuration pull loop (stopped on 
 
 **NOT composable — 1 of 19:**
 - **`coordinator`** — `LEADER_ONLY_NOT_COMPOSABLE`. Its round loop needs `expandCandidates`,
-  `pricedCandidateFor` and `commit`. The first two resolve through
+  `pricedCandidateFor` and `commit`, and **nothing in this repository constructs them** — they
+  exist only in test fixtures (`tools/verify/phase9ProductionPath.js` says so in its own header).
+  The first two resolve through
   `plan/insertion.js → planBuilder.hopsForSequence → routing/cellPairCache.hopsFor` to an injected
   `route` function — **the routing engine, which B1 has not selected**. `gate:composition` exits 1
   on exactly this one violation, with owner **EXTERNAL**.
+
+  > **The routing engine is not the whole of it, and until 2026-09-01 the refusal implied it was.**
+  > `COMPOSERS.coordinator()` took no argument and returned a fixed paragraph naming B1. The V1
+  > audit replaced it with a probe over `src/workers/coordinatorPipeline.js`'s **14-input
+  > contract**, and the measured answer has **three** classes, not one: 3 `EXTERNAL_ROUTING`
+  > (`route`, the `travelSdSeconds` source — **N29, which no shortlisted engine supplies** — and a
+  > per-profile `speedMetresPerSecond`); 3 `REGISTER_UNRESOLVED`
+  > (`candidate.max_radius_by_sla_class`, `plan.service_time_prior`, `energy.model_residual_cv`,
+  > all `null` **by declaration**, §22.4's calibration owner's); and 3 `NO_PRODUCER`
+  > (`terrainByStop`, `environment.ambientC/packC`, `masses.vehicleMassKg` — **no schema column and
+  > no code anywhere in `src/`**, which is nobody's withheld decision but missing code against an
+  > unnamed data source). **Selecting a routing engine would close three of the nine.**
 
 **DEFERRED — 6 of 19, each with the blocker the registry itself records.** Only the first is B1's:
 
@@ -214,7 +243,14 @@ await classifiers or fleet data. **None is an unreported gap, and none is separa
 blocker** — see [`PHASE_15_BLOCKERS.md`](PHASE_15_BLOCKERS.md).
 
 The remaining composition-root work (`evaluateExact`, `pricedCandidateFor`, `hopsForSequence`, and
-their injection alongside the routing client at `server.js`) is **released by B1, not by a commit**.
+their injection alongside the routing client at `server.js`) ~~is **released by B1, not by a
+commit**~~ — **this is now known to be only two-thirds true, and the correction matters because it
+changes who is waiting on whom.** B1 releases the `EXTERNAL_ROUTING` third. The
+`REGISTER_UNRESOLVED` third is §22.4's calibration owner's. The `NO_PRODUCER` third is released by
+**neither** — it is a commit, plus a data source nobody has named. And the assembly bodies
+themselves are repository-owned work that no external decision releases; they are deliberately
+unwritten because with the inputs absent they would be exercised only by an injected context.
+See [`../v1/V1_CONTRACT_AND_STOP_CONDITION.md`](../v1/V1_CONTRACT_AND_STOP_CONDITION.md) §E.1.
 
 ---
 
@@ -460,7 +496,7 @@ that should be built:
 
 ## Tests
 
-**163 suites / 7 291 tests**, exit 0, re-measured **2026-09-01** at digest `4d94ef18…` — the V1
+**164 suites / 7 307 tests**, exit 0, re-measured **2026-09-01** at digest `4d94ef18…` — the V1
 audit added `tests/engine/solveRoundSearchGapProvenance.test.js` (14 tests, I20 search-gap
 provenance) and reworked `workerRegistry.test.js` from pinning the N13 gap to asserting it closed.
 *(Was 162 / 7 275 at `d033038c…`; before that 160 /

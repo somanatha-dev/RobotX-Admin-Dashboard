@@ -22,6 +22,7 @@
  */
 
 const leaderWorkers = require("../../src/workers/leaderWorkers");
+const coordinatorPipeline = require("../../src/workers/coordinatorPipeline");
 const registry = require("../../src/workers/registry");
 // Spied on directly: the lifecycle calls these, and counting the calls is the only way to
 // see a handle that was replaced rather than skipped (see the duplicate-writer test).
@@ -218,7 +219,32 @@ describe("PLANTED — an unstartable worker is refused, never stubbed", () => {
     expect(refusal.refusal).toBe(leaderWorkers.REFUSAL.EXTERNAL_DEPENDENCY_UNAVAILABLE);
     expect(refusal.blockedBy).toMatch(/B1/);
     expect(refusal.blockedBy).toMatch(/routing engine/);
-    expect(refusal.requires).toEqual(["expandCandidates", "pricedCandidateFor", "commit"]);
+
+    // ── V1 audit, 2026-09-01 ──────────────────────────────────────────────
+    // This asserted `requires` was exactly `["expandCandidates", "pricedCandidateFor",
+    // "commit"]`. Those are the three *collaborators* `round.execute` takes, and pinning
+    // them named the **shape** of the gap while saying nothing about its contents — which
+    // is precisely how "the coordinator is blocked on B1" survived unexamined. It is not:
+    // B1 closes three of the nine unresolved inputs, and three more are `null` register
+    // entries while three have no producer at all.
+    //
+    // `requires` is now DERIVED from `coordinatorPipeline.REQUIREMENTS`, so re-pinning a
+    // literal list here would just recreate the drift one layer along. Assert the
+    // derivation instead, and let `coordinatorPipelineRequirements.test.js` own the
+    // contract's contents.
+    expect(refusal.requires).toBe(coordinatorPipeline.REQUIREMENT_IDS);
+
+    // The refusal is MEASURED against this context rather than restated from a constant,
+    // and this fixture is the proof: it supplies `prisma` and `kv`, so those two are
+    // reported as satisfied while the routing inputs are not. A refusal that named the
+    // whole contract regardless of what it was handed would be the constant this replaced.
+    const missing = refusal.missing.map((row) => row.input);
+    expect(missing).toContain("route");
+    expect(refusal.satisfied).toEqual(expect.arrayContaining(["prisma", "kv"]));
+    expect(missing).not.toContain("prisma");
+    expect(missing.length).toBeLessThan(coordinatorPipeline.REQUIREMENT_IDS.length);
+    expect(refusal.blockedBy).toMatch(/MEASURED against this context/);
+
     // Not running. This is the assertion that matters: the refusal is a refusal, not a
     // label on a worker that started anyway.
     expect(lifecycle.running()).not.toContain("coordinator");
