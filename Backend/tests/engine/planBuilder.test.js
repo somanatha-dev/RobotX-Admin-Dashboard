@@ -27,6 +27,21 @@ const { toCU, subtract } = require("../../src/engine/determinism/fixedPoint");
 
 afterEach(() => phi.clearTerms());
 
+/**
+ * A hop for the timing tests below, which are about *when* an agent arrives and not about
+ * what the journey costs in watt-hours.
+ *
+ * E-8 — `timeline.project` refuses a hop that carries no terrain, because §14.2 evaluates
+ * climb, regeneration and stop-start over the traversal and an unsurveyed hop read as flat
+ * understates mission energy. These tests declare a level hop rather than omitting the
+ * fields: the distinction the fix turns on is **declared zero versus absent**, and writing
+ * the zeros is the test saying "this journey is level", which is a claim it is entitled to
+ * make about its own fixture.
+ */
+function levelHop(overrides) {
+  return { distanceM: 100, travelSeconds: 60, travelSdSeconds: 0, climbM: 0, descentM: 0, stopStartCycles: 0, ...(overrides || {}) };
+}
+
 describe("§13.1 — the plan is the artefact feasibility and cost share", () => {
   const built = planBuilder.build(fixture.buildInput());
 
@@ -228,7 +243,7 @@ describe("§13.2 — service time and waiting", () => {
           windowStartMs: fixture.DECISION_TIME_MS + 20 * fixture.MINUTE_MS,
         },
       ],
-      hops: [{ distanceM: 100, travelSeconds: 60, travelSdSeconds: 0 }],
+      hops: [levelHop()],
     });
     expect(projected.stops[0].waitSeconds).toBe(20 * 60 - 60);
     expect(projected.totals.windowWaitSeconds).toBe(20 * 60 - 60);
@@ -246,7 +261,7 @@ describe("§13.2 — service time and waiting", () => {
           windowStartMs: fixture.DECISION_TIME_MS + 20 * fixture.MINUTE_MS,
         },
       ],
-      hops: [{ distanceM: 100, travelSeconds, travelSdSeconds: 0 }],
+      hops: [levelHop({ travelSeconds })],
     });
     const fast = timeline.project(stops(60));
     const slow = timeline.project(stops(1140));
@@ -266,8 +281,8 @@ describe("§13.2 — service time and waiting", () => {
         { sequence: 2, serviceSeconds: 60, serviceSdSeconds: 0 },
       ],
       hops: [
-        { distanceM: 100, travelSeconds: 60, travelSdSeconds: 30 },
-        { distanceM: 100, travelSeconds: 60, travelSdSeconds: 0 },
+        levelHop({ travelSdSeconds: 30 }),
+        levelHop(),
       ],
     });
     expect(projected.stops[0].band.arrivalSdSeconds).toBe(30);
@@ -293,7 +308,7 @@ describe("§13.2 — service time and waiting", () => {
     const projected = timeline.project({
       startMs: fixture.DECISION_TIME_MS,
       stops: [{ sequence: 1, serviceSeconds: 60 }, { sequence: 2, serviceSeconds: 60 }],
-      hops: [{ distanceM: 100, travelSeconds: 60, travelSdSeconds: 0 }],
+      hops: [levelHop()],
     });
     expect(projected.ok).toBe(false);
     expect(projected.problems[0]).toMatch(/a leg the plan would traverse for free/);
@@ -307,8 +322,8 @@ describe("§13.2 — service time and waiting", () => {
         { sequence: 2, serviceSeconds: 100, serviceSdSeconds: 0 },
       ],
       hops: [
-        { distanceM: 10, travelSeconds: 10, travelSdSeconds: 0 },
-        { distanceM: 10, travelSeconds: 10, travelSdSeconds: 0 },
+        levelHop({ distanceM: 10, travelSeconds: 10 }),
+        levelHop({ distanceM: 10, travelSeconds: 10 }),
       ],
     });
     const three = timeline.project({
@@ -319,9 +334,9 @@ describe("§13.2 — service time and waiting", () => {
         { sequence: 3, serviceSeconds: 100, serviceSdSeconds: 0 },
       ],
       hops: [
-        { distanceM: 10, travelSeconds: 10, travelSdSeconds: 0 },
-        { distanceM: 10, travelSeconds: 10, travelSdSeconds: 0 },
-        { distanceM: 10, travelSeconds: 10, travelSdSeconds: 0 },
+        levelHop({ distanceM: 10, travelSeconds: 10 }),
+        levelHop({ distanceM: 10, travelSeconds: 10 }),
+        levelHop({ distanceM: 10, travelSeconds: 10 }),
       ],
     });
     const priced = (totals) =>
@@ -352,8 +367,8 @@ describe("§13.2 — service time and waiting", () => {
         { sequence: 2, serviceSeconds: 100, serviceSdSeconds: 0 },
       ],
       hops: [
-        { distanceM: 10, travelSeconds: 10, travelSdSeconds: 0 },
-        { distanceM: 10, travelSeconds: 10, travelSdSeconds: 0 },
+        levelHop({ distanceM: 10, travelSeconds: 10 }),
+        levelHop({ distanceM: 10, travelSeconds: 10 }),
       ],
     });
     const t = projected.totals;

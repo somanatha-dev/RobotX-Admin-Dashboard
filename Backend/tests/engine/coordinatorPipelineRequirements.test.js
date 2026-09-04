@@ -58,10 +58,17 @@ function completeContext() {
       resolve: (name, context, options) =>
         Object.prototype.hasOwnProperty.call(overrides, name) ? overrides[name] : real.resolve(name, context, options),
     }),
-    route: async () => ({ distanceM: 100, travelSeconds: 60, travelSdSeconds: 6 }),
+    route: async () => ({
+      distanceM: 100,
+      travelSeconds: 60,
+      travelSdSeconds: 6,
+      climbM: 3,
+      descentM: 1,
+      stopStartCycles: 2,
+    }),
     travelTimeSpread: { source: "declared-for-this-test" },
     speedMetresPerSecondFor: () => 2.5,
-    terrainForStops: () => [],
+    hopTerrainSource: { source: "declared-for-this-test" },
     environmentFor: () => ({ ambientC: 20, packC: 25 }),
     vehicleMassKgFor: () => 80,
     prisma: {},
@@ -197,13 +204,28 @@ describe("the classes are the actionable part, and they are assigned correctly",
     }
   });
 
-  test("the three no-producer families are NO_PRODUCER, and are not owned by a decision-maker", () => {
+  test("the two no-producer families are NO_PRODUCER, and are not owned by a decision-maker", () => {
     // The distinction the flat list destroyed: these are not waiting on anyone's decision.
     // Calling them "blocked on B1" would send the owner looking for a decision to make.
-    for (const name of ["terrainByStop", "environment.ambientC / packC", "masses.vehicleMassKg"]) {
+    for (const name of ["environment.ambientC / packC", "masses.vehicleMassKg"]) {
       expect(byId.get(name).class).toBe(pipeline.REQUIREMENT_CLASS.NO_PRODUCER);
       expect(byId.get(name).owner).toMatch(/Engineering/);
     }
+  });
+
+  /**
+   * E-8 — terrain was a third `NO_PRODUCER` family called `terrainByStop`, and that was the
+   * wrong class. §14.2 states climb, regeneration and stop-start **over the traversal**, so
+   * the routing seam is its producer; the seam simply was not carrying it. The row is
+   * `EXTERNAL_ROUTING` now, and its owner is the traversal source, not Engineering.
+   */
+  test("hop terrain is EXTERNAL_ROUTING — it has a producer, and the producer is the router", () => {
+    const row = byId.get("hop terrain (climbM / descentM / stopStartCycles)");
+    expect(row.class).toBe(pipeline.REQUIREMENT_CLASS.EXTERNAL_ROUTING);
+    expect(row.owner).toMatch(/traversal source/);
+    expect(byId.has("terrainByStop")).toBe(false);
+    // Every routing row is one contract: the `route` entry names all six fields it returns.
+    expect(byId.get("route").why).toMatch(/climbM, descentM, stopStartCycles/);
   });
 
   test("the Ω correction is checked rather than assumed, and fails closed without a snapshot", () => {

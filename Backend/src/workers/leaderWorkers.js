@@ -176,10 +176,13 @@ const UNCOMPOSABLE = Object.freeze({
       "invented travel times, which is worse than not assigning it. " +
       "**And the routing engine is not the whole of it** — `src/workers/coordinatorPipeline.js` enumerates the " +
       "full contract, including three register entries that resolve to `null` by declaration " +
-      "(`candidate.max_radius_by_sla_class`, `plan.service_time_prior`, `energy.model_residual_cv`) and three " +
-      "input families with **no schema column and no producer anywhere in `src/`** (`terrainByStop`, " +
-      "`environment.ambientC/packC`, `masses.vehicleMassKg`). Those last three are nobody's withheld decision; " +
-      "they are missing code against a data source nobody has named. Run the probe for the current list.",
+      "(`candidate.max_radius_by_sla_class`, `plan.service_time_prior`, `energy.model_residual_cv`) and two " +
+      "input families with **no schema column and no producer anywhere in `src/`** " +
+      "(`environment.ambientC/packC`, `masses.vehicleMassKg`). Those last two are nobody's withheld decision; " +
+      "they are missing code against a data source nobody has named. " +
+      "*(E-8 moved a third — terrain — out of that group: §14.2 states climb, regeneration and stop-start over " +
+      "the traversal, so the router is its producer and the `route` contract is six fields, not three.)* " +
+      "Run the probe for the current list.",
   }),
 });
 

@@ -62,11 +62,26 @@ function newLegs(overrides) {
   ];
 }
 
-/** One hop per stop: travel *into* it. */
+/**
+ * One hop per stop: travel *into* it.
+ *
+ * E-8 — each hop carries its own terrain. §14.2 evaluates climb, regeneration and
+ * stop-start over the traversal, so `climbM` / `descentM` / `stopStartCycles` ride on the
+ * hop beside `distanceM`, and `hopsForSequence` re-resolving them is what gives an inserted
+ * charging stop a real elevation profile instead of none. The values differ per hop so a
+ * test that summed the wrong one would not still pass.
+ */
 function hops(count) {
   const rows = [];
   for (let index = 0; index < (count || 2); index += 1) {
-    rows.push({ distanceM: 600, travelSeconds: 600, travelSdSeconds: 30 });
+    rows.push({
+      distanceM: 600,
+      travelSeconds: 600,
+      travelSdSeconds: 30,
+      climbM: 5 + index,
+      descentM: 2 + index,
+      stopStartCycles: 6 + index,
+    });
   }
   return rows;
 }
@@ -172,10 +187,7 @@ function buildInput(overrides) {
     charging: charging(),
     environment: { ambientC: 18, packC: 22 },
     masses: { vehicleMassKg: 60, payloadMassExpectedKg: 8, payloadMassExpectedKgByLegId: { "leg-1": 8 } },
-    terrainByStop: {
-      1: { climbM: 5, descentM: 2, stopStartCycles: 6 },
-      2: { climbM: 3, descentM: 6, stopStartCycles: 8 },
-    },
+    // E-8: terrain moved onto the hops above; `terrainByStop` no longer exists as an input.
     actuatorCycles: { LIFT: 0, DOOR: 2, LATCH: 2 },
     brakingEvents: 14,
     gradientExposureM: 16,

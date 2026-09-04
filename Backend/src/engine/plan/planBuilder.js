@@ -89,6 +89,7 @@ const FAILURE = Object.freeze({
   MISSING_SERVICE_TIME: "MISSING_SERVICE_TIME",
   MISSING_ENERGY_INPUT: "MISSING_ENERGY_INPUT",
   MISSING_PAYLOAD_INPUT: "MISSING_PAYLOAD_INPUT",
+  MISSING_TERRAIN: "MISSING_TERRAIN",
 });
 
 /** How the plan resolved its energy reserve position. */
@@ -242,18 +243,23 @@ function resolveServiceTimes(stops, input) {
  * One profile per **Leg**, not per stop: §14.2's equation is stated over a leg, and the
  * `t_occupied(k)` term for payload conditioning is an interval that spans stops.
  *
+ * **Terrain arrives on the projected hop and is refused when absent** (`MISSING_TERRAIN`).
+ * It used to arrive as a separate `terrainByStop` map keyed by the sequenced stop number;
+ * E-8 moved it onto the hop, where §14.2 states it — see the block comment at the read.
+ *
  * @param {object} input
- * @param {object[]} input.projectedStops
+ * @param {object[]} input.projectedStops from `timeline.project()`, each carrying the hop's
+ *   `distanceM`, `climbM`, `descentM` and `stopStartCycles`
  * @param {object[]} input.stops the sequenced stops, carrying `legId`
  * @param {object[]} input.occupancy from `payload/loadState.project()`
  * @param {object} input.environment `{ ambientC, packC }`
  * @param {object} input.masses `{ vehicleMassKg, payloadMassExpectedKgByLegId }`
- * @param {object} input.terrainByStop `{ climbM, descentM, stopStartCycles }` per stop sequence
  * @returns {{ ok: boolean, profiles: object[], problems: string[] }}
  */
 function legProfiles(input) {
   const source = input || {};
   const problems = [];
+  let terrainRefused = false;
 
   const bySequence = new Map();
   for (const stop of source.projectedStops || []) bySequence.set(stop.sequence, stop);
@@ -266,7 +272,37 @@ function legProfiles(input) {
       continue;
     }
     const legId = String(stop.legId);
-    const terrain = (source.terrainByStop || {})[String(stop.sequence)] || {};
+
+    // ── E-8: an absent terrain profile is not flat ground ─────────────────────
+    // This read `(source.terrainByStop || {})[seq] || {}` and then accumulated
+    // `isNumber(t.climbM) ? t.climbM : 0` (and `: 1` for the cycles). A stop with no terrain
+    // therefore produced a profile asserting **zero climb, zero descent and one stop-start
+    // cycle** — a complete, plausible, entirely invented physical description of ground
+    // nobody surveyed.
+    //
+    // `energy/consumption.legEnergyWh` lists all three in `REQUIRED_PROFILE_FIELDS` and
+    // refuses a profile missing any of them. That refusal was **unreachable**: this function
+    // always supplied a number, so the fail-closed check one layer down could never fire.
+    // The coercion did not degrade the estimate, it defeated the guard — and it defeated it
+    // in the permissive direction, since zeroing `β_climb · climbM · grossMassKg` understates
+    // mission energy, which overstates the projected charge F34 holds the §14 reserves
+    // against.
+    //
+    // **Terrain now arrives on the hop**, from `timeline.project`, which refuses a hop
+    // without it. §14.2 states these terms over the traversal, and the previous
+    // `terrainByStop` map was keyed by the *sequenced* stop number — a key
+    // `insertChargingStop` rewrites, so every stop after an inserted charge read its
+    // neighbour's elevation profile. Reading from the projection removes that failure mode
+    // instead of guarding it.
+    const terrainFields = timeline.TERRAIN_FIELDS.filter((field) => !isNumber(projected[field]));
+    if (terrainFields.length > 0) {
+      terrainRefused = true;
+      problems.push(
+        `stop ${String(stop.sequence)}: the hop into it carries no terrain (${terrainFields.join(", ")})`,
+      );
+      continue;
+    }
+
     const current = byLeg.get(legId) || {
       legId,
       distanceM: 0,
@@ -279,15 +315,15 @@ function legProfiles(input) {
     };
 
     current.distanceM += projected.distanceM;
-    current.climbM += isNumber(terrain.climbM) ? terrain.climbM : 0;
-    current.descentM += isNumber(terrain.descentM) ? terrain.descentM : 0;
+    current.climbM += projected.climbM;
+    current.descentM += projected.descentM;
     current.movingSeconds += projected.travelSeconds;
     // Waiting is dwell for energy purposes: the agent is stationary and drawing auxiliary
     // and thermal loads. It is priced as committed time by C_direct and as energy here,
     // which are two different consumptions of the same interval, not a double count.
     current.dwellSeconds += projected.serviceSeconds + projected.waitSeconds;
     current.totalSeconds += projected.travelSeconds + projected.serviceSeconds + projected.waitSeconds;
-    current.stopStartCycles += isNumber(terrain.stopStartCycles) ? terrain.stopStartCycles : 1;
+    current.stopStartCycles += projected.stopStartCycles;
 
     byLeg.set(legId, current);
   }
@@ -315,7 +351,9 @@ function legProfiles(input) {
     });
   }
 
-  if (problems.length > 0) return { ok: false, profiles, problems };
+  if (problems.length > 0) {
+    return { ok: false, profiles, problems: terrainRefused ? [FAILURE.MISSING_TERRAIN, ...problems] : problems };
+  }
   return { ok: true, profiles, problems: [] };
 }
 
@@ -426,7 +464,6 @@ function buildVariant(input, stops) {
     occupancy: load.occupancy,
     environment: source.environment,
     masses: source.masses,
-    terrainByStop: source.terrainByStop,
   });
   if (!profiles.ok) return { ok: false, variant: null, problems: profiles.problems };
 
@@ -711,16 +748,17 @@ function insertChargingStop(input, stops) {
  * @param {object} input.agent `{ agentId, agentClassId, releaseAtMs, packNominalWh, … }`
  * @param {object[]} input.committedLegs the Legs the agent already holds
  * @param {object[]} input.newLegs the Legs this candidate would add
- * @param {object[]} input.hops travel into each stop, from the cell-pair cache
+ * @param {object[]} input.hops travel into each stop, from the cell-pair cache, each carrying
+ *   `{ distanceM, travelSeconds, travelSdSeconds, climbM, descentM, stopStartCycles }`
  * @param {(stops: object[]) => object[]} [input.hopsForSequence] re-resolves hops for a
- *   re-sequenced stop list; required for charging insertion
+ *   re-sequenced stop list; required for charging insertion, and the reason an inserted
+ *   charging stop gets its own terrain rather than none
  * @param {object} input.serviceTime §13.2's inputs
  * @param {object} input.payload §15's inputs
  * @param {object} input.energy §14's inputs
  * @param {object} input.charging §13.4/§14.6's inputs
  * @param {object} input.environment `{ ambientC, packC }`
  * @param {object} input.masses
- * @param {object} input.terrainByStop
  * @param {object|Map} input.config
  * @param {number} input.decisionTimeMs
  * @param {number} input.commitmentHorizonSeconds `plan.commitment_horizon`

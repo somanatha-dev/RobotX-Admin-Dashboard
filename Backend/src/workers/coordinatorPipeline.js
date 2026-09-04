@@ -133,7 +133,7 @@ function registerRequirement(name, why, owner) {
  * probe a promotion runs cannot disagree about what the coordinator needs.
  */
 const REQUIREMENTS = Object.freeze([
-  /* ── Routing: the injected `route` seam and the two values it cannot supply ── */
+  /* ── Routing: the injected `route` seam and the values it cannot supply ── */
   {
     id: "route",
     class: REQUIREMENT_CLASS.EXTERNAL_ROUTING,
@@ -141,8 +141,10 @@ const REQUIREMENTS = Object.freeze([
     why:
       "`routing/cellPairCache.read` falls through to `deps.route(parts)` on a cache miss and returns " +
       "`no router is available and the entry is not cached` without it. Contract: " +
-      "`async ({originCell, destCell, profileKey, timeBucket}) => {distanceM, travelSeconds, travelSdSeconds}`, " +
-      "all three finite and non-negative or `buildEntry` refuses the result and nothing is cached.",
+      "`async ({originCell, destCell, profileKey, timeBucket}) => {distanceM, travelSeconds, travelSdSeconds, " +
+      "climbM, descentM, stopStartCycles}`, every one finite and non-negative. The first three are refused by " +
+      "`buildEntry` and never cached; the terrain three are carried by `buildEntry` and refused by " +
+      "`plan/timeline.project` at the decision path (E-8).",
     probe: (context) => isFunction(context.route),
   },
   {
@@ -166,6 +168,27 @@ const REQUIREMENTS = Object.freeze([
       "profile's own speed, and refuses without it. It is a real fleet measurement, not a plausible number: " +
       "the only `MobilityModel` in this repository is a seed whose `speedModel` is a note deferring to D3.",
     probe: (context) => isFunction(context.speedMetresPerSecondFor) || isPositive(context.speedMetresPerSecond),
+  },
+  {
+    id: "hop terrain (climbM / descentM / stopStartCycles)",
+    class: REQUIREMENT_CLASS.EXTERNAL_ROUTING,
+    owner: "the project owner — the same traversal source as `route`",
+    why:
+      "§14.2 evaluates `β_climb · Σ max(0, Δh)`, its regeneration counterpart and `β_stop_start · " +
+      "n_stop_start_cycles` **over the traversal**, so these are properties of the hop the router answers with. " +
+      "`plan/timeline.project` refuses a hop without them and `planBuilder.legProfiles` then refuses the plan " +
+      "with `MISSING_TERRAIN`. Elevation is not uniformly available: Valhalla and GraphHopper can return it, " +
+      "OSRM cannot, and **no shortlisted engine returns stop-start cycles** — so like `travelSdSeconds` this " +
+      "needs a declared source, and selecting an engine does not by itself close it.\n" +
+      "*(E-8, 2026-09-04. This was a `NO_PRODUCER` row named `terrainByStop`, and it carried two false claims. " +
+      "It said `legProfiles` \"fails closed\" when `legProfiles` coerced absent terrain to zero climb, zero " +
+      "descent and one stop-start cycle — which made `consumption.REQUIRED_PROFILE_FIELDS`'s refusal " +
+      "unreachable. And it classed terrain as a family with no producer, when §14.2 states it over the " +
+      "traversal and the routing seam is its producer. The old stop-keyed map was additionally misaligned by " +
+      "§13.4: `insertChargingStop` re-sequences, so every stop after an inserted charge read its neighbour's " +
+      "elevation profile. The class moved from `NO_PRODUCER` to `EXTERNAL_ROUTING`; the requirement count is " +
+      "unchanged at 14.)*",
+    probe: (context) => present(context.hopTerrainSource),
   },
 
   /* ── Register entries that exist and resolve to nothing ────────────────────── */
@@ -192,16 +215,6 @@ const REQUIREMENTS = Object.freeze([
   ),
 
   /* ── Input families with no schema column and no producer ─────────────────── */
-  {
-    id: "terrainByStop",
-    class: REQUIREMENT_CLASS.NO_PRODUCER,
-    owner: "Engineering + a terrain data source",
-    why:
-      "`plan/planBuilder.legProfiles` requires `{climbM, descentM, stopStartCycles}` per stop and fails closed " +
-      "without it. **No Prisma column and no producer anywhere in `src/` supplies it.** This is not a decision " +
-      "anyone is withholding — it is code nobody has written against a data source nobody has named.",
-    probe: (context) => isFunction(context.terrainForStops),
-  },
   {
     id: "environment.ambientC / packC",
     class: REQUIREMENT_CLASS.NO_PRODUCER,

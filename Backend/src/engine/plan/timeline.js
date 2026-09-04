@@ -58,6 +58,18 @@ const { normalCdf } = require("../energy/consumption");
 /** @structural milliseconds in one second */
 const MS_PER_SECOND = 1000;
 
+/**
+ * The per-hop terrain §14.2's climb, regeneration and stop-start terms are evaluated over.
+ *
+ * Declared here rather than imported from `routing/cellPairCache`, which carries the same
+ * three on its entries: `plan/` has no module edge to `routing/` and this is not the change
+ * that should create one — the router is injected as `hopsForSequence`, not required. The
+ * two lists are pinned equal by test so the duplication cannot drift.
+ *
+ * @structural the terrain fields of §14.2's equation, stated per traversal
+ */
+const TERRAIN_FIELDS = Object.freeze(["climbM", "descentM", "stopStartCycles"]);
+
 /** @structural seconds in one hour */
 const SECONDS_PER_HOUR = 3600;
 
@@ -298,8 +310,52 @@ function project(input) {
       continue;
     }
 
-    const travelSd = isNumber(hop.travelSdSeconds) ? hop.travelSdSeconds : 0;
-    const serviceSd = isNumber(stop.serviceSdSeconds) ? stop.serviceSdSeconds : 0;
+    // ── E-8: an absent spread is not a spread of zero ─────────────────────────
+    // These two lines read `isNumber(x) ? x : 0`. A hop that carried no
+    // `travelSdSeconds` therefore contributed **no variance**, the band closed by exactly
+    // that much, and §8.4's `p_late` — which is priced "from the ETA predictive
+    // distribution, not the point estimate" — read the plan as arriving on a certain
+    // schedule. That is the optimistic direction: it understates lateness risk on every
+    // hop whose spread is unknown, and it is the same coalesce N29 names and that
+    // `tools/routing/b1Benchmark.js` was already corrected for. `cellPairCache.buildEntry`
+    // refuses an entry without a finite non-negative `travelSdSeconds`, so no cached hop
+    // reaches here without one — which means this coercion never protected a real path and
+    // only ever hid a producer that had stopped supplying it.
+    //
+    // A declared `0` still passes. What no longer passes is silence.
+    if (!isNumber(hop.travelSdSeconds) || hop.travelSdSeconds < 0) {
+      problems.push(
+        `stop ${String(stop.sequence)}: the hop's travel-time spread is unresolved. §8.4 prices p_late from ` +
+          "the ETA predictive distribution, so reading a missing spread as 0 would assert a certain arrival",
+      );
+      continue;
+    }
+    if (!isNumber(stop.serviceSdSeconds) || stop.serviceSdSeconds < 0) {
+      problems.push(
+        `stop ${String(stop.sequence)}: the service-time spread is unresolved. §13.2's ladder always returns ` +
+          "one beside the mean, so its absence means the ladder was bypassed, not that service is deterministic",
+      );
+      continue;
+    }
+
+    // ── E-8: the hop's terrain, refused rather than assumed flat ──────────────
+    // §14.2 evaluates climb, regeneration and stop-start over the traversal, so the hop is
+    // where they live. `cellPairCache.buildEntry` carries them without requiring them,
+    // because that seam is also what `b1Benchmark.js` measures engine latency through; the
+    // decision path is here, and this is where a hop with no elevation profile stops being
+    // usable. Nothing downstream of this point can then read a fabricated gradient.
+    const terrainMissing = TERRAIN_FIELDS.filter((field) => !isNumber(hop[field]) || hop[field] < 0);
+    if (terrainMissing.length > 0) {
+      problems.push(
+        `stop ${String(stop.sequence)}: the hop's terrain is unresolved (${terrainMissing.join(", ")}). ` +
+          "§14.2 evaluates climb and regeneration over the traversal, and treating an unsurveyed hop as flat " +
+          "understates mission energy",
+      );
+      continue;
+    }
+
+    const travelSd = hop.travelSdSeconds;
+    const serviceSd = stop.serviceSdSeconds;
 
     const arrivalMs = cursorMs + hop.travelSeconds * MS_PER_SECOND;
     varianceSeconds2 += travelSd * travelSd;
@@ -328,6 +384,9 @@ function project(input) {
       serviceSeconds: stop.serviceSeconds,
       waitSeconds: stopWaitSeconds,
       distanceM: hop.distanceM,
+      climbM: hop.climbM,
+      descentM: hop.descentM,
+      stopStartCycles: hop.stopStartCycles,
       band: {
         arrivalSdSeconds,
         departureSdSeconds: Math.sqrt(varianceSeconds2),
@@ -452,6 +511,7 @@ function lateProbability(projectedStops, deadlineMs) {
 
 module.exports = {
   MS_PER_SECOND,
+  TERRAIN_FIELDS,
   SECONDS_PER_HOUR,
   HOURS_PER_DAY,
   DAYS_PER_WEEK,

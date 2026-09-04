@@ -50,6 +50,13 @@ const KEY_PREFIX = "engine:route:cell";
 const KEY_FIELDS = Object.freeze(["originCell", "destCell", "profileKey", "timeBucket"]);
 
 /**
+ * The per-hop terrain §14.2's climb, regeneration and stop-start terms are evaluated over.
+ * Carried on the entry; required by `plan/timeline.project`, not here — see `buildEntry`.
+ * @structural the terrain fields of §14.2's equation, stated per traversal
+ */
+const TERRAIN_FIELDS = Object.freeze(["climbM", "descentM", "stopStartCycles"]);
+
+/**
  * @param {*} value
  * @returns {boolean}
  */
@@ -95,7 +102,31 @@ function key(parts) {
  * stored only a mean would make punctuality unpriceable for every cached pair — which is
  * every pair in steady state.
  *
- * @param {object} input `{ distanceM, travelSeconds, travelSdSeconds, profileKey, timeBucket }`
+ * ── E-8: terrain is a property of the traversal, so it is carried here ─────
+ * §14.2 states the climb and regeneration terms as `Σ max(0, Δh)` **over the leg**, and
+ * `β_stop_start · n_stop_start_cycles` as *"acceleration cycles"* along it. All three are
+ * properties of the path between two points, exactly as `distanceM` is — so they belong on
+ * the hop the router answers with, and the `route(parts)` contract is **six** fields.
+ *
+ * They were previously carried as `planBuilder`'s `terrainByStop`, a map keyed by the
+ * *sequenced* stop number. `insertChargingStop` re-sequences every stop when it evaluates
+ * an insertion position, so that key shifted under §13.4 and each stop after the inserted
+ * one read its neighbour's terrain — a silently wrong physical profile, not a refusal.
+ * Keying by the hop removes the failure mode rather than guarding it: `hopsForSequence` is
+ * re-run per variant, so an inserted charging stop gets its own approach hop with its own
+ * elevation change.
+ *
+ * **Carried, not required.** The three original fields are what makes a row a usable cache
+ * entry at all, and they stay mandatory. Terrain is a *decision-path* requirement, and it is
+ * enforced where the decision is made — `plan/timeline.project` refuses a hop without it,
+ * before any plan is built or priced. Requiring it here instead would additionally refuse
+ * every row written by `tools/routing/b1Benchmark.js`, which measures engine latency and
+ * cache hit rate and builds no plan; a benchmark that cached nothing would report a hit rate
+ * of zero and read as an engine result. A value that *is* supplied is still validated: a
+ * negative climb is refused rather than stored.
+ *
+ * @param {object} input `{ distanceM, travelSeconds, travelSdSeconds, climbM, descentM,
+ *   stopStartCycles, profileKey, timeBucket }`
  * @returns {{ ok: boolean, entry: object|null, missing: string[] }}
  */
 function buildEntry(input) {
@@ -105,6 +136,15 @@ function buildEntry(input) {
   if (!isNumber(source.distanceM) || source.distanceM < 0) missing.push("distanceM");
   if (!isNumber(source.travelSeconds) || source.travelSeconds < 0) missing.push("travelSeconds");
   if (!isNumber(source.travelSdSeconds) || source.travelSdSeconds < 0) missing.push("travelSdSeconds");
+
+  // Present-but-invalid is a refusal; absent is carried as `null` for `timeline.project` to
+  // refuse at the decision path. The two are kept distinct precisely so that "the router
+  // returned a negative climb" never reads as "the router said nothing".
+  for (const field of TERRAIN_FIELDS) {
+    const value = source[field];
+    if (value === null || value === undefined) continue;
+    if (!isNumber(value) || value < 0) missing.push(field);
+  }
   if (missing.length > 0) return { ok: false, entry: null, missing };
 
   return {
@@ -113,6 +153,9 @@ function buildEntry(input) {
       distanceM: source.distanceM,
       travelSeconds: source.travelSeconds,
       travelSdSeconds: source.travelSdSeconds,
+      climbM: source.climbM ?? null,
+      descentM: source.descentM ?? null,
+      stopStartCycles: source.stopStartCycles ?? null,
       profileKey: source.profileKey ?? null,
       timeBucket: source.timeBucket ?? null,
     }),
@@ -147,6 +190,10 @@ function applyIntraCellOffset(entry, input) {
   const ends = isNumber(source.ends) ? source.ends : 2;
   const offsetM = source.intraCellOffsetM * ends;
 
+  // Terrain passes through untouched. The offset is a **horizontal** quantisation — §20.3
+  // corrects for the distance between a cell's centre and the real endpoint — and there is
+  // no elevation change to attribute to it. Inflating climb by a plausible gradient here
+  // would be inventing terrain for ground the router never traversed.
   return {
     ok: true,
     corrected: Object.freeze({
@@ -318,6 +365,7 @@ class Counters {
 module.exports = {
   KEY_PREFIX,
   KEY_FIELDS,
+  TERRAIN_FIELDS,
   key,
   buildEntry,
   applyIntraCellOffset,
