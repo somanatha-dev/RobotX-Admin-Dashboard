@@ -178,6 +178,13 @@ identity.*
 — computed live via `node -e "require('./tools/release/sourceDigest.js').sourceDigest()"` from `Backend/`,
 2026-09-01, after the V1 audit's four source edits and one new test file.
 
+> **CURRENT TREE, 2026-09-04 — supersedes the HEAD and digest stated in this row.** **HEAD `8910818`** · digest **`011049f7a504fa70d05bfc2e87a662f897cefdf4fbd5a58b3e861fff5eba3b42` / 577 files** · `npm test` **165 suites / 7 336 tests / 0 failures** · `npm run gates` **7 PASS / 1 FAIL** (`gate:composition`) · `routing:readiness` **BLOCKED**.
+>
+> **Application source HAS been modified since `7335260`** — the claim that it had not held through `9e1d871` and is now false. Five V1 commits have landed: `2b367e4` (I20 + N13), `cb6517b`, `27d3470` (E-7), **`e38fe5b` (E-8 — the terrain and ETA-spread fail-opens)** and **`8910818` (E-8b — the coordinator's pinned snapshot)**. See `docs/v1/V1_CONTRACT_AND_STOP_CONDITION.md` §J.0.
+>
+> **No §24 gate moved. RELEASE: BLOCKED, unchanged.** B1, B8, B-P, B-O, B-M, X3 and A9 are all where they were, and no formal-verification run was repeated.
+
+
 > **`d033038cb261c3de…` / 573 is SUPERSEDED, and this is the first digest move since 2026-08-30.**
 > It is not a cosmetic change of identity: **application source moved**, so every measurement on this
 > page dated 2026-08-30 was taken against a tree that no longer exists. Those rows keep `d033038c…`

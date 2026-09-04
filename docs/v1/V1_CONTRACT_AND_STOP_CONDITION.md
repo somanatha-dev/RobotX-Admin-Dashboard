@@ -1,8 +1,19 @@
 # V1 — CONTRACT, CLASSIFICATION, AND FINITE STOP CONDITION
 
 **Audit date:** 2026-09-01 · **Branch:** `feature/dashboard` · **HEAD at audit start:** `09e91a5`
-**Source digest:** `d033038cb261c3de0efe13796af9aa26d190ea113a5a2bfe5971480f72bdca00` (**573 files**) —
-measured live, unchanged.
+**Source digest at audit start:** `d033038cb261c3de0efe13796af9aa26d190ea113a5a2bfe5971480f72bdca00`
+(**573 files**) — measured live.
+
+> **CURRENT STATE — last execution pass 2026-09-04.** **HEAD `8910818`** ·
+> **digest `011049f7a504fa70d05bfc2e87a662f897cefdf4fbd5a58b3e861fff5eba3b42` / 577 files** ·
+> `npm test` **165 suites / 7 336 tests / 0 failures** · `npm run gates` **7 PASS / 1 FAIL**
+> (`gate:composition`) · `routing:readiness` **BLOCKED**.
+>
+> **V1 STATUS: BLOCKED — at an owner/external boundary, not at repository-owned work.**
+> Stop conditions **S-1, S-2, S-8 met**; **S-3 open** (§K); S-4, S-6, S-7 are consequences of it;
+> S-5 is an owner configuration act whose mechanism is implemented and **verified live**.
+> **Section K is the request.** Sections A–J below are the audit as written on 2026-09-01, with
+> each later pass's corrections recorded beside the text they correct rather than over it.
 
 > **What this document is.** The first V1/V2 boundary this repository has ever had. Before it, no
 > V1 stop condition existed anywhere in the tree — a search of every `.md` found none. The
@@ -339,7 +350,11 @@ shardSupervisor.worker.runOnce  →  leaderWorkers.apply({mayRunRound})
 | **The single structural break** | The coordinator's dependency assembly. Everything downstream is *written and tested*; nothing *constructs* it |
 | **What that assembly needs that this repository cannot supply** | `route(parts)`, a `travelSdSeconds` source (N29 — **no shortlisted engine returns one**), a per-profile `speedMetresPerSecond`, and `candidate.max_radius_by_sla_class` (`required: true`, **no default**, deliberately) |
 
-### D.2 The `route` contract, stated exactly
+### D.2 The `route` contract, stated exactly — **SUPERSEDED by §F.2 (E-8, 2026-09-04)**
+
+~~Three fields.~~ **The contract is six.** §14.2 evaluates climb, regeneration and stop-start over
+the *traversal*, so terrain is a property of the hop and the router is its producer. The block
+below is retained as the state before E-8; **read §F.2 for the current contract**.
 
 ```js
 async route({ originCell, destCell, profileKey, timeBucket })
@@ -348,8 +363,9 @@ async route({ originCell, destCell, profileKey, timeBucket })
       travelSdSeconds: number ≥ 0 }     // all three REQUIRED by cellPairCache.buildEntry
 ```
 
-Anything missing a field is refused by `buildEntry` and never cached — the seam already fails
-closed.
+~~Anything missing a field is refused by `buildEntry` and never cached — the seam already fails
+closed.~~ **True of these three and still true. It was *not* true of terrain, which had no place in
+the contract at all and was silently invented one layer down — see §E.2.**
 
 ### D.3 A finding that narrows D1's V1 relevance
 
@@ -385,6 +401,8 @@ An item is here only if V1 cannot truthfully be called a working engineering rel
 | **E-5** | The X7 formal-verification result is uncommitted, so the tree's latest verification is not reproducible from any commit | Reproducibility is part of the V1 contract | **FIXED in this task** |
 | **E-6** | Canonical documents present a stale HEAD, a stale working-tree claim, and three stale X6/X7 status rows | §15's document-maintenance rule | **FIXED in this task** |
 | **E-7** | **The coordinator solve-path composition does not exist** — `expandCandidates`, `pricedCandidateFor`, `expansionInputFor`, and the injection of `route`, `commit`, `planState` and `deferPriceFor` at `server.js` | Without it no request is ever assigned. This is *the* V1 gap | **PARTIALLY CLOSED — the requirements probe is built; the assembly is deliberately not.** See §E.1 |
+| **E-8** | Three fail-**open** coercions on the V1 plan path: `legProfiles` turned absent terrain into flat ground, and `timeline.project` turned an absent travel-time and service-time spread into zero | **UNKNOWN IS NOT PERMISSION**, and all three erred permissively. Zeroed climb understates mission energy → overstates the charge F34 holds the §14 reserves against; a zeroed ETA spread makes §8.4's `p_late` price a certain arrival | **FIXED — `e38fe5b`.** See §E.2 |
+| **E-8b** | The composition root never handed the coordinator the pinned snapshot it already holds, so `snapshot` **and** the §6.4 Ω admissibility check both measured as unsatisfied at a real promotion | A dependency this repository owns, reported as missing. It also made E-7's own table wrong in two rows | **FIXED — `8910818`.** See §E.3 |
 
 ### E.1 — E-7, as built: the requirements probe
 
@@ -460,6 +478,119 @@ against it and killed**, and both files were restored and byte-verified. *(The X
 precedent with its own M6, and the reason to follow it is that a mutant reported as killed when it
 survived is worse evidence than no mutation testing at all.)*
 
+### E.2 — E-8, as found: three coercions that made a fail-closed guard unreachable
+
+**Found by reading `legProfiles` while verifying §F.0's `terrainByStop` row, not by a new audit.**
+The row asserted that `plan/planBuilder.legProfiles` *"requires `{climbM, descentM,
+stopStartCycles}` per stop and fails closed without it."* **It did not.** Reproduced live against
+the shipped module before any change:
+
+```
+legProfiles({ …, terrainByStop: undefined })
+  → ok = true
+  → profile = { climbM: 0, descentM: 0, stopStartCycles: 1, … }
+```
+
+An absent terrain profile became **a complete, plausible, entirely invented physical description of
+ground nobody surveyed** — and the same read at `timeline.project` turned an absent
+`travelSdSeconds` into `0`, which is §8.4's *"this ETA is certain"* in the optimistic direction and
+is N29's own coalesce one layer on from the one `tools/routing/b1Benchmark.js` was already
+corrected for.
+
+**Why this is worse than a bad estimate.** `energy/consumption.legEnergyWh` lists `climbM`,
+`descentM` and `stopStartCycles` in `REQUIRED_PROFILE_FIELDS` and **refuses** a profile missing any
+of them. That refusal was **unreachable**: `legProfiles` always handed it a number. The coercion
+did not degrade the estimate, **it defeated the guard one layer down** — and it defeated it
+permissively, because the climb term is `β_climb · climbM · grossMassKg` and zeroing it understates
+mission energy, which overstates the projected charge F34 holds the §14 reserves against.
+
+**Fixing it exposed a third defect it had been hiding.** Terrain arrived as `terrainByStop`, keyed
+by the **sequenced** stop number — and `insertChargingStop` re-sequences every stop when it
+evaluates an insertion position. Under §13.4 each stop after an inserted charge therefore read its
+**neighbour's** elevation profile, and the missing tail entry coerced to flat so nothing showed.
+That was never a refusal; it was a wrong number.
+
+**The contract decision.** §14.2 states `β_climb · Σ max(0, Δh)`, its regeneration counterpart and
+`β_stop_start · n_stop_start_cycles` **over the traversal**. Terrain is therefore a property of the
+hop, exactly as `distanceM` is — so it moved onto the hop, `hopsForSequence` re-resolves it per
+variant, and the misalignment **cannot be expressed**. Charging insertion works again for the right
+reason rather than being refused for a keying accident.
+
+**Consequently the `route(parts)` contract is six fields, not three** (§D.2 is superseded by §F.2),
+and terrain moves from `NO_PRODUCER` to `EXTERNAL_ROUTING`: it is not a family with no producer, it
+is a field the router produces and the seam was not carrying. **The requirement count is unchanged
+at 14.**
+
+**Where the requirement is enforced, and why not at the cache.** `cellPairCache.buildEntry`
+**carries** terrain and validates it when present, but does not require it; `timeline.project`
+refuses without it, before any plan is built or priced. Requiring it at the cache would
+additionally refuse every row written by `tools/routing/b1Benchmark.js`, which builds no plan — a
+benchmark that cached nothing would report a hit rate of zero and read as an engine result.
+
+**Nothing is fabricated.** Every **declared** zero still passes; what no longer passes is silence.
+That is the distinction every test in the suite turns on, and a test that only checked "absent is
+refused" would have passed against a change that refused both.
+
+**Evidence: 22 tests; 4 mutants built, 4 killed.** **M6** restores `legProfiles`' coercion → 2
+failures. **M7** restores both spread coercions in `timeline.project` → 3. **M8** disables the
+timeline terrain guard → 3. **M9** makes `buildEntry` accept a negative climb → 1. All three
+modules restored and byte-verified (`diff -q`).
+
+### E.3 — E-8b: the process dependency the composition root already owned
+
+**E-7's table was wrong in two rows, and only measuring the real context showed it.** It recorded
+`PROCESS_DEPENDENCY` as *"`prisma`, `kv`, `commit` — supplied at promotion"* and `ADMISSIBILITY` as
+*"**0 missing** — the Ω correction **resolves** on the current register"*.
+
+`server.js` hands `leaderWorkers.create()` a `values` accessor — the resolved parameter **map** —
+and never the **snapshot**. The map is not a substitute: `resolve(name, { sla_class })` is
+scope-aware and a flat map cannot answer a per-SLA-class question, which is exactly what
+`candidate.max_radius_by_sla_class` is. Measured against the context `server.js` actually builds:
+
+| | Satisfied | Missing | By class |
+|---|---:|---:|---|
+| **Before** | 2 — `prisma`, `kv` | **12** | `EXTERNAL_ROUTING` 4 · `REGISTER_UNRESOLVED` 3 · `NO_PRODUCER` 2 · `PROCESS_DEPENDENCY` 2 · `ADMISSIBILITY` 1 |
+| **After** | 4 — `+ snapshot`, `+ Ω correction` | **10** | `EXTERNAL_ROUTING` 4 · `REGISTER_UNRESOLVED` 3 · `NO_PRODUCER` 2 · `PROCESS_DEPENDENCY` 1 |
+
+So a real promotion left **twelve** inputs unresolved, not nine — and the §6.4 admissibility check
+E-7 recorded as *resolving* was in fact **failing**, because the code that would have resolved it
+was never given its input. **This is the Phase 15 finding again in a new place: a producer exists,
+and the composition root does not use it.**
+
+Passed as an **accessor**, for P15-R2's reason exactly — `create()` runs once at boot and the
+composers run on every promotion, so a captured snapshot would bind the coordinator to the version
+the process booted on while the request path moved on. A throwing accessor is **not** satisfied.
+
+**The one remaining `PROCESS_DEPENDENCY` is `commit`, and it is not a wiring omission.**
+`commitment/commit.js` refuses without `volatileRecheck`; `feasibility/volatileSubset.js`'s
+`createVolatileRecheck` refuses without a `buildContext` adapter, and its own header says why —
+*"assembling an agent snapshot from a transaction is the round's work (Phase 9/10) and not this
+module's."* That is the same unwritten assembly `evaluateExact` needs. **It is left refused rather
+than bound to a stub.**
+
+### E.4 — Why the solve-path assembly is still not written, now measured rather than argued
+
+§E.1 recorded this as an owner decision on 2026-09-01. This pass re-examined it against the tree
+and the decision holds, for reasons that are now **facts about the repository** rather than a
+judgement about effort:
+
+1. **10 of 14 declared inputs are unresolved at a real promotion**, and 9 of those 10 are external
+   or belong to §22.4's calibration owner. The assembly is not one value away from running.
+2. **`commit`'s own chain bottoms out in the same unwritten code** (§E.3), so building the assembly
+   would not even close the process dependencies.
+3. **No reference implementation exists anywhere — including in the tests.** This was checked, not
+   assumed: `tests/engine/candidatesExpansion.test.js` injects
+   `evaluateExact: async (agentId) => ({ feasible: true, gammaMilliCU: 42_000n })`, and every other
+   caller in `tests/` is a stub of the same shape. Nothing in `src/` builds a `planBuilder.build()`
+   input; `plan/insertion.js` takes `builderInput` injected. So a new assembly would have **nothing
+   to be checked against**.
+4. **Its output is a price, not a boolean.** A wiring error in `evaluateExact` produces a *wrong
+   assignment* that looks successful, and the only thing that could catch it — §I.2's S-6
+   end-to-end demonstration — is itself blocked on S-3.
+
+**This is a stop at an external boundary, not a deferral of repository-owned work.** Everything on
+the V1 path that this repository can complete without an external value has been completed.
+
 ---
 
 ## SECTION F — V1-EXTERNAL-INPUT
@@ -474,6 +605,7 @@ as the smallest thing that unblocks V1 — not as its full production form.
 | **F-3** | **`speedMetresPerSecond` per routing profile** | One declared value per profile in use — required by `applyIntraCellOffset`, which refuses without it | D3's full §2.2 six-element mobility model per class, from a real fleet measurement | Owner (Fleet) |
 | **F-4** | **`candidate.max_radius_by_sla_class`** | A bound. `required: true`, **no default**, `UNCALIBRATED` — the register deliberately refuses to invent a containment limit | Derivation from measured SLA attainment | Owner (Ops) |
 | **F-5** | **A staged operating region** — publish a config version binding `cutover.engine_enabled = true` at `region` scope, pin it, and set `ENGINE_ENABLED=true` | An ordinary versioned, audited configuration act. **No code change, no fabrication** | The full D1 declaration: signed boundary, CRS, cover, charger estate, governance sign-off | Owner |
+| **F-6** | **Per-hop terrain on the `route` contract** — `climbM`, `descentM`, `stopStartCycles` | The same declared traversal source as F-1 returning three more fields. Elevation is available from Valhalla and GraphHopper and not from OSRM; **no shortlisted engine returns stop-start cycles**, so like F-2 this needs a declared source and selecting an engine does not close it | Calibration against realised consumption | Owner |
 
 ### F.0 CORRECTION, same day — **S-3 is NOT four values.** The table above is incomplete.
 
@@ -491,7 +623,7 @@ current tree:
 | `plan.service_time_prior` | **`null`, `UNCALIBRATED`** — required by `resolveServiceTimes` | **V1-EXTERNAL-INPUT** (calibration owner) |
 | `energy.model_residual_cv` | **`null`, `UNCALIBRATED`** — required by `consumption.predictiveDistribution` | **V1-EXTERNAL-INPUT** (calibration owner) |
 | `candidate.max_radius_by_sla_class` | **`null`, `UNCALIBRATED`** — already **F-4** | V1-EXTERNAL-INPUT |
-| `terrainByStop` (`climbM`, `descentM`, `stopStartCycles`) | **No schema column and no producer anywhere in `src/`** | **V1-MUST-FIX (code) + external data** |
+| ~~`terrainByStop`~~ **hop terrain** (`climbM`, `descentM`, `stopStartCycles`) | **RECLASSIFIED by E-8, 2026-09-04.** Not a family with no producer: §14.2 states these over the traversal, so **the router is the producer** and the seam simply was not carrying them. The code half is **DONE** (`e38fe5b`); what remains is the declared source | **V1-EXTERNAL-INPUT (routing)** — see **F-6** |
 | `environment` (`ambientC`, `packC`) | **No schema column and no producer anywhere in `src/`.** Consumed by `energy/consumption.betaThermal` | **V1-MUST-FIX (code) + a telemetry/forecast source** |
 | `masses.vehicleMassKg` | `AgentClass.totalMassLimitKg` is a **limit**, not a mass. No mass column exists | **V1-MUST-FIX (code) + external data** |
 | `payload` (container, items per stop) | Schema-backed (`PayloadSpec`, `massKg`, `massToleranceKg`) — **assembly code absent** | V1-MUST-FIX (code) |
@@ -521,11 +653,35 @@ the best current measurement and not as a closed set.**
 | **A** | Does V1 require a production routing engine selection/benchmark? | **No.** B1 Steps 1–5 produce a *procurement decision recorded in an ADR*. That is a release artefact |
 | **B** | Does V1 merely require a declared/injected traversal source? | **Yes — plus E-7, the code that injects it.** Both, not either |
 | **C** | Can the existing adapter seam satisfy the V1 routing dependency? | **Partly, and not as-is.** `tools/routing/adapters/` are **benchmark** adapters. They live in `tools/`, outside the production require graph; their own header says they are *"not `src/engine/routing/client.js`"*; they answer matrix queries rather than the `route(parts)` cell-pair shape; and **none of them can supply `travelSdSeconds` for any engine (N29)**. An adaptor from that layer to the `route(parts)` seam is small — but it does not exist, and it cannot close F-2 |
-| **D** | What must be supplied to `route(parts)`? | `async ({originCell, destCell, profileKey, timeBucket}) => {distanceM, travelSeconds, travelSdSeconds}`, all finite and non-negative |
+| **D** | What must be supplied to `route(parts)`? | ~~`{distanceM, travelSeconds, travelSdSeconds}`~~ — **SUPERSEDED by §F.2 (E-8, 2026-09-04): six fields**, adding `climbM`, `descentM` and `stopStartCycles`, all finite and non-negative |
 | **E** | What region/spatial inputs does the V1 runtime genuinely require? | An origin fine cell (**derived**, no declaration), a radius **or** wall-clock bound (**F-4**), and `speedMetresPerSecond` (**F-3**). The **H3 cover is not required** at `max_expansion_tiers ≤ 2` — see §D.3 |
 | **F** | Can a V1 engineering environment use a declared bounded traversal source without claiming production readiness? | **This is the owner's decision and nobody else's.** The forbidden-actions table bars *"a stub, fake, or in-process router"* written to make `gate:composition` pass. A **real, declared, owner-supplied** source in a **declared non-production environment** is a different act — ADR-34 already establishes that precedent for cutover rehearsal. It would still have to be recorded as such, and **it would not discharge B1, close `engine_decision_path_wired`, or make any release evidence admissible** |
-| **G** | Which B1 decisions are unavoidable for V1? | **F-1, F-2, F-3, F-4.** Four values. Nothing else |
+| **G** | Which B1 decisions are unavoidable for V1? | ~~**F-1, F-2, F-3, F-4.** Four values.~~ **CORRECTED 2026-09-04: F-1, F-2, F-3, F-4 and F-6 — five**, F-6 being the per-hop terrain E-8 moved onto the `route` contract. *(This row has now been wrong twice in the same direction — §F.0 corrected "four" once already, and the reason is the same both times: it was read off one seam.)* |
 | **H** | Which B1 requirements are strictly production/release, and therefore V2? | Steps 1/3/4/5 in full; the selection ADR; D8 entirely (extract identity, vintage, refresh cadence, re-contraction budget); the D1 governance sign-off, cover, charger estate and containment-semantics escalation; R1 self-hosting evidence; commercial coverage; every calibration in B8 |
+
+### F.2 The `route` contract, as it stands after E-8 — **six fields**
+
+```js
+async route({ originCell, destCell, profileKey, timeBucket })
+  → { distanceM:        number ≥ 0,   // REQUIRED by cellPairCache.buildEntry
+      travelSeconds:    number ≥ 0,   // REQUIRED by cellPairCache.buildEntry
+      travelSdSeconds:  number ≥ 0,   // REQUIRED by cellPairCache.buildEntry  (F-2, N29)
+      climbM:           number ≥ 0,   // REQUIRED by plan/timeline.project     (F-6)
+      descentM:         number ≥ 0,   // REQUIRED by plan/timeline.project     (F-6)
+      stopStartCycles:  number ≥ 0 }  // REQUIRED by plan/timeline.project     (F-6)
+```
+
+**Two enforcement points, deliberately.** The first three are what makes a row a usable cache entry
+and are refused by `buildEntry`, so a malformed one is never cached. The terrain three are a
+*decision-path* requirement and are refused by `timeline.project`, before any plan is built or
+priced. The reason the cache does not require them is stated in §E.2: `cellPairCache` is also the
+seam `tools/routing/b1Benchmark.js` measures engine latency and hit rate through, and that harness
+builds no plan.
+
+**A declared `0` is accepted in every field. Silence is not.** A router that reports a level hop
+has measured something; a router that omits the field has not, and the two must not produce the
+same plan.
+
 
 ---
 
@@ -632,7 +788,7 @@ decision, or 24 green §24 gates.
 
 | # | Condition | How it is checked |
 |---|---|---|
-| **S-1** | No reported optimality gap is ever a value the engine did not prove | `npm test` green **and** the E-1 regression tests present and passing |
+| **S-1** | No reported optimality gap is ever a value the engine did not prove, **and no absent physical input is read as a benign one** | `npm test` green **and** the E-1 **and E-8** regression suites present and passing. *(E-8 was added to S-1 on 2026-09-04 rather than becoming an S-9: it is the same condition — the engine must not assert what it did not compute — found at a second seam. §I.2 admits no ninth condition and this is not one.)* |
 | **S-2** | `registry.js` names, for every worker, either a register parameter that exists or a `@structural` constant with a stated reason | Assertion in `assertRegistry()` / test, green |
 | **S-3** | The four external values **F-1…F-4** are supplied by the owner, in writing, in a decision record under `docs/release-decisions/` | The record exists and names its author and date |
 | **S-4** | The coordinator's solve path is composed at `server.js` from those values, and `leaderWorkers.COMPOSERS.coordinator` returns a started handle | `gate:composition` **exit 0**, 0 violations |
@@ -643,15 +799,24 @@ decision, or 24 green §24 gates.
 
 ### I.3 What is true right now
 
+**As of 2026-09-04, after E-8 and E-8b:**
+
 ```
-S-1  ✅ fixed in this task            S-5  ⬜ owner configuration act (no code)
-S-2  ✅ fixed in this task            S-6  ⬜ blocked by S-3 → S-4
-S-3  ⬜ OWNER — four named values     S-7  ⚠  npm test 0 ✔ ; npm run gates 1 ✘ (S-4 closes it)
-S-4  ⬜ blocked by S-3                S-8  ✅ this document
+S-1  ✅ E-1 + E-8, fixed and mutation-tested   S-5  ⬜ owner configuration act (no code; mechanism VERIFIED)
+S-2  ✅ fixed 2026-09-01                       S-6  ⬜ blocked by S-3 → S-4
+S-3  ⬜ OWNER + calibration owner — 9 inputs   S-7  ⚠  npm test 0 ✔ ; npm run gates 1 ✘ (S-4 closes it)
+S-4  ⬜ blocked by S-3                         S-8  ✅ this document
 ```
 
-**Three of eight are met. One is an owner decision (S-3). Two are mechanical consequences of it
-(S-4, S-6). One is a configuration act (S-5). One follows (S-7).**
+**Three of eight are met. One is an owner/calibration decision (S-3). Two are mechanical
+consequences of it (S-4, S-6). One is a configuration act (S-5). One follows (S-7).**
+
+**S-5's mechanism was verified this pass rather than asserted.** Executed live:
+`enabled.describe({ snapshot: defaultSnapshot(), shard: { regionId }, env: { ENGINE_ENABLED: "true" } })`
+returns `processEnabled: true`, `configEnabled: false`, `live: false`, `decisionPath: "NONE"`.
+Both halves are required and `forShard` ANDs them, exactly as §C.2 said. **No code change is
+needed for S-5**; what remains is publishing and pinning a config version that binds
+`cutover.engine_enabled = true` at `region` scope, which is the owner's act.
 
 ### I.4 The single thing standing between this repository and V1
 
@@ -699,6 +864,22 @@ Executed after the changes, on the tree they produced.
 | Working tree | Commits so far: `9e1d871` (the X7 pass, previously uncommitted), `2b367e4` (I20 + N13 + this document), `cb6517b` (§J), and E-7 pending commit. **Nothing pushed** |
 | §24 gate table | **Untouched.** 8 blocking gates still not green; B1, B8, B-P, B-O, B-M, X3, A9 all where they were. **RELEASE: BLOCKED** |
 
+### J.0 THIS PASS — 2026-09-04, E-8 and E-8b
+
+| Check | Result |
+|---|---|
+| `npm test` | **exit 0 — 165 suites / 7 336 tests / 0 failures / 0 skips** *(164 / 7 307 before this pass; 165 / 7 330 after E-8; 165 / 7 336 after E-8b)* |
+| New regression suite | `tests/engine/planTerrainAndSpreadProvenance.test.js` — **22 passed** |
+| `tests/engine/coordinatorPipelineRequirements.test.js` | **23 passed** *(was 17)* — six new, pinning E-8b's measured before/after |
+| Mutation testing | **4 built, 4 killed on the first run.** M6 restores `legProfiles`' terrain coercion → 2 failures; M7 restores both spread coercions in `timeline.project` → 3; M8 disables the timeline terrain guard → 3; M9 makes `buildEntry` accept a negative climb → 1. **All three modules restored and byte-verified** (`diff -q`) |
+| `npm run gates` | **exit 1 — 7 PASS, 1 FAIL** (`gate:composition`, `coordinator`). **Unchanged, and not claimed otherwise.** E-8 and E-8b do not move it |
+| `npm run routing:readiness` | **OVERALL: BLOCKED**, D1/D3/D8 all BLOCKED, exit 0. **Unchanged** |
+| Coordinator contract | **14 declared inputs, unchanged.** At a real promotion context: **10 missing** *(was 12 before E-8b)* — `EXTERNAL_ROUTING` 4 · `REGISTER_UNRESOLVED` 3 · `NO_PRODUCER` 2 · `PROCESS_DEPENDENCY` 1 |
+| Source digest | **`011049f7a504fa70d05bfc2e87a662f897cefdf4fbd5a58b3e861fff5eba3b42` / 577 files** *(`1b301e28…` / 576 at `27d3470` → this)* |
+| Commits | `e38fe5b` (E-8), `8910818` (E-8b), and this document. **Nothing pushed** |
+| §24 gate table | **Untouched.** B1, B8, B-P, B-O, B-M, X3, A9 all where they were. **RELEASE: BLOCKED** |
+| Formal verification | **Nothing re-run and nothing changed.** `commitment_c1` and `lifecycle_c1` still close exhaustively — §G.1's V1-VERIFICATION condition remains met. §7.3a item 8, *boundedness accepted*, is **still unsigned**: see §J.3 |
+
 ### J.1 The truthfulness audit — *does the repository now do what we claim V1 does?*
 
 **Not yet, and the claim is not being made.** V1 is defined in §I.1 as a request traversing the
@@ -737,8 +918,30 @@ owner of §7.6 do not exist as distinct individuals, and none was simulated or i
 > | `REGISTER_UNRESOLVED` | **§22.4's calibration owner** | `candidate.max_radius_by_sla_class` · `plan.service_time_prior` · `energy.model_residual_cv` |
 > | `NO_PRODUCER` | **Engineering + a named data source** | `terrainByStop` · `environment.ambientC`/`packC` · `masses.vehicleMassKg` |
 >
+> **UPDATED 2026-09-04.** The `EXTERNAL_ROUTING` row is now **four**, not three: E-8 moved hop
+> terrain (`climbM` / `descentM` / `stopStartCycles`) out of `NO_PRODUCER` and onto the `route`
+> contract, because §14.2 states those terms over the traversal and the router is their producer.
+> `NO_PRODUCER` is correspondingly **two**. The total is unchanged at nine external inputs, and the
+> *classes* — the actionable part — are now right where two of them were not.
+>
 > Plus **E-7's own remaining half**: the assembly bodies, which are repository-owned and
-> deliberately unwritten until the inputs exist.
+> deliberately unwritten until the inputs exist. **§E.4 re-derives that decision against the tree
+> and it holds** — with the added measured fact that `commit`'s own dependency chain bottoms out in
+> the same unwritten code, so building the assembly would not even close the process dependencies.
+
+### J.3 The formal-verification acceptance V1 does not grant itself
+
+§G.1's V1-VERIFICATION condition is **met and unchanged**: `commitment_c1` (17 991 520 states /
+2 375 660 distinct / diameter 21) and `lifecycle_c1` (777 942 / 187 289 / depth 43 / 0 on queue,
+`Safety` + `TerminalIsFinal` + `Liveness` all PASS) both close exhaustively on the configurations as
+checked in. **Nothing was re-run this pass and no `.cfg` or property definition was touched.**
+
+**What is not granted, and is not being granted here:** `PHASE_15_BM_TLC_RUN_RECORD.md` §15.10 item
+8 — *boundedness accepted* — records `MaxTicks = 3` as **unchanged and still unsigned**. That is an
+**owner acceptance** of a global tick budget over 2 Legs, and §22.3's reasoning applies: an
+automated process must not sign it. It is recorded in §F as an owner decision and **this document
+does not treat it as met**. Capacity 2/3 chaining evidence remains Tier-2 / Phase-16 territory and
+the V1 contract does not require it.
 >
 > *(This row first said "four values", then "at least four plus five more". Both were hand-audits
 > and both were wrong. **The list above is the one the code computes**, and re-running
@@ -747,6 +950,62 @@ owner of §7.6 do not exist as distinct individuals, and none was simulated or i
 > S-4 and S-6 are mechanical consequences of S-3. S-5 is a configuration act requiring no code.
 > S-7 follows from S-4. **There is no V1 work outside S-1…S-8**, and the boundary did not move
 > when S-3's contents turned out to be larger than the first measurement of them.
+
+---
+
+## SECTION K — THE OWNER-INPUT REQUEST (2026-09-04)
+
+**This is the boundary V1 execution stops at.** Every row is produced by
+`coordinatorPipeline.requirements()` run against the context `server.js` builds — not by a
+hand-audit. Re-run it to check this table rather than trusting it.
+
+**Nothing here may be defaulted, inferred, or filled in by this repository**, and every row's
+"when absent" column is the behaviour that is *already implemented*, not a behaviour to add.
+
+### K.1 The ten unresolved inputs
+
+| # | Field | Type / unit | Why V1 needs it | Source / owner named by the specification | Where it enters the runtime | When absent | Blocks E2E? |
+|---|---|---|---|---|---|---|---|
+| 1 | `route(parts)` | `async ({originCell, destCell, profileKey, timeBucket}) => {…}` | Every hop of every plan. Without it no candidate can be priced at all | **B1** — the project owner, on D1/D3/D8 | `leaderWorkers.create({ route })` → `cellPairCache.read` on a cache miss | `cellPairCache.read` returns *"no router is available and the entry is not cached"* | **YES** |
+| 2 | `distanceM` | `number ≥ 0`, metres | §14.2's `β_dist · d`, the dominant term on flat ground | with (1) | `cellPairCache.buildEntry` | entry **refused**, nothing cached | **YES** |
+| 3 | `travelSeconds` | `number ≥ 0`, seconds | The ETA point estimate the timeline projects from | with (1) | `cellPairCache.buildEntry` | entry **refused**, nothing cached | **YES** |
+| 4 | `travelSdSeconds` **(N29)** | `number ≥ 0`, seconds | §8.4 prices `p_late` *"from the ETA predictive distribution, not the point estimate"*. **No shortlisted engine returns a spread** — OSRM's `table`, Valhalla's `sources_to_targets` and GraphHopper's `route` are all point estimates — so this needs a **declared** source and selecting an engine does not supply it | the project owner | `cellPairCache.buildEntry` | entry **refused**, nothing cached | **YES** |
+| 5 | `climbM`, `descentM` | `number ≥ 0`, metres, per hop | §14.2's `β_climb · Σ max(0,Δh)` and its regeneration counterpart. **New to the contract at E-8** — see §E.2 | the same traversal source as (1). Valhalla and GraphHopper can return elevation; **OSRM cannot** | carried by `cellPairCache.buildEntry`, **required** by `plan/timeline.project` | `timeline.project` refuses: *"the hop's terrain is unresolved"*; `legProfiles` then refuses with `MISSING_TERRAIN` | **YES** |
+| 6 | `stopStartCycles` | `number ≥ 0`, count, per hop | §14.2's `β_stop_start · n_stop_start_cycles` — *"urban stop-go consumption is not a function of distance"*. **No shortlisted engine returns it**, so like (4) it needs a declared source | the same traversal source as (1) | as (5) | as (5) | **YES** |
+| 7 | `speedMetresPerSecond` per routing profile | `number > 0`, m/s | §20.3's intra-cell quantisation correction is applied *at the profile's own speed*, and `applyIntraCellOffset` refuses without it. The only `MobilityModel` in this repository is a seed whose `speedModel` is a note deferring to **D3** | **D3** — Product + Fleet Engineering | `leaderWorkers.create({ speedMetresPerSecondFor })` → `cellPairCache.applyIntraCellOffset` | correction **refused**; the cached pair is not usable | **YES** |
+| 8 | `candidate.max_radius_by_sla_class` | register entry, metres, per SLA class | §6.3 requires the k-ring expansion to be bounded by a radius **or** a wall-clock budget; with neither, `expandCandidates` **refuses outright** (`unbounded_search_refused`) to preserve §6.1's bounded-work property (T9). `required: true` with **no default**, on purpose | **§22.4's calibration owner / Operations** | published config version → `snapshot.resolve(name, { sla_class })` | expansion refuses; zero candidates | **YES** |
+| 9 | `plan.service_time_prior` | register entry, seconds | `planBuilder.resolveServiceTimes` fails closed without it and `buildVariant` returns before projecting a timeline | **§22.4's calibration owner** | as (8) | `MISSING_SERVICE_TIME` | **YES** |
+| 10 | `energy.model_residual_cv` | register entry, dimensionless CV | `consumption.predictiveDistribution` needs it to turn a mean consumption into the distribution §14's reserves are held against | **§22.4's calibration owner.** **Safety class** — §22.3 forbids an automated process from choosing it, and **no provisional route exists for it** | as (8) | `MISSING_ENERGY_INPUT` | **YES** |
+| 11 | `environment.ambientC` / `packC` | `number`, °C | `consumption.betaThermal` evaluates the model's ambient and pack curves at these two temperatures | **Engineering + a declared weather snapshot / agent telemetry source.** No Prisma column, no producer in `src/` | `leaderWorkers.create({ environmentFor })` → `legProfiles` | `legEnergyWh` refuses: `profile.ambientC`, `profile.packC` | **YES** |
+| 12 | `masses.vehicleMassKg` | `number > 0`, kg, per agent class | `legProfiles` needs the vehicle's own mass. **`AgentClass.totalMassLimitKg` is a *limit*, not a mass**, and reading a limit as a mass would overstate consumption on every candidate equally — an error that looks conservative and is simply wrong | **Engineering + the fleet's own specifications.** No mass column exists | `leaderWorkers.create({ vehicleMassKgFor })` → `legProfiles` | `legEnergyWh` refuses: `profile.vehicleMassKg` | **YES** |
+
+*(Rows 2–6 are fields of the single `route` contract in §F.2 and are listed separately because they
+have different availability across the shortlisted engines. The probe counts them as **four**
+requirement rows — `route`, `travelSdSeconds source (N29)`, `speedMetresPerSecond`, `hop terrain` —
+which is why `EXTERNAL_ROUTING` reads 4 and not 12.)*
+
+### K.2 The two owner **decisions** — distinct from the inputs above
+
+| Decision | Owner | Exact act | Why V1 needs it | What this repository has already done |
+|---|---|---|---|---|
+| **A staged V1 operating region** | Owner | Publish a config version binding `cutover.engine_enabled = true` at **`region`** scope, pin it, and run the process with `ENGINE_ENABLED=true`. **Both halves are required** — `forShard` ANDs them | Without it `task.service.assignTask` returns **503 `ENGINE_NOT_LIVE`** and nothing is written. That is §22.4's designed fail-closed staging, not a defect | **The mechanism exists and was verified live this pass** (§I.3). **No code change is needed.** The register default is `false` and this document does not change it |
+| **Boundedness acceptance: `MaxTicks = 3`** | Release owner (§7.6) | Sign, or decline, `MaxTicks = 3` as the **global** tick budget over 2 Legs in `lifecycle_c1` | §7.3a item 8. `commitment_c1` and `lifecycle_c1` both close exhaustively with every declared property passing; the budget under which they close is unsigned | **Nothing was re-run and nothing was weakened.** No `.cfg` changed, `CHECK_DEADLOCK` is absent from all six, every property definition is byte-identical. **This document does not treat it as accepted** |
+
+### K.3 What the owner must **not** be asked for
+
+Recorded so that a later reader does not widen this request back out:
+
+- **Not a routing-engine procurement decision.** B1 Steps 1/3/4/5 and the selection ADR are a
+  *release* artefact (§F.1 A). V1 needs a **declared traversal source**, not a vendor.
+- **Not the D1 H3 cover, boundary polygon, CRS or charger estate.** §D.3 establishes that a
+  k-ring-bounded expansion (`candidate.max_expansion_tiers ≤ 2`) runs from
+  `cells.cellForPoint(lat, lon, FINE)` with no declaration at all.
+- **Not production calibration** of `plan.service_time_prior` or `candidate.max_radius_by_sla_class`
+  — a declared provisional value with a named author is enough for V1. **`energy.model_residual_cv`
+  is the exception**: it is Safety-class, and **no provisional route is offered for it here**.
+- **Not the 39 Safety-class B8 parameters, the soak, the shadow window, the fidelity study or any
+  §7.6 attestation.** Those are V2 and §G lists them with the reason.
+
 
 ---
 
