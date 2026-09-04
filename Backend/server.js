@@ -662,6 +662,21 @@ async function start() {
         // either answer alone. Read through a function, a promotion composes against the
         // version in force at the moment leadership is acquired.
         values: () => app.locals.config && app.locals.config.values,
+        // E-8b — the same accessor rule, for the snapshot itself.
+        //
+        // `values` is the resolved parameter *map*; `coordinatorPipeline`'s probes need the
+        // *snapshot*, because `resolve(name, { sla_class })` is scope-aware and a flat map
+        // cannot answer a per-SLA-class question. This process has had that object all along
+        // — `app.locals.config`, kept current by the configuration pull loop — and simply
+        // never handed it to the composers, so `snapshot` measured as an unsatisfied
+        // PROCESS_DEPENDENCY on a dependency the repository already owns. That made the
+        // coordinator's refusal report one more missing input than it truly had, and E-7's
+        // own table recorded the process dependencies as "supplied at promotion" when two of
+        // the four were not.
+        //
+        // An accessor rather than the object, for P15-R2's reason exactly: `create()` runs
+        // once at boot and the composers run on every promotion.
+        snapshot: () => app.locals.config,
         shardId,
         regionId,
         instanceId: `${process.env.HOSTNAME || host}:${process.pid}`,

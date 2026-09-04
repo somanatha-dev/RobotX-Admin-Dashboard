@@ -91,6 +91,31 @@ const REQUIREMENT_CLASS = Object.freeze({
   ADMISSIBILITY: "ADMISSIBILITY",
 });
 
+/**
+ * The pinned configuration snapshot this context carries, accepting the accessor form.
+ *
+ * P15-R2 established the rule for `values` and the same reasoning governs the snapshot:
+ * `leaderWorkers.create()` runs once at boot and the composers run on every promotion, so a
+ * snapshot captured at `create()` would bind the coordinator to the configuration version
+ * the *process* booted on, permanently, while the request path moved on. The composition
+ * root therefore passes `() => app.locals.config`, and a promotion composes against the
+ * version in force at the moment leadership is acquired.
+ *
+ * A plain snapshot is still accepted unchanged, because that is what every test passes.
+ *
+ * @param {object} context
+ * @returns {object|undefined}
+ */
+function snapshotFrom(context) {
+  const carried = (context || {}).snapshot;
+  if (typeof carried !== "function") return carried;
+  try {
+    return carried();
+  } catch {
+    return undefined;
+  }
+}
+
 /** Read a value from the round's configuration snapshot without throwing. */
 function resolved(snapshot, name, context) {
   if (!snapshot || typeof snapshot.resolve !== "function") return undefined;
@@ -119,7 +144,7 @@ function registerRequirement(name, why, owner) {
     class: REQUIREMENT_CLASS.REGISTER_UNRESOLVED,
     owner,
     why,
-    probe: (context) => present(resolved(context.snapshot, name, { sla_class: context.slaClass ?? null })),
+    probe: (context) => present(resolved(snapshotFrom(context), name, { sla_class: context.slaClass ?? null })),
   };
 }
 
@@ -268,8 +293,14 @@ const REQUIREMENTS = Object.freeze([
     id: "snapshot",
     class: REQUIREMENT_CLASS.PROCESS_DEPENDENCY,
     owner: "the composition root",
-    why: "§9.6 requirement 5 — the round's pinned configuration version. Every register probe above reads it",
-    probe: (context) => present(context.snapshot) && isFunction(context.snapshot.resolve),
+    why:
+      "§9.6 requirement 5 — the round's pinned configuration version. Every register probe above reads it. " +
+      "Accepted as an accessor (`() => app.locals.config`) as well as a snapshot: P15-R2's rule, because " +
+      "`create()` runs at boot and the composers run on every promotion.",
+    probe: (context) => {
+      const snapshot = snapshotFrom(context);
+      return present(snapshot) && isFunction(snapshot.resolve);
+    },
   },
 
   /* ── §6.4 admissibility, checked rather than assumed ───────────────────────── */
@@ -284,9 +315,10 @@ const REQUIREMENTS = Object.freeze([
       "`lowerBound()` refuses a non-bigint correction, so this fails closed; it is probed here so the refusal " +
       "names §6.4 rather than surfacing as an unexplained empty candidate set.",
     probe: (context) => {
-      if (!present(context.snapshot)) return false;
+      const snapshot = snapshotFrom(context);
+      if (!present(snapshot)) return false;
       try {
-        return omega.combinedCorrection({ snapshot: context.snapshot, omegaTerminalCu: context.omegaTerminalCu }).ok;
+        return omega.combinedCorrection({ snapshot, omegaTerminalCu: context.omegaTerminalCu }).ok;
       } catch {
         return false;
       }
@@ -348,6 +380,7 @@ function describeMissing(missing) {
 
 module.exports = {
   REQUIREMENT_CLASS,
+  snapshotFrom,
   REQUIREMENTS,
   REQUIREMENT_IDS,
   requirements,

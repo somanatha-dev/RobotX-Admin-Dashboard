@@ -33,6 +33,8 @@
 const pipeline = require("../../src/workers/coordinatorPipeline");
 const leaderWorkers = require("../../src/workers/leaderWorkers");
 const service = require("../../src/engine/config/service");
+const fs = require("fs");
+const path = require("path");
 
 /**
  * A context in which every declared input resolves. Used only to prove conditionality.
@@ -285,5 +287,99 @@ describe("COMPOSERS.coordinator refuses with the measured list, and still refuse
     // for itself.
     expect(leaderWorkers.UNCOMPOSABLE.coordinator).toBeDefined();
     expect(leaderWorkers.UNCOMPOSABLE.coordinator.external).toBe(true);
+  });
+});
+
+/**
+ * E-8b — the composition root's own half of the contract.
+ *
+ * E-7's table recorded the process dependencies as *"`prisma`, `kv`, `commit` — supplied at
+ * promotion"*, and its admissibility row as *"**0 missing** — the Ω correction resolves on
+ * the current register"*. Measured against the context `server.js` actually built, both were
+ * wrong. `leaderWorkers.create()` was handed `values` — the resolved parameter **map** — and
+ * never the **snapshot**, so `snapshot` measured as an unsatisfied PROCESS_DEPENDENCY on an
+ * object this process has had all along, and the Ω probe, whose only input is that snapshot,
+ * could not resolve either. A real promotion left **twelve** inputs missing, not nine.
+ *
+ * The map is not a substitute: `resolve(name, { sla_class })` is scope-aware and a flat map
+ * cannot answer a per-SLA-class question, which is exactly what
+ * `candidate.max_radius_by_sla_class` is.
+ */
+describe("E-8b — the snapshot the composition root already had", () => {
+  const promotionContext = (overrides) => ({
+    prisma: {},
+    kv: {},
+    shardId: "shard-1",
+    regionId: "region-1",
+    ...(overrides || {}),
+  });
+
+  test("an accessor is resolved, so a promotion composes against the version in force", () => {
+    const app = { locals: { config: service.defaultSnapshot() } };
+    const resolvedSnapshot = pipeline.snapshotFrom({ snapshot: () => app.locals.config });
+
+    expect(resolvedSnapshot).toBe(app.locals.config);
+    // P15-R2's property: replacing the snapshot is seen by the next read, not frozen at boot.
+    const replacement = service.defaultSnapshot();
+    app.locals.config = replacement;
+    expect(pipeline.snapshotFrom({ snapshot: () => app.locals.config })).toBe(replacement);
+  });
+
+  test("a plain snapshot is still accepted, because that is what every test passes", () => {
+    const snapshot = service.defaultSnapshot();
+    expect(pipeline.snapshotFrom({ snapshot })).toBe(snapshot);
+  });
+
+  test("an accessor that throws is not satisfied — it fails closed, like every other probe", () => {
+    const context = promotionContext({
+      snapshot: () => {
+        throw new Error("the configuration pull loop has not populated app.locals yet");
+      },
+    });
+
+    expect(pipeline.snapshotFrom(context)).toBeUndefined();
+    const missing = pipeline.requirements(context).missing.map((row) => row.input);
+    expect(missing).toContain("snapshot");
+    expect(missing).toContain("Ω correction (candidates/omega.combinedCorrection)");
+  });
+
+  test("without the snapshot a real promotion left TWELVE missing, and Ω among them", () => {
+    const result = pipeline.requirements(promotionContext());
+
+    expect(result.satisfied).toEqual(["prisma", "kv"]);
+    expect(result.missing.length).toBe(12);
+    // The row E-7 reported as resolving. Its only input was the object never passed.
+    expect(result.missing.map((row) => row.input)).toContain(
+      "Ω correction (candidates/omega.combinedCorrection)",
+    );
+  });
+
+  test("with it, both close — and the remainder is external plus the unwritten assembly", () => {
+    const app = { locals: { config: service.defaultSnapshot() } };
+    const result = pipeline.requirements(promotionContext({ snapshot: () => app.locals.config }));
+
+    expect(result.satisfied).toEqual(
+      expect.arrayContaining(["snapshot", "Ω correction (candidates/omega.combinedCorrection)"]),
+    );
+    expect(result.missing.length).toBe(10);
+    expect(result.byClass).toEqual({
+      EXTERNAL_ROUTING: 4,
+      REGISTER_UNRESOLVED: 3,
+      NO_PRODUCER: 2,
+      // `commit`, which bottoms out in the same unwritten assembly: `createVolatileRecheck`
+      // refuses without a `buildContext` adapter, and assembling an agent snapshot from a
+      // transaction is the round's work — the code that does not exist.
+      PROCESS_DEPENDENCY: 1,
+    });
+  });
+
+  test("the production composition root passes the snapshot as an accessor", () => {
+    // A source pin, in this suite's own idiom: the wiring is in `server.js`, which no unit
+    // test boots. Phase 15's repeated finding is that a producer can exist and the
+    // composition root simply not use it, and that is invisible to every test of the
+    // producer.
+    const source = fs.readFileSync(path.join(__dirname, "..", "..", "server.js"), "utf8");
+    expect(source).toMatch(/leaderWorkers\.create\(\{/u);
+    expect(source).toMatch(/snapshot:\s*\(\)\s*=>\s*app\.locals\.config,/u);
   });
 });
