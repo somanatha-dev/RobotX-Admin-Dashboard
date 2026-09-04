@@ -4,16 +4,23 @@
 **Source digest at audit start:** `d033038cb261c3de0efe13796af9aa26d190ea113a5a2bfe5971480f72bdca00`
 (**573 files**) — measured live.
 
-> **CURRENT STATE — last execution pass 2026-09-04.** **HEAD `8910818`** ·
-> **digest `011049f7a504fa70d05bfc2e87a662f897cefdf4fbd5a58b3e861fff5eba3b42` / 577 files** ·
-> `npm test` **165 suites / 7 336 tests / 0 failures** · `npm run gates` **7 PASS / 1 FAIL**
+> **CURRENT STATE — last execution pass 2026-09-04 (E-9, the composition).**
+> **digest `22afc5b1a83634899ad5dce7ccedad6f779afc085ca939f8f9e0c40bc28aead6` / 580 files** ·
+> `npm test` **166 suites / 7 379 tests / 0 failures** · `npm run gates` **7 PASS / 1 FAIL**
 > (`gate:composition`) · `routing:readiness` **BLOCKED**.
 >
 > **V1 STATUS: BLOCKED — at an owner/external boundary, not at repository-owned work.**
-> Stop conditions **S-1, S-2, S-8 met**; **S-3 open** (§K); S-4, S-6, S-7 are consequences of it;
-> S-5 is an owner configuration act whose mechanism is implemented and **verified live**.
-> **Section K is the request.** Sections A–J below are the audit as written on 2026-09-01, with
-> each later pass's corrections recorded beside the text they correct rather than over it.
+> Stop conditions **S-1, S-2, S-8 met**; **S-3 open** (§K, and **materially larger than §K
+> records — see §L**); S-4, S-6, S-7 are consequences of it; S-5 is an owner configuration act
+> whose mechanism is implemented and **verified live**.
+>
+> **The composition root now exists.** `Backend/src/workers/coordinatorSolvePath.js` assembles
+> the coordinator's solve path from the shipped modules; `COMPOSERS.coordinator` calls it and
+> starts the worker when every declared input resolves. **§L is this pass**, and it corrects
+> §K, §D.3 and §F.0 with measurements the code produces. **Section K remains the shape of the
+> owner request; §L.2 is its corrected content.** Sections A–J are the audit as written on
+> 2026-09-01, with each later pass's corrections recorded beside the text they correct rather
+> than over it.
 
 > **What this document is.** The first V1/V2 boundary this repository has ever had. Before it, no
 > V1 stop condition existed anywhere in the tree — a search of every `.md` found none. The
@@ -403,6 +410,7 @@ An item is here only if V1 cannot truthfully be called a working engineering rel
 | **E-7** | **The coordinator solve-path composition does not exist** — `expandCandidates`, `pricedCandidateFor`, `expansionInputFor`, and the injection of `route`, `commit`, `planState` and `deferPriceFor` at `server.js` | Without it no request is ever assigned. This is *the* V1 gap | **PARTIALLY CLOSED — the requirements probe is built; the assembly is deliberately not.** See §E.1 |
 | **E-8** | Three fail-**open** coercions on the V1 plan path: `legProfiles` turned absent terrain into flat ground, and `timeline.project` turned an absent travel-time and service-time spread into zero | **UNKNOWN IS NOT PERMISSION**, and all three erred permissively. Zeroed climb understates mission energy → overstates the charge F34 holds the §14 reserves against; a zeroed ETA spread makes §8.4's `p_late` price a certain arrival | **FIXED — `e38fe5b`.** See §E.2 |
 | **E-8b** | The composition root never handed the coordinator the pinned snapshot it already holds, so `snapshot` **and** the §6.4 Ω admissibility check both measured as unsatisfied at a real promotion | A dependency this repository owns, reported as missing. It also made E-7's own table wrong in two rows | **FIXED — `8910818`.** See §E.3 |
+| **E-9** | **The solve-path assembly itself — E-7's remaining half.** `expandCandidates`, `pricedCandidateFor`, `expansionInputFor`, `evaluateExact` and `commit` existed only in test fixtures | *The* V1 gap. Without it no request is ever assigned, and the last obstacle attributable to this repository | **BUILT — this pass.** `src/workers/coordinatorSolvePath.js`. See **§L** |
 
 ### E.1 — E-7, as built: the requirements probe
 
@@ -569,6 +577,19 @@ module's."* That is the same unwritten assembly `evaluateExact` needs. **It is l
 than bound to a stub.**
 
 ### E.4 — Why the solve-path assembly is still not written, now measured rather than argued
+
+> **SUPERSEDED by §L (E-9, 2026-09-04, later the same day). The assembly is written.**
+> The owner's decision changed: *"the absence of a reference implementation is NOT a reason
+> to leave the required V1 composition unwritten."* The four arguments below are retained
+> because three of them were **correct and remain true** — 25 of 33 inputs are still
+> unresolved, `commit`'s chain did bottom out here, and there is still no reference
+> implementation to check an output against. What they did not justify is the conclusion.
+>
+> Argument 3 is the one the build refuted in practice: with nothing constructing the path,
+> the four seams past `planBuilder` had never been executed against a candidate assembled
+> from this schema, and **writing the assembly is what found §L.2's twelve further register
+> parameters and §L.4's 35 unresolved gate inputs.** An assembly that is written and refuses
+> by name turns out to measure more than a probe that stops where the reader stopped.
 
 §E.1 recorded this as an owner decision on 2026-09-01. This pass re-examined it against the tree
 and the decision holds, for reasons that are now **facts about the repository** rather than a
@@ -799,14 +820,20 @@ decision, or 24 green §24 gates.
 
 ### I.3 What is true right now
 
-**As of 2026-09-04, after E-8 and E-8b:**
+**As of 2026-09-04, after E-8, E-8b and E-9 (the composition — §L):**
 
 ```
 S-1  ✅ E-1 + E-8, fixed and mutation-tested   S-5  ⬜ owner configuration act (no code; mechanism VERIFIED)
-S-2  ✅ fixed 2026-09-01                       S-6  ⬜ blocked by S-3 → S-4
-S-3  ⬜ OWNER + calibration owner — 9 inputs   S-7  ⚠  npm test 0 ✔ ; npm run gates 1 ✘ (S-4 closes it)
-S-4  ⬜ blocked by S-3                         S-8  ✅ this document
+S-2  ✅ fixed 2026-09-01                       S-6  ⬜ blocked by S-3 → S-4. NOT attempted, NOT claimed
+S-3  ⬜ OWNER + calibration owner — 25 inputs  S-7  ⚠  npm test 0 ✔ ; npm run gates 1 ✘ (S-4 closes it)
+S-4  ⬜ blocked by S-3 — the COMPOSITION now   S-8  ✅ this document
+        exists and starts when its inputs
+        resolve; they do not resolve here
 ```
+
+*(S-3 read "9 inputs" before E-9. The composition measured 25 — see §L.2. **The stop
+condition did not move**: S-3 has always been "the external values", and only the
+measurement of its contents changed.)*
 
 **Three of eight are met. One is an owner/calibration decision (S-3). Two are mechanical
 consequences of it (S-4, S-6). One is a configuration act (S-5). One follows (S-7).**
@@ -955,6 +982,22 @@ the V1 contract does not require it.
 
 ## SECTION K — THE OWNER-INPUT REQUEST (2026-09-04)
 
+> **CORRECTED THE SAME DAY BY §L.2 — read both.** This section's *shape* is right and its
+> *content* is incomplete. Every row below is still true; the list is not closed. Building
+> the assembly (§L) raised the contract from 14 declared inputs to **33**, and the unresolved
+> set at a real promotion from 10 to **25**: one further routing input (`timeBucket`), twelve
+> further register entries, three further families with no producer — and it removed the one
+> `PROCESS_DEPENDENCY` (`commit`), which the composition now builds.
+>
+> **§L.3 additionally corrects two of §K.3's four "do not ask the owner for" rows**: D1's
+> serviceable region and the charger estate are V1 *runtime* prerequisites at the feasibility
+> gate, even though §D.3 is right that neither is a *search* prerequisite.
+>
+> **This row has now been corrected four times, always in the same direction, always for the
+> same reason: each count was taken at whichever seam the reader reached.** §L.2's is the
+> first taken by code that runs the whole path. It is offered as the current measurement and
+> not as a closed set, and `coordinatorPipeline.requirements()` remains the way to check it.
+
 **This is the boundary V1 execution stops at.** Every row is produced by
 `coordinatorPipeline.requirements()` run against the context `server.js` builds — not by a
 hand-audit. Re-run it to check this table rather than trusting it.
@@ -1006,6 +1049,259 @@ Recorded so that a later reader does not widen this request back out:
 - **Not the 39 Safety-class B8 parameters, the soak, the shadow window, the fidelity study or any
   §7.6 attestation.** Those are V2 and §G lists them with the reason.
 
+
+---
+
+## SECTION L — E-9: THE COMPOSITION, BUILT (2026-09-04)
+
+**Owner decision, this pass:** build the minimum real composition root now — verify each
+dependency contract directly, compose the existing implementations, test the wiring, test
+that missing external inputs fail closed, and **do not** claim an end-to-end assignment.
+
+That is what was done. **The repository-owned "unwritten composition" boundary is closed.**
+What follows is what the assembly measured on its way, and every row of it is produced by
+code a reader can re-run rather than by a trace a reader must trust.
+
+### L.1 What was built
+
+| File | What it is |
+|---|---|
+| **`Backend/src/workers/coordinatorSolvePath.js`** (new, ~840 lines) | **The assembly.** `create(context)` refuses, or returns the exact `deps` object `coordinator.worker.runRound` destructures |
+| **`Backend/src/engine/domain/mappers/decisionInputs.js`** (new) | `energyCoefficientsFrom` and `fleetBestCaseFrom`, moved out of `diagnostics.controller.js` because a **second** caller now exists. Two mappings of one schema are free to disagree after a migration |
+| `Backend/src/workers/coordinatorPipeline.js` | The contract, extended by what the assembly proved it reads: **14 rows → 33** |
+| `Backend/src/workers/leaderWorkers.js` | `COMPOSERS.coordinator` now *attempts the construction* and **starts the worker** when every input resolves |
+| `Backend/server.js` | `runSerializable`, `selectForUpdate`, `isSerializationFailure` — the three seams `commit` is built from. The E-8b `snapshot` accessor is **unchanged and pinned by a test** |
+| `Backend/src/controllers/diagnostics.controller.js` | Uses the shared mappers instead of its private copies |
+| `Backend/tests/engine/coordinatorSolvePathComposition.test.js` (new) | 42 tests, in six groups |
+
+**The exact production dependency graph, as assembled:**
+
+```
+coordinator.worker.runRound(deps)
+  ├── deps.planState        shard/planState.create({shardId}), wrapped so `beginRound`
+  │                         clears the round's pinned plans (§9.6 req. 4–5)
+  ├── deps.expansionInputFor(row)          ← the WorkQueue row's own fields, synchronously
+  ├── deps.expandCandidates(input)
+  │     └── candidates/expansion.expandCandidates
+  │           ├── rates            ← cost/exchangeRates.ratesFrom(snapshot)
+  │           ├── delayParameters  ← delayParametersFrom(snapshot)   [STRICT: no coalescing]
+  │           ├── correction       ← candidates/omega.combinedCorrection
+  │           ├── fleetBestCase    ← domain/mappers/decisionInputs.fleetBestCaseFrom(rows)
+  │           ├── deadlineMs/elapsedMs ← solve.time_budget  (§6.3's wall-clock half)
+  │           ├── loadAgentSnapshot ← prisma.agentCellPosition + agent + class + battery
+  │           ├── availabilityIndex.candidatesInFineCell(kv, …)
+  │           └── evaluateExact(agentId, leg, agentSnapshot)          ← THE ASSEMBLY
+  │                 ├── routing/cellPairCache.hopsFor({kv, route})    ← injected `route`
+  │                 │     └── + a per-pairing (from,to) memo → `hopsForSequence` (§13.4)
+  │                 ├── plan/planBuilder.build(planInputFor(…))
+  │                 │     ├── payload   ← payloadFor(leg.manifests)   [§15, schema-backed]
+  │                 │     ├── usableWh  ← energy/usable.fTemp(model, packC) → startingUsableWh
+  │                 │     └── energy / masses / environment ← register + injected seams
+  │                 ├── feasibility/evaluate.gate(plan, …)            ← the ONLY brander
+  │                 └── plan/column.make + column.price(phiInputFor(…))
+  │                       └── cost/phi.evaluate → cDirect · cRisk · cLifecycle · cPolicy · cDelay
+  ├── deps.pricedCandidateFor(agentId, legId)  ← the memo, keyed `legId|agentId`
+  └── deps.commit(assignment, roundResult)
+        └── commitment/commit.commit
+              ├── runSerializable / selectForUpdate       ← server.js
+              ├── volatileRecheck ← volatileSubset.createVolatileRecheck({ buildContext })
+              │     └── buildContext: locked rows → evaluation context, on the MEMOISED plan
+              └── sideEffects     ← dispatch/offers.enqueueOffer(tx, …)  [§10.3.2 step 5]
+```
+
+**Not injected, deliberately:** `deferPriceFor` (`cost/cDefer.js` is Tier 2 behind the
+`deferral` kill switch), `tierZeroAgentIds` (chaining, Tier 2), and the tier 3/4/6 cover maps
+(§D.3 — an empty array would claim "this zone contains no cells", which is a different and
+false statement from "no cover is published"). `gate:tiers` **PASSES**: 292 modules, 456
+edges, no Tier 0/1 → Tier 2 dependency.
+
+### L.2 What the assembly measured — S-3 is materially larger than §K records
+
+**This is the finding, and it is the third correction in the same direction for the same
+reason.** §F derived S-3 from the routing seam and said four values. §F.0 corrected it to
+nine by reading `planBuilder`. E-7 made it a probe. **Writing the assembly walked one seam
+further — into `cost/phi.evaluate` — and found the probe itself was short.**
+
+| Class | §K.1 (E-7/E-8b) | **Measured now** | What the assembly walked into |
+|---|---:|---:|---|
+| `EXTERNAL_ROUTING` | 4 | **5** | `timeBucket` — §20.3 keys a cell-pair entry on the congestion bucket and `cellPairCache.key` refuses without one. **No producer in `src/`** |
+| `REGISTER_UNRESOLVED` | 3 | **15** | Every `C_direct`/`C_risk`/`C_lifecycle`/`C_delay` rate is its own refusal. All twelve new ones are `required: true`, `default: null`, `UNCALIBRATED` |
+| `NO_PRODUCER` | 2 | **5** | `p_fail` (§8.3.1 — `src/engine/reliability/` holds one `.gitkeep`), `route_hazard_cost` (§5.2's Map service — a consumer exists, no client), §14.4's battery wear inputs (no wear-curve column) |
+| `PROCESS_DEPENDENCY` | 1 (`commit`) | **0** | `commit` is now **composed**, not required; the three seams it needs are supplied by `server.js` |
+| `ADMISSIBILITY` | 0 | **0** | Unchanged |
+| **Total unresolved at a real promotion** | **10** | **25 of 33** | |
+
+**The twelve register parameters E-7's probe did not name**, every one measured `null` on
+`service.defaultSnapshot()`: `cost.energy.cu_per_wh` · `cost.wear.cu_per_metre` ·
+`cost.failure.cu` · `cost.staleness.cu_per_second_age` · `cost.energy_consequence` ·
+`cost.sla.cu_per_second_late` · `cost.sla.breach_penalty` ·
+`lifecycle.cu_per_actuator_cycle` · `lifecycle.cu_per_braking_event` ·
+`lifecycle.cu_per_gradient_metre` · `lifecycle.cu_per_thermal_stress_second` ·
+`cost.battery.cu_per_equivalent_cycle` · `energy.reserve_floor_wh`. Two are **Safety class**
+(`energy.reserve_floor_wh`, `energy.model_residual_cv`) and §22.3 offers them no provisional
+route. **Nothing here is a proposed value.**
+
+### L.3 Three corrections to this document, each with its evidence
+
+**L.3.1 — `candidate.max_radius_by_sla_class`: E-8's classification is preserved, and the
+probe was wrong.** Instruction 10 asked which of two readings was right. Neither document was:
+§6.3 states *a radius **or** a wall-clock budget*, `expandCandidates`'s guard is
+`!hasRadiusBound && !hasClockBound`, and **the probe asked for the radius alone** — a conjunct
+neither the specification nor the code states. The composed path resolves `solve.time_budget`
+(registered, `unit: ms`, resolves to 250) and supplies `deadlineMs`/`elapsedMs`, so **the
+search terminates without the parameter and E-8's non-blocking classification holds.** The
+probe now encodes the disjunction; `contextFor()` resolves the clock half; a test asserts the
+row is unsatisfied on a bare snapshot and satisfied on the enriched one. *(What the wall clock
+does **not** supply is §6.3's **containment** limit: a clock-bounded search is bounded in work
+and unbounded in distance. That remains Operations' policy statement, and it is now stated as
+one rather than as a blocker.)*
+
+**L.3.2 — §D.3 and §K.3 stopped one seam short: D1's serviceable region IS a V1 runtime
+prerequisite.** §D.3 established that a k-ring-bounded *expansion* needs no published cover,
+and that is correct. The conclusion drawn from it — §K.3's *"the owner must not be asked
+for the D1 H3 cover, boundary polygon, CRS or charger estate"* — does not follow. **F33
+requires every endpoint to be a well-formed coordinate inside the serviceable region** and
+**F35 requires a charger reachable with `E_return` intact**; both declare `DENY`. The cover
+is not a *search* prerequisite and it is a *gate* prerequisite.
+
+**L.3.3 — the charger estate is not `RESIDUAL`; it is blocking.** §F.0 recorded
+`charging.chargerCandidates` as *"empty is survivable — a charging stop is attempted only
+when reserves fail, and `NO_FEASIBLE_INSERTION` is a priced result, not a crash"*. Both
+sentences are true and the classification does not follow. With no charger estate,
+`eReturn.evaluate` resolves no return leg, `reserves.compose` refuses — §14.5 calls a zero
+return reserve *"a reachability question nobody answered"* — and therefore **no plan holds
+its reserves, for any agent, at any state of charge.** Measured, and pinned by a test.
+
+### L.4 The largest finding — §7.5's gate cannot resolve its own inputs
+
+**Measured by running the shipped gate against a candidate assembled from this repository's
+own schema**, with `collectAll` so the answer is the whole set and not whichever predicate
+denied first:
+
+> **35 of 38 predicates deny. Every single one is `INDETERMINATE`. Not one is `VIOLATED`.**
+
+Nothing about the agent or the plan breaks a rule — **the gate cannot see the facts it is
+required to check.** The denials group by the predicates' own `inputSource`:
+
+| Source | Count | Examples |
+|---|---:|---|
+| `CONTROL_PLANE` | 16 | commissioning record (**F1**), supported firmware set, certification validity, tenant/fleet scope |
+| `SENSOR` | 6 | emergency stop, blocking faults, telemetry freshness |
+| `PLAN` | 5 | latest feasible start, cooloff/reassignment budget, §14.5's tier probabilities, charger reachability |
+| `ROUTING` | 2 | envelope constrictions, time-of-day restrictions |
+| `CONFIG` | 2 | intervention-rate bound, capacity/horizon |
+| `OPERATOR` · `INFERRED` · `EXTERNAL_SUBSYSTEM` · `MAP` | 1 each | holds/quarantine · health tier · third-party reservations · serviceable region |
+
+**F1 is first in §7.5's cheapest-first order and it denies**, on `agentSnapshot.commissioning`
+— a control-plane fact with **no schema column and no producer anywhere in `src/`**. Its own
+text says why that ends the evaluation: *"an uncommissioned agent has no validated
+configuration, so no other predicate's inputs are trustworthy."*
+
+**And the two *admitting* policies deny too.** `ADMIT_WITH_PENALTY` and
+`DENY_UNLESS_ENVELOPE` are the two seams §7.3 provides for letting an unknown through under
+a price, and both refuse here because the inputs *they* need (`cost.uncertainty_penalty`, a
+reduced-envelope evaluation) are themselves unresolved. **UNKNOWN IS NOT PERMISSION holds all
+the way down**, which is the system behaving exactly as designed and is also why no candidate
+can be priced today.
+
+**This was invisible to every prior audit** because every prior audit stopped at
+`planBuilder`, and §7.5's gate is one seam further. It is reported, not fixed: supplying any
+of these would be fabricating the fleet's own facts.
+
+### L.5 What the tests prove, and what they do not
+
+**42 tests, in six groups.** The file's header states the limit before its first assertion.
+
+| | Proves |
+|---|---|
+| **A — composition** | The real `expandCandidates` (asserted by the §6.1/§6.4 result shape, incl. `achievedGapProven`), the real `evaluateExact` (the gate, Plan Builder and Φ all reached), the routing dependency **through the seam** (the injected `route` receives §20.3's four key components), `pricedCandidateFor` returning the memo, `commit` opening §10.3.2's serialisable transaction and aborting on step 1, the composer starting the worker, and `server.js` still passing the pinned snapshot (E-8b) |
+| **B — missing routing** | With no `route`, `create()` builds **nothing** — `deps` is `undefined`, not a pipeline that declines — the composer starts no worker, no commitment is reachable, and the refusal names `route` as `EXTERNAL_ROUTING` |
+| **C — missing energy input** | Through the **real** `planInputFor` + `planBuilder.build`: an omitted `energy.model_residual_cv` → `MISSING_ENERGY_INPUT`; omitted ambient/pack → refused; omitted vehicle mass → refused; omitted hop terrain → refused at `timeline.project` with all three field names; and the composed input carries `null`/`undefined` for every absent seam rather than a value |
+| **D — component contracts** | `delayParametersFrom` refuses on the published register and substitutes nothing; `contextFor` resolves §6.3's clock half; the routing seam names *"no router is available"*; `payloadFor`'s observed-over-declared precedence and its refusal to partially sum; the agent snapshot carrying no stand-in for an absent battery row |
+| **F — the gate** | §L.4, as a re-runnable measurement |
+| **E — no false claim** | On the published register the assembly **refuses**, and `gate:composition`'s declarative row is untouched |
+
+**What they do NOT prove**, stated in the file and here: that a request is assigned, that a
+commitment is written, or that any priced number is right. Every green test in groups A, C and
+F runs against a snapshot with fifteen register parameters overridden **in one object** and a
+labelled router-shaped double. **S-6 is untouched and nothing in that file may be cited
+against it.**
+
+**Mutation testing: 5 built, 4 killed on the first run, 1 survived and was re-killed.**
+
+| | Mutant | Result |
+|---|---|---|
+| **M10** | `create()` builds the assembly even when requirements are unresolved | **KILLED** — 8 failures |
+| **M11** | per-Leg state collapsed back to one slot | **KILLED** — 1 failure |
+| **M12** | a plausible vehicle mass (50 kg) and ambient/pack temperature (20 °C) substituted | **KILLED** — 3 failures |
+| **M13** | absent SLA/aging rates coalesced to zero, as the diagnostics endpoint does | **KILLED** — 2 failures |
+| **M14** | an unpriceable candidate admitted at `gammaMilliCU: 0n` | **SURVIVED**, then killed |
+
+**M14's survival is recorded rather than presented as a kill**, following the M5 precedent.
+Zero is not a neutral placeholder there: it is the *cheapest possible* price, so an
+unpriceable candidate admitted at zero wins every solve it enters. It survived because **the
+branch is unreachable through the whole pipeline** — §L.4's gate denies at F1 before pricing
+is attempted — so no test had executed it. A unit test of that one branch was added, with
+`feasibility.gate` and `column.price` spied and labelled as such in its own body, **M14 was
+re-run against it and killed**, and the module was restored and byte-verified (`diff -q`).
+
+### L.6 A defect found in this assembly while writing it, fixed, and pinned
+
+The first draft held the round's per-Leg state — the Leg row, its version, its manifests, its
+Ω correction — in **one slot**, overwritten by each `expandCandidates` call. Correct for a
+batch of one; silently wrong for a batch of two, because `round.execute` commits **after** the
+whole batch is planned, so every commit would have named the last-expanded Leg's row id,
+version and expected state. **That is a real commitment written against the wrong Leg,
+reporting success.** State is now keyed by Leg, cleared at `planState.beginRound` — the signal
+the coordinator already sends — and both properties are pinned by tests. **M11 is the mutant
+that reverts it.**
+
+### L.7 Final verification of this pass
+
+| Check | Result |
+|---|---|
+| `npm test` | **exit 0 — 166 suites / 7 379 tests / 0 failures / 0 skips**, 475 s *(165 / 7 336 before)* |
+| New suite | `tests/engine/coordinatorSolvePathComposition.test.js` — **42 passed** |
+| `tests/engine/coordinatorPipelineRequirements.test.js` | **24 passed** *(was 23)* |
+| Mutation testing | **5 built, 4 killed first run, 1 survived → test strengthened → re-killed.** Module restored and byte-verified |
+| `npm run gates` | **exit 1 — 7 PASS, 1 FAIL** (`gate:composition`, `coordinator`). **Unchanged, and not claimed otherwise.** `gate:tiers` 292 modules / 456 edges *(was 290 / 434)*; `gate:params` 193 modules; `gate:legacy` 349 files |
+| `npm run routing:readiness` | **OVERALL: BLOCKED**, D1/D3/D8 all BLOCKED, exit 0. **Unchanged** |
+| Coordinator contract | **33 declared inputs** *(was 14)*. At a real promotion: **25 missing, 8 satisfied** — `EXTERNAL_ROUTING` 5 · `REGISTER_UNRESOLVED` 15 · `NO_PRODUCER` 5 · `PROCESS_DEPENDENCY` **0** |
+| Source digest | **`22afc5b1a83634899ad5dce7ccedad6f779afc085ca939f8f9e0c40bc28aead6` / 580 files** *(`011049f7…` / 577 before)* |
+| §24 gate table | **Untouched.** B1, B8, B-P, B-O, B-M, X3, A9 all where they were. **RELEASE: BLOCKED** |
+| Formal verification | **Nothing re-run and nothing changed.** No `.tla` or `.cfg` touched |
+
+### L.8 S-4 and S-6, stated exactly
+
+**S-4 — NOT MET, and its content has changed.** S-4 reads: *"the coordinator's solve path is
+composed at `server.js` from those values, and `COMPOSERS.coordinator` returns a started
+handle; `gate:composition` exit 0."* **The composition now exists and the composer returns a
+started handle when its inputs resolve** — proven by test. It does not resolve them on this
+register, `gate:composition` is still RED, and **S-4 is not met.** What changed is that S-4 is
+no longer waiting on code: it is waiting on S-3, exactly as §I.2 said it would be.
+
+**S-6 — NOT MET, NOT ATTEMPTED, AND NOT CLAIMED.** No request has traversed the engine, no
+`Commitment` row has been written, and `tools/verify/v1CorePath.js` has not been built —
+building it would produce a harness that can only report the same refusal. **No result in
+this pass may be read as end-to-end evidence.**
+
+### L.9 The exact remaining V1 boundary
+
+> **A. Composition implemented and verified; V1 remains blocked only by legitimate
+> external/owner inputs.**
+>
+> **No repository-owned V1 composition defect remains.** Every collaborator
+> `coordinator.worker.runRound` takes is constructed by production code, from the shipped
+> modules, and starts when its inputs resolve. The one defect this pass found in that code
+> (§L.6) was found, fixed, mutation-tested and pinned within it.
+>
+> What remains is **25 inputs in three classes**, none of which this repository may supply:
+> five routing, fifteen register entries belonging to §22.4's calibration owner, and five
+> families with no producer — **plus** §L.4's 35 gate inputs and §L.3's two corrections,
+> which are new information for the owner and are not additions to the stop condition.
+>
+> S-1, S-2 and S-8 are met. S-3 is open. S-4, S-6 and S-7 follow from it. S-5 is a
+> configuration act needing no code.
 
 ---
 

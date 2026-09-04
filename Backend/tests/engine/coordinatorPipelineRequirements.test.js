@@ -50,11 +50,12 @@ const path = require("path");
  */
 function completeContext() {
   const real = service.defaultSnapshot();
-  const overrides = {
-    "candidate.max_radius_by_sla_class": 2500,
-    "plan.service_time_prior": 90,
-    "energy.model_residual_cv": 0.15,
-  };
+  // Every register name the contract declares, given *some* resolvable value so that the
+  // probe's conditionality can be exercised. Built from the contract rather than typed out,
+  // so a row added to `SOLVE_PATH_REGISTER_INPUTS` cannot leave this fixture silently
+  // short and turn a real regression into "one more thing was already missing".
+  const overrides = { "candidate.max_radius_by_sla_class": 2500 };
+  for (const entry of pipeline.SOLVE_PATH_REGISTER_INPUTS) overrides[entry.name] = 1;
   return {
     snapshot: Object.assign(Object.create(Object.getPrototypeOf(real)), real, {
       resolve: (name, context, options) =>
@@ -71,11 +72,19 @@ function completeContext() {
     travelTimeSpread: { source: "declared-for-this-test" },
     speedMetresPerSecondFor: () => 2.5,
     hopTerrainSource: { source: "declared-for-this-test" },
+    timeBucket: "declared-for-this-test",
     environmentFor: () => ({ ambientC: 20, packC: 25 }),
     vehicleMassKgFor: () => 80,
+    failureProbabilityFor: () => ({ probability: 0.01, provenance: "declared-for-this-test" }),
+    routeHazardCuFor: () => 0,
+    batteryWearInputsFor: () => ({}),
     prisma: {},
     kv: {},
-    commit: async () => ({ committed: true }),
+    // V1 composition — `commit` is no longer injected. The assembly builds it from these
+    // three, because `createVolatileRecheck`'s `buildContext` adapter now exists.
+    runSerializable: async (client, fn) => fn(client),
+    selectForUpdate: async () => null,
+    signingKey: "declared-for-this-test",
     // `omega.combinedCorrection` reads the snapshot; the stub above resolves every name,
     // which is enough for it to succeed.
   };
@@ -264,20 +273,46 @@ describe("COMPOSERS.coordinator refuses with the measured list, and still refuse
     expect(outcome.missing.length).toBe(pipeline.REQUIREMENT_IDS.length);
   });
 
-  test("with EVERY input supplied it STILL refuses — and the refusal changes owner", () => {
-    // The most important assertion here. A satisfied requirements list is not a started
-    // worker: the assembly itself is deliberately unwritten, because with the real inputs
-    // absent it would be exercised only by an injected context — *written, tested, and
-    // never called*. What changes is the honest attribution: the last obstacle stops being
-    // external and becomes this repository's.
+  /**
+   * SUPERSEDED, and the supersession is the finding — V1 composition, 2026-09-04.
+   *
+   * This test asserted `COLLABORATOR_NOT_IMPLEMENTED`: *"a satisfied requirements list is
+   * not a started worker, because the assembly itself is deliberately unwritten."* That was
+   * a true statement about the tree on 2026-09-01 and it is false now — the assembly is
+   * `workers/coordinatorSolvePath.js`, and with every declared input satisfied the composer
+   * **starts the coordinator**.
+   *
+   * The assertion is replaced rather than deleted, and what it asserts is the same property
+   * one state along: the composer's answer is a *function of its context*, and the only
+   * thing between this repository and a running coordinator is now the context.
+   */
+  test("with EVERY input supplied it composes — the assembly exists and is reached", () => {
     const outcome = leaderWorkers.COMPOSERS.coordinator(completeContext());
 
+    expect(outcome.ok).toBe(true);
+    expect(outcome.missing).toBeUndefined();
+    expect(typeof outcome.handle.stop).toBe("function");
+    // Stopped immediately: this test proves the composition, never that a round ran. There
+    // is no database behind that context and no claim is made that one executed.
+    outcome.handle.stop();
+  });
+
+  test("and on the real register it does NOT compose — no context here can", () => {
+    // The other half, and the one that must never quietly flip. `completeContext()`
+    // overrides fifteen register entries **in that object alone**; the published register
+    // resolves none of them, and no routing source exists at all.
+    const outcome = leaderWorkers.COMPOSERS.coordinator({
+      snapshot: service.defaultSnapshot(),
+      prisma: {},
+      kv: {},
+      runSerializable: async () => null,
+      selectForUpdate: async () => null,
+      signingKey: "k",
+    });
+
     expect(outcome.ok).toBe(false);
-    expect(outcome.refusal).toBe(leaderWorkers.REFUSAL.COLLABORATOR_NOT_IMPLEMENTED);
-    expect(outcome.external).toBe(false);
-    expect(outcome.missing).toEqual([]);
-    expect(outcome.blockedBy).toMatch(/assembly itself is still not written/);
-    expect(outcome.blockedBy).toMatch(/repository-owned gap rather than an external one/);
+    expect(outcome.refusal).toBe(leaderWorkers.REFUSAL.EXTERNAL_DEPENDENCY_UNAVAILABLE);
+    expect(outcome.missing.map((row) => row.input)).toEqual(expect.arrayContaining(["route"]));
   });
 
   test("the build gate's declarative row is unchanged — gate:composition stays RED", () => {
@@ -343,34 +378,44 @@ describe("E-8b — the snapshot the composition root already had", () => {
     expect(missing).toContain("Ω correction (candidates/omega.combinedCorrection)");
   });
 
-  test("without the snapshot a real promotion left TWELVE missing, and Ω among them", () => {
+  test("without the snapshot, `snapshot` and Ω are BOTH unsatisfied — one cause, two rows", () => {
     const result = pipeline.requirements(promotionContext());
 
+    // `prisma` and `kv` are the only two this context supplies. The counts this test used
+    // to pin — twelve missing, then ten with the snapshot — were correct on 2026-09-04
+    // against a fourteen-row contract; the V1 composition raised the contract to
+    // thirty-three by walking past `planBuilder` into `cost/phi.evaluate`. The **property**
+    // E-8b found is what is pinned here instead, because it is the part that can regress:
+    // Ω's only input is the snapshot, so the two rows move together and always have.
     expect(result.satisfied).toEqual(["prisma", "kv"]);
-    expect(result.missing.length).toBe(12);
-    // The row E-7 reported as resolving. Its only input was the object never passed.
-    expect(result.missing.map((row) => row.input)).toContain(
-      "Ω correction (candidates/omega.combinedCorrection)",
+    expect(result.missing.map((row) => row.input)).toEqual(
+      expect.arrayContaining(["snapshot", "Ω correction (candidates/omega.combinedCorrection)"]),
     );
   });
 
-  test("with it, both close — and the remainder is external plus the unwritten assembly", () => {
+  test("with it, both close together — and the remainder is external, calibration, or absent", () => {
     const app = { locals: { config: service.defaultSnapshot() } };
+    const before = pipeline.requirements(promotionContext());
     const result = pipeline.requirements(promotionContext({ snapshot: () => app.locals.config }));
 
     expect(result.satisfied).toEqual(
       expect.arrayContaining(["snapshot", "Ω correction (candidates/omega.combinedCorrection)"]),
     );
-    expect(result.missing.length).toBe(10);
-    expect(result.byClass).toEqual({
-      EXTERNAL_ROUTING: 4,
-      REGISTER_UNRESOLVED: 3,
-      NO_PRODUCER: 2,
-      // `commit`, which bottoms out in the same unwritten assembly: `createVolatileRecheck`
-      // refuses without a `buildContext` adapter, and assembling an agent snapshot from a
-      // transaction is the round's work — the code that does not exist.
-      PROCESS_DEPENDENCY: 1,
-    });
+    // Exactly two rows move — `snapshot` and the Ω check whose only input it is. Supplying
+    // one object closes both, which is E-8b's finding stated as an arithmetic property
+    // rather than as a count that ages.
+    expect(before.missing.length - result.missing.length).toBe(2);
+
+    // `commit` is gone from `PROCESS_DEPENDENCY` — the assembly builds it now rather than
+    // requiring it — and what remains there is the three seams the assembly genuinely
+    // cannot build for itself. `server.js` supplies all three; this fixture does not, and
+    // that is what makes them visible here.
+    const processDependencies = result.missing
+      .filter((row) => row.class === pipeline.REQUIREMENT_CLASS.PROCESS_DEPENDENCY)
+      .map((row) => row.input)
+      .sort();
+    expect(processDependencies).toEqual(["runSerializable", "selectForUpdate", "signingKey"]);
+    expect(result.missing.map((row) => row.input)).not.toContain("commit");
   });
 
   test("the production composition root passes the snapshot as an accessor", () => {

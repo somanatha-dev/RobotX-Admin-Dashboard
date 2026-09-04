@@ -93,6 +93,11 @@ const registry = require("./registry");
 // this deployment is actually missing instead of restating a fixed paragraph, and
 // `UNCOMPOSABLE.coordinator.requires` is derived from the same list.
 const coordinatorPipeline = require("./coordinatorPipeline");
+// V1 composition — the assembly itself. `COMPOSERS.coordinator` no longer reports that
+// nothing constructs the solve path; it *attempts the construction* and reports what the
+// construction could not resolve. The distinction is the whole of this change: the refusal
+// below is now produced by the code that would run, not by a paragraph describing it.
+const coordinatorSolvePath = require("./coordinatorSolvePath");
 const clock = require("../engine/commitment/clock");
 // §4.5's expiry semantics — the producer of the `handlers` map that this module could
 // not build until Phase 5's remediation, and the reason `UNCOMPOSABLE` no longer has a
@@ -166,22 +171,28 @@ const UNCOMPOSABLE = Object.freeze({
     owner: "B1 — Operations + Commercial (D1), Product + Fleet Engineering (D3), Operations (D8)",
     external: true,
     blockedBy:
-      "the round loop needs `expandCandidates`, `pricedCandidateFor` and `commit`, and **nothing in this " +
-      "repository constructs them** — they exist only in test fixtures. They resolve, through " +
-      "plan/insertion.js → planBuilder.hopsForSequence → routing/cellPairCache.hopsFor, to an injected `route` " +
+      "the round loop needs `expandCandidates`, `pricedCandidateFor` and `commit`. " +
+      "*(V1 composition, 2026-09-04 — this sentence used to continue \"and **nothing in this repository " +
+      "constructs them** — they exist only in test fixtures\". That is no longer true: " +
+      "`workers/coordinatorSolvePath.js` constructs all three from the shipped modules, and this refusal is " +
+      "now produced by that assembly failing to resolve its inputs rather than by its absence.)* " +
+      "They resolve, through " +
+      "planBuilder.hopsForSequence → routing/cellPairCache.hopsFor, to an injected `route` " +
       "function — the routing engine. **No routing engine is selected**: that is execution-plan item B1, whose " +
       "Step 5 is blocked on D1 (no authoritative operating region), D3 (no fleet speed model) and D8 (no " +
       "extract vintage), none of which is an engineering task. `npm run routing:readiness` reports BLOCKED and " +
       "refuses to fabricate one. Starting the coordinator against an invented router would assign real work on " +
       "invented travel times, which is worse than not assigning it. " +
       "**And the routing engine is not the whole of it** — `src/workers/coordinatorPipeline.js` enumerates the " +
-      "full contract, including three register entries that resolve to `null` by declaration " +
-      "(`candidate.max_radius_by_sla_class`, `plan.service_time_prior`, `energy.model_residual_cv`) and two " +
-      "input families with **no schema column and no producer anywhere in `src/`** " +
-      "(`environment.ambientC/packC`, `masses.vehicleMassKg`). Those last two are nobody's withheld decision; " +
-      "they are missing code against a data source nobody has named. " +
-      "*(E-8 moved a third — terrain — out of that group: §14.2 states climb, regeneration and stop-start over " +
-      "the traversal, so the router is its producer and the `route` contract is six fields, not three.)* " +
+      "full contract, including **fifteen** register entries that resolve to `null` by declaration and " +
+      "**four** input families with **no schema column and no producer anywhere in `src/`** " +
+      "(`environment.ambientC/packC`, `masses.vehicleMassKg`, `p_fail`, §14.4's battery wear inputs). Those " +
+      "last four are nobody's withheld decision; they are missing code against a data source nobody has named. " +
+      "*(E-8 moved terrain out of that group: §14.2 states climb, regeneration and stop-start over " +
+      "the traversal, so the router is its producer and the `route` contract is six fields, not three. The V1 " +
+      "composition then raised the register count from three to fifteen — not because the register changed, " +
+      "but because writing the assembly walked past `planBuilder` into `cost/phi.evaluate`, where every " +
+      "`C_direct`, `C_risk`, `C_lifecycle` and `C_delay` rate is its own refusal.)* " +
       "Run the probe for the current list.",
   }),
 });
@@ -333,68 +344,83 @@ const COMPOSERS = Object.freeze({
   },
 
   /**
-   * §9.2 / §19.3 — the round loop. **Still refused, and now for measured reasons.**
+   * §9.2 / §19.3 — the round loop. **Assembled, and refused only when an input is absent.**
    *
-   * ── What changed, and why it is not cosmetic ───────────────────────────────
-   * This was `return { ok: false, ...UNCOMPOSABLE.coordinator }` — an **unconditional**
+   * ── The three states this composer has had, and why the third is different ─
+   * It began as `return { ok: false, ...UNCOMPOSABLE.coordinator }` — an **unconditional**
    * refusal that inspected nothing. Supplying a routing engine, a region and every
-   * calibrated value would not have changed its answer by one character, because it never
-   * looked at the context it was handed. A refusal that cannot be satisfied is not a
-   * dependency check; it is a constant.
+   * calibrated value would not have changed its answer by one character. A refusal that
+   * cannot be satisfied is not a dependency check; it is a constant.
    *
-   * It now asks `coordinatorPipeline.requirements(context)` and reports **what this
-   * deployment is actually missing**, by name, owner and class. The classes are the
-   * actionable part: a `REGISTER_UNRESOLVED` entry is `null` by declaration and is §22.4's
-   * calibration owner's to derive, while a `NO_PRODUCER` family is nobody's withheld
-   * decision — it is code nobody has written against a data source nobody has named. Both
-   * used to read as "blocked on B1", and one of them is not.
+   * E-7 made it conditional: it asked `coordinatorPipeline.requirements(context)` and
+   * reported **what this deployment is actually missing**, by name, owner and class. That
+   * was a real improvement — the classes are the actionable part — but the assembly itself
+   * was still unwritten, so the composer's final answer, with every input satisfied, was
+   * `COLLABORATOR_NOT_IMPLEMENTED`.
+   *
+   * **It is now written.** `workers/coordinatorSolvePath.js` builds the real
+   * `expandCandidates`, `pricedCandidateFor`, `expansionInputFor` and `commit` from the
+   * shipped modules, and this composer calls it. So the refusal below is produced by *the
+   * code that would run*, not by a paragraph describing code that does not exist — which
+   * is the same move `coordinatorPipeline` made for the requirement list, one layer down.
    *
    * ── This does not move the gate, and must not be read as progress ─────────
    * `tools/gates/checkCompositionRoot.js` reads `UNCOMPOSABLE` **declaratively**, that row
    * is unchanged, and `gate:composition` stays RED. The row is removed only when the
-   * coordinator actually starts — the rule that table sets for itself.
-   *
-   * **And a satisfied requirements list is still not a started worker.** The assembly
-   * itself — `expandCandidates`, `pricedCandidateFor`, `expansionInputFor` and the
-   * `evaluateExact` they bottom out in — is **deliberately not written**: with the inputs
-   * absent it would be exercised only by an injected complete context, which is the
-   * *written, tested, and never called* failure this registry's own header names. So the
-   * refusal below is `COLLABORATOR_NOT_IMPLEMENTED` once every input resolves, and it says
-   * so plainly rather than implying the last obstacle is external.
+   * coordinator actually starts — the rule that table sets for itself — and it cannot
+   * start, because 25 of its 33 declared inputs are unresolved on this register with no
+   * routing source. Writing the assembly moved the last *repository-owned* obstacle; it
+   * did not supply a router, a calibration, or a region.
    */
   coordinator(context) {
-    const contract = coordinatorPipeline.requirements(context);
+    const assembly = coordinatorSolvePath.create(context);
 
-    if (!contract.ok) {
+    if (!assembly.ok) {
       return {
         ok: false,
         ...UNCOMPOSABLE.coordinator,
         // The measured list, alongside the standing declaration. `requires` is the
         // contract; `missing` is this deployment's answer to it.
-        missing: contract.missing,
-        missingByClass: contract.byClass,
-        satisfied: contract.satisfied,
+        missing: assembly.missing,
+        missingByClass: assembly.missingByClass,
+        satisfied: assembly.satisfied,
         blockedBy:
           `${UNCOMPOSABLE.coordinator.blockedBy} ` +
-          `MEASURED against this context — ${contract.missing.length} of ` +
+          `MEASURED against this context — ${assembly.missing.length} of ` +
           `${coordinatorPipeline.REQUIREMENT_IDS.length} inputs unresolved: ` +
-          `${coordinatorPipeline.describeMissing(contract.missing)}.`,
+          `${coordinatorPipeline.describeMissing(assembly.missing)}.`,
       };
     }
 
+    const enriched = assembly.context;
+    const values = context.values;
+
     return {
-      ok: false,
-      refusal: REFUSAL.COLLABORATOR_NOT_IMPLEMENTED,
-      requires: coordinatorPipeline.REQUIREMENT_IDS,
-      owner: "Engineering — the composition-root assembly",
-      external: false,
-      satisfied: contract.satisfied,
-      missing: [],
-      blockedBy:
-        "every declared input resolves, and the solve-path assembly itself is still not written: nothing " +
-        "constructs `expandCandidates`, `pricedCandidateFor`, `expansionInputFor` or the `evaluateExact` they " +
-        "bottom out in outside a test fixture. **This is now a repository-owned gap rather than an external " +
-        "one**, and it is the only thing between this context and a running coordinator.",
+      ok: true,
+      satisfied: assembly.satisfied,
+      handle: coordinatorWorker.start(assembly.deps, {
+        shardId: context.shardId,
+        instanceId: context.instanceId,
+        regionId: context.regionId,
+        config: {
+          maxEvaluatedPerLeg: finite(values, "candidate.max_evaluated"),
+          maxColumnsPerRound: finite(values, "plan.max_columns_per_round"),
+          branchNodeBudget: finite(values, "solve.branch_node_budget"),
+          timeBudgetMs: enriched.expansionWallClockBudgetMs,
+          maxClockSkewMillis: finite(values, "time.max_clock_skew"),
+          storeRoundTripMillis: finite(values, "time.store_round_trip"),
+          windowMinMs: finite(values, "solve.window_min"),
+          windowMaxMs: finite(values, "solve.window_max"),
+          saturatedWindowMs: finite(values, "solve.saturated_window"),
+          maxLegsPerRound: finite(values, "solve.max_legs_per_round"),
+        },
+        // §22.5's switches reach the round as data. None is thrown on by this composer:
+        // `deferral` and the rest are register state, and the round reads `killSwitches`
+        // for what it may do, never for what it must.
+        killSwitches: context.killSwitches || {},
+        tickMs: finite(values, "solve.window_min"),
+        record: context.record,
+      }),
     };
   },
 

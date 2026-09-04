@@ -63,6 +63,13 @@ const { orderCandidates, compareStrings } = require("../engine/candidates/orderi
 const { unexploredRingFloorMilliCU, READY_CLASSES } = require("../engine/candidates/expansion");
 const { ratesFrom } = require("../engine/cost/exchangeRates");
 const { toCU } = require("../engine/determinism/fixedPoint");
+// V1 composition — these two row adapters were defined in this file, with the stated
+// reason that `consumption.js`'s contract is the coefficient object rather than the row.
+// That is still true of `consumption.js` and no longer true of the *location*: the
+// coordinator's solve-path assembly (`workers/coordinatorSolvePath.js`) needs the same two
+// conversions, and two mappings of one schema are free to disagree after a migration —
+// with this endpoint and the decision path then reporting different energy for one agent.
+const { energyCoefficientsFrom, fleetBestCaseFrom } = require("../engine/domain/mappers/decisionInputs");
 
 /**
  * The default window the distribution is reported over when the caller names none.
@@ -425,38 +432,6 @@ const getAgentEnergy = asyncHandler(async (req, res) => {
 const CANDIDATES_MAX_RING = 3;
 
 /**
- * `EnergyModelParams` as `energy/consumption.js` reads a model: an object keyed by
- * §14.2's coefficient names (`beta_dist`, …), not the camelCase Prisma columns.
- *
- * This adapter exists because the two spellings are genuinely different and nothing
- * else converts between them. Reading `params.coefficients` — a column
- * `EnergyModelParams` does not have — yields `undefined` for every coefficient and
- * therefore an unresolvable `LB(a, l)` on every agent, which is what this endpoint
- * did before the Phase 9 closure. Kept beside the endpoint that needs it rather
- * than added to `consumption.js`, whose contract is the coefficient object, not the
- * row it came from.
- *
- * @param {object|null} params an `EnergyModelParams` row
- * @returns {object|null} a coefficient object, or null when there is no row
- */
-function energyCoefficientsFrom(params) {
-  if (!params) return null;
-  return {
-    [consumption.COEFFICIENT.DIST]: params.betaDist,
-    [consumption.COEFFICIENT.MASS]: params.betaMass,
-    [consumption.COEFFICIENT.CLIMB]: params.betaClimb,
-    [consumption.COEFFICIENT.REGEN]: params.betaRegen,
-    [consumption.COEFFICIENT.MOVE_TIME]: params.betaMoveTime,
-    [consumption.COEFFICIENT.STOP_START]: params.betaStopStart,
-    [consumption.COEFFICIENT.DWELL]: params.betaDwell,
-    [consumption.COEFFICIENT.AUX]: params.betaAux,
-    [consumption.COEFFICIENT.THERMAL]: params.betaThermal,
-    [consumption.COEFFICIENT.PAYLOAD_THERMAL]: params.betaPayloadThermal,
-    [consumption.COEFFICIENT.REGEN_EFFICIENCY]: params.etaRegen,
-  };
-}
-
-/**
  * GET /api/diagnostics/candidates/:legId — §6's own diagnostic: "cells explored,
  * smallest unexplored bound, achieved gap in CU" (§6.1).
  *
@@ -671,38 +646,6 @@ function readDelayParameters(snapshot) {
       maxMultiplier: snapshot.resolve("cost.aging.max_multiplier", {}) ?? 1,
     },
   };
-}
-
-/**
- * The fleet-wide best-case speed/energy coefficients `unexploredRingFloorMilliCU`
- * needs (§6.4), derived from whichever candidates this sweep actually found —
- * the fastest declared speed and the cheapest κ·β_dist product among them. An
- * honest, request-scoped proxy for "the fleet's own best-case class", not a
- * fleet-wide config lookup Phase 9 does not otherwise need.
- *
- * @param {object[]} positions Prisma `AgentCellPosition` rows with `agent.agentClass` included
- * @returns {{ maxSpeedMs: number, kappaMin: number, betaDistMin: number }|null}
- */
-function fleetBestCaseFrom(positions) {
-  let maxSpeedMs = null;
-  let betaDistMin = null;
-
-  for (const position of positions) {
-    const agentClass = position.agent.agentClass;
-    const limits = agentClass && agentClass.mobilityModel && agentClass.mobilityModel.kinematicLimits;
-    if (limits && Number.isFinite(limits.maxSpeedMs)) {
-      maxSpeedMs = maxSpeedMs === null ? limits.maxSpeedMs : Math.max(maxSpeedMs, limits.maxSpeedMs);
-    }
-    const params = agentClass && agentClass.energyModelParams && agentClass.energyModelParams[0];
-    const coefficients = energyCoefficientsFrom(params);
-    const betaDist = coefficients && coefficients[consumption.COEFFICIENT.DIST];
-    if (Number.isFinite(betaDist)) {
-      betaDistMin = betaDistMin === null ? betaDist : Math.min(betaDistMin, betaDist);
-    }
-  }
-
-  if (maxSpeedMs === null || betaDistMin === null) return null;
-  return { maxSpeedMs, kappaMin: 1, betaDistMin };
 }
 
 module.exports = {

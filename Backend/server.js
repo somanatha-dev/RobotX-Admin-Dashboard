@@ -9,7 +9,13 @@ require("./src/observability/eventLoopMonitor").start();
 const app = require("./src/app");
 const logger = require("./src/config/logger");
 const { isOriginAllowed, tlsPosture } = require("./src/config/cors");
-const { connectPrismaWithRetry, disconnectPrisma, runSerializable, selectForUpdate } = require("./src/db/prisma");
+const {
+  connectPrismaWithRetry,
+  disconnectPrisma,
+  runSerializable,
+  selectForUpdate,
+  isSerializationFailure,
+} = require("./src/db/prisma");
 const { initKv } = require("./src/cache/kv");
 const initSocketServer = require("./src/sockets/socket.server");
 const { createVirtualRobotSimulator } = require("./src/simulation/SimulationEngine");
@@ -681,6 +687,20 @@ async function start() {
         regionId,
         instanceId: `${process.env.HOSTNAME || host}:${process.pid}`,
         runInTransaction: (fn) => runSerializable(prisma, fn),
+        // V1 composition — the three seams §10.3.2's commit is built from.
+        //
+        // `workers/coordinatorSolvePath.js` assembles `commit` rather than taking it
+        // injected, because `commitment/commit.js` refuses without a `volatileRecheck`,
+        // `volatileSubset.createVolatileRecheck` refuses without a `buildContext` adapter,
+        // and that adapter's own header assigns it to the round's composition root. What
+        // the assembly cannot build for itself is the transaction seam and the row lock —
+        // those know this deployment's isolation level — and the §23.3 signing key, which
+        // is an operator-declared deployment secret. All three already existed in this
+        // process for the supervisor's own path; they were simply never handed to the
+        // composers, which is the E-8b finding again at a second dependency.
+        runSerializable,
+        selectForUpdate,
+        isSerializationFailure,
         // §11.3's transport arm, bound to this process's `io`. The worker never reaches for
         // a socket itself; `activeModes` is passed as a function because a shard's mode set
         // can change between two rows of one drain pass.

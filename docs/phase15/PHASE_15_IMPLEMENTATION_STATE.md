@@ -154,10 +154,12 @@ classes — BUILD, SUITE, PRODUCTION, ORGANISATIONAL.
 PHASE T1-04 added `fairness.worker.js` for §17.5; re-measured 2026-08-30 —
 `require('./src/workers/registry.js').WORKERS.length` → 19)*, exporting `READINESS`, `WORKERS`,
 `WORKER_BY_ID`, `assertRegistry`, `scheduledAtBoot`, `scheduledOnLeadership`, `report`.
-The directory holds **22 `.js` files**: 19 `*.worker.js` modules, `registry.js`,
-`leaderWorkers.js` (the LEADER_ONLY wiring), and **`coordinatorPipeline.js`** — the
-coordinator's solve-path **requirements probe**, added 2026-09-01 by the V1 audit
-*(was 21 files)*. **It registers no worker**, so the registry count stays 19.
+The directory holds **23 `.js` files**: 19 `*.worker.js` modules, `registry.js`,
+`leaderWorkers.js` (the LEADER_ONLY wiring), **`coordinatorPipeline.js`** — the
+coordinator's solve-path **requirements probe**, added 2026-09-01 by the V1 audit — and
+**`coordinatorSolvePath.js`**, the **assembly itself**, added 2026-09-04 by the V1
+composition pass *(was 22 files; 21 before that)*. **Neither registers a worker**, so the
+registry count stays 19.
 
 > **`coordinatorPipeline.js` enumerates what the coordinator's solve path needs — 14 inputs,
 > each with a class, an owner and a probe — and `COMPOSERS.coordinator(context)` now reports
@@ -168,6 +170,18 @@ coordinator's solve-path **requirements probe**, added 2026-09-01 by the V1 audi
 > `UNCOMPOSABLE` declaratively and that row is removed only when the worker actually starts.
 > Its measured output, and why the three classes matter more than the count, is in
 > [`../v1/V1_CONTRACT_AND_STOP_CONDITION.md`](../v1/V1_CONTRACT_AND_STOP_CONDITION.md) §E.1.
+>
+> **UPDATED 2026-09-04 — "It builds no assembly and starts nothing" is no longer true.**
+> `workers/coordinatorSolvePath.js` **is** the assembly: it constructs `expandCandidates`,
+> `pricedCandidateFor`, `expansionInputFor` and `commit` from the shipped modules, and
+> `COMPOSERS.coordinator` starts the worker when every declared input resolves. Building it
+> raised the contract from **14 declared inputs to 33** and the unresolved set at a real
+> promotion from 10 to **25** — twelve further register entries, one further routing input
+> (`timeBucket`), three further families with no producer — and removed the one
+> `PROCESS_DEPENDENCY`, because the composition now builds `commit` rather than requiring it.
+> **`gate:composition` is still RED and unchanged**: the row is removed when the worker
+> actually starts, and 25 of its 33 inputs do not resolve on this register. See
+> [`../v1/V1_CONTRACT_AND_STOP_CONDITION.md`](../v1/V1_CONTRACT_AND_STOP_CONDITION.md) **§L**.
 
 > **`gate:composition` prints "1 violation(s) across 19 registered worker(s)"** — re-run and
 > re-read 2026-08-30. The violation count did not move: it is `coordinator`, and it is B1's.
@@ -211,8 +225,13 @@ publishes automatic rollbacks, and runs the configuration pull loop (stopped on 
 
 **NOT composable — 1 of 19:**
 - **`coordinator`** — `LEADER_ONLY_NOT_COMPOSABLE`. Its round loop needs `expandCandidates`,
-  `pricedCandidateFor` and `commit`, and **nothing in this repository constructs them** — they
-  exist only in test fixtures (`tools/verify/phase9ProductionPath.js` says so in its own header).
+  `pricedCandidateFor` and `commit`. *(This sentence continued **"and nothing in this repository
+  constructs them — they exist only in test fixtures"**, quoting
+  `tools/verify/phase9ProductionPath.js`'s own header. **That ceased to be true on 2026-09-04**:
+  `workers/coordinatorSolvePath.js` constructs all three, and the gate now fails because the
+  assembly cannot resolve 25 of its 33 declared inputs — not because it does not exist. The
+  verdict, the owner and the exit code are unchanged; only the cause is now one layer more
+  precise. See `../v1/V1_CONTRACT_AND_STOP_CONDITION.md` §L.)*
   The first two resolve through
   `plan/insertion.js → planBuilder.hopsForSequence → routing/cellPairCache.hopsFor` to an injected
   `route` function — **the routing engine, which B1 has not selected**. `gate:composition` exits 1

@@ -126,6 +126,16 @@ repository closes it.
 **Blocking:** Yes — this is §24 gate `engine_decision_path_wired`.
 **Isolated exit code confirmed:** `npm run gate:composition` → exit `1`.
 
+> **Re-verified 2026-09-04, after the V1 composition pass.** Exit code, violation count,
+> violating worker and owner are all **unchanged**. What changed is the failure's content:
+> `workers/coordinatorSolvePath.js` now constructs `expandCandidates`, `pricedCandidateFor`
+> and `commit`, so the gate fails because the assembly cannot resolve **25 of 33 declared
+> inputs** rather than because the assembly is absent. **The gate was not touched**, the
+> `UNCOMPOSABLE` row it reads declaratively is unchanged, and the row is removed only when the
+> worker actually starts. `npm test` **166 suites / 7 379 tests / 0 failures**; `npm run
+> gates` **7 PASS / 1 FAIL**; `routing:readiness` **BLOCKED**. See
+> [`../v1/V1_CONTRACT_AND_STOP_CONDITION.md`](../v1/V1_CONTRACT_AND_STOP_CONDITION.md) §L.7.
+
 ---
 
 ## 3. Release verdict — the §24 gate table

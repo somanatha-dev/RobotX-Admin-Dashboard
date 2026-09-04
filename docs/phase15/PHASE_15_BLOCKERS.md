@@ -237,10 +237,21 @@ re-confirmed EXTERNAL by every pass since.
   uncomposable.
 
 **Why it blocks:** `coordinator`'s round loop needs `expandCandidates`, `pricedCandidateFor` and
-`commit`. The first two resolve through `plan/insertion.js → planBuilder.hopsForSequence →
+`commit`. The first two resolve through `planBuilder.hopsForSequence →
 routing/cellPairCache.hopsFor` to an injected `route` function — the routing engine. With no engine
 selected, the Tier 0 decision path has no leaf. `engine_decision_path_wired` is one of 24 blocking
 §24 gates.
+
+> **UPDATED 2026-09-04 — the cause is now one layer more precise, and the verdict is
+> unchanged.** Until this date the collaborators did not exist as code at all;
+> `workers/coordinatorSolvePath.js` now constructs them from the shipped modules and
+> `COMPOSERS.coordinator` starts the worker when its inputs resolve. **B1 still blocks**, and
+> it is no longer the whole of it: the assembly reports **25 of 33 declared inputs
+> unresolved** — 5 routing (B1's), **15 register entries** belonging to §22.4's calibration
+> owner (twelve of them found by building the assembly, all `required: true` / `null` /
+> `UNCALIBRATED`), and 5 families with no producer anywhere in `src/`. Anyone reading this row
+> as "B1 releases the coordinator" would supply a router and find the gate still red.
+> See [`../v1/V1_CONTRACT_AND_STOP_CONDITION.md`](../v1/V1_CONTRACT_AND_STOP_CONDITION.md) §L.2.
 
 **Three workers, not one, are held by B1.** `gate:composition` fails on `coordinator` alone,
 because it is the only one *declared* `LEADER_ONLY` and therefore expected to start. Two more are
