@@ -65,6 +65,7 @@ const coordinatorPipeline = require("./coordinatorPipeline");
 const coordinatorWorker = require("./coordinator.worker");
 
 const cells = require("../engine/spatial/cells");
+const hierarchy = require("../engine/spatial/hierarchy");
 const expansion = require("../engine/candidates/expansion");
 const omega = require("../engine/candidates/omega");
 const cellPairCache = require("../engine/routing/cellPairCache");
@@ -77,6 +78,8 @@ const consumption = require("../engine/energy/consumption");
 const usable = require("../engine/energy/usable");
 const cDelay = require("../engine/cost/cDelay");
 const { ratesFrom } = require("../engine/cost/exchangeRates");
+const schedulerClient = require("../engine/energy/chargingSchedulerClient");
+const { compareStrings } = require("../engine/determinism/ordering");
 const commitment = require("../engine/commitment/commit");
 const offers = require("../engine/dispatch/offers");
 const planStateModel = require("../engine/shard/planState");
@@ -96,6 +99,14 @@ const MS_PER_SECOND = 1000;
  * @structural §11.2's post-commit Leg state, resolved from the state machine
  */
 const COMMITTED_LEG_STATE = legMachine.LEG_STATE.OFFERED;
+
+/**
+ * The Availability Index classes that mean *"free now"* — read from `expansion.js` rather
+ * than restated, so a §6.3 change cannot leave this composer with a second, drifting
+ * notion of readiness.
+ * @structural §6.3's ready classes, resolved from the module that searches them
+ */
+const READY_AVAILABILITY_CLASSES = expansion.READY_CLASSES;
 
 /** Why an assembled collaborator refused. @structural the assembly's refusal taxonomy */
 const REFUSAL = Object.freeze({
@@ -335,8 +346,25 @@ function agentSnapshotLoaderFor(context) {
       containerClasses: position.containerClasses,
       observedAtMs: Number(position.observedAtMs),
 
+      // The whole declared model, not the two fields the expansion happens to read.
+      //
+      // E-10 (§M.4) measured F28 and F29 denying on *"the agent's MobilityModel"* while
+      // the row was loaded and four of its columns were dropped on the way through this
+      // mapper — `permissionSet` (F28's enumerated surface classes), `envelopeConstraints`
+      // and `dimensionalFootprint` (F29's passage limits) and `speedModel`. A mapper that
+      // narrows a row is a mapper that makes a predicate report an absent record when the
+      // record exists, which is the E-8 family of defect at the schema boundary. Each
+      // column is passed through exactly as declared: absent columns stay `undefined` and
+      // the predicates name them.
       mobilityModel: agentClass && agentClass.mobilityModel
-        ? { kinematicLimits: agentClass.mobilityModel.kinematicLimits, traversalDomain: agentClass.mobilityModel.traversalDomain }
+        ? {
+            traversalDomain: agentClass.mobilityModel.traversalDomain,
+            kinematicLimits: agentClass.mobilityModel.kinematicLimits,
+            permissionSet: agentClass.mobilityModel.permissionSet,
+            envelopeConstraints: agentClass.mobilityModel.envelopeConstraints,
+            dimensionalFootprint: agentClass.mobilityModel.dimensionalFootprint,
+            speedModel: agentClass.mobilityModel.speedModel,
+          }
         : null,
       containerModel: agentClass ? agentClass.containerModel : null,
       capabilityBundle: agentClass ? agentClass.capabilityBundle : null,
@@ -381,7 +409,18 @@ function legLoaderFor(context) {
       include: {
         stops: { orderBy: { sequence: "asc" } },
         manifests: true,
-        mission: { include: { legs: { select: { id: true, sequence: true }, orderBy: { sequence: "asc" } } } },
+        mission: {
+          include: {
+            legs: { select: { id: true, sequence: true }, orderBy: { sequence: "asc" } },
+            // §2.8 — `Task >──< Mission`. §2.4 puts the RequirementSet, the payload
+            // specification, the SLA class and the tenant on the **Task**, and the Mission
+            // is what discharges Tasks; the decision path reads them through this relation
+            // or not at all. F4, F21 and F25 denied on `mission.tenantId`,
+            // `mission.requirements` and `mission.payload` while every one of those was a
+            // column on a row this query did not join (§M.4).
+            tasks: { include: { payloadSpec: true } },
+          },
+        },
       },
     });
     if (!leg) return null;
@@ -411,6 +450,9 @@ function legLoaderFor(context) {
       startNotBeforeMs: leg.startNotBefore ? leg.startNotBefore.getTime() : null,
       createdAtMs: leg.createdAt ? leg.createdAt.getTime() : null,
       manifests: leg.manifests || [],
+      // §2.4's Task attributes, resolved across the Mission's Tasks. Absent rather than
+      // guessed when the Tasks disagree — see `agreedTaskAttribute`.
+      tasks: taskAttributesFor(leg.mission),
       stops: leg.stops.map((stop) => ({
         stopId: stop.stopId,
         sequence: stop.sequence,
@@ -418,8 +460,65 @@ function legLoaderFor(context) {
         siteId: stop.siteId,
         lat: stop.lat,
         lon: stop.lon,
+        // §2.4's per-Stop access constraints, for F32. **Only a stated list is carried.**
+        // F32 reads `undefined` as *"nobody established what this site requires"* and
+        // `null`/`[]` as *"none required"*, and those are different facts: a `Json?`
+        // column nobody has populated is the first, not the second. So an array is passed
+        // through and anything else — including a `null` column — leaves the field absent
+        // and F32 denies. Populating the column with `[]` is how an operator declares a
+        // kerbside stop, which is a statement someone makes rather than one this mapper
+        // makes for them.
+        accessPrerequisites: Array.isArray(stop.accessConstraints) ? stop.accessConstraints : undefined,
       })),
     };
+  };
+}
+
+/**
+ * One attribute, agreed across every Task the Mission discharges — or absent.
+ *
+ * §2.8 makes `Task >──< Mission` many-to-many, so a Mission may discharge several Tasks
+ * and they may disagree about the tenant, the RequirementSet or the payload. **A
+ * disagreement is not a tie to be broken here.** Picking the first Task's tenant would let
+ * F4 certify multi-tenant isolation against one of two customers, which is the permissive
+ * direction on an isolation predicate; unioning two RequirementSets would assert a
+ * requirement nobody declared. Both are answered by leaving the attribute absent, which is
+ * what the predicates read as *"nobody established this"*.
+ *
+ * @param {object[]} tasks
+ * @param {(task: object) => *} read
+ * @returns {*} the agreed value, or `undefined`
+ */
+function agreedTaskAttribute(tasks, read) {
+  const stated = [];
+  for (const task of tasks || []) {
+    const value = read(task);
+    if (value !== undefined && value !== null) stated.push(value);
+  }
+  if (stated.length === 0) return undefined;
+  const first = stated[0];
+  for (const value of stated) {
+    if (value !== first) return undefined;
+  }
+  return first;
+}
+
+/**
+ * §2.4's Task-carried mission attributes: tenant, RequirementSet, payload specification.
+ *
+ * @param {object|null} mission a `Mission` row with `tasks.payloadSpec` included
+ * @returns {{ tenantId: *, requirements: *, payload: *, taskCount: number }}
+ */
+function taskAttributesFor(mission) {
+  const tasks = (mission && mission.tasks) || [];
+  return {
+    taskCount: tasks.length,
+    tenantId: agreedTaskAttribute(tasks, (task) => task.tenantId),
+    // The RequirementSet is a JSON document on the Task (§2.3). Carried only when it is
+    // the list `domain/capability.matchRequirements` reads; anything else is left absent
+    // so F21 reports "unreadable" rather than matching against a shape it did not expect.
+    requirements: agreedTaskAttribute(tasks, (task) => (Array.isArray(task.requirements) ? task.requirements : undefined)),
+    payload: agreedTaskAttribute(tasks, (task) => task.payloadSpec),
   };
 }
 
@@ -589,6 +688,215 @@ function phiInputFor(input) {
 }
 
 /**
+ * The pinned charger-availability projection, from the durable row §14.5 calls immutable.
+ *
+ * `ChargerAvailabilityProjection` is *the* authority (§3.3): the KV mirror
+ * `chargerReachability.worker.mirrorProjection` writes is a cache, and this deployment
+ * starts that worker nowhere, so a mirror read would be a lookup that always misses.
+ *
+ * The latest version is read, then validated by the module that owns the shape —
+ * `chargingSchedulerClient.consumeProjection`, which refuses a projection with no version
+ * or no publication time. **A projection that does not validate is not pinned**: `null`
+ * travels on, `eReturn` measures staleness as *"no charger availability projection is
+ * pinned into this round"*, and §14.5's defined degradation to `DEPOT_ONLY` applies. That
+ * is a stated fallback, not a silent one.
+ *
+ * @param {object} context
+ * @returns {Promise<{ projection: object|null, problems: string[] }>}
+ */
+async function pinnedChargerProjection(context) {
+  const table = context.prisma && context.prisma.chargerAvailabilityProjection;
+  if (!table || !isFunction(table.findFirst)) {
+    return { projection: null, problems: ["the store exposes no ChargerAvailabilityProjection table"] };
+  }
+
+  const row = await table.findFirst({ orderBy: { version: "desc" } });
+  if (!row) return { projection: null, problems: ["no charger availability projection has been published"] };
+
+  const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
+  const consumed = schedulerClient.consumeProjection({
+    version: row.version,
+    publishedAt: row.publishedAt,
+    horizonEnd: row.horizonEnd,
+    chargers: payload.chargers,
+  });
+  if (!consumed.ok) {
+    return { projection: null, problems: consumed.problems.map((problem) => `projection ${String(row.version)}: ${problem}`) };
+  }
+  return { projection: consumed.projection, problems: [] };
+}
+
+/**
+ * The declared charger estate, as the nearest-k return-leg candidates `eReturn` reads —
+ * **the F35 seam.**
+ *
+ * ── What was missing ───────────────────────────────────────────────────────
+ * `planInputFor` has always read `input.chargerCandidates` and **no caller supplied it**
+ * (§M.3). The consequence was not a missing charging stop: `eReturn` resolved no return
+ * leg, `reserves.compose` refused — §14.5 calls a zero return reserve *"a reachability
+ * question nobody answered"* — `plan.energy` came out `null`, and **F34 and F35 both
+ * denied for every agent at every state of charge.** So this seam is not a charging
+ * feature; it is what makes a plan have an energy projection at all.
+ *
+ * ── The contract, and where each field comes from ──────────────────────────
+ * `eReturn.evaluate` reads `{ chargerId, energyWh, travelSeconds, isDepot }`:
+ *
+ *   · `chargerId` / `isDepot` — the `Charger` row. Schema-backed and therefore this
+ *     repository's to assemble, on §F.0's own rule for payload mass. `isDepot` decides
+ *     admissibility under the `DEPOT_ONLY` basis, so it is read and never assumed.
+ *   · `travelSeconds` — the **same** cell-pair seam every other traversal goes through,
+ *     so §20.3's intra-cell offset is applied by the module that owns it and the return
+ *     leg is priced under the same profile and congestion bucket as the mission.
+ *   · `energyWh` — `distanceM × the profile's return-leg Wh per metre`, which is exactly
+ *     what `routing/chargerReachabilityCache.buildEntry` computes and exactly the input it
+ *     asks its own caller for. **No register entry and no column carries it**, and it is
+ *     not derivable here: `β_dist` alone omits mass, gradient, auxiliary and time terms,
+ *     so using it would understate `E_return`, overstate the surplus, and admit missions
+ *     the reserve exists to refuse. It arrives through a declared seam or the candidate
+ *     is not built — see `coordinatorPipeline`'s `returnLegEnergyWhPerMetre` requirement.
+ *
+ * ── Fail-closed, per charger, by name ──────────────────────────────────────
+ * A charger with no `cellId`, or one the routing seam cannot answer for, is **omitted and
+ * reported** rather than admitted at a guessed distance. Omission shrinks the admissible
+ * set, which is the conservative direction: it can only make `E_return` unreachable, never
+ * reachable.
+ *
+ * @param {object} input
+ * @returns {Promise<{ candidates: object[], truncated: boolean, problems: string[] }>}
+ */
+async function chargerCandidatesFor(input) {
+  const { context, routing, originCell, profileKey, snapshot, scope } = input;
+  const problems = [];
+
+  const table = context.prisma && context.prisma.charger;
+  if (!table || !isFunction(table.findMany)) {
+    return { candidates: [], truncated: false, problems: ["the store exposes no Charger table"] };
+  }
+  if (!originCell) {
+    return { candidates: [], truncated: false, problems: ["the plan's mission-end cell is unresolved"] };
+  }
+
+  const whPerMetre = isFunction(context.returnLegEnergyWhPerMetreFor)
+    ? context.returnLegEnergyWhPerMetreFor(profileKey)
+    : context.returnLegEnergyWhPerMetre;
+  if (!isNumber(whPerMetre) || whPerMetre <= 0) {
+    return {
+      candidates: [],
+      truncated: false,
+      problems: [`the return-leg Wh per metre for profile "${String(profileKey)}" is unresolved`],
+    };
+  }
+
+  // Ordered by identifier so the read itself is deterministic before the distance sort
+  // ranks it — two hosts must not disagree about which chargers were even considered.
+  const rows = await table.findMany({ orderBy: { chargerId: "asc" } });
+  if (rows.length === 0) {
+    return { candidates: [], truncated: false, problems: ["no Charger rows are declared in this deployment"] };
+  }
+
+  const routed = [];
+  for (const row of rows) {
+    if (!row.cellId) {
+      problems.push(`charger ${String(row.chargerId)} states no cell and cannot be routed to (§20.3 item 3)`);
+      continue;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    const traversal = await routing.forPairing(originCell, [{ sequence: 1, cellId: row.cellId }], profileKey);
+    if (!traversal.ok || !traversal.hops[0]) {
+      problems.push(`charger ${String(row.chargerId)}: ${traversal.problems.join("; ")}`);
+      continue;
+    }
+    const hop = traversal.hops[0];
+    if (!isNumber(hop.distanceM) || !isNumber(hop.travelSeconds)) {
+      problems.push(`charger ${String(row.chargerId)}: the traversal states no distance or travel time`);
+      continue;
+    }
+    routed.push({
+      chargerId: row.chargerId,
+      chargerClass: row.chargerClass ?? null,
+      isDepot: row.isDepot === true,
+      distanceM: hop.distanceM,
+      travelSeconds: hop.travelSeconds,
+      energyWh: hop.distanceM * whPerMetre,
+    });
+  }
+
+  // Nearest first, with `compareStrings` rather than `localeCompare` breaking the tie:
+  // this sort decides which chargers survive the `slice(0, k)`, so two hosts with
+  // different collation could otherwise truncate a tie differently and one round could
+  // find a destination another could not (§9.6 replay). Same rule, and the same reason,
+  // as `chargerReachabilityCache.buildEntry`.
+  routed.sort((a, b) => a.distanceM - b.distanceM || compareStrings(a.chargerId, b.chargerId));
+
+  const k = resolve(snapshot, "route.charger_reachability_k", scope);
+  if (!Number.isInteger(k) || k < 1) {
+    return { candidates: [], truncated: false, problems: [...problems, "route.charger_reachability_k is unresolved"] };
+  }
+
+  return {
+    candidates: routed.slice(0, k).map((entry) => Object.freeze(entry)),
+    // What tells `eReturn` that "no admissible charger" may mean "none within k" rather
+    // than "none at all" (§20.3 item 3): k bounds the entry, not the constraint.
+    truncated: routed.length > k,
+    problems,
+  };
+}
+
+/**
+ * §3.6's containment-by-assignment, applied to a Leg's stops — **the F33 seam.**
+ *
+ * ── What was missing, and what this is not ─────────────────────────────────
+ * `spatial/hierarchy.indexMap().resolve()` has been written, validated and tested since
+ * Phase 2 and **was called by nothing on the decision path**: `"serviceable"` did not
+ * occur in this module at all, so `f33.evaluate` read `undefined` for every stop and
+ * denied every candidate for every Leg (§M.2). This is that call.
+ *
+ * It is **not** a geofence test. §3.6 forbids deriving containment from geometry at query
+ * time — *"floating-point geometry evaluated per round, which is both slow and
+ * non-deterministic (T6)"* — so the only question asked here is whether the **published**
+ * map assigns the stop's fine cell. The H3 cell itself is pure arithmetic on the stop's
+ * own coordinates (§D.3) and needs no published cover; the *assignment* does.
+ *
+ * ── The three answers, and why the third is not `false` ────────────────────
+ *   · **no `spatial` payload published** → every stop keeps `serviceable` absent, F33 is
+ *     INDETERMINATE and denies. A deployment that has declared no region has not thereby
+ *     declared the world serviceable.
+ *   · **the cell is assigned** → `serviceable: true`.
+ *   · **the map is published and this cell is not in it** → `serviceable` stays **absent**,
+ *     not `false`. F33 reads `false` as VIOLATED — *"lies outside the serviceable region"* —
+ *     which is a definite claim about the request, and an unassigned cell does not support
+ *     it. §M.2: *"an unassigned cell is not an out-of-area one"*. Both deny; only one of
+ *     them tells the truth about why.
+ *
+ * @param {object|null} snapshot the round's pinned configuration snapshot
+ * @returns {(stops: object[]) => object[]}
+ */
+function serviceabilityFor(snapshot) {
+  const map = snapshot && snapshot.spatial;
+  let index = null;
+  if (map && typeof map === "object") {
+    try {
+      index = hierarchy.indexMap(map);
+    } catch {
+      // An unreadable published map is not an empty one and is not a permissive one: the
+      // stops keep their absent assignment and F33 denies, naming the assignment.
+      index = null;
+    }
+  }
+
+  return function withServiceability(stops) {
+    if (index === null) return stops || [];
+    return (stops || []).map((stop) => {
+      const cellId = stop.cellId || cellIdFor(stop);
+      if (!cellId) return stop;
+      const assignment = index.resolve(cellId);
+      if (!assignment.assigned) return { ...stop, cellId };
+      return { ...stop, cellId, serviceable: true };
+    });
+  };
+}
+
+/**
  * Build the `plan/planBuilder.build()` input for one (agent, Leg) pairing.
  *
  * Every field is read from a real source or left absent. The four families this repository
@@ -661,7 +969,9 @@ function planInputFor(input) {
         deadlineMs: leg.deadlineMs,
         queueAgeSeconds: input.queueAgeSeconds,
         custodyAlreadyHeld: leg.custodyState === "HELD",
-        stops: leg.stops,
+        // §3.6's assignment, resolved from the pinned map. Absent where the map is
+        // absent — F33 then denies, which is the whole point of the seam.
+        stops: serviceabilityFor(snapshot)(leg.stops),
       },
     ],
     hops,
@@ -694,20 +1004,38 @@ function planInputFor(input) {
       kappa: agentSnapshot.kappa,
       usableWh: usableEnergy.ok ? usableEnergy.wh : undefined,
       residualCv: resolve(snapshot, "energy.model_residual_cv", scope),
-      inflations: resolve(snapshot, "energy.uncertainty_inflation", scope),
+      // `energy.variance_inflation` — the register's own name (§14.5's three inflation
+      // factors, which `consumption.predictiveDistribution` names one by one when they do
+      // not resolve). E-10 found this asked for `energy.uncertainty_inflation`, which the
+      // register does not carry: `snapshot.resolve()` answers `undefined` for an unknown
+      // name, exactly as it does for a registered-but-null entry, so a **published**
+      // PROVISIONAL value read as an input the owner had not supplied — and no plan was
+      // built for any candidate. The composition test's own fixture overrode the same
+      // misspelling, which is why 42 green tests said nothing about it (§M.1, M-1).
+      inflations: resolve(snapshot, "energy.variance_inflation", scope),
       severity: input.uncertaintySeverity,
       floorWh: resolve(snapshot, "energy.reserve_floor_wh", scope),
       operationalWh: resolve(snapshot, "energy.operational_reserve_wh", scope),
       contingencyQuantile: resolve(snapshot, "energy.contingency_quantile", scope),
       availabilityMargin: resolve(snapshot, "energy.charger_availability_margin", scope),
-      projectionMaxAgeSeconds: resolve(snapshot, "energy.projection_max_age", scope),
+      // `energy.charger_projection_max_age` — the register's name, and `eReturn.staleness`
+      // names it verbatim in its own refusal. Under the old spelling that refusal fired on
+      // every round, so §14.5's `PINNED_PROJECTION` basis was unreachable and F35 would
+      // have reported `DEPOT_ONLY` as a *choice* the engine never made (§M.1, M-2).
+      projectionMaxAgeSeconds: resolve(snapshot, "energy.charger_projection_max_age", scope),
       uncalibratedReserveFactor: resolve(snapshot, "energy.uncalibrated_reserve_factor", scope),
     },
     charging: {
-      // §14.5's `E_return` layer. The owner has declared that no production chargers exist
-      // at either campus (`RD-2026-08-30-01`), so the candidate set is empty and
-      // `eReturn.evaluate` reports the shortfall rather than crashing — a priced outcome,
-      // which is what §13.4 asks for.
+      // §14.5's `E_return` layer, from the declared estate — `chargerCandidatesFor` above.
+      //
+      // The previous note here said an empty set was survivable because
+      // `NO_FEASIBLE_INSERTION` is a priced outcome. E-10 measured the rest of that chain
+      // (§M.3): with no candidates, `reserves.compose` refuses, `plan.energy` is `null`,
+      // and **F34 and F35 deny for every agent** — so an empty estate is survivable in the
+      // sense that the engine keeps saying why, and not in the sense of producing an
+      // assignment. `RD-2026-08-30-01` records that no production chargers exist at either
+      // campus; that is a statement about production, and it is the decision this row needs
+      // re-taken for a V1 environment. Nothing is invented here in the meantime.
       chargerCandidates: input.chargerCandidates || [],
       projection: input.chargerProjection || null,
       // §14.6 gives the Charging Scheduler ownership of the target SoC and forbids the
@@ -731,6 +1059,32 @@ function planInputFor(input) {
     decisionTimeMs,
     commitmentHorizonSeconds: resolve(snapshot, "plan.commitment_horizon", scope),
   };
+}
+
+/**
+ * The agent snapshot as §7.5 reads it: the loaded row plus §6.4's `wait_until_available`,
+ * written onto the field F19 actually reads.
+ *
+ * ── One field, from a value the assembly already computes ──────────────────
+ * `waitUntilAvailableFor()` returns `0` for an agent the Availability Index files in a
+ * ready class, and its own note says why: *"an agent in the Index's ready classes is ready
+ * now, which is what those classes mean"*. The expansion's lower bound consumed that and
+ * F19 never saw it, so F19 denied on *"the agent's projected availability time"* for an
+ * agent this round had already established was free (§M.4).
+ *
+ * **Only for the ready classes.** `CHARGING_INTERRUPTIBLE` and `FINISHING_SOON` become
+ * free at a time only a chaining projection can state, and chaining is Tier 2 — so those
+ * keep the field absent and F19 denies, which is the honest answer rather than a
+ * projected availability nobody projected.
+ *
+ * @param {object} agentSnapshot
+ * @param {number} decisionTimeMs the round's pinned time — never a clock read
+ * @returns {object}
+ */
+function gatedAgentSnapshot(agentSnapshot, decisionTimeMs) {
+  if (!READY_AVAILABILITY_CLASSES.includes(agentSnapshot.availabilityClass)) return agentSnapshot;
+  if (!isNumber(decisionTimeMs)) return agentSnapshot;
+  return { ...agentSnapshot, projectedAvailableAtMs: decisionTimeMs };
 }
 
 /**
@@ -767,7 +1121,23 @@ function evaluateExactFor(context, round) {
     const traversal = await routing.forPairing(agentSnapshot.cellId, leg.stops, profileKey);
     if (!traversal.ok) return refuse(REFUSAL.MISSING_HOP, traversal.problems);
 
-    /* ── 2. The plan (§13) ────────────────────────────────────────────────── */
+    /* ── 2. §14.5's return-leg destinations, from the declared estate ──────── */
+    //
+    // Resolved here rather than inside `planInputFor` because both halves are I/O — a
+    // store read and a routing call — and `planBuilder`'s input is built synchronously.
+    // The return leg starts where the mission ends, which for this plan is the last stop.
+    const lastStop = leg.stops.length > 0 ? leg.stops[leg.stops.length - 1] : null;
+    const estate = await chargerCandidatesFor({
+      context,
+      routing,
+      originCell: lastStop ? lastStop.cellId || cellIdFor(lastStop) : null,
+      profileKey,
+      snapshot,
+      scope,
+    });
+    const pinned = await pinnedChargerProjection(context);
+
+    /* ── 3. The plan (§13) ────────────────────────────────────────────────── */
     const built = planBuilder.build(
       planInputFor({
         agentSnapshot,
@@ -780,16 +1150,31 @@ function evaluateExactFor(context, round) {
         seams: context,
         slaClass: state.slaClass,
         queueAgeSeconds: state.queueAgeSeconds,
+        chargerCandidates: estate.candidates,
+        chargerProjection: pinned.projection,
       }),
     );
-    if (!built.ok) return refuse(REFUSAL.PLAN_REFUSED, built.problems);
+    if (!built.ok) {
+      // The estate's own refusals travel with the plan's, because *"no plan holds its
+      // reserves"* and *"no charger states a cell"* are the same finding at two distances,
+      // and a decision record that carried only the first would send a reader to §14.5
+      // when the answer is a row nobody has declared.
+      return refuse(REFUSAL.PLAN_REFUSED, [...built.problems, ...estate.problems, ...pinned.problems]);
+    }
 
-    /* ── 3. The feasibility gate (§7.1) — the only thing that may brand ────── */
+    /* ── 4. The feasibility gate (§7.1) — the only thing that may brand ────── */
+    //
+    // The scope carries the agent class as well as the SLA class. `capacity` is an
+    // **indexed** parameter — `tv.readIndexedParameter(config, "capacity", classId)` — and
+    // a scope without `agent_class` cannot index it, so F17 denied on a parameter that
+    // resolves (§M.4). The two scoping dimensions are the ones §22.2 declares; neither is
+    // inferred from the other.
+    const gateScope = { ...scope, agent_class: agentSnapshot.agentClassId ?? null };
     const gated = feasibility.gate(built.plan, {
-      agentSnapshot,
+      agentSnapshot: gatedAgentSnapshot(agentSnapshot, state.decisionTimeMs),
       mission: round.missionFor(state),
       plan: built.plan,
-      config: { get: (name) => resolve(snapshot, name, scope) },
+      config: { get: (name) => resolve(snapshot, name, gateScope) },
       decisionTimeMs: state.decisionTimeMs,
       snapshotId: state.snapshotId,
     });
@@ -803,7 +1188,7 @@ function evaluateExactFor(context, round) {
       });
     }
 
-    /* ── 4. `γ(c) = Φ(plan(c)) − Φ(plan₀) + C_churn` (§8.1) ────────────────── */
+    /* ── 5. `γ(c) = Φ(plan(c)) − Φ(plan₀) + C_churn` (§8.1) ────────────────── */
     const phi = phiInputFor({
       plan: gated.candidate,
       snapshot,
@@ -1118,7 +1503,12 @@ function commitFor(context, round) {
         },
         config: {
           capacity: round.capacityFor(agentSnapshot),
-          leaseDurationSeconds: resolve(current, "commitment.lease_duration", scope),
+          // `lease.duration` (§12.2) — the register's name, and the one
+          // `commitment/leases.grant` quotes in its own `RangeError`. Under the old
+          // spelling this resolved to `undefined` and `grant()` threw **inside** the
+          // serialisable transaction, after step 1's row locks, so the commit failed at
+          // its last step rather than being refused at composition time (§M.1, M-3).
+          leaseDurationSeconds: resolve(current, "lease.duration", scope),
         },
       },
     );
@@ -1298,17 +1688,37 @@ function create(context) {
      *
      * @param {object} state a `rememberLeg` entry
      */
-    missionFor: (state) => ({
+    missionFor: (state) => {
+      // A Leg loaded by anything but `legLoaderFor` carries no `tasks` block. Absent
+      // rather than empty: `{}` reads through as `undefined` for each attribute, which is
+      // what F4, F21 and F25 read as "nobody established this" — never as a permission.
+      const tasks = state.leg.tasks || {};
+      return {
       legId: state.leg.legId,
       missionId: state.leg.missionId,
       purpose: state.leg.purpose,
       custodyState: state.leg.custodyState,
       slaClass: state.slaClass,
       targetMs: state.leg.targetMs,
+      // Carried, and it was not. `Leg.slaDeadline` is set on the row and `legLoaderFor`
+      // has always read it, and dropping it here made F37 report *"the task states no
+      // deadline; F37 does not bind"* — a contractual deadline that exists, reported as
+      // absent, and SATISFIED only because the omission was total (§M.6). F37 now binds
+      // and asks its second question, `deadlineIsContractuallyHard`, which **no column in
+      // this schema carries**: hardness is a contract term recorded upstream, and F37's
+      // own text forbids inferring it here from proximity or SLA-class name. So this moves
+      // F37 from a false SATISFIED to an honest INDETERMINATE with a named input.
       deadlineMs: state.leg.deadlineMs,
+      // §2.4's Task-carried attributes, agreed across the Mission's Tasks or absent.
+      // `Mission` carries none of these columns; `Task` carries all three (§2.8's
+      // many-to-many is the join `legLoaderFor` now makes).
+      tenantId: tasks.tenantId,
+      requirements: tasks.requirements,
+      payload: tasks.payload,
       manifests: state.leg.manifests,
       stops: state.leg.stops,
-    }),
+      };
+    },
 
     capacityFor: (agentSnapshot) => {
       const override = agentSnapshot.capacityOverride;
@@ -1422,6 +1832,11 @@ module.exports = {
   phiInputFor,
   cellIdFor,
   payloadFor,
+  taskAttributesFor,
+  serviceabilityFor,
+  chargerCandidatesFor,
+  pinnedChargerProjection,
+  gatedAgentSnapshot,
   create,
   // Re-exported so a caller that has an assembly can start the worker it was built for
   // without a second require, and so the composition test can assert the two are the same

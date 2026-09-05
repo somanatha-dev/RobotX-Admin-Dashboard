@@ -21,6 +21,13 @@
 > owner request; §L.2 is its corrected content.** Sections A–J are the audit as written on
 > 2026-09-01, with each later pass's corrections recorded beside the text they correct rather
 > than over it.
+>
+> **§M — E-10, 2026-09-04 (analysis only, no code changed) — IS THE CURRENT BOUNDARY.**
+> It resolves §L.3's F33/F35 corrections and maps all 38 §7.5 predicates mechanically, and in
+> doing so it **falsifies §L.9's claim that "no repository-owned V1 composition defect
+> remains"**: three parameter names the composition asks for are names the register does not
+> carry, and the first of them means **no plan is built even after all 25 external inputs are
+> supplied**. **Read §M before acting on §K, §L.2, §L.3, §L.4 or §L.9.**
 
 > **What this document is.** The first V1/V2 boundary this repository has ever had. Before it, no
 > V1 stop condition existed anywhere in the tree — a search of every `.md` found none. The
@@ -820,6 +827,10 @@ decision, or 24 green §24 gates.
 
 ### I.3 What is true right now
 
+> **SUPERSEDED by §N.8 (E-11, 2026-09-05).** The block below is kept as written because it is
+> what the composition pass measured; §N.8 restates it against the executed tree, where S-3 is
+> 28 inputs and S-6 has been attempted.
+
 **As of 2026-09-04, after E-8, E-8b and E-9 (the composition — §L):**
 
 ```
@@ -1036,6 +1047,12 @@ which is why `EXTERNAL_ROUTING` reads 4 and not 12.)*
 
 ### K.3 What the owner must **not** be asked for
 
+> **PARTIALLY SUPERSEDED by §M.2 and §M.3.** Bullets 1, 3 and 4 stand. **Bullet 2 is wrong**:
+> V1 does need a *declared serviceable region* (a minimal published fine-cell assignment —
+> **not** the D1 cover, boundary polygon, CRS or governance sign-off) and it does need **one
+> declared depot-class charger**. §M.2 states the exact minimum for each and the exact line
+> where the false generalisation was made.
+
 Recorded so that a later reader does not widen this request back out:
 
 - **Not a routing-engine procurement decision.** B1 Steps 1/3/4/5 and the selection ADR are a
@@ -1143,6 +1160,11 @@ route. **Nothing here is a proposed value.**
 
 ### L.3 Three corrections to this document, each with its evidence
 
+> **L.3.2 and L.3.3 are RESOLVED by §M.2 and §M.3 (E-10, 2026-09-04) — read those for the
+> traced code path, the minimum contract, and the measured before/after. Both conclusions
+> here are confirmed; §M supplies the mechanism and the exact input.** L.3.1 is **CURRENT**
+> and re-measured.
+
 **L.3.1 — `candidate.max_radius_by_sla_class`: E-8's classification is preserved, and the
 probe was wrong.** Instruction 10 asked which of two readings was right. Neither document was:
 §6.3 states *a radius **or** a wall-clock budget*, `expandCandidates`'s guard is
@@ -1173,6 +1195,11 @@ return reserve *"a reachability question nobody answered"* — and therefore **n
 its reserves, for any agent, at any state of charge.** Measured, and pinned by a test.
 
 ### L.4 The largest finding — §7.5's gate cannot resolve its own inputs
+
+> **SUPERSEDED IN ITS NUMBERS by §M.4.** The finding holds exactly. Re-running the same
+> measurement gives **34 denials and 4 SATISFIED (F2, F26, F37, F38)**, not 35 and 3, and the
+> `ROUTING` row of the histogram below is **1**, not 2. §M.4 carries the full 38-row table
+> with each predicate's own first refusal, and §M.5 classifies every one.
 
 **Measured by running the shipped gate against a candidate assembled from this repository's
 own schema**, with `collectAll` so the answer is the whole set and not whichever predicate
@@ -1287,6 +1314,15 @@ this pass may be read as end-to-end evidence.**
 
 ### L.9 The exact remaining V1 boundary
 
+> **SUPERSEDED by §M — 2026-09-04, the same day.** The sentence *"no repository-owned V1
+> composition defect remains"* is **false**, and §M.1 shows it with a run: three parameter
+> names this assembly asks for are names the register does not carry, and the first
+> (`energy.uncertainty_inflation` for `energy.variance_inflation`) means **no plan is built
+> even when all 25 inputs are supplied**. The count below also moves from 25 to **27** —
+> F33's serviceable region and F35's charger were in none of the 33 declared rows. **§M.6 is
+> the authoritative list; §M.7 is the repository-owned work.** The text below is retained as
+> written.
+
 > **A. Composition implemented and verified; V1 remains blocked only by legitimate
 > external/owner inputs.**
 >
@@ -1302,6 +1338,606 @@ this pass may be read as end-to-end evidence.**
 >
 > S-1, S-2 and S-8 are met. S-3 is open. S-4, S-6 and S-7 follow from it. S-5 is a
 > configuration act needing no code.
+
+---
+
+## SECTION M — E-10: THE §L.3 CORRECTIONS RESOLVED, AND §7.5 MAPPED (2026-09-04)
+
+**CURRENT.** Analysis and contract mapping only. **No source file, register entry, test,
+specification, gate or fixture was changed in this pass**, and no value was invented. Every
+number below was produced by running the shipped modules against the published register.
+
+### M.1 The finding — §L.9 is SUPERSEDED
+
+> **§L.9 said: *"No repository-owned V1 composition defect remains."* That is now false, and
+> it was false when written.**
+
+**Three register parameter names that `coordinatorSolvePath.js` asks for do not exist in the
+register.** `snapshot.resolve()` answers `undefined` for an unknown name — the same shape as a
+registered-but-null entry — so each reads as "an input the owner has not supplied" when it is in
+fact an input the register already carries under a different name.
+
+| # | Asked for | Registered name | Published value today | Effect |
+|---|---|---|---|---|
+| **M-1** | `energy.uncertainty_inflation` (`coordinatorSolvePath.js:697`) | **`energy.variance_inflation`** | `{route_novelty: 1.25, forecast_horizon: 1.1, weather: 1.15}`, PROVISIONAL | `consumption.predictiveDistribution` refuses → `buildVariant` returns `MISSING_ENERGY_INPUT` → **no plan is ever built, for any agent, even with all 25 external inputs supplied** |
+| **M-2** | `energy.projection_max_age` (`coordinatorSolvePath.js:703`) | **`energy.charger_projection_max_age`** | `120`, PROVISIONAL | `eReturn.staleness()` always answers `fresh: false, reason: "energy.charger_projection_max_age is unresolved"` → the §14.5 basis is permanently `DEPOT_ONLY` and `energy.uncalibrated_reserve_factor` is always applied. **The `PINNED_PROJECTION` branch is unreachable**, and F35 would report a basis the engine did not choose on the evidence — the E-8 family of defect (asserting what was not measured) |
+| **M-3** | `commitment.lease_duration` (`coordinatorSolvePath.js:1121`) | **`lease.duration`** (§12.2) | `60`, PROVISIONAL | `leases.grant()` throws `RangeError` ("a commitment without a positive lease is an unsupervised commitment, §12.2, I2") **inside the serialisable transaction, after the step-1 locks**, and `commit()` re-throws it. **S-6 cannot succeed.** Fail-closed in direction, but as an uncaught throw at the last step rather than a named refusal at composition time |
+
+**Measured, scenario 1 of `allInputsProbe`:** with all fifteen `REGISTER_UNRESOLVED` rows
+supplied under their real names and every routing/`NO_PRODUCER` seam injected —
+
+```
+plan built: false
+problems: [ "MISSING_ENERGY_INPUT", "energy.variance_inflation" ]
+```
+
+**Why 42 green composition tests did not catch this.** `resolvableRegister()` in
+`coordinatorSolvePathComposition.test.js` overrides `"energy.uncertainty_inflation"` (line 127)
+and `"energy.projection_max_age"` (line 130) — **the same two names the production code
+misspells**. The fixture and the code share the typo, so the override lands and the test is
+green. M-3 is never reached because the one commit test aborts at step 1 on a missing row.
+**Nothing in the tree asserts that a name passed to `snapshot.resolve()` exists in the
+register**; `gate:params` checks the converse (no bare behavioural constants).
+
+**Classification: `REPOSITORY_DEFECT`.** All three are this repository's to fix, none is an
+owner input, and **M-1 is a hard V1 blocker that S-3 does not release.**
+
+### M.2 F33 — the exact V1 requirement
+
+**Predicate.** `f33.js`, class **C**, indeterminate **DENY**, cache tier `NONE`, not volatile.
+Two ordered checks: (1) well-formedness of every `plan.stops[i].{lat,lon}` — a malformation is
+`VIOLATED`, a definite fact; (2) **containment by assignment** — `stop.serviceable === true`.
+§3.6 forbids deriving containment from geometry at query time (non-deterministic, T6), so the
+predicate reads an *assignment* and never runs a point-in-polygon test.
+
+**Measured verdict today:** `INDETERMINATE` — *"the serviceability assignment for stop 1 is
+absent from the snapshot"*, `inputSource: MAP`. Coordinates are well-formed; only the assignment
+is missing.
+
+**The code path, traced end to end.**
+
+```
+legLoaderFor()      → prisma.leg.findFirst → stops mapped to
+                      { stopId, sequence, stopType, siteId, lat, lon }   ← no serviceability
+planInputFor()      → newLegs[0].stops = leg.stops
+planBuilder.build() → plan.stops = { ...stop, ...projectedStop, load, energy }
+feasibility.gate()  → f33.evaluate → stop.serviceable === undefined → tv.absent → DENY
+```
+
+`"serviceable"` occurs **0 times** in `coordinatorSolvePath.js`. The producer is missing at two
+distinct layers, and both matter:
+
+1. **No assignment source is consulted.** `spatial/hierarchy.indexMap(map).resolve(cellId)`
+   returns exactly `{ zoneId, siteId, regionId, assigned }` — §3.6's containment-by-assignment,
+   written, validated and **never called by the solve path**. `grep -r "CellAssignment" src/`
+   returns three *comments* and no read. The `Stop.geofenceResult` column exists and nothing
+   writes it: `task.service.sealIdentities` writes `fineCell` only, and says why —
+   *"the other five §23.7 quantities … are products of the round, not of the submission"*.
+2. **No mapping exists even if it were populated.** `legLoaderFor` selects neither column.
+
+**Required for every request, not only region validation.** F33 is class C with policy `DENY`
+and no cache tier, so it is evaluated per candidate per round. Absent, **every** candidate for
+**every** Leg denies.
+
+**Why the previous boundary classified it incorrectly.** §D.3 measured that a k-ring-bounded
+*expansion* (`candidate.max_expansion_tiers ≤ 2`) needs no published cover — `cells.cellForPoint`
+is pure H3. That is correct and is unchanged. §K.3 then generalised it to *"the owner must not be
+asked for the D1 H3 cover, boundary polygon, CRS or charger estate"*, which does not follow:
+**the cover is not a search prerequisite and it is a gate prerequisite.** The audit stopped at
+`expandCandidates` and §7.5 is one seam further.
+
+**The distinction the owner asked for, stated exactly.**
+
+| | |
+|---|---|
+| **"V1 needs a declared serviceable region"** — **TRUE, and it is the requirement** | A published config version whose `spatial` payload carries `cells[]` assignments at `RESOLUTION.FINE` for **the cells this V1 request's origin and stops actually fall in**, plus the `regions[]`/`zones[]`/`sites[]` rows those reference. That is an ordinary versioned configuration act on a payload shape `config/service.js` already accepts and `config/validators.a6SpatialCellIdentity` already validates |
+| **"V1 needs production-wide geographic coverage"** — **FALSE** | §3.6's 10³–10⁵ fine-cell cardinality band is enforced by `regionBoundary.validateCover`, which is reached **only** from `tools/routing/b1Readiness.js` — the **D1 acceptance gate**. It is not on the config publish path. A5/A6 at publish validate cell-id *identity* (H3 resolution), never cardinality, and pass vacuously on an absent map. The signed boundary polygon, the CRS attestation, the full campus cover and the D1 governance sign-off are **release artefacts (V2)** and none is required to make F33 decidable |
+
+**The minimum V1 region contract:** for each fine cell containing the request's origin or any of
+its stops, one published assignment row `{ cellId, resolution: "FINE", regionId, zoneId?, siteId? }`,
+in a pinned config version. **A cell with no row stays `INDETERMINATE`, which is correct** — an
+unassigned cell is not an out-of-area one.
+
+**Owner input vs repository work.** The *assignment data* is an **owner/configuration input**
+(D1, minimal form). The *code that reads it and sets `stop.serviceable`* is **repository-owned
+and does not exist** — see §M.7 R-1.
+
+### M.3 F35 — the exact V1 requirement
+
+**Predicate.** `f35.js`, class **I**, indeterminate **DENY**, cache tier `NONE`, **on the
+§10.3.2 step-3 volatile subset** (re-checked inside the commit transaction). It reads
+`plan.energy.chargerReachability` and requires: a readable verdict; a `basis` of
+`PINNED_PROJECTION` or `DEPOT_ONLY`; a `projectionVersion` **iff** the basis is
+`PINNED_PROJECTION`; and a stated `reachable`. `reachable !== true` is **VIOLATED**, not
+indeterminate.
+
+**"Reachable", operationally.** From `eReturn.evaluate`: with a fresh pinned projection, the
+nearest candidate that the projection shows `FREE` or `RESERVABLE` at
+`projectedEndMs + travelSeconds·1000`; otherwise (§14.5's defined degradation) the candidate set
+is filtered to `isDepot === true` and `energy.uncalibrated_reserve_factor` is applied. It is
+reachable when
+
+```
+surplusWh = usableWh − missionWh − floorWh − (energyWh × availabilityMargin)  ≥  0
+```
+
+It is a **feasibility reserve, not a booking** — a `SATISFIED` asserts a viable destination
+exists, never that one is held (§14.7).
+
+**Is it required for every mission, or only when reserves require charging? — Every mission.**
+This is the reconciliation §L.3.3 asked for and it is now measured rather than argued:
+
+```
+chargerCandidates = []  →  eReturn: chosen = null, verdict.reachable = false, eReturnWh = null
+                       →  returnLayerWh: ok = false
+                       →  reserves.compose({ returnWh: undefined }) REFUSES  (§14.5: a zero
+                          return reserve is "a reachability question nobody answered")
+                       →  composed.ok = false → tiers.ok = false → energyFragment = null
+                       →  plan.energy = null
+                       →  F34 INDETERMINATE ("the plan's energy projection is unreadable")
+                          F35 INDETERMINATE ("the plan's energy projection is absent")
+```
+
+So F35 does not merely fail when a charging stop is *needed*: **an empty charger estate makes
+`plan.energy` null, which denies F34 *and* F35, class I, `DENY`, for every candidate at every
+state of charge.** §F.0's *"empty is survivable"* and §K.3's *"do not ask for the charger
+estate"* are **SUPERSEDED**. §L.3.3 reached the right conclusion; this is its mechanism, and it
+also shows the denial arrives at F34/F35 as an **absent energy projection**, not as a charging
+failure.
+
+**Does it fail closed?** Yes, at every step: `eReturn` reports unreachable rather than assuming,
+`compose` refuses rather than defaulting `returnWh` to 0, `planEnergyFragment` is not produced,
+and both predicates deny on absence. `charging: NO_FEASIBLE_INSERTION` is a *priced* outcome as
+§F.0 said — but the plan it produces has no energy fragment, so nothing downstream can price it.
+
+**Required to demonstrate a valid V1 request: YES.**
+
+**The minimum legitimate V1 charger input — measured, not proposed.** With everything else
+resolved, adding **one** candidate produced:
+
+```
+charging: NOT_REQUIRED
+plan.energy.chargerReachability = { reachable: true, basis: "DEPOT_ONLY",
+                                    projectionVersion: null, chargerId: "…",
+                                    eReturnWh: …, surplusWh: … }
+F34 SATISFIED · F35 SATISFIED
+```
+
+The contract per candidate is `{ chargerId: string, energyWh: number, travelSeconds: number,
+isDepot: boolean }`. Because no availability projection exists, the basis is `DEPOT_ONLY` and
+**only `isDepot: true` candidates are admissible** — so the minimum is **one declared depot-class
+charging location**, with the energy and time to reach it from the projected mission end. **No
+location, power rating or capability is proposed here**, and none may be invented: the owner's
+`RD-2026-08-30-01` records that no production chargers exist at either campus, which is a
+statement about production and is exactly the decision this row now needs re-taken for a V1
+environment.
+
+**External input or repository-owned producer? — Both, in sequence.**
+`prisma.schema` **already carries `model Charger`** with `chargerId`, `cellId`, `isDepot`,
+`latitude`/`longitude`, `ratedPowerW`, and `model ChargerAvailabilityProjection`. Nothing in
+`src/` ever reads `Charger` (`grep`: two hits, both in `chargerReachability.worker.js`, and both
+on the *projection* table). `chargerCandidates` occurs twice in `coordinatorSolvePath.js` — the
+read in `planInputFor` and its own comment — and **no caller passes it**. So: the **declaration**
+is an owner input; the **estate → candidate-list seam** is repository-owned and does not exist
+(§M.7 R-2).
+
+### M.4 §7.5 — all 38 predicates, measured
+
+Re-run of §L.4's measurement, reproducing `everyVerdict()` exactly (same fixture, same fifteen
+overrides, `collectAll: true`). **Correction to §L.4: the count is 34 denials and 4 SATISFIED,
+not 35 and 3**, and the `ROUTING` row of §L.4's histogram is 1, not 2. The four decidable
+predicates are named in the table. *(§L.4's numbers were prose; no test asserts them.)*
+
+Legend for **Class** (§5 of this section): **A** required to execute a V1 request · **B** §7.5
+gate only · **C** external production evidence · **D** owner decision · **E** V2/future ·
+**F** repository defect · **G** already satisfied.
+
+| Predicate | Result | Why (the predicate's own first refusal) | Required input(s) | Producer | Owner | V1 blocker? |
+|---|---|---|---|---|---|---|
+| **F1** Commissioned | INDETERMINATE | `agentSnapshot.commissioning` absent | commissioning record | **none — no column, no producer** | Control plane / Fleet ops | **A — YES, first in evaluation order** |
+| **F2** Lifecycle ACTIVE | **SATISFIED** | `Agent.lifecycleState` is a column and the loader reads it | — | `agentSnapshotLoaderFor` | — | **G** |
+| **F3** No hold/quarantine | INDETERMINATE | `agent.operatorHold` absent | hold + quarantine status | none in `src/`; `inputSource: OPERATOR` | Operator console | **A — YES** |
+| **F4** Tenant/fleet scope | INDETERMINATE | `mission.tenantId` absent | mission tenant; agent `fleetId` | `missionFor()` omits `tenantId` (`Agent.tenantId` **is** loaded) | Repository | **F — YES** (mapping gap, one field) |
+| **F5** Firmware in supported set | INDETERMINATE | `mission.missionType` absent, then attested firmware, then `AgentClass.firmwareVersionSet` | mission type; attested version; supported set | none | Control plane | **A — YES** |
+| **F6** Calibration/certification valid | INDETERMINATE | `agent.calibrations` absent | calibration + certification records with expiries | none | Control plane / Compliance | **A — YES** |
+| **F7** E-stop not engaged | INDETERMINATE | emergency-stop observation absent | e-stop observation + its timestamp | none; `inputSource: SENSOR` | Fleet telemetry | **A — YES** |
+| **F8** No blocking fault | INDETERMINATE | `agent.faults` absent | fault list with severities | none | Fleet telemetry | **A — YES** |
+| **F9** Health tier ≥ SLA tier | INDETERMINATE | `agent.healthTier` absent (then `health.required_tier`, `null`/UNCALIBRATED) | health tier; `health.required_tier` | none / register | Fleet telemetry + §22.4 | **A — YES** |
+| **F10** Localisation confidence | INDETERMINATE | localisation state absent (then `localisation.min_confidence`, `null`) | localisation state + independent corroboration; threshold | none / register | Fleet telemetry + §22.4 | **A — YES** |
+| **F11** Reliability bound | INDETERMINATE | `reliability.max_intervention_rate` is `null`, UNCALIBRATED. **`ADMIT_WITH_PENALTY` denied anyway** because `cost.uncertainty_penalty` is also `null` | both register rows; intervention rate | register / none | §22.4 calibration owner | **A — YES** |
+| **F12** No recall/advisory | INDETERMINATE | advisory list absent | outstanding-advisory list | none | Control plane / Compliance | **A — YES** |
+| **F13** Live session + heartbeat | INDETERMINATE | session state absent (`connectivity.max_heartbeat_age` = 10 **resolves**) | session + last-heartbeat timestamp | none | Fleet telemetry | **A — YES** |
+| **F14** Command path proven | INDETERMINATE | session state absent | last acknowledged round trip | none | Fleet telemetry | **A — YES** |
+| **F15** Link quality | INDETERMINATE | `mission.supervisionRequirement` absent (then `link.min_quality`, `null`). **`ADMIT_WITH_PENALTY` denied** | supervision requirement; link quality; threshold | none / register | Control plane + §22.4 | **A — YES** |
+| **F16** Observation freshness | INDETERMINATE | safety-relevant observation set absent | per-observation ages + budgets | none | Fleet telemetry | **A — YES** |
+| **F17** Capacity + horizon | INDETERMINATE | `capacity` for the agent class. **`capacity` resolves to 1 (DERIVED)**; the gate's `config.get` passes scope `{ sla_class }` only, and `readIndexedParameter` cannot index a scalar by `agent_class` | scope carrying `agent_class` | `coordinatorSolvePath` scope construction (`:884`) | Repository | **F — YES** (scope gap; the value exists) |
+| **F18** No conflicting reservation | INDETERMINATE | reservation set absent | third-party reservations over the plan window | `ChargerReservation` exists; no reader | Charging Scheduler (§14.7) | **A — YES** |
+| **F19** Availability ≤ latest start | INDETERMINATE | projected availability time absent | `agentSnapshot.projectedAvailableAtMs` | none — chaining is Tier 2; `waitUntilAvailableFor()` returns 0 but is not written onto the snapshot | Repository | **F — YES** (one field, from a value the assembly already computes) |
+| **F20** No cooloff/NACK exclusion | INDETERMINATE | per-Leg exclusion set absent | exclusion set; `Leg` reassignment count (`recover.max_reassignments_per_leg` = 3 **resolves**) | none in the assembly | Repository | **F — YES** |
+| **F21** RequirementSet ⊆ CapabilityBundle | INDETERMINATE | `mission.requirements` absent | mission RequirementSet; attested bundle (`AgentClass.capabilityBundle` **is** loaded) | `missionFor()` omits requirements | Repository + control plane | **A/F — YES** |
+| **F22** Payload mass ≤ rated × factor | INDETERMINATE | `agent.totalMassLimitKg` absent (`payload.safety_factor` = 0.9 **resolves**; `plan.loadState` **is** projected) | `AgentClass.totalMassLimitKg` onto the snapshot | column exists; loader omits it | Repository | **F — YES** (mapping gap) |
+| **F23** Packing feasible | INDETERMINATE | *"the tier-3 placement search exhausted its budget"* — with `containerModel: null` there is no geometry to place into | a declared `ContainerModel` for the agent class | schema-backed; unseeded | Fleet Engineering | **A — YES** |
+| **F24** CoG envelope | INDETERMINATE | container model declares no CoG envelope | `ContainerModel.cogEnvelope` | schema-backed; unseeded | Fleet Engineering | **A — YES** |
+| **F25** Thermal class covers payload | INDETERMINATE | `mission.payload` absent | mission payload spec; compartment thermal assignment | `missionFor()` omits payload | Repository + consignor | **A/F — YES** |
+| **F26** Hazmat/segregation | **SATISFIED** | vacuously: 0 compartments, 0 items on an empty manifest | — | — | — | **G** *(re-denies as soon as a Leg carries a manifest and no compartment assignment)* |
+| **F27** Zone authorisation | INDETERMINATE | agent zone-authorisation set absent; then `plan.route.zonesTraversed` | authorisation set; traversed-zone list | none; `plan.route` is `null` | Control plane + routing | **A — YES** |
+| **F28** Permitted surface classes | INDETERMINATE | MobilityModel absent from the snapshot (`AgentClass.mobilityModel` **is** loaded, but `agentSnapshotLoaderFor` maps only `kinematicLimits` + `traversalDomain`), then route surface classes | MobilityModel surface classes; route surface list | partial mapping; `plan.route` null | Repository + D3 + routing | **F/A — YES** |
+| **F29** Dimensional passage | INDETERMINATE | as F28, then the route's constriction list | agent envelope dims; constrictions | as F28 | Repository + D3 + routing | **F/A — YES** |
+| **F30** Time-of-day restrictions | INDETERMINATE | *"the route's traversal windows are unreadable"* — `plan.route` is `null` | per-zone traversal windows; restriction sets | `plan.route` is never populated (`source.route ?? null`) | Repository + Map service | **A/F — YES** |
+| **F31** Environmental envelope | INDETERMINATE | agent environmental envelope absent, then the forecast | `AgentClass` envelope; `plan.environmentForecast` | neither populated | Fleet Eng + weather source | **A — YES** |
+| **F32** Site access prerequisites | INDETERMINATE | access prerequisites for stop 1 absent. **`DENY_UNLESS_ENVELOPE` denied**, no reduced-envelope evaluation available | per-stop prerequisites (`Site.accessRules` **exists**) | column exists; loader omits it | Repository + Operations | **F — YES** (mapping gap) |
+| **F33** Geofence / serviceable region | INDETERMINATE | `stop.serviceable` absent — **§M.2** | published fine-cell assignments + the code that reads them | **owner input + missing repository seam** | Owner (D1, minimal) | **A — YES** |
+| **F34** Energy feasibility, 3 tiers | INDETERMINATE | `plan.energy` unreadable — a consequence of F35's chain (**§M.3**) | resolves the moment a depot charger exists | see F35 | see F35 | **A — YES, closes with F35** |
+| **F35** Charger reachable | INDETERMINATE | `plan.energy` absent — **§M.3** | one depot-class charger candidate + the seam to carry it | **owner input + missing repository seam** | Owner | **A — YES** |
+| **F36** Maintenance interval | INDETERMINATE | agent maintenance state absent | odometer/hours counters + intervals | none | Fleet ops | **A — YES** |
+| **F37** Deadline feasibility | **SATISFIED** | *"the task states no deadline; F37 does not bind"* — `missionFor()` omits `deadlineMs`, though `Leg.slaDeadline` is set | — | — | — | **G, and G for the wrong reason** — see §M.6 |
+| **F38** Plan validity | **SATISFIED** | 2 stops sequenced, arrivals projected, no time windows declared | — | `planBuilder` | — | **G** |
+
+**Denials by `inputSource`:** `CONTROL_PLANE` 16 · `SENSOR` 6 · `PLAN` 5 · `CONFIG` 2 ·
+`OPERATOR` 1 · `INFERRED` 1 · `EXTERNAL_SUBSYSTEM` 1 · `ROUTING` 1 · `MAP` 1 = **34**.
+
+**Both admitting policies denied.** `ADMIT_WITH_PENALTY` (F11, F15) and `DENY_UNLESS_ENVELOPE`
+(F32) are §7.3's two seams for letting an unknown through under a price, and both refused,
+because the inputs *they* need are themselves unresolved. **UNKNOWN IS NOT PERMISSION holds all
+the way down** — the system behaving as designed.
+
+**Not one `VIOLATED`.** Nothing about the agent or the plan breaks a rule. This is a gate that
+cannot see, not a fleet that fails.
+
+**What closing F33 and F35 alone achieves — measured:**
+
+| Scenario | Denials |
+|---|---|
+| As built today | **34 / 38** |
+| \+ one declared depot charger | **32 / 38** (F34, F35 → SATISFIED) |
+| \+ `stop.serviceable` from a published assignment | **31 / 38** (F33 → SATISFIED) |
+
+The remaining 31 are **not owner decisions**. They are control-plane records and fleet telemetry
+(§M.5 class A) plus seven repository mapping gaps (class F).
+
+### M.5 Classification of every INDETERMINATE predicate
+
+Exactly one class each, per instruction 5.
+
+| Class | Count | Predicates |
+|---|---:|---|
+| **A — required to execute a V1 request** | 22 | F1, F3, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16, F18, F23, F24, F27, F31, F33, F35, F36 |
+| **B — §7.5 release/verification gate only** | **0** | §7.5 is not a release gate. It is the runtime admission gate `evaluateExact` calls per candidate per round; a denial here is a candidate that cannot be priced. **Every §7.5 predicate is a V1 runtime predicate** |
+| **C — external production evidence** | **0** | No §7.5 predicate reads an attestation, a soak result or an observation window |
+| **D — owner decision** | **2** *(overlapping A)* | **F33** (declare the serviceable region) and **F35** (declare a depot charger) are the only two whose blocking input is a *decision* rather than a fact the fleet emits. Both are also class A |
+| **E — V2 / future** | **0** | No §7.5 predicate is deferred to V2 by any frozen document |
+| **F — repository defect** | **7** | **F4** (mission `tenantId` not mapped) · **F17** (scope omits `agent_class`, so a resolving `capacity` cannot be indexed) · **F19** (`projectedAvailableAtMs` not written onto the snapshot) · **F20** (no exclusion set assembled) · **F22** (`AgentClass.totalMassLimitKg` not mapped) · **F32** (`Site.accessRules` not mapped) · **F30/F28/F29's `plan.route`** (never populated) |
+| **G — already satisfied** | **4** | F2, F26, F37, F38 |
+
+*(F21, F25, F28, F29, F30 straddle A and F: each has a repository mapping gap **and** an input
+with no producer behind it. They are counted in A above and named in F where the mapping gap is
+the nearer cause. F34 is a consequence of F35 and is counted with A.)*
+
+**Neither inference the instruction warned against is drawn.** "Indeterminate" does not mean the
+V1 implementation is broken — 22 of these are facts a running fleet emits that this deployment
+has no fleet to emit. And it does not mean "V2" — **zero** predicates are deferred. It means the
+gate is fail-closed and the world has not been declared to it yet.
+
+### M.6 Reconciliation of the 25 S-3 inputs — the corrected authoritative list
+
+Generated mechanically (`coordinatorPipeline.requirements()` against the context `server.js` can
+build today), **not counted by hand**:
+
+```
+declared inputs 33 · satisfied 8 · missing 25
+EXTERNAL_ROUTING 5 · REGISTER_UNRESOLVED 15 · NO_PRODUCER 5 · PROCESS_DEPENDENCY 0 · ADMISSIBILITY 0
+satisfied: candidate.max_radius_by_sla_class, prisma, kv, runSerializable,
+           selectForUpdate, signingKey, snapshot, Ω correction
+```
+
+**§L.2's 25 is confirmed exactly. The answer to instruction 6:**
+
+| Question | Answer |
+|---|---|
+| Does F33 introduce a genuinely new input? | **YES.** The serviceable-region assignment is in **none** of the 33 declared rows and was not hidden inside the 25 |
+| Does F35 introduce a genuinely new input? | **YES.** The charger estate is in none of the 33 either |
+| Was either already hidden in the 25? | **No.** `coordinatorPipeline.REQUIREMENTS` probes the composition's *constructor* seams; F33's and F35's inputs are read *inside* `planInputFor`, which the probe does not walk. **This is the fourth time a count has been taken at the seam the reader reached** — and this time the instrument, not the reader, was short |
+| Does the total change? | **YES: 25 → 27 external/owner inputs**, plus **3 repository defects (M-1…M-3)** and **7 repository mapping gaps** that are not inputs at all |
+| Is any previous classification now wrong? | **YES, three.** §F.0's `charging.chargerCandidates` = *"RESIDUAL for V1"* → **BLOCKING (§M.3)**. §K.3's *"not the D1 cover … or charger estate"* → **both are V1 runtime prerequisites (§M.2, §M.3)**. §L.9's *"no repository-owned composition defect remains"* → **false (§M.1)** |
+
+**The corrected authoritative S-3 list — 27 rows.**
+
+| # | Input | Class | Owner |
+|---|---|---|---|
+| 1 | `route(parts)` — a declared traversal source | EXTERNAL_ROUTING | Owner (B1) |
+| 2 | `travelSdSeconds` source (N29) | EXTERNAL_ROUTING | Owner |
+| 3 | `speedMetresPerSecond` per profile | EXTERNAL_ROUTING | Owner (D3 — Fleet) |
+| 4 | hop terrain `climbM`/`descentM`/`stopStartCycles` | EXTERNAL_ROUTING | Owner (same source as 1) |
+| 5 | `timeBucket` (§20.3 congestion bucket) | EXTERNAL_ROUTING | Owner (part of declaring 1) |
+| 6–20 | the fifteen `null` register rows (§L.2's list, unchanged) | REGISTER_UNRESOLVED | §22.4 calibration owner; **two are Safety class** |
+| 21 | `environment.ambientC` / `packC` | NO_PRODUCER | Engineering + telemetry/forecast |
+| 22 | `masses.vehicleMassKg` | NO_PRODUCER | Engineering + fleet specs |
+| 23 | `p_fail` per agent | NO_PRODUCER | Engineering (§8.3.1) |
+| 24 | `route_hazard_cost` | NO_PRODUCER | Engineering + Map service |
+| 25 | §14.4 battery wear inputs | NO_PRODUCER | Engineering + pack characterisation |
+| **26** | **Serviceable-region cell assignments (F33)** | **NEW — owner declaration** | **Owner (D1, minimal form — §M.2)** |
+| **27** | **One depot-class charger (F35)** | **NEW — owner declaration** | **Owner (§M.3)** |
+
+**Rows 1–5 stay five distinct inputs and are not merged.** `route` is the function; `travelSdSeconds`
+and the terrain three are fields **no shortlisted engine returns** (N29, F-6); `timeBucket` is a
+property of the query, not of the answer; and `speedMetresPerSecond` is **not routing at all** —
+`cellPairCache.applyIntraCellOffset` reads it to apply §20.3's intra-cell quantisation, and the
+only `MobilityModel` in the tree is a seed whose `speedModel` is a note deferring to **D3**. So
+**speed is fleet/profile configuration (D3), supplied alongside the router, never by it.** The
+`route(parts)` contract is unchanged at the six fields of §F.2.
+
+**The 15 `REGISTER_UNRESOLVED` rows — every one measured `null`, `UNCALIBRATED`, on
+`service.defaultSnapshot()`.** `plan.service_time_prior` · `energy.model_residual_cv` ·
+`energy.reserve_floor_wh` · `cost.energy.cu_per_wh` · `cost.wear.cu_per_metre` ·
+`cost.failure.cu` · `cost.staleness.cu_per_second_age` · `cost.energy_consequence` ·
+`cost.sla.cu_per_second_late` · `cost.sla.breach_penalty` ·
+`lifecycle.cu_per_actuator_cycle` · `lifecycle.cu_per_braking_event` ·
+`lifecycle.cu_per_gradient_metre` · `lifecycle.cu_per_thermal_stress_second` ·
+`cost.battery.cu_per_equivalent_cycle`. All fifteen block S-6; none blocks only a gate.
+
+> **The two Safety-class rows — `energy.model_residual_cv` and `energy.reserve_floor_wh` — are
+> NOT to be bootstrapped through the ordinary provisional route.** §22.3 forbids an automated
+> process from choosing a Safety-class parameter and §K.3 offers them no provisional path.
+> **No value is proposed for either here.** They are named, and they stop there.
+
+*(`candidate.max_radius_by_sla_class` remains **satisfied** by §6.3's wall-clock disjunction —
+E-8's classification, preserved by §L.3.1 and re-measured this pass. It is a containment policy
+Operations still owes, and it is not a V1 blocker.)*
+
+**One reclassification found while reconciling: F37 is SATISFIED for the wrong reason.**
+`missionFor()` omits `deadlineMs`, so F37 reports *"the task states no deadline; F37 does not
+bind"* — while `Leg.slaDeadline` **is** set on the row and `legLoaderFor` **does** read it into
+`leg.deadlineMs`. A contractual deadline that exists is being reported as absent. It is
+`SATISFIED` today only because the omission is total; the moment `missionFor` carries the field,
+F37 binds. **Recorded as a repository mapping gap, not fixed** (§M.7 R-4).
+
+### M.7 Repository-owned remaining work — the honest answer to "what must Claude still implement"
+
+> **DISCHARGED by §N (E-11, 2026-09-05).** R-1…R-6 are done; R-7 is done except for the three
+> rows §N.3 reclassifies as not repository-owned (F20, F22, `plan.route`). The table below is
+> kept as the statement of what was outstanding.
+
+**None of this is proposed as this pass's work.** It is recorded so the boundary is not stated
+as smaller than it is.
+
+| # | Item | Why it is repository-owned | Blocks |
+|---|---|---|---|
+| **R-1** | Fix **M-1** `energy.uncertainty_inflation` → `energy.variance_inflation` | The value is published and PROVISIONAL. **No plan is built until this is corrected**, with or without S-3 | **S-6, and every candidate** |
+| **R-2** | Fix **M-2** `energy.projection_max_age` → `energy.charger_projection_max_age` | Makes §14.5's `PINNED_PROJECTION` basis reachable and stops F35 reporting a basis the engine did not choose | truthfulness of F35; S-1's own rule |
+| **R-3** | Fix **M-3** `commitment.lease_duration` → `lease.duration` | `leases.grant` throws inside the commit transaction | **S-6** |
+| **R-4** | A test (or gate) asserting that every name passed to `snapshot.resolve()` exists in the register | R-1…R-3 survived 166 suites because the fixture shares the typo. **This is the defect class, not the three instances** | future recurrence |
+| **R-5** | The **F33 seam**: resolve each stop's fine cell against `snapshot.spatial` via `spatial/hierarchy.indexMap().resolve()` and set `stop.serviceable` | `hierarchy.js` is written and never called; §3.6's assignment path exists | F33 |
+| **R-6** | The **F35 seam**: read `Charger` rows into `chargerCandidates` (and `ChargerAvailabilityProjection` into `chargerProjection`), with the return-leg `energyWh`/`travelSeconds` from the reachability cache | `planInputFor` reads `input.chargerCandidates`; **no caller supplies it** | F34, F35 |
+| **R-7** | Seven §7.5 mapping gaps (§M.5 class F): mission `tenantId`/`requirements`/`payload`/`deadlineMs` onto `missionFor`; `totalMassLimitKg` and the full `mobilityModel` onto the agent snapshot; `Site.accessRules` onto the stop; `agent_class` into the gate's config scope; `projectedAvailableAtMs`; the per-Leg exclusion set; `plan.route` | Every one reads a column that exists or a value the assembly already computes | F4, F17, F19, F20, F21, F22, F25, F28, F29, F30, F32, F37 |
+
+**R-1, R-3 and R-4 are the only ones that must precede the owner's inputs**; the rest are
+mechanical consequences of S-3 arriving.
+
+### M.8 §7.5 versus the V1 stop condition — the answer to instruction 9
+
+**The stop condition has NOT changed. It is still the eight conditions of §I.2, and §7.5 adds no
+ninth.**
+
+**§7.5 is not a release gate.** It is `feasibility/evaluate.gate`, called by `evaluateExact` per
+candidate per round on the decision path — the same call that brands a candidate feasible before
+`column.price` is allowed to price it. So the question *"must §7.5 go fully green"* is not the
+right question:
+
+- **§7.5 is not required to be green for the deployment.** No stop condition mentions it, and
+  §24's gate table is untouched.
+- **§7.5 must resolve for the one candidate S-6 exercises.** S-6 requires a request to reach a
+  durable `Commitment` row. A candidate that denies at any §7.5 predicate is never priced, never
+  enters the solve, and never commits. **So S-6 requires every one of the 38 predicates to return
+  `SATISFIED` — or `ADMIT_WITH_PENALTY`/`DENY_UNLESS_ENVELOPE` to admit — for that one
+  agent–Leg pairing, on that one round.**
+
+That is a materially different and much smaller thing than "§7.5 green in production": it is
+**one agent with a complete record, one Leg with a complete mission, in one declared region, with
+one reachable charger** — not a fleet, not coverage, not calibration.
+
+**Which §7.5 predicates are genuinely required for V1: all 38, for the S-6 pairing.** They are
+required by S-6, which was already in §I.2. Nothing was added; what changed is that the *content*
+of S-6 is now known rather than assumed. §L.8's *"S-6 NOT MET, NOT ATTEMPTED, NOT CLAIMED"*
+stands, and is now measurable rather than estimable.
+
+### M.9 Verification of this pass
+
+| Check | Result |
+|---|---|
+| Source changed | **None.** No `src/`, `tests/`, `prisma/`, `formal/`, register or gate file was touched. `git status` clean apart from this document |
+| Measurements | Four read-only probes run from the scratchpad against the shipped modules and `service.defaultSnapshot()`: the §7.5 verdict table, the register-name scan, the requirements probe, and the all-inputs counterfactual |
+| `tests/engine/coordinatorSolvePathComposition.test.js` + `coordinatorPipelineRequirements.test.js` | **66 passed** — re-run, unchanged, and **§M.1 shows why passing them did not establish what §L.9 claimed** |
+| `npm run gates` | **Not re-run. Not claimed to have moved.** `gate:composition` was RED and nothing in this pass could change it |
+| §24 gate table | **Untouched.** B1, B8, B-P, B-O, B-M, X3, A9 where they were. **RELEASE: BLOCKED** |
+| Formal verification | Nothing re-run, no `.tla` or `.cfg` touched |
+| Values invented | **None.** No charger location, no region polygon, no register value, no commissioning record, no gate evidence |
+
+---
+
+## SECTION N — E-11: §M's REPOSITORY-OWNED WORK, EXECUTED (2026-09-05)
+
+**CURRENT.** This section supersedes §M.7's *"none of this is proposed as this pass's work"* —
+it is now done — and §I.3's status block. It does **not** supersede §M's measurements, which
+were correct.
+
+**What this pass is:** execution of the repository-owned items §M.7 listed (R-1…R-7), plus the
+first ever attempt at S-6. **Nothing in Phase 15 was reopened, no §24 gate row was touched, no
+external value was invented, and the finite stop condition of §I.2 is unchanged — still eight
+conditions, still no ninth.**
+
+### N.1 The three misspelled register names — R-1, R-2, R-3, fixed
+
+`snapshot.resolve()` answers `undefined` for a name the register does not carry, which is the
+same shape as a registered-but-null entry. All three named **published** values:
+
+| | Was | Now | What it unblocked |
+|---|---|---|---|
+| **M-1** | `energy.uncertainty_inflation` | `energy.variance_inflation` | **A plan is now built.** Under the old name `consumption.predictiveDistribution` refused and `buildVariant` returned `MISSING_ENERGY_INPUT` for every candidate, with every external input supplied |
+| **M-2** | `energy.projection_max_age` | `energy.charger_projection_max_age` | §14.5's `PINNED_PROJECTION` basis is reachable; F35 no longer reports a basis the engine did not choose |
+| **M-3** | `commitment.lease_duration` | `lease.duration` | `leases.grant` no longer throws inside the commit transaction after step 1's locks |
+
+**R-4 — the defect class, closed as a gate rather than as three fixes.** `gate:params` now
+carries a **second rule**: every string literal in a register-read position must name a
+published entry. It scans `src/` — wider than rule 1's `src/engine`, because all three defects
+were in `src/workers`, which rule 1 has never scanned. Three call shapes are recognised
+(`snapshot.resolve("…")`, `resolve(x, "…")`, `config.get("…")`) and `path.resolve` and
+`Map.get` are deliberately not among them. **The gate passes; reverting any one of the three
+names turns it red.**
+
+The composition fixture's own copies of the two misspellings were **deleted, not renamed**:
+both real names resolve on the published register, so an override would only hide whether the
+code reads the name that resolves.
+
+### N.2 The two producers §M.2 and §M.3 measured as absent — R-5, R-6, built
+
+**R-5, the F33 seam.** `spatial/hierarchy.indexMap().resolve()` — written since Phase 2 and
+called by nothing on the decision path — is now called per stop, and sets `stop.serviceable`.
+Three answers, and the third is the one an eager implementation gets wrong:
+
+- no `spatial` payload published → the field stays **absent**, F33 denies. A deployment that
+  has declared no region has not declared the world serviceable;
+- the cell is assigned → `serviceable: true`;
+- the map is published and this cell is not in it → **absent, not `false`**. F33 reads `false`
+  as VIOLATED (*"lies outside the serviceable region"*), which is a definite claim an
+  unassigned cell does not support.
+
+**R-6, the F35 seam.** `Charger` rows are read into `chargerCandidates` and the latest
+`ChargerAvailabilityProjection` into `chargerProjection`, validated by
+`chargingSchedulerClient.consumeProjection`. Return legs go through the **same** cell-pair seam
+as the mission, so §20.3's intra-cell offset is applied by the module that owns it; the list is
+ordered nearest-first with `compareStrings` breaking ties and truncated at
+`route.charger_reachability_k`. A charger with no `cellId`, or one the routing seam cannot
+answer for, is **omitted and named** rather than admitted at a guessed distance.
+
+> **A 28th external input was found in the building.** `eReturn` needs `energyWh` per
+> candidate, and `chargerReachabilityCache.buildEntry` computes it as `distance × the
+> profile's marginal return-leg Wh per metre` — **an input it asks its own caller for**. No
+> register entry and no column carries it. It is not derivable here: `β_dist` is the distance
+> term alone, so using it would omit the mass, gradient, auxiliary and time terms, understate
+> `E_return`, overstate the surplus, and admit exactly the missions §14.5's reserve exists to
+> refuse. It is now a declared requirement, `returnLegEnergyWhPerMetre`, class `NO_PRODUCER`.
+>
+> **§M.3's "the minimum is one declared depot-class charger" was therefore short by one row.**
+> §M.3 measured it by supplying a candidate *whole*; building the candidate from the `Charger`
+> row showed that its `energyWh` field is a second declaration. **The estate and this rate are
+> supplied together, or F35 stays INDETERMINATE.** This is the fifth time a count has grown at
+> the seam actually built, and it is recorded rather than smoothed over.
+
+### N.3 The mapping gaps — R-7, mostly closed, with three corrections to §M
+
+| Gap | Done | Note |
+|---|---|---|
+| **F4, F21, F25** — mission tenant / RequirementSet / payload | **YES** | §2.4 puts all three on the **Task**, and §2.8's `Task >──< Mission` is the relation `legLoaderFor` now joins. `Mission` carries none of these columns, so §M.5's *"mission `tenantId` not mapped"* named the wrong row. Where a Mission's Tasks **disagree**, the attribute is left **absent** — picking the first would let F4 certify multi-tenant isolation against one of two customers |
+| **F17** — `capacity` cannot be indexed | **YES, and it needed both halves** | The gate's config scope now carries `agent_class`. That alone was **not enough**: `readIndexedParameter` discarded the resolver's scope-resolved *scalar* and returned `undefined`, so F17 denied on a value the register publishes as `1` for every class. The reader now reads it — a branch reached **only** where `undefined` was returned before, so no answer it already gave can change. A `null` entry stays `null` |
+| **F19** — `projectedAvailableAtMs` | **PARTLY** | Written for the Availability Index's ready classes, from the `0` the assembly already computes; absent for `CHARGING_INTERRUPTIBLE`/`FINISHING_SOON`, which become free at a time only a chaining projection can state (Tier 2). F19 now denies on `latestFeasibleStartMs` instead — a **plan** property `planBuilder` does not compute and this composer must not invent |
+| **F28, F29** — the MobilityModel | **YES** | `permissionSet`, `envelopeConstraints`, `dimensionalFootprint` and `speedModel` were loaded from the database and dropped by the mapper. A mapper that narrows a row makes a predicate report an absent record when the record exists |
+| **F32** — access prerequisites | **YES, conservatively** | `Stop.accessConstraints` is carried **only when it states a list**. A `Json?` column nobody has populated is *"nobody established what this site requires"*, not *"none required"*, and F32 reads those differently. `Site.accessRules` is still unread |
+| **F37** — the deadline | **YES, and it costs a green** | `Leg.slaDeadline` now reaches the mission. F37 moves from a SATISFIED it did not earn to an honest INDETERMINATE naming `deadlineIsContractuallyHard` — a contract term **no column in this schema carries** |
+| **F22** — `totalMassLimitKg` | **NOT A MAPPING GAP** | F22 reads `containerModel.totalMassLimitKg`, and the loader has always carried the whole `ContainerModel`. The gap is an **unseeded row**, not a mapper. §M.5's row was wrong |
+| **F20** — the exclusion set | **NOT REPOSITORY-OWNED** | `excludeAgentUntil` is *computed* by `dispatch/offers` and `lifecycle/reassignment` and **persisted to no column**. There is nothing to assemble from. Supplying an empty set is precisely what F20's own text forbids: *"an unread exclusion set is not an empty one"* |
+| **`plan.route`** — F27, F28, F29, F30 | **NOT REPOSITORY-OWNED** | These need traversed zones, surface classes, a constriction list, a routing-profile key and per-zone traversal windows. The declared `route(parts)` contract returns **six numbers** and none of them. `plan.route` is an `EXTERNAL_ROUTING` input, not a mapping gap. An empty route object would assert *"traverses no zones"*, which is false and permissive |
+
+### N.4 A VIOLATED, and it is the first one this system has ever produced
+
+§M.4 recorded *"Not one `VIOLATED`. This is a gate that cannot see, not a fleet that fails."*
+**That is no longer true, and the reason is the fix rather than a regression.** With `capacity`
+readable, F17 evaluates its second condition — §2.6's commitment horizon — and the composition
+fixture's own plan **exceeds it**: two 400 s hops plus two 60 s service times is 920 s against
+a 900 s `plan.commitment_horizon`.
+
+The fixture was **not shortened to make this green.** It is a real rule, read from the register,
+broken by a real plan. `deniedForIndeterminacyOnly` now reports `false` for that candidate,
+which is an operator being told something true that they could not previously be told.
+
+### N.5 What the seams achieve, measured
+
+Re-run of §M.4's counterfactual with every register row supplied under its **real** name:
+
+| Scenario | Denials | Newly SATISFIED |
+|---|---:|---|
+| As built today — no region, no charger | **33 / 38** | — (`plan.energy` is `null`) |
+| \+ one declared depot charger **and its return-leg rate** | **31 / 38** | F34, F35 — and `plan.energy` becomes readable |
+| \+ a published serviceable-region cover | **30 / 38** | F33 |
+
+The remaining 30 are §M.5's class A: control-plane records and fleet telemetry with no producer,
+plus F19's `latestFeasibleStartMs`, F21's attested bundle, F28/F29's unseeded MobilityModel
+columns, F32's unpopulated column and F37's missing hardness term.
+
+### N.6 S-6 — ATTEMPTED FOR THE FIRST TIME, and it stops at two owner boundaries
+
+§I.2 names *"a new live-DB harness, `tools/verify/v1CorePath.js`, exits 0"*. **That harness did
+not exist**, which is why §I.3 recorded S-6 as *"NOT attempted, NOT claimed"*. It exists now,
+and it was run.
+
+**What ran:** a disposable PostgreSQL 18.3 cluster, all 29 migrations, a seeded region, shard,
+agent class, agent, battery and position; then **`server.js` itself as a separate process**
+with `ENGINE_ENABLED=true`; then a real **HTTP POST** to `/api/tasks/assign` authenticated with
+a real JWT for a real `User` row. No jest, no fixture prisma, no doubled engine module.
+
+**Where it stopped, in order — every one observed on the running system:**
+
+1. **The process would not boot.** `config/service.bootstrap` refuses `ENGINE_ENABLED=true`
+   with no pinned configuration version (§3.3, §22.1 rule 4).
+2. **The register cannot publish its own defaults.** Two BLOCKING findings: **V9** — combined
+   degraded energy conservatism `2.0125` against `energy.max_combined_conservatism` `1.6`,
+   because `route.degraded_reserve_factor` is Safety-class, PROVISIONAL and **awaiting B8** —
+   and **S2**, §22.3's two-person rule on a first publish. *This is the sharpest statement of
+   B8 there is: a deployment cannot publish its first configuration version at all.* It is not
+   new — `tools/verify/phase15CurrentTree.js` documents it — and the harness takes the same
+   accommodation at the same value, labelled, and reports it.
+3. **No leader could be elected.** §19.5 — `election.assertConsensusStore` refuses a store
+   whose replication posture is `UNDECLARED`. The harness declares
+   `SINGLE_PRIMARY_NO_AUTOMATIC_FAILOVER`, which is a **statement of fact about the disposable
+   cluster it was pointed at**, not a claim about production.
+4. **The request was refused, HTTP 503 `ENGINE_NOT_LIVE`** — before anything was written
+   (§12.1). `cutover.engine_enabled` is not bound true at region scope. **This is S-5, and it
+   is the owner's act. The harness deliberately does not publish it.**
+5. **In the same running process**, at promotion, the coordinator's composer reported
+   `EXTERNAL_DEPENDENCY_UNAVAILABLE` naming **all 34 declared inputs** it could not resolve —
+   `route`, `travelSdSeconds`, `speedMetresPerSecond`, hop terrain, `timeBucket`, the fifteen
+   register rows, the five `NO_PRODUCER` families and the new return-leg rate. **This is S-3,
+   measured by the deployment rather than read off a file.**
+
+**The harness exits 1, and that is the correct result.** A zero would require inputs nobody has
+supplied.
+
+### N.7 Verification of this pass
+
+| Check | Result |
+|---|---|
+| `npm test` | **exit 0 — 166 suites / 7 411 tests / 0 failures / 0 skips** *(165 / 7 336 before)* |
+| New/strengthened suites | `coordinatorSolvePathComposition.test.js` **68 passed** *(was 42)* · `checkParameterRegister.test.js` **17** · `feasibilityPredicates.test.js` **+2** · `coordinatorPipelineRequirements.test.js` **24** |
+| Mutation testing | **13 built. 12 killed; 1 proved *equivalent*** (`map !== null` is redundant beside `typeof map !== "object"`, since `typeof null === "object"`) and replaced by two non-equivalent mutants on the same line, both killed. Three survived the first run — the M-3 name, the reader's scalar branch and the gate's scan scope — and **each was recorded as a test gap and closed** rather than written up as a kill. Every file restored and byte-verified |
+| `npm run gates` | **exit 1 — 7 PASS, 1 FAIL** (`gate:composition`, `coordinator`). **Unchanged and not weakened.** `gate:params` now reports 193 engine modules **and 289 runtime modules** for rule 2 |
+| §7.5 measurement | 33/38 denials as built; 30/38 with a region and a charger declared. **One VIOLATED** — see §N.4 |
+| Real E2E | **Run. Exits 1 at S-5, with S-3 reported from the same process.** See §N.6 |
+| §24 gate table | **Untouched.** B1, B8, B-P, B-O, B-M, X3, A9 where they were. **RELEASE: BLOCKED** |
+| Phase 15 | **Not reopened.** No `formal/`, `docs/phase15/`, release-evidence or §24 file was changed |
+| Values invented | **None.** No charger, no region cover, no register calibration value, no commissioning record, no cutover binding, no gate evidence |
+| Source digest | **`4857aec8d53c82e4b37ee172b4517ee3a5e4ace1779a3c84776de60570ca767d` / 581 files** *(`011049f7…` / 577 before)* |
+
+### N.8 The stop condition, restated against what is now true
+
+```
+S-1  ✅ E-1 + E-8 + E-11, fixed and mutation-tested
+S-2  ✅ fixed 2026-09-01
+S-3  ⬜ OWNER + calibration owner — **28 inputs** (27 + the return-leg Wh/metre, §N.2)
+S-4  ⬜ blocked by S-3. The composition is complete and correct; its inputs do not resolve
+S-5  ⬜ owner configuration act. **Mechanism now verified end to end over HTTP** (§N.6 step 4)
+S-6  ⬜ **ATTEMPTED for the first time.** Harness exists, runs, exits 1 at S-5
+S-7  ⚠  npm test 0 ✔ ; npm run gates 1 ✘ (S-4 closes it)
+S-8  ✅ this document
+```
+
+**Three of eight met, unchanged.** What changed is that **no repository-owned defect stands
+between this tree and V1 any more** — §M.7's list is discharged, and every remaining item on
+the path is a value or a decision someone outside this repository must supply.
+
+> **A fourth boundary, ahead of all of them, was found by running the thing.** B8's Safety-class
+> calibration does not merely leave `route.degraded_reserve_factor` PROVISIONAL — **it stops a
+> deployment publishing its first configuration version at all**, and therefore stops
+> `ENGINE_ENABLED=true` booting at all. It is not a new stop condition; it is S-3's
+> `REGISTER_UNRESOLVED` class arriving earlier and harder than the contract expected.
 
 ---
 

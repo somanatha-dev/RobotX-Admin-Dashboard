@@ -509,9 +509,30 @@ function readParameter(config, name) {
  * Read a register parameter that is indexed by a key — `capacity[agent_class]`,
  * `cost.uncertainty_penalty[predicate]`, `energy.shortfall_probability[tier]`.
  *
- * Accepts both the flat form (`"capacity.ROBOT_A"`) and the map form
- * (`config["capacity"] = { ROBOT_A: 2 }`), because the resolver publishes indexed
- * parameters as maps and a caller assembling a fixture will reach for the flat name.
+ * Accepts three forms, in this order of precedence:
+ *
+ *   1. the **map** form — `config["capacity"] = { ROBOT_A: 2 }`, which is what the
+ *      resolver publishes when a version binds the parameter per key;
+ *   2. the **flat** form — `config["capacity.ROBOT_A"]`, which is what a caller
+ *      assembling a fixture reaches for;
+ *   3. the **scope-resolved scalar** — `config.get("capacity")` answering `1`.
+ *
+ * ── Why the third form is read rather than discarded ───────────────────────
+ * The `config` handed to a predicate is the *output* of `config/resolver.js`, and the
+ * resolver has **already walked the scope chain**: `resolve("capacity", { agent_class })`
+ * consults the `agent_class` binding and falls back to the `global` one, which is what
+ * §22.2's scope hierarchy means. So a scalar answer is not an unindexed parameter — it is
+ * *this key's* value, resolved at the most specific level that has a binding.
+ *
+ * This branch previously returned `undefined`, and F17 therefore denied on `capacity`
+ * while the register published `1` for every agent class (§M.4). That is M-1's shape one
+ * layer along: a published value read as an unsupplied one. The branch is reached **only**
+ * where `undefined` was returned before, so no answer this function already gave can
+ * change — it can only replace an absence with the register's own published value, never
+ * a value with a different one.
+ *
+ * A `null` entry is still `null`: an UNCALIBRATED parameter is not a scalar binding, and
+ * the `typeof` test below keeps the two apart.
  *
  * @param {object|Map|null|undefined} config
  * @param {string} name
@@ -526,7 +547,9 @@ function readIndexedParameter(config, name, key) {
   }
   if (key === undefined || key === null) return map;
   const flat = readParameter(config, `${name}.${key}`);
-  return flat !== undefined ? flat : undefined;
+  if (flat !== undefined) return flat;
+  if (map !== undefined && map !== null && typeof map !== "object") return map;
+  return undefined;
 }
 
 /**

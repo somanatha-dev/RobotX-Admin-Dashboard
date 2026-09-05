@@ -566,6 +566,44 @@ describe("F17 — a property of the plan, not of the agent (§13.3, §9.3)", () 
     expect(result.outcome).toBe(OUTCOME.VIOLATED);
     expect(result.marginUnit).toBe("ms");
   });
+
+  /**
+   * `readIndexedParameter`'s three forms, and the one that was being discarded.
+   *
+   * The `config` a predicate is handed is the **output** of `config/resolver.js`, which
+   * has already walked §22.2's scope chain: `resolve("capacity", { agent_class })`
+   * consults the `agent_class` binding and falls back to the `global` one. So a scalar
+   * answer is this key's value, resolved at the most specific level that has a binding —
+   * and returning `undefined` for it made F17 deny on a parameter the register publishes
+   * as `1` for every class (§M.4).
+   */
+  test("a scope-resolved scalar IS the key's value — the map and flat forms still win", () => {
+    const { readIndexedParameter } = require("../../src/engine/feasibility/threeValued");
+
+    // 1. map form — a version that binds per key.
+    expect(readIndexedParameter({ capacity: { SIDEWALK_V2: 2 } }, "capacity", "SIDEWALK_V2")).toBe(2);
+    // 2. flat form — what a fixture reaches for.
+    expect(readIndexedParameter({ "capacity.SIDEWALK_V2": 3 }, "capacity", "SIDEWALK_V2")).toBe(3);
+    // 3. scope-resolved scalar — what the real resolver answers on this register.
+    expect(readIndexedParameter({ capacity: 1 }, "capacity", "SIDEWALK_V2")).toBe(1);
+    // Precedence: a per-key binding is never overridden by the scalar.
+    expect(readIndexedParameter({ capacity: { SIDEWALK_V2: 2 } }, "capacity", "OTHER_CLASS")).toBeUndefined();
+  });
+
+  test("an UNCALIBRATED entry stays absent — `null` is not a scalar binding", () => {
+    const { readIndexedParameter } = require("../../src/engine/feasibility/threeValued");
+
+    // The distinction the third form must not erase. A register entry that is `null` by
+    // declaration is §22.4's calibration owner's to supply; reading it as a value for
+    // every key would turn "nobody has set this" into a threshold, which is the whole
+    // failure mode §22.1 exists to prevent.
+    expect(readIndexedParameter({ capacity: null }, "capacity", "SIDEWALK_V2")).toBeUndefined();
+    expect(readIndexedParameter({}, "capacity", "SIDEWALK_V2")).toBeUndefined();
+    // And F17 must still deny on it rather than reading `null` as a capacity.
+    expect(evaluate("F17", { config: { capacity: null }, plan: { concurrentCommitments: 1 } }).outcome).toBe(
+      OUTCOME.INDETERMINATE,
+    );
+  });
 });
 
 describe("F37 — soft deadlines are priced, not gated (§7.5 F37, §8.7)", () => {

@@ -283,10 +283,93 @@ describe("register loading", () => {
   });
 });
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   RULE 2 — a name asked *of* the register must exist in it
+
+   `ConfigSnapshot.resolve(name)` answers `undefined` for an unknown name — the same
+   shape it answers for a registered entry whose value is `null`. So a misspelled
+   parameter reads at runtime as "an input the owner has not supplied yet". Three of
+   them shipped in the coordinator's composition root and survived 166 green suites,
+   because the composition test's own fixture overrode the same misspellings (§M.1).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe("rule 2 — unregistered register reads", () => {
+  test("a planted misspelling in src/workers is caught — where all three actually were", () => {
+    // The scope assertion, and it is the load-bearing one. Rule 1 scans `src/engine`
+    // only; every one of the three defects was in `src/workers`, which that scan has
+    // never covered. A rule 2 inheriting rule 1's include list would be green on the exact
+    // tree that produced the finding.
+    const root = createTree("param-read-workers", {
+      "src/engine/config/register/parameters.json": REGISTER_FIXTURE,
+      "src/workers/composer.js": 'const v = resolve(snapshot, "supervise.stall_tyme", scope);\n',
+    });
+
+    const result = checkParameterRegister({ root });
+
+    expect(result.violations).toEqual([
+      expect.objectContaining({
+        file: "src/workers/composer.js",
+        line: 1,
+        kind: "unregistered-parameter-read",
+      }),
+    ]);
+    expect(result.ok).toBe(false);
+
+    removeTree(root);
+  });
+
+  test("all three call shapes the composition root uses are scanned", () => {
+    const root = createTree("param-read-shapes", {
+      "src/engine/config/register/parameters.json": REGISTER_FIXTURE,
+      "src/workers/shapes.js":
+        'const a = snapshot.resolve("energy.uncertainty_inflation", scope);\n' +
+        'const b = resolve(snapshot, "energy.projection_max_age", scope);\n' +
+        'const c = config.get("commitment.lease_duration");\n',
+    });
+
+    const result = checkParameterRegister({ root });
+
+    expect(result.violations.map((row) => row.line).sort()).toEqual([1, 2, 3]);
+
+    removeTree(root);
+  });
+
+  test("a registered name, a doc comment, `path.resolve` and `Map.get` are not violations", () => {
+    const root = createTree("param-read-clean", {
+      "src/engine/config/register/parameters.json": REGISTER_FIXTURE,
+      "src/workers/clean.js":
+        "/**\n * Mentions supervise.not_a_parameter in prose, and even\n" +
+        ' * `resolve(snapshot, "supervise.also_not_one")` in a code sample.\n */\n' +
+        'const a = resolve(snapshot, "supervise.stall_time", scope);\n' +
+        'const b = path.resolve(__dirname, "..", "tools");\n' +
+        'const c = terms.get("C_opportunity");\n' +
+        "const d = config.get(dynamicName);\n",
+    });
+
+    const result = checkParameterRegister({ root });
+
+    // Comments are stripped before the scan, `path.resolve` puts its literal in the
+    // second position where the member-call pattern does not look, `Map.get` is not
+    // `config.get`, and a dynamic name is not a literal at all.
+    expect(result.violations).toEqual([]);
+    expect(result.ok).toBe(true);
+
+    removeTree(root);
+  });
+});
+
 describe("the real tree", () => {
   test("the committed engine contains no bare behavioural constant", () => {
     const result = checkParameterRegister();
     expect(result.violations).toEqual([]);
     expect(result.ok).toBe(true);
+  });
+
+  test("every register read in the committed tree names a published entry", () => {
+    const result = checkParameterRegister();
+
+    expect(result.violations.filter((row) => row.kind === "unregistered-parameter-read")).toEqual([]);
+    // And rule 2 genuinely scans wider than rule 1 — the composition root included.
+    expect(result.readFilesChecked).toBeGreaterThan(result.filesChecked);
   });
 });

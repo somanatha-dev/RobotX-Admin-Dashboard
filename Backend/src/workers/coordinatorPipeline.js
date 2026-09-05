@@ -437,6 +437,25 @@ const REQUIREMENTS = Object.freeze([
     probe: (context) => isFunction(context.routeHazardCuFor),
   },
   {
+    id: "return-leg Wh per metre (per routing profile)",
+    class: REQUIREMENT_CLASS.NO_PRODUCER,
+    owner: "Engineering + Fleet — declared alongside the profile's `speedMetresPerSecond` (D3)",
+    why:
+      "§14.5's `E_return` is a per-candidate energy, and `routing/chargerReachabilityCache.buildEntry` " +
+      "computes it as `distance × the profile's marginal return-leg Wh per metre` — an input it asks its " +
+      "**caller** for. No register entry and no schema column carries it, and nothing in `src/` produces " +
+      "one. It is not derivable here either: `β_dist` is the distance term alone, so using it would omit " +
+      "the mass, gradient, auxiliary and time terms, understate `E_return`, overstate the surplus, and " +
+      "admit exactly the missions §14.5's reserve exists to refuse — the permissive direction on a " +
+      "feasibility gate.\n" +
+      "*(New at the F35 seam, 2026-09-05. §M.3 measured the minimum charger input as \"one declared " +
+      "depot-class charger\" by supplying a candidate **whole**; building the candidate from the " +
+      "`Charger` row showed that its `energyWh` field is a second declaration. The estate and this rate " +
+      "are supplied together or F35 stays INDETERMINATE.)*",
+    probe: (context) =>
+      isFunction(context.returnLegEnergyWhPerMetreFor) || isPositive(context.returnLegEnergyWhPerMetre),
+  },
+  {
     id: "battery wear inputs (§14.4)",
     class: REQUIREMENT_CLASS.NO_PRODUCER,
     owner: "Engineering + the pack manufacturer's characterisation",

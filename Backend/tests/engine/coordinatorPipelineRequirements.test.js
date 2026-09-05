@@ -78,6 +78,10 @@ function completeContext() {
     failureProbabilityFor: () => ({ probability: 0.01, provenance: "declared-for-this-test" }),
     routeHazardCuFor: () => 0,
     batteryWearInputsFor: () => ({}),
+    // §14.5's return-leg Wh per metre. Declared for this test only: no register entry and
+    // no schema column carries it, and `chargerReachabilityCache.buildEntry` asks its
+    // caller for it — see the requirement's own `why`.
+    returnLegEnergyWhPerMetreFor: () => 0.05,
     prisma: {},
     kv: {},
     // V1 composition — `commit` is no longer injected. The assembly builds it from these

@@ -94,10 +94,10 @@ function declaredRouter() {
  * hand-built stand-in that satisfied the probe where a real snapshot would not is exactly
  * the false green this suite exists to prevent.
  */
-function snapshotWith(overrides) {
+function snapshotWith(overrides, extras) {
   const real = service.defaultSnapshot();
   const map = overrides || {};
-  return Object.assign(Object.create(Object.getPrototypeOf(real)), real, {
+  return Object.assign(Object.create(Object.getPrototypeOf(real)), real, extras || {}, {
     resolve: (name, context, options) =>
       Object.prototype.hasOwnProperty.call(map, name) ? map[name] : real.resolve(name, context, options),
     explain: (name, context, options) => {
@@ -114,6 +114,19 @@ function snapshotWith(overrides) {
  * **None of these is a proposed value.** They are the smallest resolvable numbers that let
  * the assembly be exercised, and the whole point of the C-group tests below is what happens
  * when one of them is taken away again.
+ *
+ * ── Two entries were removed here, and their absence is load-bearing ───────
+ * This map used to override `"energy.uncertainty_inflation"` and
+ * `"energy.projection_max_age"`. **Neither name exists in the register.** The production
+ * code asked for the same two misspellings, so the overrides landed, every test here went
+ * green, and §L.9 concluded from that green suite that no composition defect remained —
+ * while in production `snapshot.resolve()` answered `undefined` for both, exactly as it
+ * does for an unsupplied input, and **no plan was built for any candidate** (§M.1).
+ *
+ * They are not renamed to the real names either. `energy.variance_inflation` and
+ * `energy.charger_projection_max_age` both **resolve on the published register**, so an
+ * override would only hide whether the code reads the name that resolves. The G-group test
+ * *"both names resolve on the published register"* asserts that directly.
  */
 function resolvableRegister(omit) {
   const values = {
@@ -124,10 +137,8 @@ function resolvableRegister(omit) {
     "plan.service_time_prior": 60,
     "energy.model_residual_cv": 0.1,
     "energy.reserve_floor_wh": 50,
-    "energy.uncertainty_inflation": { route_novelty: 1, forecast_horizon: 1, weather: 1 },
     "energy.contingency_quantile": 0.99,
     "energy.charger_availability_margin": 1.15,
-    "energy.projection_max_age": 120,
     "energy.uncalibrated_reserve_factor": 1.25,
     "cost.energy.cu_per_wh": 0.5,
     "cost.wear.cu_per_metre": 0.001,
@@ -259,8 +270,16 @@ function storeWith(options) {
     [secondLeg.id, secondLeg],
   ]);
 
+  // The declared charger estate, as `Charger` rows. **Empty by default**, because an
+  // empty estate is what this deployment actually has (`RD-2026-08-30-01`) and because
+  // §M.3's whole finding is what an empty one does to F34 and F35. A test that wants a
+  // charger declares one and says so.
+  const chargers = settings.chargers || [];
+  const projections = settings.projections || [];
+
   return {
     fineCellId,
+    dropCellId: cells.cellForPoint(DROP.lat, DROP.lon, cells.RESOLUTION.FINE),
     agent,
     leg,
     secondLeg,
@@ -276,6 +295,15 @@ function storeWith(options) {
         findFirst: async () => (settings.omitAgent ? null : position),
         findMany: async () => (settings.omitAgent ? [] : [position]),
       },
+      charger: {
+        findMany: async () => chargers.map((row) => ({ ...row })),
+      },
+      chargerAvailabilityProjection: {
+        findFirst: async () => {
+          if (projections.length === 0) return null;
+          return [...projections].sort((a, b) => b.version - a.version)[0];
+        },
+      },
     },
   };
 }
@@ -289,11 +317,11 @@ function storeWith(options) {
  */
 function completeContext(overrides) {
   const settings = overrides || {};
-  const store = storeWith(settings.store);
+  const store = storeWith({ ...(settings.store || {}), chargers: settings.chargers, projections: settings.projections });
   return {
     store,
     context: {
-      snapshot: snapshotWith(resolvableRegister(settings.omitParameter)),
+      snapshot: snapshotWith(resolvableRegister(settings.omitParameter), { spatial: settings.spatial || null }),
       prisma: store.prisma,
       kv: settings.kv,
       shardId: SHARD_ID,
@@ -306,6 +334,11 @@ function completeContext(overrides) {
       timeBucket: "test-bucket",
       environmentFor: () => ({ ambientC: 20, packC: 22 }),
       vehicleMassKgFor: () => 60,
+      // **TEST DOUBLE — not a fleet measurement.** §14.5's return leg is priced at the
+      // profile's marginal Wh per metre, which `chargerReachabilityCache.buildEntry` asks
+      // its caller for and which no register entry and no column carries. No assertion in
+      // this file depends on the number.
+      returnLegEnergyWhPerMetreFor: () => 0.05,
       failureProbabilityFor: () => ({ probability: 0.01, provenance: "TEST DOUBLE — no producer exists" }),
       routeHazardCuFor: () => 0,
       batteryWearInputsFor: () => ({
@@ -1178,14 +1211,28 @@ describe("F — §7.5's gate cannot resolve most of its inputs from this schema"
     );
   }
 
-  test("the gate denies, and every denial is INDETERMINATE — an absence, not a violation", () => {
+  test("the gate denies, and every denial but one is INDETERMINATE — an absence, not a violation", () => {
     const outcome = everyVerdict();
 
     expect(outcome.feasible).toBe(false);
-    // **Not one VIOLATED.** Nothing about this agent or this plan breaks a rule; the gate
-    // simply cannot see the facts it is required to check. That distinction is the whole
-    // finding: these are missing inputs, not a fleet that fails its constraints.
-    const outcomes = new Set(outcome.denials.map((row) => row.outcome));
+    // **One VIOLATED, and it is new.** Until the E-10 execution pass this read *"not one
+    // VIOLATED — a gate that cannot see, not a fleet that fails"*, and that was true
+    // because F17 could not read `capacity` at all: `readIndexedParameter` discarded the
+    // register's scope-resolved scalar, so the predicate stopped at condition 1 and never
+    // reached condition 2. With the value readable, F17 evaluates the §2.6 commitment
+    // horizon — and **this fixture's plan genuinely exceeds it**: two 400 s hops plus two
+    // 60 s service times is 920 s against a 900 s `plan.commitment_horizon`.
+    //
+    // The fixture is deliberately **not** shortened to make this green. It is a real rule,
+    // read from the register, broken by a real plan, and it is the first thing §7.5 has
+    // ever been able to say about this deployment other than "I cannot see".
+    const violated = outcome.denials.filter((row) => row.outcome === "VIOLATED");
+    expect(violated.map((row) => row.predicateId)).toEqual(["F17"]);
+    expect(violated[0].result.reason).toMatch(/commitment horizon/);
+    expect(violated[0].result.observed.extentMs).toBeGreaterThan(900_000);
+
+    // Every other denial is an absence.
+    const outcomes = new Set(outcome.denials.filter((row) => row.outcome !== "VIOLATED").map((row) => row.outcome));
     expect([...outcomes]).toEqual(["INDETERMINATE"]);
     // §7.3's three-valued resolution, and the sharper half of the finding: the denied set
     // is **not** confined to predicates whose declared policy is `DENY`. It also contains
@@ -1196,15 +1243,18 @@ describe("F — §7.5's gate cannot resolve most of its inputs from this schema"
     // So "UNKNOWN IS NOT PERMISSION" holds all the way down, including at the two seams
     // designed to let an unknown through under a price. Every one of these is an
     // indeterminacy denial, not a rule broken.
-    expect(outcome.denials.every((row) => row.deniedForIndeterminacy === true)).toBe(true);
+    expect(outcome.denials.filter((row) => row.outcome !== "VIOLATED").every((row) => row.deniedForIndeterminacy === true)).toBe(true);
     expect([...new Set(outcome.denials.map((row) => row.policy))].sort()).toEqual([
       "ADMIT_WITH_PENALTY",
       "DENY",
       "DENY_UNLESS_ENVELOPE",
     ]);
-    // And the tally §7.4 step 1 keeps: denied **solely** for indeterminacy, which is the
-    // state an operator must be able to tell from a genuinely infeasible fleet.
-    expect(outcome.deniedForIndeterminacyOnly).toBe(true);
+    // And the tally §7.4 step 1 keeps — which has now **flipped**, and that is the point of
+    // it. "Denied solely for indeterminacy" is the state an operator must be able to tell
+    // from a genuinely infeasible fleet, and this candidate is no longer in it: one real
+    // constraint is broken. An operator reading `false` here is being told something true
+    // that they could not previously be told.
+    expect(outcome.deniedForIndeterminacyOnly).toBe(false);
   });
 
   test("F1 denies first, so no candidate is ever priced — the branch above is unreachable", () => {
@@ -1261,6 +1311,517 @@ describe("F — §7.5's gate cannot resolve most of its inputs from this schema"
     expect(byId.get("F33").policy).toBe("DENY");
     expect(byId.get("F35").result.required).toMatch(/charger reachable/);
     expect(byId.get("F35").policy).toBe("DENY");
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   G — THE SEAMS E-10 NAMED, BUILT AND EXERCISED
+
+   Three register names the code asked for and the register does not carry (§M.1),
+   and the two producers §M.2 and §M.3 measured as absent. Every assertion below
+   runs the REAL modules; the doubles are the store and the two seams that have no
+   producer anywhere, each labelled at its use.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe("G — the three misspelled register names (§M.1)", () => {
+  test("all three names the composition asks for are published by the register", () => {
+    // The direct statement of M-1, M-2 and M-3. Each of these resolved to `undefined`
+    // under the name the code used, which is indistinguishable from a `null` entry the
+    // owner has not supplied — so a **published** value read as a missing input.
+    const real = service.defaultSnapshot();
+
+    expect(real.resolve("energy.variance_inflation", {})).toEqual(
+      expect.objectContaining({ route_novelty: expect.any(Number) }),
+    );
+    expect(typeof real.resolve("energy.charger_projection_max_age", {})).toBe("number");
+    expect(typeof real.resolve("lease.duration", {})).toBe("number");
+
+    // And the names they replaced are genuinely absent, which is why the substitution was
+    // silent rather than a throw.
+    for (const absent of ["energy.uncertainty_inflation", "energy.projection_max_age", "commitment.lease_duration"]) {
+      expect(real.resolve(absent, {})).toBeUndefined();
+    }
+  });
+
+  test("`planInputFor` reads the published names — on the register, with NO overrides", () => {
+    // The counterfactual that M-1 failed. Against `service.defaultSnapshot()` itself —
+    // no `snapshotWith`, no fixture override — the two energy inputs must arrive with the
+    // register's published values rather than as `undefined`.
+    const { context, store } = completeContext({ kv: kvHandle.kv });
+    const input = solvePath.planInputFor({
+      agentSnapshot: { agentId: "a", agentClassId: "c", cellId: store.fineCellId, ambientC: 20, packC: 22, soc: 0.9, soh: 0.95, kappa: 1, energyModel: null, energyCoefficients: null, containerModel: null },
+      leg: { legId: "leg-1", stops: [], role: "TERMINAL", targetMs: null, deadlineMs: null, custodyState: "NONE" },
+      hops: [],
+      hopsForSequence: () => null,
+      snapshot: service.defaultSnapshot(),
+      scope: {},
+      decisionTimeMs: DECISION_TIME_MS,
+      seams: context,
+      slaClass: null,
+      queueAgeSeconds: 60,
+    });
+
+    expect(input.energy.inflations).toEqual(service.defaultSnapshot().resolve("energy.variance_inflation", {}));
+    expect(input.energy.projectionMaxAgeSeconds).toBe(
+      service.defaultSnapshot().resolve("energy.charger_projection_max_age", {}),
+    );
+    expect(input.energy.inflations).toBeDefined();
+  });
+
+  test("the whole plan path builds on the published inflation factors alone", () => {
+    // M-1's measured consequence, inverted. With `energy.uncertainty_inflation` the
+    // fixture's override was consumed and the register's value never reached
+    // `consumption.predictiveDistribution`; in production nothing reached it and
+    // `buildVariant` returned `MISSING_ENERGY_INPUT` for every candidate. Here the
+    // fixture supplies **no** inflation factors at all, so the plan can only build if the
+    // published `energy.variance_inflation` is what the code reads.
+    const overrides = resolvableRegister();
+    expect(Object.keys(overrides)).not.toContain("energy.variance_inflation");
+
+    const { context, store } = completeContext({ kv: kvHandle.kv });
+    const built = planBuilder.build(
+      solvePath.planInputFor({
+        agentSnapshot: {
+          agentId: "agent-1",
+          agentClassId: "class-composition",
+          cellId: store.fineCellId,
+          lat: ORIGIN.lat,
+          lon: ORIGIN.lon,
+          energyModel: store.agent.agentClass.energyModel,
+          energyCoefficients: require("../../src/engine/domain/mappers/decisionInputs").energyCoefficientsFrom(
+            energyModelParamsRow(),
+          ),
+          kappa: 1,
+          soc: 0.9,
+          soh: 0.95,
+          containerModel: null,
+          ambientC: 20,
+          packC: 22,
+        },
+        leg: {
+          legId: "leg-1",
+          missionId: "mission-1",
+          role: "TERMINAL",
+          custodyState: "NONE",
+          targetMs: DECISION_TIME_MS + 3_600_000,
+          deadlineMs: DECISION_TIME_MS + 3_600_000,
+          stops: store.leg.stops.map((stop) => ({ ...stop, cellId: solvePath.cellIdFor(stop) })),
+        },
+        hops: [1, 2].map(() => ({ distanceM: 800, travelSeconds: 400, travelSdSeconds: 20, climbM: 6, descentM: 3, stopStartCycles: 4 })),
+        hopsForSequence: () => null,
+        snapshot: context.snapshot,
+        scope: { sla_class: null },
+        decisionTimeMs: DECISION_TIME_MS,
+        seams: context,
+        slaClass: null,
+        queueAgeSeconds: 60,
+      }),
+    );
+
+    expect(built.ok).toBe(true);
+    expect(built.problems.join(" ")).not.toMatch(/variance_inflation|MISSING_ENERGY_INPUT/);
+  });
+
+  test("`commit` hands §10.3.2 a POSITIVE lease duration — M-3, at the seam", async () => {
+    // **The assertion §M.1 said this suite could not make.** `leases.grant` throws a
+    // RangeError on a non-positive lease **inside** the serialisable transaction, after
+    // step 1's row locks — and the existing commit test aborts at step 1 on a store with
+    // no rows, so M-3 was never reached and reverting the name broke nothing.
+    //
+    // So the assertion is moved to the seam instead of the outcome: `commitment/commit.js`
+    // is spied on to capture the `config` the composer builds, and called through to the
+    // real implementation so the abort below is still the shipped guard's.
+    const real = service.defaultSnapshot();
+    const published = real.resolve("lease.duration", {});
+    expect(published).toBeGreaterThan(0);
+
+    const { context, store } = completeContext({
+      kv: kvHandle.kv,
+      runSerializable: async (client, fn) =>
+        fn({ commitment: { findUnique: async () => null }, agent: { findFirst: async () => null }, leg: { findFirst: async () => null } }),
+    });
+    const assembly = solvePath.create(context);
+    await assembly.deps.expandCandidates({ legId: "leg-1", shardId: SHARD_ID, decisionTimeMs: DECISION_TIME_MS, queueAgeSeconds: 60 });
+
+    const commitment = require("../../src/engine/commitment/commit");
+    const realCommit = commitment.commit;
+    let captured = null;
+    const spy = jest.spyOn(commitment, "commit").mockImplementation((deps, input) => {
+      captured = input;
+      return realCommit(deps, input);
+    });
+
+    try {
+      const outcome = await assembly.deps.commit(
+        { legId: store.leg.legId, agentId: store.agent.agentId },
+        { roundId: "round-lease", leadershipFence: 1 },
+      );
+
+      // The composer resolved the register's published lease, under the register's own
+      // name. Under the old spelling this is `undefined`, and `leases.grant` would throw
+      // at the last step of a commit that had already taken its locks.
+      expect(captured.config.leaseDurationSeconds).toBe(published);
+      expect(captured.config.leaseDurationSeconds).toBeGreaterThan(0);
+      // And the real `commit.js` still ran and aborted at step 1 — the shipped guard.
+      expect(outcome.outcome).toBe("ABORTED");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("`gate:params` rule 2 fails on each of the three names — the gate, not the fix", () => {
+    // R-4: the defect class, not the three instances. A test pinning the three names
+    // would not catch the fourth; this asserts the **scanner** rejects an unregistered
+    // read in each of the three call shapes the composition root actually uses.
+    const { checkResolvedNames, loadRegister } = require("../../tools/gates/checkParameterRegister");
+    const { names } = loadRegister(path.join(__dirname, "..", ".."));
+
+    const offending = [
+      'const a = resolve(snapshot, "energy.uncertainty_inflation", scope);',
+      'const b = snapshot.resolve("energy.projection_max_age", scope);',
+      'const c = config.get("commitment.lease_duration");',
+    ].join("\n");
+    const found = checkResolvedNames("probe.js", offending, names);
+    // Sorted, because the scanner runs one pattern at a time and reports in pattern order;
+    // the gate itself sorts by (file, line) before rendering.
+    expect(found.map((row) => row.line).sort()).toEqual([1, 2, 3]);
+    expect(found.every((row) => row.kind === "unregistered-parameter-read")).toBe(true);
+
+    // And it does not fire on the shipped spellings, nor on the two call shapes that
+    // merely share a name — `path.resolve` and `Map.get`.
+    const clean = [
+      'const a = resolve(snapshot, "energy.variance_inflation", scope);',
+      'const b = snapshot.resolve("energy.charger_projection_max_age", scope);',
+      'const c = config.get("lease.duration");',
+      'const d = path.resolve(__dirname, "..", "not-a-parameter");',
+      'const e = terms.get("C_opportunity");',
+    ].join("\n");
+    expect(checkResolvedNames("probe.js", clean, names)).toEqual([]);
+  });
+});
+
+describe("G — F33: containment by assignment, from the published map (§M.2)", () => {
+  /** A published `spatial` payload assigning exactly the cells this fixture's stops sit in. */
+  function coverFor(stops) {
+    return {
+      version: 1,
+      regions: [{ id: "region-1" }],
+      zones: [{ id: "zone-1", regionId: "region-1" }],
+      sites: [],
+      cells: stops.map((stop) => ({
+        cellId: cells.cellForPoint(stop.lat, stop.lon, cells.RESOLUTION.FINE),
+        resolution: cells.RESOLUTION.FINE,
+        regionId: "region-1",
+        zoneId: "zone-1",
+      })),
+    };
+  }
+
+  test("with NO published map every stop's assignment stays absent — F33 denies", () => {
+    const { context, store } = completeContext({ kv: kvHandle.kv });
+    expect(context.snapshot.spatial).toBeNull();
+
+    const withAssignment = solvePath.serviceabilityFor(context.snapshot)(store.leg.stops);
+    for (const stop of withAssignment) {
+      expect(stop.serviceable).toBeUndefined();
+    }
+    // A deployment that has declared no region has not declared the world serviceable.
+    const verdict = require("../../src/engine/feasibility/predicates/f33").evaluate({
+      plan: { stops: withAssignment.map((stop, index) => ({ ...stop, sequence: index + 1 })) },
+    });
+    expect(verdict.outcome).toBe("INDETERMINATE");
+  });
+
+  test("with the cells assigned, F33 is SATISFIED — `hierarchy.resolve` is finally called", () => {
+    const { context, store } = completeContext({ kv: kvHandle.kv, spatial: coverFor([PICKUP, DROP]) });
+
+    const withAssignment = solvePath.serviceabilityFor(context.snapshot)(store.leg.stops);
+    expect(withAssignment.map((stop) => stop.serviceable)).toEqual([true, true]);
+
+    const verdict = require("../../src/engine/feasibility/predicates/f33").evaluate({
+      plan: { stops: withAssignment.map((stop, index) => ({ ...stop, sequence: index + 1 })) },
+    });
+    expect(verdict.outcome).toBe("SATISFIED");
+  });
+
+  test("a published map that does not assign the cell leaves it ABSENT, never `false`", () => {
+    // The distinction §M.2 draws and the one an eager implementation gets wrong. `false`
+    // is read by F33 as VIOLATED — *"lies outside the serviceable region"* — which is a
+    // definite claim about the request. An unassigned cell does not support it.
+    // A cover of somewhere else entirely — the two campus points are metres apart and can
+    // share a fine cell, which would make this assertion pass for the wrong reason.
+    const elsewhere = { lat: 51.5074, lon: -0.1278 };
+    const { context, store } = completeContext({ kv: kvHandle.kv, spatial: coverFor([elsewhere]) });
+
+    const withAssignment = solvePath.serviceabilityFor(context.snapshot)(store.leg.stops);
+    expect(withAssignment.every((stop) => stop.serviceable === undefined)).toBe(true);
+
+    const verdict = require("../../src/engine/feasibility/predicates/f33").evaluate({
+      plan: { stops: withAssignment.map((stop, index) => ({ ...stop, sequence: index + 1 })) },
+    });
+    expect(verdict.outcome).toBe("INDETERMINATE");
+    expect(verdict.outcome).not.toBe("VIOLATED");
+  });
+
+  test("an unreadable published map is not a permissive one", () => {
+    const withAssignment = solvePath.serviceabilityFor({ spatial: { cells: "not-a-list" } })([{ sequence: 1, lat: PICKUP.lat, lon: PICKUP.lon }]);
+    expect(withAssignment[0].serviceable).toBeUndefined();
+  });
+
+  test("the assignment reaches the plan through `planInputFor` — the production caller", () => {
+    const { context, store } = completeContext({ kv: kvHandle.kv, spatial: coverFor([PICKUP, DROP]) });
+    const input = solvePath.planInputFor({
+      agentSnapshot: { agentId: "a", agentClassId: "c", cellId: store.fineCellId, ambientC: 20, packC: 22, soc: 0.9, soh: 0.95, kappa: 1, energyModel: null, energyCoefficients: null, containerModel: null },
+      leg: { legId: "leg-1", stops: store.leg.stops, role: "TERMINAL", targetMs: null, deadlineMs: null, custodyState: "NONE" },
+      hops: [],
+      hopsForSequence: () => null,
+      snapshot: context.snapshot,
+      scope: {},
+      decisionTimeMs: DECISION_TIME_MS,
+      seams: context,
+      slaClass: null,
+      queueAgeSeconds: 60,
+    });
+
+    expect(input.newLegs[0].stops.map((stop) => stop.serviceable)).toEqual([true, true]);
+  });
+});
+
+describe("G — F35: the declared charger estate, read from the store (§M.3)", () => {
+  /** A depot-class `Charger` row, in the shape `prisma/schema.prisma` declares. */
+  function depotRow(cellId) {
+    return { chargerId: "charger-depot-1", cellId, isDepot: true, chargerClass: "DEPOT", regionId: null };
+  }
+
+  test("with no `Charger` rows the seam supplies nothing and says so", async () => {
+    const { context, store } = completeContext({ kv: kvHandle.kv });
+    const seam = solvePath.routingSeamFor(context);
+    const routing = {
+      forPairing: async () => ({ ok: true, hops: [{ distanceM: 800, travelSeconds: 400 }], hopsForSequence: null, problems: [] }),
+    };
+
+    const estate = await solvePath.chargerCandidatesFor({
+      context,
+      routing,
+      originCell: store.dropCellId,
+      profileKey: "GROUND",
+      snapshot: context.snapshot,
+      scope: {},
+    });
+
+    expect(seam.deps.route).toBeDefined();
+    expect(estate.candidates).toEqual([]);
+    expect(estate.problems.join(" ")).toMatch(/no Charger rows are declared/);
+  });
+
+  test("one declared depot becomes one candidate in `eReturn`'s own contract", async () => {
+    const { context, store } = completeContext({ kv: kvHandle.kv, chargers: [depotRow("placeholder")] });
+    const routing = {
+      forPairing: async () => ({ ok: true, hops: [{ distanceM: 800, travelSeconds: 400 }], hopsForSequence: null, problems: [] }),
+    };
+
+    const estate = await solvePath.chargerCandidatesFor({
+      context,
+      routing,
+      originCell: store.dropCellId,
+      profileKey: "GROUND",
+      snapshot: context.snapshot,
+      scope: {},
+    });
+
+    expect(estate.candidates.length).toBe(1);
+    // Exactly the four fields `energy/eReturn.evaluate` documents, each from a real
+    // source: two columns, the routing seam, and the declared return-leg rate.
+    expect(estate.candidates[0]).toEqual(
+      expect.objectContaining({ chargerId: "charger-depot-1", isDepot: true, travelSeconds: 400, energyWh: 800 * 0.05 }),
+    );
+  });
+
+  test("a charger with no cell is omitted and named — never routed to at a guessed distance", async () => {
+    const { context, store } = completeContext({
+      kv: kvHandle.kv,
+      chargers: [{ chargerId: "charger-no-cell", cellId: null, isDepot: true }],
+    });
+    const routing = { forPairing: async () => ({ ok: true, hops: [{ distanceM: 1, travelSeconds: 1 }], hopsForSequence: null, problems: [] }) };
+
+    const estate = await solvePath.chargerCandidatesFor({
+      context,
+      routing,
+      originCell: store.dropCellId,
+      profileKey: "GROUND",
+      snapshot: context.snapshot,
+      scope: {},
+    });
+
+    expect(estate.candidates).toEqual([]);
+    expect(estate.problems.join(" ")).toMatch(/states no cell/);
+  });
+
+  test("without the declared return-leg Wh per metre NO candidate is built — β_dist is not a substitute", async () => {
+    const { context, store } = completeContext({ kv: kvHandle.kv, chargers: [depotRow("cell")] });
+    const routing = { forPairing: async () => ({ ok: true, hops: [{ distanceM: 800, travelSeconds: 400 }], hopsForSequence: null, problems: [] }) };
+
+    const estate = await solvePath.chargerCandidatesFor({
+      context: { ...context, returnLegEnergyWhPerMetreFor: undefined, returnLegEnergyWhPerMetre: undefined },
+      routing,
+      originCell: store.dropCellId,
+      profileKey: "GROUND",
+      snapshot: context.snapshot,
+      scope: {},
+    });
+
+    // §14.5's `E_return` understated is a surplus overstated, which admits exactly the
+    // missions the reserve exists to refuse. Absent, the candidate is not built.
+    expect(estate.candidates).toEqual([]);
+    expect(estate.problems.join(" ")).toMatch(/return-leg Wh per metre/);
+  });
+
+  test("`create()` refuses without the return-leg rate — it is a declared requirement", () => {
+    const { context } = completeContext({ kv: kvHandle.kv });
+    const assembly = solvePath.create({ ...context, returnLegEnergyWhPerMetreFor: undefined });
+
+    expect(assembly.ok).toBe(false);
+    expect(assembly.missing.map((row) => row.input)).toContain("return-leg Wh per metre (per routing profile)");
+  });
+
+  test("no published projection is DEPOT_ONLY by §14.5's defined degradation, not by silence", async () => {
+    const { context } = completeContext({ kv: kvHandle.kv });
+    const pinned = await solvePath.pinnedChargerProjection(context);
+
+    expect(pinned.projection).toBeNull();
+    expect(pinned.problems.join(" ")).toMatch(/no charger availability projection has been published/);
+  });
+
+  test("a published projection is pinned through the module that validates it", async () => {
+    const { context } = completeContext({
+      kv: kvHandle.kv,
+      projections: [
+        {
+          version: 7,
+          publishedAt: new Date(DECISION_TIME_MS - 30_000),
+          horizonEnd: new Date(DECISION_TIME_MS + 3_600_000),
+          payload: { chargers: [{ chargerId: "charger-depot-1", isDepot: true, intervals: [{ fromMs: DECISION_TIME_MS, untilMs: DECISION_TIME_MS + 3_600_000, state: "FREE" }] }] },
+        },
+      ],
+    });
+
+    const pinned = await solvePath.pinnedChargerProjection(context);
+    expect(pinned.projection.version).toBe(7);
+    expect(pinned.projection.chargers[0].chargerId).toBe("charger-depot-1");
+    // Frozen, because §14.7 calls the projection immutable and a round that could mutate
+    // its own pinned input could not be replayed from the version it recorded.
+    expect(Object.isFrozen(pinned.projection)).toBe(true);
+  });
+
+  test("a projection with no version is NOT pinned — the round degrades rather than keys on nothing", async () => {
+    const { context } = completeContext({
+      kv: kvHandle.kv,
+      projections: [{ version: null, publishedAt: new Date(DECISION_TIME_MS), payload: { chargers: [] } }],
+    });
+
+    const pinned = await solvePath.pinnedChargerProjection(context);
+    expect(pinned.projection).toBeNull();
+    expect(pinned.problems.join(" ")).toMatch(/version/);
+  });
+});
+
+describe("G — the §7.5 mapping gaps this pass closed (§M.4)", () => {
+  test("F17: the gate's scope carries `agent_class`, so `capacity` can be indexed", () => {
+    // The value resolves; the scope could not index it. `readIndexedParameter` cannot
+    // index a scalar by a dimension the scope does not carry, so F17 denied on a
+    // parameter the register publishes.
+    const real = service.defaultSnapshot();
+    const withClass = require("../../src/engine/feasibility/threeValued").readIndexedParameter(
+      { get: (name) => real.resolve(name, { sla_class: null, agent_class: "class-composition" }) },
+      "capacity",
+      "class-composition",
+    );
+    expect(typeof withClass).toBe("number");
+  });
+
+  test("F19: `projectedAvailableAtMs` is written for a ready class and NOT for a busier one", () => {
+    const ready = solvePath.gatedAgentSnapshot({ agentId: "a", availabilityClass: "IDLE_READY" }, DECISION_TIME_MS);
+    expect(ready.projectedAvailableAtMs).toBe(DECISION_TIME_MS);
+
+    // `FINISHING_SOON` becomes free at a time only a chaining projection can state, and
+    // chaining is Tier 2. Absent is the honest answer; F19 denies and names it.
+    const busy = solvePath.gatedAgentSnapshot({ agentId: "a", availabilityClass: "FINISHING_SOON" }, DECISION_TIME_MS);
+    expect(busy.projectedAvailableAtMs).toBeUndefined();
+  });
+
+  test("F4/F21/F25: §2.4's Task attributes reach the mission through the Mission→Task relation", () => {
+    const attributes = solvePath.taskAttributesFor({
+      tasks: [{ tenantId: "tenant-a", requirements: [{ name: "cold_chain" }], payloadSpec: { thermalMinC: 2, thermalMaxC: 8 } }],
+    });
+
+    expect(attributes.tenantId).toBe("tenant-a");
+    expect(attributes.requirements).toEqual([{ name: "cold_chain" }]);
+    expect(attributes.payload).toEqual({ thermalMinC: 2, thermalMaxC: 8 });
+  });
+
+  test("two Tasks disagreeing leaves the attribute ABSENT — never the first one's value", () => {
+    // §2.8 makes `Task >──< Mission` many-to-many. Picking the first Task's tenant would
+    // let F4 certify multi-tenant isolation against one of two customers, which is the
+    // permissive direction on an isolation predicate.
+    const attributes = solvePath.taskAttributesFor({
+      tasks: [{ tenantId: "tenant-a" }, { tenantId: "tenant-b" }],
+    });
+
+    expect(attributes.tenantId).toBeUndefined();
+    expect(attributes.taskCount).toBe(2);
+  });
+
+  test("a non-list RequirementSet is not carried — F21 must not match against a shape it did not expect", () => {
+    expect(solvePath.taskAttributesFor({ tasks: [{ requirements: { cold_chain: true } }] }).requirements).toBeUndefined();
+  });
+
+  test("F32: a stop carries access prerequisites only when the column STATES a list", async () => {
+    const { context } = completeContext({ kv: kvHandle.kv });
+    const load = solvePath.legLoaderFor(context);
+    const leg = await load("leg-1");
+
+    // The fixture's stops declare nothing, so the field is absent and F32 denies. A
+    // `Json?` column nobody has populated is "nobody established what this site requires",
+    // which is a different fact from "none required" — and F32 reads them differently.
+    expect(leg.stops.every((stop) => stop.accessPrerequisites === undefined)).toBe(true);
+  });
+
+  test("F28/F29: the whole declared MobilityModel is mapped, not two of its columns", async () => {
+    const { context } = completeContext({ kv: kvHandle.kv });
+    const load = solvePath.agentSnapshotLoaderFor(context);
+    const snapshot = await load("agent-row-1");
+
+    // `permissionSet`, `envelopeConstraints` and `dimensionalFootprint` are the columns
+    // F28 and F29 read. The fixture's model declares none of them, so they arrive
+    // `undefined` and the predicates name them — which is the point: the mapper no longer
+    // decides that they do not exist.
+    expect(Object.keys(snapshot.mobilityModel).sort()).toEqual([
+      "dimensionalFootprint",
+      "envelopeConstraints",
+      "kinematicLimits",
+      "permissionSet",
+      "speedModel",
+      "traversalDomain",
+    ]);
+    expect(snapshot.mobilityModel.traversalDomain).toBe("GROUND");
+  });
+
+  test("F37: the Leg's own deadline reaches the mission — a stated deadline is not an absent one", async () => {
+    const { context, store } = completeContext({ kv: kvHandle.kv });
+    const assembly = solvePath.create(context);
+    await assembly.deps.expandCandidates({ legId: "leg-1", shardId: SHARD_ID, decisionTimeMs: DECISION_TIME_MS, queueAgeSeconds: 60 });
+
+    const mission = assembly.round.missionFor(assembly.round.legs.get("leg-1"));
+    expect(mission.deadlineMs).toBe(store.leg.slaDeadline.getTime());
+
+    // And F37 now *binds*, which moves it from a SATISFIED it did not earn to an honest
+    // INDETERMINATE naming the input this schema has no column for.
+    const verdict = require("../../src/engine/feasibility/predicates/f37").evaluate({
+      mission,
+      plan: { earliestFeasibleCompletionMs: DECISION_TIME_MS + 1000 },
+    });
+    expect(verdict.outcome).toBe("INDETERMINATE");
+    expect(verdict.reason).toMatch(/contractually hard/);
   });
 });
 
