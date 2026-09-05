@@ -1914,7 +1914,7 @@ supplied.
 | §24 gate table | **Untouched.** B1, B8, B-P, B-O, B-M, X3, A9 where they were. **RELEASE: BLOCKED** |
 | Phase 15 | **Not reopened.** No `formal/`, `docs/phase15/`, release-evidence or §24 file was changed |
 | Values invented | **None.** No charger, no region cover, no register calibration value, no commissioning record, no cutover binding, no gate evidence |
-| Source digest | **`4857aec8d53c82e4b37ee172b4517ee3a5e4ace1779a3c84776de60570ca767d` / 581 files** *(`011049f7…` / 577 before)* |
+| Source digest | **`023906bef5b23c34f71b64f78419d4d6562813a74f5dd9ca95c48ef719a1017a` / 581 files**, measured on the tree as committed at `3ff92ae` *(`011049f7…` / 577 before)*. The working tree before that commit digests `4857aec8…`; git normalises line endings on commit, so the two differ and the committed one is the figure that matters. Recording it here necessarily moves it again — the second commit's digest is stated in the pass report rather than chased into this file |
 
 ### N.8 The stop condition, restated against what is now true
 
