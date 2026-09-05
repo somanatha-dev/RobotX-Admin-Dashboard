@@ -1893,10 +1893,34 @@ a real JWT for a real `User` row. No jest, no fixture prisma, no doubled engine 
    (§12.1). `cutover.engine_enabled` is not bound true at region scope. **This is S-5, and it
    is the owner's act. The harness deliberately does not publish it.**
 5. **In the same running process**, at promotion, the coordinator's composer reported
-   `EXTERNAL_DEPENDENCY_UNAVAILABLE` naming **all 34 declared inputs** it could not resolve —
-   `route`, `travelSdSeconds`, `speedMetresPerSecond`, hop terrain, `timeBucket`, the fifteen
-   register rows, the five `NO_PRODUCER` families and the new return-leg rate. **This is S-3,
-   measured by the deployment rather than read off a file.**
+   `EXTERNAL_DEPENDENCY_UNAVAILABLE` naming ~~**all 34 declared inputs** it could not resolve~~
+   — **CORRECTED, see below** — `route`, `travelSdSeconds`, `speedMetresPerSecond`, hop terrain,
+   `timeBucket`, the fifteen register rows, the five `NO_PRODUCER` families and the new
+   return-leg rate. **This is S-3, measured by the deployment rather than read off a file.**
+
+   > **CORRECTED 2026-09-05 by W-D1 (`docs/v1/V1_IMPLEMENTATION_CONTROL.md` §5.6).**
+   > The composer reported **`26 of 34`**, not all 34. **34 is the denominator** — the size of
+   > `coordinatorPipeline.REQUIREMENT_IDS`, the declared assembly contract — and the code prints
+   > a fraction: `"${assembly.missing.length} of ${REQUIREMENT_IDS.length} inputs unresolved"`
+   > (`leaderWorkers.js:389-392`). The remaining **8** were reported *satisfied*: the six
+   > `PROCESS_DEPENDENCY` rows `server.js:657-722` supplies, the derived Ω correction, and
+   > `candidate.max_radius_by_sla_class`.
+   >
+   > **The enumeration this step already gives is right and is unchanged** — `route`,
+   > `travelSdSeconds`, `speedMetresPerSecond`, hop terrain, `timeBucket` (5), the fifteen
+   > register rows (15), and the `NO_PRODUCER` families with the return-leg rate (6) — which is
+   > **5 + 15 + 6 = 26**. Only the phrase *"all 34"* was wrong, and it contradicted the list
+   > standing beside it.
+   >
+   > Verbatim, from a run on `4e2155a` against a live PostgreSQL on 2026-09-05:
+   > `MEASURED against this context — 26 of 34 inputs unresolved: EXTERNAL_ROUTING: … | REGISTER_UNRESOLVED: … | NO_PRODUCER: …`
+   >
+   > **S-3's authoritative count is unaffected and remains 28** — the measured 26 plus the
+   > serviceable-region assignment and the depot charger, which §M.2/§M.3 supply by hand because
+   > no dependency probe can observe them (§5.6.6). **No other statement in §N is changed by this
+   > measurement**; in particular §N.8's *"at all"* stands as §4.2 of the control document
+   > corrected it, on different evidence — **and §N.8 now carries that correction inline
+   > (W-A3, 2026-09-05)** rather than only in the control document.
 
 **The harness exits 1, and that is the correct result.** A zero would require inputs nobody has
 supplied.
@@ -1929,15 +1953,57 @@ S-7  ⚠  npm test 0 ✔ ; npm run gates 1 ✘ (S-4 closes it)
 S-8  ✅ this document
 ```
 
-**Three of eight met, unchanged.** What changed is that **no repository-owned defect stands
-between this tree and V1 any more** — §M.7's list is discharged, and every remaining item on
-the path is a value or a decision someone outside this repository must supply.
+**Three of eight met, unchanged.** What changed is that ~~**no repository-owned defect stands
+between this tree and V1 any more**~~ — **CORRECTED, see below** — §M.7's list is discharged, and
+every remaining item on the path is a value or a decision someone outside this repository must
+supply.
+
+> **CORRECTED 2026-09-05 (`V1_IMPLEMENTATION_CONTROL.md` §9.1, item W-A5).** The sentence was
+> **false when written**, and it was a *knowledge* claim rather than a fact about the tree — the
+> honest form is *"no repository-owned defect is currently **known**."* One was standing at this
+> tree and was found later: `coordinatorSolvePath`'s pricing seam refused §14.4's battery wear
+> for want of vendor stress curves that `EnergyModelParams.stressCurves` declares and that the
+> agent-snapshot loader **had already loaded**. The code justified skipping them by naming
+> `EnergyModel`, a different table. **A producer existed and the composition root did not use
+> it** — the E-8b finding again.
+>
+> **Three of eight is unchanged and remains correct**: the defect was on a stage no production
+> request reaches today, and fixing it satisfied no requirement, cleared no probe row and
+> changed no count. **S-3 is still 28 and `gate:composition` is still RED.** It is recorded here
+> because a claim of the form *"nothing remains"* that turns out to be false is precisely what
+> this document's supersession convention exists to keep visible.
 
 > **A fourth boundary, ahead of all of them, was found by running the thing.** B8's Safety-class
-> calibration does not merely leave `route.degraded_reserve_factor` PROVISIONAL — **it stops a
-> deployment publishing its first configuration version at all**, and therefore stops
-> `ENGINE_ENABLED=true` booting at all. It is not a new stop condition; it is S-3's
-> `REGISTER_UNRESOLVED` class arriving earlier and harder than the contract expected.
+> calibration does not merely leave `route.degraded_reserve_factor` PROVISIONAL — it stops a
+> deployment publishing its first configuration version ~~**at all**~~ — **CORRECTED, see
+> below** — and therefore stops `ENGINE_ENABLED=true` booting. It is not a new stop condition;
+> it is S-3's `REGISTER_UNRESOLVED` class arriving earlier and harder than the contract expected.
+>
+> > **CORRECTED 2026-09-05 by W-A3 (`docs/v1/V1_IMPLEMENTATION_CONTROL.md` §4.2), under this
+> > document's supersession convention.** *"At all"* is too strong, and the E-11 run this note
+> > was written from is itself the counter-example.
+> >
+> > What B8 stops is an **unaccommodated, production-intent** first publish. A **labelled
+> > verification publish is precedented and was performed by the E-11 run**:
+> > `tools/verify/v1CorePath.js:206` binds `route.degraded_reserve_factor = 1.1` at global
+> > scope — the same accommodation, at the same value, that
+> > `tools/verify/phase15CurrentTree.js` already documents — which brings the combined
+> > degraded product under `energy.max_combined_conservatism` and clears validator **V9**;
+> > `:191-196` records two harness approver identities for §22.3's two-person rule (**S2**).
+> > The run then published, pinned, and booted with `ENGINE_ENABLED=true`.
+> >
+> > **The operational consequence, which is why this wording matters:** *"resolve B8"* is
+> > **not** the technical unblock for S-5 or S-6. The harness reached S-5 with a
+> > configuration version already published and **deliberately declined to cross it**,
+> > leaving `cutover.engine_enabled` unbound because binding it would be a verification
+> > file deciding that the engine is live for a region (`v1CorePath.js:196-210`).
+> >
+> > **B8's status as an owner decision is unchanged** — it is D-1 in §10 of the control
+> > document, it gates a production-intent publish, and nothing here weakens it, resolves
+> > it, or proposes a value for it. Only the sentence's scope is corrected.
+> >
+> > This discharges the remaining half of **W-A3**; §N.6 step 5's *"all 34"* was corrected
+> > separately, and on different evidence.
 
 ---
 

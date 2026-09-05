@@ -1136,6 +1136,49 @@ describe("F — §7.5's gate cannot resolve most of its inputs from this schema"
    * predicate is a pure function of the snapshot — which is what makes this a measurement
    * of the gate's inputs and not of its evaluation order.
    */
+  /**
+   * The hop this fixture's plan traverses twice, and the shape of the mission it makes.
+   *
+   * Lifted out of `everyVerdict` so that the commitment-horizon assumption below can be
+   * *derived* from the fixture rather than restated beside it. **These are not travel
+   * times** — see `declaredRouter` in the file header.
+   */
+  const FIXTURE_HOP = Object.freeze({
+    distanceM: 800,
+    travelSeconds: 400,
+    travelSdSeconds: 20,
+    climbM: 6,
+    descentM: 3,
+    stopStartCycles: 4,
+  });
+  const FIXTURE_HOP_COUNT = 2;
+  const FIXTURE_STOP_COUNT = 2;
+
+  /**
+   * **W-A2 — the assumption the F17 `VIOLATED` below rests on, computed rather than assumed.**
+   *
+   * F17's condition 2 compares the plan's furthest extent against `plan.commitment_horizon`.
+   * This fixture does **not** override that parameter: it is read from the shipped register,
+   * which is the whole evidential value of the `VIOLATED` — a real rule, read from the
+   * register, broken by a real plan (§6.3).
+   *
+   * That is also its fragility. `plan.commitment_horizon` is `PROVISIONAL`/`UNCALIBRATED`
+   * and `awaits: "observed commitment lead times"`, so §22.4's calibration owner may
+   * legitimately move it. Calibrated to anything at or above this fixture's extent, F17
+   * stops being violated and the expectations below stop holding — **for no defect at all.**
+   *
+   * So the assumption is asserted first, by name and with its arithmetic. If it is the
+   * assertion that fails, the message says what happened and what must not be done about
+   * it. **It must NOT be discharged by shortening the fixture, by overriding the parameter
+   * here, or by removing the `VIOLATED`** (§6.8, §17 rule 7).
+   */
+  function commitmentHorizonAssumption() {
+    const horizonSeconds = service.defaultSnapshot().resolve("plan.commitment_horizon", {});
+    const serviceTimeSeconds = resolvableRegister()["plan.service_time_prior"];
+    const extentSeconds = FIXTURE_HOP_COUNT * FIXTURE_HOP.travelSeconds + FIXTURE_STOP_COUNT * serviceTimeSeconds;
+    return { horizonSeconds, serviceTimeSeconds, extentSeconds, holds: extentSeconds > horizonSeconds };
+  }
+
   function everyVerdict() {
     const { context, store } = completeContext({ kv: kvHandle.kv });
     const snapshot = context.snapshot;
@@ -1174,14 +1217,7 @@ describe("F — §7.5's gate cannot resolve most of its inputs from this schema"
       manifests: [],
     };
 
-    const hops = [1, 2].map(() => ({
-      distanceM: 800,
-      travelSeconds: 400,
-      travelSdSeconds: 20,
-      climbM: 6,
-      descentM: 3,
-      stopStartCycles: 4,
-    }));
+    const hops = Array.from({ length: FIXTURE_HOP_COUNT }, () => ({ ...FIXTURE_HOP }));
 
     const built = planBuilder.build(
       solvePath.planInputFor({
@@ -1211,6 +1247,40 @@ describe("F — §7.5's gate cannot resolve most of its inputs from this schema"
     );
   }
 
+  test("W-A2 — the F17 VIOLATED rests on a PROVISIONAL horizon, and this is that assumption", () => {
+    const assumption = commitmentHorizonAssumption();
+
+    // The fixture's own arithmetic, pinned. If someone shortens the mission to make F17
+    // green, this is the assertion that says so — which is the point of pinning it.
+    expect(assumption.serviceTimeSeconds).toBe(60);
+    expect(assumption.extentSeconds).toBe(
+      FIXTURE_HOP_COUNT * FIXTURE_HOP.travelSeconds + FIXTURE_STOP_COUNT * assumption.serviceTimeSeconds,
+    );
+    expect(assumption.extentSeconds).toBe(920);
+
+    // The register's side of the comparison, read live and never overridden here.
+    expect(typeof assumption.horizonSeconds).toBe("number");
+
+    if (!assumption.holds) {
+      throw new Error(
+        "W-A2 — the fixture's commitment-horizon assumption no longer holds.\n" +
+          `  plan.commitment_horizon now publishes as ${assumption.horizonSeconds} s.\n` +
+          `  This fixture's plan extends ${assumption.extentSeconds} s past the decision time.\n` +
+          "  The horizon is at or above the extent, so F17 no longer reports VIOLATED and the\n" +
+          "  expectations in the next test cannot hold.\n" +
+          "\n" +
+          "  THIS IS NOT A DEFECT. plan.commitment_horizon is PROVISIONAL/UNCALIBRATED and awaits\n" +
+          "  'observed commitment lead times'; §22.4's calibration owner is entitled to move it.\n" +
+          "\n" +
+          "  It must NOT be closed by shortening this fixture, by overriding plan.commitment_horizon\n" +
+          "  in resolvableRegister(), or by deleting the VIOLATED assertion (§6.8 / W-A2, and §17\n" +
+          "  rule 7 of docs/v1/V1_IMPLEMENTATION_CONTROL.md). Re-derive the fixture's extent against\n" +
+          "  the new horizon, record the new arithmetic here, and keep the VIOLATED real.",
+      );
+    }
+    expect(assumption.holds).toBe(true);
+  });
+
   test("the gate denies, and every denial but one is INDETERMINATE — an absence, not a violation", () => {
     const outcome = everyVerdict();
 
@@ -1226,10 +1296,16 @@ describe("F — §7.5's gate cannot resolve most of its inputs from this schema"
     // The fixture is deliberately **not** shortened to make this green. It is a real rule,
     // read from the register, broken by a real plan, and it is the first thing §7.5 has
     // ever been able to say about this deployment other than "I cannot see".
+    //
+    // **W-A2**: the horizon this is measured against is read from the register rather than
+    // written as a literal, so the assertion states the relation the predicate actually
+    // checks. The assumption that the relation holds at all is asserted in the test above,
+    // where a future calibration explains itself instead of failing here as a lost list.
+    const assumption = commitmentHorizonAssumption();
     const violated = outcome.denials.filter((row) => row.outcome === "VIOLATED");
     expect(violated.map((row) => row.predicateId)).toEqual(["F17"]);
     expect(violated[0].result.reason).toMatch(/commitment horizon/);
-    expect(violated[0].result.observed.extentMs).toBeGreaterThan(900_000);
+    expect(violated[0].result.observed.extentMs).toBeGreaterThan(assumption.horizonSeconds * 1000);
 
     // Every other denial is an absence.
     const outcomes = new Set(outcome.denials.filter((row) => row.outcome !== "VIOLATED").map((row) => row.outcome));
@@ -1822,6 +1898,216 @@ describe("G — the §7.5 mapping gaps this pass closed (§M.4)", () => {
     });
     expect(verdict.outcome).toBe("INDETERMINATE");
     expect(verdict.reason).toMatch(/contractually hard/);
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   G — §14.4's VENDOR STRESS CURVES: THE COLUMN THAT WAS LOADED AND NOT READ
+
+   W-B4, repository side. The `battery wear inputs (§14.4)` requirement said its
+   inputs had **no schema column**, naming `EnergyModel`. That row does hold
+   `chargePowerCurve` and `thermalDeratingCurve` and no wear curve — and it is the
+   wrong row. `EnergyModelParams.stressCurves` is declared for exactly this, and
+   `agentSnapshotLoaderFor` already loads it onto the snapshot.
+
+   **This closes a read path, not the requirement.** The mission half — `dod`,
+   `socMid`, `tempC`, `cRate` and `socThroughput` — still has no column and no
+   producer, and no test below invents one.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe("G — §14.4's stress curves are read from the column that declares them (W-B4)", () => {
+  const wear = require("../../src/engine/energy/wear");
+
+  /** The mission half of §14.4, which no column carries. Supplied here, never derived. */
+  function missionConditions() {
+    return {
+      socThroughput: 0.2,
+      conditions: { dod: 0.2, socMid: 0.8, tempC: 22, cRate: 0.5 },
+    };
+  }
+
+  /**
+   * `Φ`'s argument set for a real built plan, with the battery seam and the
+   * `EnergyModelParams` row varied independently.
+   */
+  function phiFor({ columnCurves, seamCurves, omitSeam }) {
+    const { context, store } = completeContext({ kv: kvHandle.kv });
+
+    const params = { ...energyModelParamsRow() };
+    if (columnCurves !== undefined) params.stressCurves = columnCurves;
+
+    const agentSnapshot = {
+      agentId: "agent-1",
+      agentClassId: "class-composition",
+      tenantId: "tenant-a",
+      lat: ORIGIN.lat,
+      lon: ORIGIN.lon,
+      cellId: store.fineCellId,
+      lifecycleState: "ACTIVE",
+      energyModel: store.agent.agentClass.energyModel,
+      // The row, whole, exactly as `agentSnapshotLoaderFor` puts it on the snapshot.
+      energyModelParams: params,
+      energyCoefficients: require("../../src/engine/domain/mappers/decisionInputs").energyCoefficientsFrom(params),
+      kappa: 1,
+      soc: 0.9,
+      soh: 0.95,
+      containerModel: null,
+      ambientC: 20,
+      packC: 22,
+      commitments: [],
+      hardCommitmentCount: 0,
+    };
+
+    const leg = {
+      legId: "leg-1",
+      missionId: "mission-1",
+      role: "TERMINAL",
+      custodyState: "NONE",
+      purpose: "PRIMARY",
+      targetMs: DECISION_TIME_MS + 3_600_000,
+      deadlineMs: DECISION_TIME_MS + 3_600_000,
+      stops: store.leg.stops.map((stop) => ({ ...stop, cellId: solvePath.cellIdFor(stop) })),
+      manifests: [],
+    };
+
+    const hops = [1, 2].map(() => ({
+      distanceM: 800,
+      travelSeconds: 400,
+      travelSdSeconds: 20,
+      climbM: 6,
+      descentM: 3,
+      stopStartCycles: 4,
+    }));
+
+    const built = planBuilder.build(
+      solvePath.planInputFor({
+        agentSnapshot,
+        leg,
+        hops,
+        hopsForSequence: () => hops,
+        snapshot: context.snapshot,
+        scope: { sla_class: null },
+        decisionTimeMs: DECISION_TIME_MS,
+        seams: context,
+        slaClass: null,
+        queueAgeSeconds: 60,
+      }),
+    );
+    expect(built.ok).toBe(true);
+
+    const seams = { ...context };
+    if (omitSeam) {
+      delete seams.batteryWearInputsFor;
+    } else {
+      seams.batteryWearInputsFor = () => {
+        const mission = missionConditions();
+        return seamCurves === undefined ? mission : { ...mission, curves: seamCurves };
+      };
+    }
+
+    return solvePath.phiInputFor({
+      plan: built.plan,
+      snapshot: context.snapshot,
+      scope: { sla_class: null },
+      agentSnapshot,
+      leg,
+      decisionTimeMs: DECISION_TIME_MS,
+      seams,
+      correction: { ok: false },
+    });
+  }
+
+  test("the schema still declares the column this read path depends on", () => {
+    // A source-of-truth assertion, not a restatement. If `EnergyModelParams.stressCurves`
+    // is ever removed or renamed, the read path below silently stops finding anything and
+    // the family quietly reverts to "no column" — which is the state this test exists to
+    // make undeniable rather than arguable.
+    const schema = fs.readFileSync(path.join(__dirname, "..", "..", "prisma", "schema.prisma"), "utf8");
+    const model = schema.slice(schema.indexOf("model EnergyModelParams {"));
+    expect(model.slice(0, model.indexOf("\n}")).replace(/\s+/g, " ")).toMatch(/stressCurves\s+Json\?/);
+  });
+
+  test("with nothing supplying curves, the column supplies them — the defect, inverted", () => {
+    // The measured defect: this value was **loaded onto the snapshot and never read**.
+    // Before the fix `battery.curves` was `undefined` here even with the column populated.
+    const declared = energyFixture.stressCurves();
+    const phi = phiFor({ columnCurves: declared, seamCurves: undefined });
+
+    expect(phi.phiInput.lifecycle.battery.curves).toBe(declared);
+
+    // And it is *usable*: `wear.batteryWear` prices against it rather than naming it.
+    const priced = wear.batteryWear({
+      ...phi.phiInput.lifecycle.battery,
+      cuPerEquivalentCycle: 40,
+    });
+    expect(priced.missing).not.toContain("stressCurves");
+    expect(priced.ok).toBe(true);
+  });
+
+  test("an absent column stays absent — the refusal is unchanged, not softened", () => {
+    // The fail-closed half, and the one that matters most. A deployment that has not
+    // characterised its pack must get exactly the answer it got before: `batteryWear`
+    // names `stressCurves`. Nothing is defaulted, interpolated, or assumed flat.
+    const phi = phiFor({ columnCurves: null, seamCurves: undefined });
+
+    expect(phi.phiInput.lifecycle.battery.curves).toBeUndefined();
+
+    const priced = wear.batteryWear({
+      ...phi.phiInput.lifecycle.battery,
+      cuPerEquivalentCycle: 40,
+    });
+    expect(priced.ok).toBe(false);
+    expect(priced.missing).toContain("stressCurves");
+  });
+
+  test("a non-object column is not a curve set — it stays absent too", () => {
+    // `stressCurves` is `Json?`, so the column can legitimately hold a scalar or an array
+    // that is not a curve set. Passing one through would put a shape `evaluateCurve`
+    // cannot read where a refusal belongs.
+    const phi = phiFor({ columnCurves: "not-a-curve-set", seamCurves: undefined });
+    expect(phi.phiInput.lifecycle.battery.curves).toBeUndefined();
+  });
+
+  test("an injected seam value still wins over the column", () => {
+    // Precedence is stated in `batteryWearInputFor` and asserted here: the column fills a
+    // gap, it does not override a caller. Overriding an injected value would make every
+    // existing seam-driven test assert against a row it never named.
+    const seamCurves = energyFixture.stressCurves();
+    const phi = phiFor({ columnCurves: { calendarAgeing: [] }, seamCurves });
+    expect(phi.phiInput.lifecycle.battery.curves).toBe(seamCurves);
+  });
+
+  test("with no battery seam at all, the column is still read — and the mission half is still missing", () => {
+    // The production shape today: no `batteryWearInputsFor` is composed anywhere in
+    // `server.js`, so this is what the path would see. The curves resolve; `socThroughput`
+    // and `conditions` do not, and `batteryWear` names them.
+    //
+    // **This is why the requirement row stays declared and unsatisfied.** The family was
+    // narrowed by a read path, not closed by one, and a test that stopped at the curves
+    // would read as though it had been closed.
+    const phi = phiFor({ columnCurves: energyFixture.stressCurves(), omitSeam: true });
+
+    expect(phi.phiInput.lifecycle.battery.curves).toBeDefined();
+
+    const priced = wear.batteryWear({ ...phi.phiInput.lifecycle.battery, cuPerEquivalentCycle: 40 });
+    expect(priced.ok).toBe(false);
+    expect(priced.missing).toContain("socThroughput");
+    expect(priced.missing.some((name) => String(name).startsWith("condition."))).toBe(true);
+    expect(priced.missing).not.toContain("stressCurves");
+  });
+
+  test("the composition contract still declares `battery wear inputs (§14.4)` as unsatisfied", () => {
+    // The load-bearing negative. Reading one column must not remove a row from the
+    // coordinator's declared contract, and S-3's count must not fall because a comment was
+    // corrected. `batteryWearInputsFor` is still probed and still required.
+    const ids = pipeline.REQUIREMENT_IDS;
+    expect(ids).toContain("battery wear inputs (§14.4)");
+
+    const { context } = completeContext({ kv: kvHandle.kv });
+    const withoutSeam = { ...context };
+    delete withoutSeam.batteryWearInputsFor;
+    const missing = pipeline.requirements(withoutSeam).missing.map((row) => row.input);
+    expect(missing).toContain("battery wear inputs (§14.4)");
   });
 });
 

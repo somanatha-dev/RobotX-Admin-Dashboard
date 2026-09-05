@@ -576,6 +576,66 @@ function payloadFor(leg) {
 }
 
 /**
+ * §14.4's vendor stress curves, **from the column that declares them**.
+ *
+ * `energy/wear.js` names its own source in its parameter documentation — *"the pack's
+ * `stressCurves` from `EnergyModelParams`"* — and `prisma/schema.prisma` declares
+ * `EnergyModelParams.stressCurves` as *"the vendor cycle-life-versus-DoD curves §14.4
+ * prices wear from"*. `agentSnapshotLoaderFor` already loads that row whole and puts it on
+ * the snapshot as `energyModelParams`, so the value was **loaded and then not read**.
+ *
+ * That is the E-8b family of defect — a producer exists and the composition root does not
+ * use it — and it survived because the two places that state why this family has no
+ * producer both name the **wrong row**: `EnergyModel` carries `chargePowerCurve` and
+ * `thermalDeratingCurve` and indeed no wear curve, which is true and is not the question.
+ *
+ * **Nothing is derived, defaulted, or inferred here.** An absent or non-object column stays
+ * absent, `wear.batteryWear` then names `stressCurves`, and `cLifecycle` carries the
+ * refusal up as `battery.*` exactly as before. A deployment that has not characterised its
+ * pack gets the same answer it gets today; one that has, is no longer told the value has
+ * nowhere to live.
+ *
+ * @param {object} agentSnapshot
+ * @returns {object|null}
+ */
+function packStressCurvesFrom(agentSnapshot) {
+  const params = agentSnapshot && agentSnapshot.energyModelParams;
+  const curves = params && params.stressCurves;
+  return curves && typeof curves === "object" ? curves : null;
+}
+
+/**
+ * §14.4's battery-wear argument set: what the seam supplies, plus what a column carries.
+ *
+ * Precedence is **seam over column**, not the reverse, and that direction is deliberate:
+ * an explicitly injected `curves` is a caller stating what this evaluation is to be done
+ * against, and silently overriding it with a row would make an injected value untestable.
+ * The column fills only the gap — the case where nothing supplies curves at all, which is
+ * every production call today.
+ *
+ * The mission's `conditions` (`dod`, `socMid`, `tempC`, `cRate`) and its `socThroughput`
+ * are **not** filled from anywhere. No column carries them, `tempC` needs the environment
+ * family this contract also lists as absent, and deriving them here would be inventing the
+ * mission physics §14.4 prices. So this narrows the external requirement; it does not
+ * close it, and `battery wear inputs (§14.4)` remains a declared, unsatisfied input.
+ *
+ * @param {object} seams
+ * @param {object} agentSnapshot
+ * @param {object} plan
+ * @param {*} cuPerEquivalentCycle
+ * @returns {object}
+ */
+function batteryWearInputFor(seams, agentSnapshot, plan, cuPerEquivalentCycle) {
+  const supplied = isFunction(seams.batteryWearInputsFor) ? seams.batteryWearInputsFor(agentSnapshot, plan) : null;
+  const input = { ...(supplied || {}), cuPerEquivalentCycle };
+  if (input.curves === undefined || input.curves === null) {
+    const declared = packStressCurvesFrom(agentSnapshot);
+    if (declared) input.curves = declared;
+  }
+  return input;
+}
+
+/**
  * `Φ`'s per-plan argument set, assembled from the pinned snapshot, the plan, and the
  * injected seams.
  *
@@ -646,17 +706,24 @@ function phiInputFor(input) {
     lifecycle: {
       cuPerMetreWear: rates["cost.wear.cu_per_metre"],
       // §14.4's DoD-weighted battery cost. `energy/wear.batteryWear` needs the pack's
-      // stress curves and the mission's `{ dod, socMid, tempC, cRate }`, and **no schema
-      // column carries either**: `EnergyModel` holds `chargePowerCurve` and
-      // `thermalDeratingCurve` and no wear curve at all. Supplied by the injected seam or
-      // not at all — `batteryWear` then names `curves`/`conditions` and `cLifecycle`
-      // carries the refusal up as `battery.*`.
-      battery: isFunction(seams.batteryWearInputsFor)
-        ? {
-            ...seams.batteryWearInputsFor(agentSnapshot, plan),
-            cuPerEquivalentCycle: resolve(snapshot, "cost.battery.cu_per_equivalent_cycle", scope),
-          }
-        : { cuPerEquivalentCycle: resolve(snapshot, "cost.battery.cu_per_equivalent_cycle", scope) },
+      // stress curves, the mission's `{ dod, socMid, tempC, cRate }` and its SoC
+      // throughput.
+      //
+      // **Corrected 2026-09-05.** This block asserted that *"no schema column carries
+      // either"*, naming `EnergyModel`. That row does hold `chargePowerCurve` and
+      // `thermalDeratingCurve` and no wear curve — and it is the wrong row.
+      // `EnergyModelParams.stressCurves` is declared in the schema for exactly this
+      // purpose, `wear.js` names it as its own source, and `agentSnapshotLoaderFor` loads
+      // it. The curves were **loaded and not read**; they are read now
+      // (`batteryWearInputFor`). The `conditions` and `socThroughput` halves still have no
+      // column and no producer, so this family is narrowed and stays unsatisfied:
+      // `batteryWear` names what is missing and `cLifecycle` carries it up as `battery.*`.
+      battery: batteryWearInputFor(
+        seams,
+        agentSnapshot,
+        plan,
+        resolve(snapshot, "cost.battery.cu_per_equivalent_cycle", scope),
+      ),
       cuPerActuatorCycle: resolve(snapshot, "lifecycle.cu_per_actuator_cycle", scope),
       cuPerBrakingEvent: resolve(snapshot, "lifecycle.cu_per_braking_event", scope),
       gradientRate: rates["lifecycle.cu_per_gradient_metre"],

@@ -243,6 +243,58 @@ describe("the classes are the actionable part, and they are assigned correctly",
     expect(byId.get("route").why).toMatch(/climbM, descentM, stopStartCycles/);
   });
 
+  /**
+   * The gate's own refusal sentence said **four** no-producer families and named four, while
+   * the contract had carried **six** since §N.2 added the return-leg rate. A published count
+   * that has gone stale against the list standing beside it is this project's most-repeated
+   * defect, and `UNCOMPOSABLE.coordinator.blocker` is read by an operator and printed by
+   * `gate:composition` — so it is a false claim published by code, not by prose.
+   *
+   * The count is asserted **against the contract**, not restated, so the sentence cannot
+   * drift from the list again without this failing.
+   */
+  test("the composition refusal's no-producer count matches the contract it describes", () => {
+    const families = pipeline.REQUIREMENTS.filter(
+      (row) => row.class === pipeline.REQUIREMENT_CLASS.NO_PRODUCER,
+    ).map((row) => row.id);
+    expect(families.length).toBe(6);
+
+    const blocker = leaderWorkers.UNCOMPOSABLE.coordinator.blockedBy;
+    expect(blocker).toMatch(/\*\*six\*\* input families/);
+    expect(blocker).not.toMatch(/\*\*four\*\* input families/);
+    // Every family the contract declares is named, not just the ones that fit the sentence.
+    expect(blocker).toMatch(/environment\.ambientC/);
+    expect(blocker).toMatch(/masses\.vehicleMassKg/);
+    expect(blocker).toMatch(/p_fail/);
+    expect(blocker).toMatch(/route_hazard_cost/);
+    expect(blocker).toMatch(/return-leg Wh\/metre/);
+    expect(blocker).toMatch(/battery wear inputs/);
+  });
+
+  /**
+   * W-A5. The same sentence claimed all six families have **no schema column**. That is
+   * false of one: `EnergyModelParams.stressCurves` declares §14.4's vendor curves, and the
+   * agent-snapshot loader already put the row on the snapshot — the seam that priced wear
+   * named `EnergyModel`, a different table, and never looked.
+   *
+   * The row stays declared because its **mission** half genuinely has no column. This test
+   * pins both halves of that: the claim is gone, and the requirement is not.
+   */
+  test("the refusal no longer claims §14.4's vendor curves have no column — and the row still stands", () => {
+    const blocker = leaderWorkers.UNCOMPOSABLE.coordinator.blockedBy;
+    expect(blocker).not.toMatch(/six\*\* input families with \*\*no schema column/);
+    expect(blocker).toMatch(/EnergyModelParams\.stressCurves/);
+    expect(blocker).toMatch(/mission\*\* half/);
+
+    // The load-bearing negative: reading one column satisfied nothing.
+    expect(pipeline.REQUIREMENT_IDS).toContain("battery wear inputs (§14.4)");
+    const row = byId.get("battery wear inputs (§14.4)");
+    expect(row.class).toBe(pipeline.REQUIREMENT_CLASS.NO_PRODUCER);
+    expect(row.probe({})).toBe(false);
+    expect(row.why).toMatch(/EnergyModelParams\.stressCurves/);
+    expect(row.why).toMatch(/SoC throughput/);
+  });
+
   test("the Ω correction is checked rather than assumed, and fails closed without a snapshot", () => {
     // §6.4: a bound that omits a negative term is larger than the true cost, not smaller,
     // so pruning would discard cells containing the true optimum while the decision record

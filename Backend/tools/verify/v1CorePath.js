@@ -79,6 +79,32 @@ function step(name, ok, detail) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * The last `limit` characters of a captured stream, **and a statement of what was dropped**.
+ *
+ * W-A4. Every truncation in this file used to be silent, and one of them cost a measurement:
+ * the coordinator's refusal line is ~17 000 characters and the `MEASURED against this
+ * context — N of 34 inputs unresolved` clause it exists to capture begins past index 3 000,
+ * so a `.slice(0, 2400)` printed the preamble and dropped the answer on every run. The
+ * number had to be recovered by driving this file's own exported `seed`/`startServer` from
+ * a scratchpad.
+ *
+ * A harness that silently prints less than it measured reports a boundary it reached as a
+ * boundary it did not. So a tail is still a tail — an unbounded dump of a server's whole
+ * stdout is not a diagnostic — but it now says so, with the count, and the **decisive**
+ * diagnostic (the refusal lines themselves, `reportBoundary`) is not tailed at all.
+ *
+ * @param {string} text
+ * @param {number} limit
+ * @returns {string}
+ */
+function tail(text, limit) {
+  const source = String(text == null ? "" : text);
+  if (source.length <= limit) return source;
+  const dropped = source.length - limit;
+  return `[… ${dropped} of ${source.length} characters elided; this is the last ${limit} …]\n${source.slice(-limit)}`;
+}
+
+/**
  * The minimal world a V1 request needs to exist in — fleet and mission rows only.
  *
  * Every row here is one a real deployment holds in its own database. **No external input
@@ -330,7 +356,7 @@ async function main() {
 
     if (server.exited !== null || server.timedOut) {
       step("the real server.js process serves HTTP", false, server.exited !== null ? `exited ${server.exited}` : "timed out");
-      process.stdout.write(`\n--- server output ---\n${server.output().slice(-4000)}\n`);
+      process.stdout.write(`\n--- server output ---\n${tail(server.output(), 4000)}\n`);
       process.exitCode = 1;
       return;
     }
@@ -404,7 +430,7 @@ async function main() {
     process.exitCode = 0;
   } catch (error) {
     step("harness completed", false, error && error.message);
-    if (server) process.stdout.write(`\n--- server output ---\n${server.output().slice(-4000)}\n`);
+    if (server) process.stdout.write(`\n--- server output ---\n${tail(server.output(), 4000)}\n`);
     process.exitCode = 1;
   } finally {
     if (server && server.child && server.child.exitCode === null) server.child.kill();
@@ -448,15 +474,24 @@ function reportBoundary(status, parsed, serverOutput) {
     .split("\n")
     .filter((line) => line.includes("LEADER_ONLY worker NOT started") || line.includes("blockedBy"));
   if (refusals.length > 0) {
-    process.stdout.write("\n  S-3 — the coordinator's own composition, as this running process reported it:\n");
-    for (const line of refusals.slice(0, 12)) process.stdout.write(`    ${line.trim().slice(0, 2400)}\n`);
+    process.stdout.write(
+      `\n  S-3 — the coordinator's own composition, as this running process reported it` +
+        ` (${refusals.length} refusal line(s), each printed in full):\n`,
+    );
+    // **Printed whole, deliberately (W-A4).** This is the line the harness exists to
+    // capture — it carries `MEASURED against this context — N of 34 inputs unresolved`
+    // and then names every unresolved input by class. Every cap that used to stand here,
+    // on characters and on the number of lines, could drop exactly that clause without
+    // saying so. A long diagnostic is the correct output of a run whose whole purpose is
+    // to record a long diagnostic.
+    for (const line of refusals) process.stdout.write(`    ${line.trim()}\n`);
   } else {
     // Silence here is not "the coordinator composed". It means the run never reached a
     // promotion, and saying which is the difference between a measurement and a guess.
     process.stdout.write(
       "\n  S-3 — NOT OBSERVED in this run: no promotion was reported, so the LEADER_ONLY\n" +
         "  composers never ran and this process made no statement about the coordinator.\n" +
-        `\n--- server output (tail) ---\n${serverOutput.slice(-2500)}\n`,
+        `\n--- server output (tail) ---\n${tail(serverOutput, 2500)}\n`,
     );
   }
 }
@@ -465,4 +500,8 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { seed, startServer, waitForCommitment };
+// `reportBoundary` and `tail` are exported so that W-A4 — *"the harness prints the whole
+// refusal line"* — can be asserted without a live PostgreSQL. The defect they fix was
+// invisible to every existing test precisely because nothing could reach this file's
+// reporting without one.
+module.exports = { seed, startServer, waitForCommitment, reportBoundary, tail };

@@ -185,14 +185,22 @@ const UNCOMPOSABLE = Object.freeze({
       "invented travel times, which is worse than not assigning it. " +
       "**And the routing engine is not the whole of it** — `src/workers/coordinatorPipeline.js` enumerates the " +
       "full contract, including **fifteen** register entries that resolve to `null` by declaration and " +
-      "**four** input families with **no schema column and no producer anywhere in `src/`** " +
-      "(`environment.ambientC/packC`, `masses.vehicleMassKg`, `p_fail`, §14.4's battery wear inputs). Those " +
-      "last four are nobody's withheld decision; they are missing code against a data source nobody has named. " +
+      "**six** input families with no producer anywhere in `src/` (`environment.ambientC/packC`, " +
+      "`masses.vehicleMassKg`, `p_fail`, `route_hazard_cost`, the per-profile return-leg Wh/metre, and " +
+      "§14.4's battery wear inputs). Those six are nobody's withheld decision; they are missing code against " +
+      "a data source nobody has named. " +
       "*(E-8 moved terrain out of that group: §14.2 states climb, regeneration and stop-start over " +
       "the traversal, so the router is its producer and the `route` contract is six fields, not three. The V1 " +
       "composition then raised the register count from three to fifteen — not because the register changed, " +
       "but because writing the assembly walked past `planBuilder` into `cost/phi.evaluate`, where every " +
       "`C_direct`, `C_risk`, `C_lifecycle` and `C_delay` rate is its own refusal.)* " +
+      "*(Corrected 2026-09-05, twice over. This sentence said **four** families and named four, while the " +
+      "contract has carried six since §N.2 added the return-leg rate — the count had gone stale against the " +
+      "list standing beside it. It also said all of them have **no schema column**, which is false of one: " +
+      "`EnergyModelParams.stressCurves` declares §14.4's vendor curves, the coordinator already loaded that " +
+      "row, and the seam that priced wear named `EnergyModel` — a different table — and did not read it. " +
+      "The curves are read now; the family stays listed because its **mission** half (`socThroughput`, " +
+      "`dod`, `socMid`, `tempC`, `cRate`) genuinely has no column and no producer.)* " +
       "Run the probe for the current list.",
   }),
 });

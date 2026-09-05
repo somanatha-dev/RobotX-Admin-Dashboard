@@ -461,12 +461,21 @@ const REQUIREMENTS = Object.freeze([
     owner: "Engineering + the pack manufacturer's characterisation",
     why:
       "§14.4's DoD-weighted battery cost. `energy/wear.batteryWear` refuses without the pack's stress " +
-      "`curves` and the mission's `conditions` (`dod`, `socMid`, `tempC`, `cRate`), and `cost/cLifecycle` " +
-      "carries that refusal up as `battery.*` — so **no candidate is priceable** without them. `EnergyModel` " +
-      "carries `chargePowerCurve` and `thermalDeratingCurve` and **no wear curve at all**, and nothing in " +
-      "`src/` computes a mission's SoC throughput or C-rate.\n" +
+      "`curves`, the mission's `conditions` (`dod`, `socMid`, `tempC`, `cRate`) and its `socThroughput`, and " +
+      "`cost/cLifecycle` carries that refusal up as `battery.*` — so **no candidate is priceable** without " +
+      "them. **The `curves` half has a column and is no longer part of this shortfall**: " +
+      "`EnergyModelParams.stressCurves` is declared as *\"the vendor cycle-life-versus-DoD curves §14.4 " +
+      "prices wear from\"*, `agentSnapshotLoaderFor` loads that row, and `coordinatorSolvePath` reads it. " +
+      "What has no column and no producer is the **mission** half: nothing in `src/` computes a mission's " +
+      "SoC throughput, DoD, mid-SoC or C-rate, and `tempC` is the `environment.ambientC / packC` family " +
+      "above. So a deployment supplies vendor characterisation *into a column*, and the mission quantities " +
+      "still have nowhere to come from.\n" +
       "*(New at the V1 composition, 2026-09-04. `cLifecycle` is one seam past `planBuilder`, which is where " +
-      "every earlier audit of this contract stopped.)*",
+      "every earlier audit of this contract stopped. **Corrected 2026-09-05**: this row said `EnergyModel` " +
+      "carries \"no wear curve at all\", which is true of `EnergyModel` and was the wrong row — the curves " +
+      "were loaded onto the agent snapshot and then not read, which is the E-8b defect family. The row " +
+      "stays declared and unsatisfied because its mission half is genuinely absent, not because the whole " +
+      "of it is.)*",
     probe: (context) => isFunction(context.batteryWearInputsFor),
   },
 
