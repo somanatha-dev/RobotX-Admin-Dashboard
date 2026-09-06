@@ -2111,6 +2111,291 @@ describe("G — §14.4's stress curves are read from the column that declares th
   });
 });
 
+describe("G — two AgentClass columns the snapshot mapper dropped (N-2)", () => {
+  async function snapshotFor(agentClassOverrides) {
+    const { context, store } = completeContext({ kv: kvHandle.kv });
+    Object.assign(store.agent.agentClass, agentClassOverrides || {});
+    return solvePath.agentSnapshotLoaderFor(context)("agent-1");
+  }
+
+  test("`firmwareVersionSet` reaches F5 as `supportedFirmwareByMissionType`", async () => {
+    // The column F5 names in its own refusal — "the agent class's firmwareVersionSet".
+    const set = { DELIVERY: ["2.4.1", "2.4.2"] };
+    const snapshot = await snapshotFor({ firmwareVersionSet: set });
+    expect(snapshot.supportedFirmwareByMissionType).toEqual(set);
+  });
+
+  test("`hardwareRevision` reaches F12's advisory matcher", async () => {
+    const snapshot = await snapshotFor({ hardwareRevision: "rev-C" });
+    expect(snapshot.hardwareRevision).toBe("rev-C");
+  });
+
+  test("an undeclared column stays absent — nothing is defaulted or inferred", async () => {
+    // The fixture's AgentClass declares neither, which is what this deployment has. A
+    // fabricated empty object would be a *different and false* claim: F5 reads `{}` as
+    // "the class declares no supported set for this mission type", which is an
+    // INDETERMINATE about a qualification act, not an ABSENT about a missing column.
+    //
+    // An undeclared column reaches the snapshot as `undefined` and a declared-null one as
+    // `null`; both are absent to the predicates, and the assertion covers the pair rather
+    // than pinning whichever the fixture happens to produce.
+    const snapshot = await snapshotFor();
+    expect([null, undefined]).toContain(snapshot.supportedFirmwareByMissionType);
+    expect([null, undefined]).toContain(snapshot.hardwareRevision);
+
+    const nulled = await snapshotFor({ firmwareVersionSet: null, hardwareRevision: null });
+    expect(nulled.supportedFirmwareByMissionType).toBeNull();
+    expect(nulled.hardwareRevision).toBeNull();
+  });
+
+  test("the value passes through unshaped — F5 owns the shape check, not the mapper", async () => {
+    // Deliberate: F5 answers `absent` for a non-object, `indeterminate` for a non-array
+    // member, and `indeterminate` for an unlisted mission type — three different verdicts a
+    // mapper that "normalised" the column would collapse into one.
+    const malformed = "2.4.1";
+    const snapshot = await snapshotFor({ firmwareVersionSet: malformed });
+    expect(snapshot.supportedFirmwareByMissionType).toBe(malformed);
+
+    const f05 = require("../../src/engine/feasibility/predicates/f05");
+    const verdict = f05.evaluate({
+      agentSnapshot: { ...snapshot, firmwareVersion: "2.4.1" },
+      mission: { missionType: "DELIVERY" },
+    });
+    expect(verdict.outcome).toBe("INDETERMINATE");
+    expect(verdict.reason).toMatch(/the agent class.s firmwareVersionSet is absent/);
+  });
+
+  test("F5 still denies, because the attested firmware version has no read path", async () => {
+    // The load-bearing negative. Supplying the class's supported set does NOT make F5
+    // admit: it reads `agent.firmwareVersion` first, and that comes from a verified
+    // `CapabilityAttestation` this loader does not query (N-2's recorded bucket-(a) item).
+    // A test that only asserted the two new fields would let a reader conclude F5 was
+    // closed.
+    const snapshot = await snapshotFor({ firmwareVersionSet: { DELIVERY: ["2.4.1"] } });
+    expect(snapshot.firmwareVersion).toBeUndefined();
+
+    const f05 = require("../../src/engine/feasibility/predicates/f05");
+    const verdict = f05.evaluate({ agentSnapshot: snapshot, mission: { missionType: "DELIVERY" } });
+    expect(verdict.outcome).toBe("INDETERMINATE");
+    expect(verdict.reason).toMatch(/attested firmware version is absent/);
+  });
+});
+
+describe("G — §14.6's target SoC is resolved by its owner's client (N-1)", () => {
+  const schedulerClient = require("../../src/engine/energy/chargingSchedulerClient");
+
+  /** The scope the composition root builds for this resolver — `agent_class` included. */
+  const SCOPE = { sla_class: null, agent_class: "class-composition" };
+
+  function resolveWith(agentSnapshot, extras) {
+    const { context } = completeContext({ kv: kvHandle.kv });
+    return solvePath.targetSocFor({
+      agentSnapshot,
+      snapshot: extras && extras.snapshot ? extras.snapshot : context.snapshot,
+      scope: SCOPE,
+      decisionTimeMs: DECISION_TIME_MS,
+    });
+  }
+
+  test("both register rows the resolver reads resolve on the PUBLISHED register", () => {
+    // Not on an override map. The refusal `planBuilder.insertChargingStop` printed before
+    // this fix said "neither a published target nor the class fallback resolved"; the
+    // second half of that sentence was false about the shipped register, and this is the
+    // assertion that keeps it false-if-it-ever-returns.
+    const published = service.defaultSnapshot();
+    expect(published.resolve("energy.target_soc_max_age", { region: "r1" })).toBe(300);
+    expect(published.resolve("energy.target_soc_fallback", { agent_class: "class-composition" })).toBe(0.8);
+  });
+
+  test("a fresh published target is consumed, with SCHEDULER provenance", () => {
+    const result = resolveWith({
+      agentId: "agent-1",
+      reservations: [{ subsystem: "CHARGING", targetSoc: 0.85, publishedAtMs: DECISION_TIME_MS - 60_000 }],
+    });
+
+    expect(result.targetSoc).toBe(0.85);
+    expect(result.targetSocSource).toBe(schedulerClient.TARGET_SOC_SOURCE.SCHEDULER);
+    expect(result.problems).toEqual([]);
+    // The value is the Scheduler's, unrounded and unadjusted. §14.6's whole point.
+    expect(schedulerClient.assertNotEngineComputed(result.targetSocSource).ok).toBe(true);
+  });
+
+  test("a published target older than energy.target_soc_max_age is not consumed", () => {
+    const result = resolveWith({
+      agentId: "agent-1",
+      reservations: [{ subsystem: "CHARGING", targetSoc: 0.85, publishedAtMs: DECISION_TIME_MS - 600_000 }],
+    });
+    expect(result.targetSoc).toBeUndefined();
+  });
+
+  test("a target with no publication time is not consumed — age cannot be assumed", () => {
+    // The shape `consumeReservations` produces carries no publication time. Attributing the
+    // pinned projection's time to a reservation would assert a freshness nobody measured,
+    // and in the permissive direction: it would make a stale target look current.
+    const result = resolveWith({
+      agentId: "agent-1",
+      reservations: [{ subsystem: "CHARGING", targetSoc: 0.85, from: new Date(DECISION_TIME_MS), until: new Date(DECISION_TIME_MS + 1000) }],
+    });
+    expect(result.targetSoc).toBeUndefined();
+  });
+
+  test("two reservations stating different targets are refused, not reconciled", () => {
+    const result = resolveWith({
+      agentId: "agent-1",
+      reservations: [
+        { subsystem: "CHARGING", targetSoc: 0.85, publishedAtMs: DECISION_TIME_MS - 1000 },
+        { subsystem: "CHARGING", targetSoc: 0.7, publishedAtMs: DECISION_TIME_MS - 1000 },
+      ],
+    });
+    expect(result.targetSoc).toBeUndefined();
+    expect(result.problems.join(" ")).toMatch(/different target states of charge/);
+    // Neither value is picked, and the refusal names both.
+    expect(result.problems.join(" ")).toMatch(/0\.85/);
+    expect(result.problems.join(" ")).toMatch(/0\.7/);
+  });
+
+  test("a reservation held by another subsystem is not a charging target", () => {
+    const result = resolveWith({
+      agentId: "agent-1",
+      reservations: [{ subsystem: "MAINTENANCE", targetSoc: 0.9, publishedAtMs: DECISION_TIME_MS - 1000 }],
+    });
+    expect(result.targetSoc).toBeUndefined();
+  });
+
+  test("§14.7's class-default substitution is DECLINED by name, not taken silently", () => {
+    // The load-bearing negative of this block. The substitution is lawful under §14.6 only
+    // where it is recorded as a degradation flag on every affected decision, and this
+    // composition root supplies no per-Leg degradation context to `decisionRecord`. The
+    // refusal must say so, and must name the value it is declining — a refusal that hid the
+    // available value would be indistinguishable from the parameter being unresolved.
+    const result = resolveWith({ agentId: "agent-1" });
+
+    expect(result.targetSoc).toBeUndefined();
+    expect(result.targetSocSource).toBeUndefined();
+    expect(result.problems).toHaveLength(1);
+    expect(result.problems[0]).toContain("TARGET_SOC_CLASS_DEFAULT");
+    expect(result.problems[0]).toContain("0.8");
+    expect(result.problems[0]).toMatch(/degradation flag on every affected decision/);
+  });
+
+  test("the channel the declined flag would need genuinely has no producer", () => {
+    // Measured, not asserted from the comment above it.
+    //
+    // `decisionRecord.writeRound` reads per-Leg degradations out of
+    // `context.perLeg[legId].degradations`. The two workers that call it forward whatever
+    // their own caller passed and construct nothing, and the composition root — the only
+    // place that *sees* a degradation, because it is where the resolver runs — never
+    // mentions `perLeg` at all. So the flag has nowhere to go.
+    //
+    // Scoped to these three files deliberately: `solve/round.js` and `cost/cDelay.js` have
+    // their own unrelated `perLeg` locals (a per-Leg outcome list and a per-Leg cost
+    // breakdown), and a repository-wide text search would match those and prove nothing.
+    // If a real producer is ever added here, this test fails and the decline above must be
+    // revisited — which is the point of pinning it.
+    const fs = require("fs");
+    const pathMod = require("path");
+    const read = (relative) => fs.readFileSync(pathMod.join(__dirname, "../../src", relative), "utf8");
+
+    // Pass-through only: the value forwarded is the caller's own input, never assembled.
+    expect(read("workers/coordinator.worker.js")).toMatch(/perLeg:\s*input\.perLeg\s*\|\|\s*\{\}/);
+    expect(read("workers/shadow.worker.js")).toMatch(/perLeg:\s*source\.perLeg\s*\|\|\s*\{\}/);
+
+    // And the composition root, which is where a degradation is actually observed,
+    // constructs no such property. (It *names* the channel, in the prose explaining why the
+    // substitution is declined — so the assertion is on a `perLeg:` binding, not on the
+    // word, and it would fail the moment one were written.)
+    expect(read("workers/coordinatorSolvePath.js")).not.toMatch(/perLeg\s*:/);
+  });
+
+  test("the composition root supplies these two fields, which no caller used to set", () => {
+    // The defect itself: `planInputFor` read `input.targetSoc` and `input.targetSocSource`
+    // and nothing set them, so `insertChargingStop` refused on every plan that needed a
+    // charge. The seam is asserted rather than the wiring narrated.
+    const { context, store } = completeContext({ kv: kvHandle.kv });
+    const built = solvePath.planInputFor({
+      agentSnapshot: { agentId: "agent-1", soc: 0.4, packC: 22, energyModel: null },
+      leg: { legId: "leg-1", stops: store.leg.stops, manifests: [] },
+      hops: [],
+      hopsForSequence: () => null,
+      snapshot: context.snapshot,
+      scope: SCOPE,
+      decisionTimeMs: DECISION_TIME_MS,
+      seams: context,
+      targetSoc: 0.85,
+      targetSocSource: schedulerClient.TARGET_SOC_SOURCE.SCHEDULER,
+    });
+
+    expect(built.charging.targetSoc).toBe(0.85);
+    expect(built.charging.targetSocSource).toBe(schedulerClient.TARGET_SOC_SOURCE.SCHEDULER);
+  });
+
+  test("the REAL evaluateExact consults the resolver and carries its answer to the Plan Builder", async () => {
+    // The wiring itself, through the production path rather than through a direct call.
+    // Without this, a mutant that deletes the two fields from the `planInputFor` call site
+    // survives every other test in this block, because the unit-level tests exercise
+    // `targetSocFor` and `planInputFor` separately and nothing joins them.
+    const route = declaredRouter();
+    const { context, store } = completeContext({
+      kv: kvHandle.kv,
+      route,
+      context: { timeBucket: "test-bucket-target-soc" },
+    });
+    const assembly = solvePath.create(context);
+    await kvHandle.kv.sadd(availabilityIndex.fineKey(SHARD_ID, store.fineCellId, "IDLE_READY"), "agent-row-1");
+
+    // The Scheduler's answer, injected at the module that owns the question. The resolver's
+    // own behaviour is asserted above; what is under test here is that the composition root
+    // asks it and uses what it says.
+    const resolveSpy = jest.spyOn(schedulerClient, "resolveTargetSoc").mockReturnValue({
+      ok: true,
+      targetSoc: 0.85,
+      source: schedulerClient.TARGET_SOC_SOURCE.SCHEDULER,
+      degradationFlag: null,
+      reason: null,
+    });
+    const buildSpy = jest.spyOn(planBuilder, "build");
+
+    try {
+      await assembly.deps.expandCandidates({
+        legId: "leg-1",
+        shardId: SHARD_ID,
+        decisionTimeMs: DECISION_TIME_MS,
+        slaClass: null,
+        queueAgeSeconds: 60,
+      });
+
+      expect(resolveSpy).toHaveBeenCalled();
+      const asked = resolveSpy.mock.calls[0][0];
+      // The round's pinned time, never a clock read — the same rule every other input on
+      // this path obeys.
+      expect(asked.decisionTimeMs).toBe(DECISION_TIME_MS);
+      // Read from the register, not restated in the composition root.
+      expect(asked.maxAgeSeconds).toBe(300);
+      expect(asked.classFallback).toBe(0.8);
+      // This deployment's agent snapshot carries no reservations at all (see the §7.5
+      // inventory block above), so there is no published target to be fresh.
+      expect(asked.publishedTargetSoc).toBeNull();
+
+      expect(buildSpy).toHaveBeenCalled();
+      const planInput = buildSpy.mock.calls[0][0];
+      expect(planInput.charging.targetSoc).toBe(0.85);
+      expect(planInput.charging.targetSocSource).toBe(schedulerClient.TARGET_SOC_SOURCE.SCHEDULER);
+    } finally {
+      resolveSpy.mockRestore();
+      buildSpy.mockRestore();
+    }
+  });
+
+  test("targetSoc is NOT a 35th declared requirement, and must not become one", () => {
+    // It is F35's blind spot again (§5.6.6): the dependency it needs — `prisma` — is
+    // satisfied, and what is absent is *data inside* it. A dependency probe cannot see an
+    // empty table at any depth of walk, so registering a row would be adding a requirement
+    // the probe can never report on.
+    expect(pipeline.REQUIREMENT_IDS).toHaveLength(34);
+    expect(pipeline.REQUIREMENT_IDS.filter((id) => /soc|target/i.test(id))).toEqual([]);
+  });
+});
+
 /* ═══════════════════════════════════════════════════════════════════════════
    E — NO FALSE END-TO-END CLAIM
    ═══════════════════════════════════════════════════════════════════════════ */

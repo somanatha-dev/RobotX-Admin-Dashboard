@@ -1722,3 +1722,111 @@ behind it.
 > independently of the charger and independently of the second Safety approver.
 >
 > **TRUTH > GREEN.**
+
+---
+
+## 13. The three answers, and what they change
+
+> **§12 is NOT edited.** This file's own convention is that **a correction sits beside the record,
+> not on top of it** — the mechanism §3.6 and §11 already use — so §12 stands exactly as written on
+> 2026-09-05 and every correction to it lives here. Where §12 and §13 disagree, **§13 governs and
+> §12 is the record of what was believed before the answers arrived.**
+
+### 13.1 The answers
+
+FD-1, FD-2 and FD-3 were asked at §12.8. All three are answered.
+
+| | Question | Answer |
+|---|---|---|
+| **FD-1** | What is V1's agent? | **A** — accept that V1 stops at S-5 until hardware exists. The V1 contract is unchanged, a real commissioned physical agent is required for S-6, and RobotX hardware is in active development |
+| **FD-2** | RQ-2, the charger | **YES** — one real plug-in location will be provided. **NOT YET SUPPLIED.** This is an authorisation, not a supply |
+| **FD-3** | RQ-5, the second person | **NO FOR NOW** — there is no second Safety approver, and there is to be no self-approval. **Satisfiable later by one named person** |
+
+**They are recorded, for signature, in
+[`docs/release-decisions/RD-2026-09-05-02-v1-agent-boundary-and-simulation-track.md`](../release-decisions/RD-2026-09-05-02-v1-agent-boundary-and-simulation-track.md).**
+That record is the decision; this section is the reconciliation of this file to it. **It is
+drafted and unsigned**, and until the owner completes its author and date fields it does not
+satisfy S-3's own closure requirement.
+
+### 13.2 Correction to §12.8 option A — **"S-3 closes as far as one person can take it" is wrong**
+
+Option A's text, as offered at §12.8 and as accepted, contains one clause that does not survive
+contact with the contract:
+
+> *"S-1, S-2, S-5 and S-8 close; **S-3 closes as far as one person can take it**; S-4, S-6 and S-7
+> are recorded as awaiting hardware…"*
+
+**S-3 does not close at all, to any degree.** It is a single stop condition over **28** inputs
+(§5.4 of `V1_IMPLEMENTATION_CONTROL.md`), and §I.2 admits no partial satisfaction of any of the
+eight. What one person can supply today is **13 provisional cost values** (§11.7) plus, once
+FD-2's location is named, the charger and its return-leg rate — and even the most favourable
+reading of that leaves **13 of 28 rows plus 3 owner decisions supplied and S-3 NOT MET.**
+
+**Why the phrasing matters rather than being a quibble.** "Closes as far as one person can take
+it" is the exact shape of sentence this programme has recorded going wrong six times: a partial
+quantity stated in the vocabulary of a completed one. A future reader summarising option A would
+carry "S-3 closed (partially)" forward, and one summary later that becomes "S-3 closed". **S-3 is
+NOT MET, and supplying 13 rows leaves it NOT MET.**
+
+The rest of option A stands unamended, including its concluding clause — that awaiting hardware is
+*"a true and defensible state to be in"* — which this section does not weaken.
+
+### 13.3 §12.9's execution order, re-derived under the three answers
+
+**§12.9 is not edited.** Its ordering was derived before the answers existed and remains the record
+of that derivation. The order that governs now is §11 of the approved decision plan, and the
+material differences are these:
+
+| Change | Detail |
+|---|---|
+| **Steps 1–3 are promoted** | Recording the decisions, **N-1** (`targetSoc`) and **N-2** (the §7.5 nineteen-field inventory) now come first. All three need nothing from anyone, and §12.9 placed none of them in its first three positions because none of them existed as a named item when it was written |
+| **§12.9 step 5 is stood down** | *"Obtain and deploy a self-hosted traversal engine"* — §12.7 already named it the most expensive prerequisite on the list, and under FD-1 = A it buys progress toward conditions that cannot close until hardware exists. It is not cancelled; it is **not next** |
+| **§12.9 step 7 is stood down** | *"Supply the specification data — mass, container geometry, CoG, mobility columns, environmental envelope, pack curves, energy model, ambient source, reliability basis, hazard source"* — the same reasoning, and §12.7's own first row says so: collect them when the answers are in, not before |
+| **§12.9 step 10 is stood down** | *"The §7.5 agent-record programme"* — explicitly **blocked on FD-1**, and FD-1 = A means blocked on hardware. §13.5 carries it onto the sheets rather than leaving it unlisted |
+| **What replaces them at the front** | §11 steps 5 and 6 for the owner (the charger location **and** its rate, both or neither; and the 13 provisional values), then S5-2…S5-4, then the V1-ENG simulation track (SIM-1…SIM-5), which discharges no stop condition |
+
+### 13.4 §12.10's hard boundary is **DISCHARGED**
+
+§12.10 set one condition and it is met:
+
+> *"The earliest legitimate point to begin collecting is the moment FD-1, FD-2 and FD-3 are
+> answered, and not one item before."*
+
+**All three are answered, so collection may begin — for a strictly bounded set.**
+
+| May be collected now | May **NOT** be collected now |
+|---|---|
+| **A13** — the depot charger: a place, a region, `isDepot` | Every **hardware-gated** row (§13.5). Collecting them closes rows that lead nowhere until RobotX exists |
+| **A14** — the per-profile return-leg Wh/metre. **A13 and A14 together, both or neither** — the estate and the rate are one supply act (§11.4, §N.2) | The traversal source and its five routing rows — stood down by §13.3 |
+| **P5** — the 13 provisional cost values, sole named author, one config version. §12.10's own named exception, unchanged: they need no second person, no hardware, no engine and no deployment | The specification data of §12.9 step 7 — stood down by §13.3 |
+
+**§12.10's exception is not widened by this section.** P5 was always collectible; what has changed
+is that A13 and A14 join it, because FD-2 = YES is the authorisation §12.10 was waiting on.
+
+### 13.5 §12.6's §7.5 finding is carried onto the owner sheets
+
+§12.6 established that S-6's real prerequisite is a physical robot and an operating control plane,
+and recorded that **this requirement is on none of the owner-facing lists**. That was the finding
+that decided the verdict, and leaving it unlisted is the defect §12.6 itself named — *"what never
+happened is that conclusion being carried onto the sheets the owner is asked to fill in."*
+
+**It is carried now.** The nineteen §7.5 agent-record fields were inventoried field by field
+against `prisma/schema.prisma` and `src/` on 2026-09-05 and the result is
+`V1_IMPLEMENTATION_CONTROL.md` **§9.2**. Every row of that inventory that is not a repository
+defect is to appear on `V1_OWNER_ACTION_CHECKLIST.md` marked **"awaiting hardware (FD-1 = A) — do
+not collect"**, rather than being absent from it.
+
+**Two measured corrections to §12.6, recorded here because §12.6 is not edited:**
+
+1. **§12.6's list is right about the schema and understates the read paths.** Two of the nineteen —
+   `supportedFirmwareByMissionType` and `hardwareRevision` — were **columns that already existed**
+   on the `AgentClass` row the composition root already fetched, dropped by the snapshot mapper.
+   They were repository defects, not owner inputs, and they are fixed. **They never belonged on an
+   owner sheet.**
+2. **`AgentCertificate` and `CapabilityAttestation` do not have live producers.** The writer
+   functions exist and **nothing in `src/` calls them**. So the attested-firmware family is a data
+   gap behind hardware, not a read path anyone can write today — and any sheet that listed it as
+   collectible would be asking for something that has nowhere to be stored.
+
+**Nothing in this section closes a stop condition, changes a count, or moves a gate. The score is
+3 of 8.**

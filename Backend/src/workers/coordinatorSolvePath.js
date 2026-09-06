@@ -108,6 +108,18 @@ const COMMITTED_LEG_STATE = legMachine.LEG_STATE.OFFERED;
  */
 const READY_AVAILABILITY_CLASSES = expansion.READY_CLASSES;
 
+/**
+ * The reservation subsystem that owns a target state of charge (§14.6).
+ *
+ * Written as a literal rather than imported: `feasibility/predicates/f18.js` exports
+ * `RESERVING_SUBSYSTEM` and `energy/chargingSchedulerClient.consumeReservations` stamps
+ * the same label at `:213`, but no worker in this repository requires a predicate module
+ * and adding the first such edge to satisfy one string would change the module graph
+ * `gate:tiers` measures. The two producers are named here so a rename is greppable.
+ * @structural §7.5 F18's own subsystem label, as `consumeReservations` writes it
+ */
+const CHARGING_SUBSYSTEM = "CHARGING";
+
 /** Why an assembled collaborator refused. @structural the assembly's refusal taxonomy */
 const REFUSAL = Object.freeze({
   /** A declared input from `coordinatorPipeline` did not resolve in this context. */
@@ -368,6 +380,32 @@ function agentSnapshotLoaderFor(context) {
         : null,
       containerModel: agentClass ? agentClass.containerModel : null,
       capabilityBundle: agentClass ? agentClass.capabilityBundle : null,
+
+      // ── Two AgentClass columns the mapper dropped (N-2) ────────────────────
+      //
+      // The same defect §M.4 found on `MobilityModel` and W-A5 found on
+      // `EnergyModelParams.stressCurves`, at a third row: the loader already fetches
+      // `AgentClass` and two of its declared columns never reached the snapshot.
+      //
+      // `AgentClass.firmwareVersionSet` (`prisma/schema.prisma:1121`) is what F5 reads.
+      // The predicate names the column in its own refusal — *"the agent class's
+      // firmwareVersionSet"* (`predicates/f05.js:73-79`) — and validates the shape itself:
+      // a non-object is `absent`, a non-array member is `indeterminate`, and an unlisted
+      // mission type is *"not an unrestricted one"*. So the column is passed through
+      // exactly as declared and no shape is asserted here.
+      //
+      // `AgentClass.hardwareRevision` (`:1120`) is what F12 matches a hardware-scoped
+      // advisory against (`predicates/f12.js:53`). Absent, an advisory keyed by hardware
+      // revision matches nothing and does so **silently**, which is the permissive
+      // direction for a predicate whose whole purpose is to withhold an agent.
+      //
+      // **A divergence recorded rather than resolved.** `security/attestation.js:95-112`
+      // signs a manifest carrying a *per-device* `hardwareRevision`, so a device's attested
+      // revision and its class's declared one are two different facts. The class column is
+      // the control plane's own statement and is the only one on a row this loader reads;
+      // reconciling the two is the attestation read path N-2 records and does not build.
+      supportedFirmwareByMissionType: agentClass ? agentClass.firmwareVersionSet : null,
+      hardwareRevision: agentClass ? agentClass.hardwareRevision : null,
 
       energyModel: agentClass ? agentClass.energyModel : null,
       energyModelParams: params,
@@ -794,6 +832,145 @@ async function pinnedChargerProjection(context) {
 }
 
 /**
+ * The Charging Scheduler's published target for this agent, as the agent snapshot carries
+ * it — **read, never chosen.**
+ *
+ * `feasibility/predicates/f18.js:80` reads reservations off the agent snapshot as
+ * `agent.reservations`, and `chargingSchedulerClient.consumeReservations` is what shapes
+ * them; each carries the Scheduler's `targetSoc` "carried through untouched"
+ * (`chargingSchedulerClient.js:218-219`).
+ *
+ * **Two things this deliberately does not do.**
+ *
+ *  1. It does not pick between disagreeing targets. `assertNotEngineComputed`'s own
+ *     docstring names the failure it exists to prevent — *"both implement it and the
+ *     fleet receives two different target values for the same agent"* — so a reservation
+ *     set stating more than one distinct target is refused by name rather than resolved
+ *     by taking the first.
+ *  2. It does not synthesise a publication time. §14.6's `energy.target_soc_max_age` test
+ *     is a test on the target's **age**, and the round holds no publication time for a
+ *     reservation: the shape `consumeReservations` produces carries `from`, `until` and
+ *     `targetSoc` and no `publishedAtMs`. Attributing the pinned projection's publication
+ *     time to a reservation would be asserting a freshness nobody measured, and in the
+ *     permissive direction. Absent, `resolveTargetSoc` correctly finds nothing fresh.
+ *
+ * @param {object} agentSnapshot
+ * @returns {{ targetSoc: number|null, publishedAtMs: number|null, problems: string[] }}
+ */
+function publishedTargetSocFrom(agentSnapshot) {
+  const reservations = agentSnapshot && agentSnapshot.reservations;
+  if (!Array.isArray(reservations)) return { targetSoc: null, publishedAtMs: null, problems: [] };
+
+  const targets = [];
+  let publishedAtMs = null;
+  for (const reservation of reservations) {
+    if (!reservation || reservation.subsystem !== CHARGING_SUBSYSTEM) continue;
+    if (!isNumber(reservation.targetSoc)) continue;
+    if (!targets.includes(reservation.targetSoc)) targets.push(reservation.targetSoc);
+    if (publishedAtMs === null && isNumber(reservation.publishedAtMs)) publishedAtMs = reservation.publishedAtMs;
+  }
+
+  if (targets.length > 1) {
+    return {
+      targetSoc: null,
+      publishedAtMs: null,
+      problems: [
+        `the agent's charging reservations state ${targets.length} different target states of charge ` +
+          `(${targets.join(", ")}). §14.6 gives one owner to the target; two published values for one ` +
+          "agent are the conflict that ownership exists to prevent, and the engine does not choose between them",
+      ],
+    };
+  }
+
+  return { targetSoc: targets.length === 1 ? targets[0] : null, publishedAtMs, problems: [] };
+}
+
+/**
+ * §14.6's target state of charge, resolved by **the Charging Scheduler's own client** and
+ * never by this composition root.
+ *
+ * ── What was missing ───────────────────────────────────────────────────────
+ * `chargingSchedulerClient.resolveTargetSoc()` is the shipped resolver for this question.
+ * It was exported and unit-tested and **called from nowhere in `src/`**: `planInputFor`
+ * read `input.targetSoc` and `input.targetSocSource`, and no caller set either. So
+ * `plan/planBuilder.insertChargingStop` refused every insertion at `planBuilder.js:619-635`
+ * with a sentence reading *"with neither a published target nor the class fallback
+ * resolved"* — while on the published register `energy.target_soc_fallback` resolves to
+ * `0.8` and `energy.target_soc_max_age` to `300`. The refusal was true about the outcome
+ * and **false about the attempt**, because no attempt was made. This is the E-8b family
+ * for the fifth time: *a producer exists and the composition root does not use it*.
+ *
+ * ── Two lawful outcomes, and why only one is taken here ────────────────────
+ * §14.6 admits exactly two: the Scheduler's published target, and §14.7's pre-declared
+ * `TARGET_SOC_CLASS_DEFAULT` substitution. The substitution is lawful **only** on the
+ * condition the resolver states with it — *"records the substitution as a degradation flag
+ * on every affected decision"* — and it returns the flag, in its own words, *"so the
+ * caller attaches it, rather than logged here where a decision record would never see
+ * it."*
+ *
+ * **This composition root has nowhere to attach it, and that was measured rather than
+ * assumed.** The channel a decision record reads is
+ * `decisionRecord.writeRound`'s `context.perLeg[legId].degradations`
+ * (`observability/decisionRecord.js:574`, consumed by `sampling.classifyExemption`);
+ * `coordinator.worker.recordRound` passes `input.perLeg` straight through
+ * (`coordinator.worker.js:396`) and **nothing in this repository supplies it**. Tier A's
+ * `degradation` section carries dependencies, envelope reductions, relaxations, shard
+ * modes and kill switches (`observability/tierA.js:485-495`) — not a per-decision flag
+ * list.
+ *
+ * So the substitution is **declined by name** rather than taken unrecorded. That keeps
+ * today's behaviour exactly — no charging stop is planned — and replaces a refusal that
+ * misdescribed the register with one that names what is actually absent. Taking it would
+ * be a permissive change that dropped a flag §14.6 requires, which is E-1's
+ * `achievedGapProven` defect in a new place.
+ *
+ * @param {object} input
+ * @param {object} input.agentSnapshot
+ * @param {object} input.snapshot the round's pinned configuration snapshot
+ * @param {object} input.scope **must carry `agent_class`** — see below
+ * @param {number} input.decisionTimeMs the round's pinned time, never a clock read
+ * @returns {{ targetSoc: number|undefined, targetSocSource: string|undefined, problems: string[] }}
+ */
+function targetSocFor({ agentSnapshot, snapshot, scope, decisionTimeMs }) {
+  const absent = (problems) => ({ targetSoc: undefined, targetSocSource: undefined, problems });
+
+  const published = publishedTargetSocFrom(agentSnapshot);
+  if (published.problems.length > 0) return absent(published.problems);
+
+  const resolved = schedulerClient.resolveTargetSoc({
+    publishedTargetSoc: published.targetSoc,
+    publishedAtMs: published.publishedAtMs,
+    decisionTimeMs,
+    maxAgeSeconds: resolve(snapshot, "energy.target_soc_max_age", scope),
+    // Indexed by `agent_class`, so the scope must carry one. This is §M.4's lesson about
+    // `capacity` at a second parameter: a scope without `agent_class` cannot index an
+    // indexed row, and the miss reads exactly like an unresolved parameter.
+    classFallback: resolve(snapshot, "energy.target_soc_fallback", scope),
+  });
+
+  if (!resolved.ok) return absent([resolved.reason]);
+
+  if (resolved.degradationFlag) {
+    return absent([
+      `§14.7's ${resolved.degradationFlag.flag} substitution is available — ` +
+        `energy.target_soc_fallback resolves to ${String(resolved.degradationFlag.substituted)} for this agent ` +
+        "class — and is not taken. §14.6 admits it only where the substitution is recorded as a degradation " +
+        "flag on every affected decision, and this composition root supplies no per-Leg degradation context to " +
+        "observability/decisionRecord.writeRound, so the flag would be recorded nowhere. The engine declines a " +
+        "degradation it cannot record rather than taking it silently",
+    ]);
+  }
+
+  // The shipped provenance guard, on the path it was written for. It refuses any source
+  // that is not one of §14.6's two owners, so a future producer cannot quietly widen the
+  // set by returning a third.
+  const provenance = schedulerClient.assertNotEngineComputed(resolved.source);
+  if (!provenance.ok) return absent([provenance.reason]);
+
+  return { targetSoc: resolved.targetSoc, targetSocSource: resolved.source, problems: [] };
+}
+
+/**
  * The declared charger estate, as the nearest-k return-leg candidates `eReturn` reads —
  * **the F35 seam.**
  *
@@ -1107,6 +1284,10 @@ function planInputFor(input) {
       projection: input.chargerProjection || null,
       // §14.6 gives the Charging Scheduler ownership of the target SoC and forbids the
       // engine to compute one. Absent, `insertChargingStop` refuses by name.
+      //
+      // Supplied by `targetSocFor()` at the call site, through the Scheduler's own
+      // resolver. Until N-1 these two fields were read here and set by **no caller**, so
+      // the refusal `insertChargingStop` printed described an attempt nobody had made.
       targetSoc: input.targetSoc,
       targetSocSource: input.targetSocSource,
       currentSoc: agentSnapshot.soc,
@@ -1204,6 +1385,19 @@ function evaluateExactFor(context, round) {
     });
     const pinned = await pinnedChargerProjection(context);
 
+    /* ── 2b. §14.6's target state of charge, from its owner ────────────────── */
+    //
+    // `energy.target_soc_fallback` is indexed by `agent_class`, so the scope handed to the
+    // resolver carries one — the same scoping dimension F17's `capacity` needed (§M.4).
+    // The gate builds its own copy of this scope below; both are built from `scope` plus
+    // the agent's class rather than one being derived from the other.
+    const target = targetSocFor({
+      agentSnapshot,
+      snapshot,
+      scope: { ...scope, agent_class: agentSnapshot.agentClassId ?? null },
+      decisionTimeMs: state.decisionTimeMs,
+    });
+
     /* ── 3. The plan (§13) ────────────────────────────────────────────────── */
     const built = planBuilder.build(
       planInputFor({
@@ -1219,6 +1413,8 @@ function evaluateExactFor(context, round) {
         queueAgeSeconds: state.queueAgeSeconds,
         chargerCandidates: estate.candidates,
         chargerProjection: pinned.projection,
+        targetSoc: target.targetSoc,
+        targetSocSource: target.targetSocSource,
       }),
     );
     if (!built.ok) {
@@ -1226,7 +1422,7 @@ function evaluateExactFor(context, round) {
       // reserves"* and *"no charger states a cell"* are the same finding at two distances,
       // and a decision record that carried only the first would send a reader to §14.5
       // when the answer is a row nobody has declared.
-      return refuse(REFUSAL.PLAN_REFUSED, [...built.problems, ...estate.problems, ...pinned.problems]);
+      return refuse(REFUSAL.PLAN_REFUSED, [...built.problems, ...estate.problems, ...pinned.problems, ...target.problems]);
     }
 
     /* ── 4. The feasibility gate (§7.1) — the only thing that may brand ────── */
@@ -1903,6 +2099,8 @@ module.exports = {
   serviceabilityFor,
   chargerCandidatesFor,
   pinnedChargerProjection,
+  publishedTargetSocFrom,
+  targetSocFor,
   gatedAgentSnapshot,
   create,
   // Re-exported so a caller that has an assembly can start the worker it was built for

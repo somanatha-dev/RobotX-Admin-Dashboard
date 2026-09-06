@@ -5,7 +5,9 @@
 | | |
 |---|---|
 | **Created** | 2026-09-05 |
-| **Last updated** | 2026-09-05 — **THE FINITE REPOSITORY-ONLY PASS. All four registered repository items (W-A1, W-A2, W-A3, W-A4) are CLOSED; W-B4's repository side is executed (§9.1); and one previously unknown core-path defect, W-A5, was found, fixed and closed** — §14.4's vendor stress curves were declared in a column, loaded onto the agent snapshot, and not read, because the seam that skipped them named the wrong row. **§3.1's status reverted and was re-earned in the same session.** **NO STOP CONDITION CHANGED. The score is unchanged at 3 of 8; S-3 is still 28 and the runtime numerator still 26; `gate:composition` is still RED; no external value was fabricated and no second owner request was issued.** §14.6 now holds zero open repository items. *(Previously: W-D2 executed and closed)* |
+| **Last updated** | 2026-09-06 — **EXECUTION PASS 2: S5-2, S5-3 AND THE COMPOSITION, MEASURED. NOTHING WAS PUBLISHED, PINNED, SEEDED OR WRITTEN.** **S5-2 is BLOCKED**, and on a prerequisite the plan did not expect: every non-empty fine-cell derivation from the adopted `way/1120154292` boundary is `containmentOverlapping` under another name — 3 cells, 22.8× the campus, **95.6% of the assigned ground outside it** — and that mode is a **standing owner refusal** whose escalation target is **NOT DEFINED**. The standard path returns **0 cells** and there is no V-8 exception. **S5-3 is BLOCKED — classification B (FD-3 = NO)** on V9 *and* S2, re-derived against the **full** S5-2 candidate; V9's arithmetic was checked for a repository defect and is correct. **S5-4 NOT REACHED.** Two further results: the **spatial payload is provably not the publish constraint** (zero additional blocking findings), so S5-2's config half and S5-3 are *one* refusal; and **"the coordinator is blocked on B1" is refuted by measurement — B1 releases 5 of the 26**, with 15 calibration rows and 6 no-producer families remaining. **Three findings recorded and none acted on**: §4.1's step 3 never happened (**D-5 sharpened, status unchanged**), `shardModel.ensureShard` has no caller anywhere (**no W-item, §3.1 does not revert**), and a 116-candidate sweep is reported as **not evidence** rather than as findings. **NO STOP CONDITION WAS MET. The score is unchanged at 3 of 8; S-3 is still 28 and the runtime numerator still 26; `gate:composition` is still RED; no external value was fabricated, no containment mode was chosen, no accommodation was added, no approver was synthesised, and 0 `ConfigVersion` rows were written.** §7.1 is this pass. *(Previously: execution pass 1 — the three decisions, then three measurements)* |
+| *(prior)* | 2026-09-06 — **EXECUTION PASS 1: THE THREE DECISIONS RECORDED, THEN THREE MEASUREMENTS.** [`RD-2026-09-05-02`](../release-decisions/RD-2026-09-05-02-v1-agent-boundary-and-simulation-track.md) is drafted for signature: **FD-1 = A** (the V1 contract is unchanged; a real commissioned physical agent is required for S-6), **FD-2 = YES** (an authorisation, **not** a supply), **FD-3 = NO FOR NOW** (no second Safety approver; no self-approval; satisfiable later by one named person). **N-1** and **N-2** each found a core-path defect of the *producer-exists-and-the-composition-root-does-not-use-it* family — **W-A6** and **W-A7**, both fixed, tested and mutation-checked, and §3.1's status reverted and was re-earned. **N-2's nineteen-field §7.5 inventory is §9.2** — (a) 2 · (b) 5 · (c) 11 · 1 fitting none. **S5-1 measured the S-5 publish and it is REFUSED** by V9 *and* S2, so **S-5 is reclassified as blocked by FD-3 = NO** and the one condition FD-1 = A left reachable is not currently reachable. The simulation track is classified **V1-ENG in the new §11.F**, discharging no stop condition. **NO STOP CONDITION WAS MET. The score is unchanged at 3 of 8; S-3 is still 28 and the runtime numerator still 26; `gate:composition` is still RED; no external value was fabricated and no simulation work was started.** *(Previously: the finite repository-only pass)* |
+| *(prior)* | 2026-09-05 — **THE FINITE REPOSITORY-ONLY PASS. All four registered repository items (W-A1, W-A2, W-A3, W-A4) are CLOSED; W-B4's repository side is executed (§9.1); and one previously unknown core-path defect, W-A5, was found, fixed and closed** — §14.4's vendor stress curves were declared in a column, loaded onto the agent snapshot, and not read, because the seam that skipped them named the wrong row. **§3.1's status reverted and was re-earned in the same session.** **NO STOP CONDITION CHANGED. The score is unchanged at 3 of 8; S-3 is still 28 and the runtime numerator still 26; `gate:composition` is still RED; no external value was fabricated and no second owner request was issued.** §14.6 now holds zero open repository items. *(Previously: W-D2 executed and closed)* |
 | *(prior)* | 2026-09-05 — **W-D2 executed and closed.** The single complete owner request is issued as [`docs/release-decisions/RD-2026-09-05-01-v1-external-input-and-owner-decision-request.md`](../release-decisions/RD-2026-09-05-01-v1-external-input-and-owner-decision-request.md), covering every row of §9 and every decision of §10. **No stop condition changed: S-3 is still NOT MET** — issuing a request is not receiving an answer. Score unchanged at **3 of 8**. *(Previously: W-D1 executed and closed; the S-3 numerator measured for the first time at `26 of 34`, §5.6; the authoritative count unchanged at 28)* |
 | **Tree this document was built and verified against** | `4e2155a9a25f7b9d71842ce971a625a1fecaba6e` (HEAD), E-11 implementation at `3ff92ae02b3a406ba77a5a9555a5e8eadfd67013` |
 | **Committed source digest** | `023906bef5b23c34f71b64f78419d4d6562813a74f5dd9ca95c48ef719a1017a` / 581 files (measured at `3ff92ae`) |
@@ -78,6 +80,28 @@ exactly two files after this one is added: the contract and this control documen
 > status. **The rule's file count is the only thing corrected here — the rule itself is not
 > weakened, and `docs/v1/` acquires no fourth file.**
 
+> ### CORRECTED BY MEASUREMENT 2026-09-06 — **`docs/v1/` holds FOUR files, and it already did when the paragraph above was written.**
+>
+> `ls docs/v1/` returns **four**: the contract, this document, `V1_OWNER_ACTION_CHECKLIST.md`, and
+> **`V1_DISCOVERY_AND_OWNER_QUESTIONS.md`**. `git show --name-status 10a527c` shows all three of
+> the new ones were **added in the same commit** as the paragraph above — so the count was wrong on
+> the tree it was written against, by omitting the discovery document. **This is the fifth instance
+> of the class §16 keeps recording**: a published count gone stale against the thing standing beside
+> it. *(§N.6 step 5's "all 34"; `registry.js`'s `cadenceParameter`; `UNCOMPOSABLE`'s "four input
+> families"; §4.1's step 3; this.)*
+>
+> **Only the count is corrected here. §17 rule 13's prohibition is NOT weakened, NOT reinterpreted,
+> and NOT discharged**, and this pass added no file to `docs/v1/`.
+>
+> **One thing this session deliberately does not decide, and flags instead.** Rule 13 forbids *a
+> competing V1 status document*, and `V1_DISCOVERY_AND_OWNER_QUESTIONS.md` does carry status-shaped
+> material — its §1.1 *"the eight stop conditions, as they stand"* and its §12.2 feasibility matrix.
+> Whether that engages rule 13's substance, or whether the file is a discovery record the way the
+> checklist is a collection sheet, is a **documentation-governance question for the owner**. A
+> session that resolved it by declaring the file compliant would be the check answering itself, and
+> one that resolved it by deleting or demoting the file would be destroying a record §13 of that
+> file is actively cited from. **It is recorded, routed to the owner, and left exactly as it is.**
+
 ---
 
 ## §3 THE TWO STATUSES — THEY ARE NOT THE SAME CLAIM
@@ -91,6 +115,17 @@ statement about one of two statuses, and the other one is not met.
 Every item on §M.7's repository-owned work list (R-1 … R-7) is discharged, verified against this
 tree in §4. No repository-owned defect is currently known to stand between this tree and V1.
 
+> **It reverted a second time on 2026-09-05 and was re-earned in the same pass.** The N-1/N-2
+> pass found **two** further core-path defects of the same family — `chargingSchedulerClient.resolveTargetSoc()`
+> exported, tested and called from nowhere while `planInputFor` read a `targetSoc` no caller set
+> (**N-1**), and two declared `AgentClass` columns dropped by the snapshot mapper (**N-2**, §9.2).
+> Both were fixed, tested and mutation-checked on this tree (§16). **One repository-owned
+> core-path item is now known and deliberately NOT fixed**, and it is recorded rather than
+> carried silently: §2.3 requires a certified validity window to be checked against *mission end
+> time*, F5 performs no expiry check, and the loader does not know the mission end — so an
+> attested-firmware read path would be weaker than the specification on a safety credential
+> (§9.2.3). It is bucket **(b)** in any case: nothing writes a `CapabilityAttestation` row.
+>
 > **This status reverted once, on 2026-09-05, and was re-earned the same session.** The
 > repository-only pass of that date found **W-A5** — a core-path defect at the pricing seam:
 > §14.4's vendor stress curves were declared in `EnergyModelParams.stressCurves`, loaded onto
@@ -162,7 +197,7 @@ the register cannot publish its own defaults
         because route.degraded_reserve_factor is Safety-class, PROVISIONAL, awaiting B8
    → S2: §22.3's two-person rule on a first publish
    ↓
-no leader could be elected
+no leader could be elected                      ── ✗ SUPERSEDED 2026-09-06, see §4.3
    → §19.5 election.assertConsensusStore refuses a store whose replication posture is UNDECLARED
         (Backend/src/engine/shard/election.js:99, :141, :172-177;
          called from Backend/src/workers/shardSupervisor.worker.js:581)
@@ -204,6 +239,42 @@ published. This correction changes the immediate next action; see §15.
 configuration version at all"* → **corrected**: *it stops an unaccommodated, production-intent
 first publish; a labelled verification publish is precedented and was performed by the E-11 run
 itself.* B8's status as an owner decision (§10, D-1) is unchanged.
+
+### 4.3 A second correction to §4.1, found 2026-09-06 while measuring S5-2 — **step 3 never happened**
+
+§4.1's chain is headed *"exactly as it occurred"*, and its third step reads *"no leader could be
+elected → §19.5 `election.assertConsensusStore` refuses a store whose replication posture is
+UNDECLARED."*
+
+**That step did not occur, in the E-11 run or in any run the harness has ever made.**
+`Backend/tools/verify/v1CorePath.js:350` sets `SHARD_CONSENSUS_REPLICATION =
+"SINGLE_PRIMARY_NO_AUTOMATIC_FAILOVER"`, `server.js:562` reads exactly that environment variable
+into `election.postgresLeadershipStore`, and `assertConsensusStore` therefore **passes**. The line
+has been in the harness since its first commit, `3ff92ae` — **so §4.1 was wrong when it was
+written**, not made wrong by a later change. §5.6.1 of this same document already records the
+contradicting measurement, from an independent re-run: *"**Leadership: Acquired.** The server logged
+`Leadership acquired — LEADER_ONLY workers started`, `running: ["outbox","reconciler","timer"]`."*
+
+**Why this is more than a tidy-up.** §12 classifies **D-5** (a declared consensus-store posture) as
+**V1 REQUIRED**, with the consequence *"No leader, no round, no coordinator"* — and §4.1 is the
+evidence a reader would reach for. Left standing, the two together present D-5 as a live V1 blocker
+of the same kind as the routing source and the region. **It is not.** The harness discharges it as
+a **statement of fact about the cluster it was pointed at** — one disposable primary, no standby,
+therefore no automatic failover — which is what the value names, and the harness says so at
+`:343-349`. `ASYNCHRONOUS_FAILOVER` is still refused by name and `UNDECLARED` is still unsafe.
+
+**D-5 is not fabricated by the harness and is not discharged in general.** Any *other* deployment —
+including a V1 demo deployment on a cluster this repository has not seen — must declare its own
+true posture, and no session may declare one on an operator's behalf. **D-5's status in §12 and in
+`RD-2026-09-05-01` is unchanged: it remains an owner declaration.** What changes is only that it is
+a one-line declaration of an observable fact about a specific cluster, already demonstrated end to
+end, and **not** a boundary the V1 verification path currently stops at. §4.1's step 3 is marked
+superseded in place rather than deleted, under this document's own convention.
+
+**This correction was found by measurement, not by reading**, and it is the same defect class §16
+has now recorded four times: *a published claim gone stale against a measurement standing beside it
+in the same file* (§N.6 step 5's *"all 34"*, `registry.js`'s `cadenceParameter`, `UNCOMPOSABLE`'s
+*"four input families"*, and now this).
 
 ---
 
@@ -631,7 +702,7 @@ were verified against this tree, not copied.
 | **S-2** | `registry.js` names, for every worker, a register parameter that exists or a `@structural` constant with a stated reason | **MET** | Fixed 2026-09-01; `assertRegistry()` assertion green; `workerRegistry.test.js` 15 passed | — | Repository | Hold | `assertRegistry()` green in `npm test` |
 | **S-3** | The external values are supplied by the owner, in writing, in a decision record under `docs/release-decisions/` | **NOT MET** | **28 inputs** (§5.4), **confirmed by live measurement 2026-09-05 (§5.6): the running composer reported `26 of 34 inputs unresolved`, all 26 already on the list, plus the 2 rows the instrument cannot see.** **The decision record now exists and is ISSUED, AWAITING RESPONSE** — `docs/release-decisions/RD-2026-09-05-01-v1-external-input-and-owner-decision-request.md`, 2026-09-05, covering §9 rows 1–18 and §10 D-1…D-6. **Not one item in it is answered** *(this cell previously read "No decision record exists")* | **The inputs do not exist.** 5 routing · 15 register calibration (2 Safety-class) · 6 no-producer families · 1 region declaration · 1 charger declaration | **Owner** + §22.4 calibration owner + Engineering (for the `NO_PRODUCER` code and data sources) | **W-D1 and W-D2 are both CLOSED.** The request is issued; **the next act is the owner's**, and no repository action closes S-3 | The **answered** record — values supplied, decisions made, evidence attached — under `docs/release-decisions/`. **Issuing the request does not close S-3; only the response can** |
 | **S-4** | The coordinator's solve path is composed at `server.js` and `leaderWorkers.COMPOSERS.coordinator` returns a started handle | **NOT MET — a consequence of S-3, not an independent defect** | `npm run gates` → `gate:composition` **exit 1**, 1 violation, `LEADER_ONLY_NOT_COMPOSABLE` for `coordinator`. **The composition is written and correct**: `coordinatorSolvePath.create()` assembles all three seams and refuses only because `coordinatorPipeline.requirements()` reports unresolved inputs (`coordinatorSolvePath.js:1527-1545`) | S-3 | Owner (via S-3) | None available in this repository. Do **not** weaken the gate | `npm run gates` **exit 0**, `gate:composition` 0 violations |
-| **S-5** | A config version binding `cutover.engine_enabled = true` at region scope is published and pinned, and the process runs with `ENGINE_ENABLED=true` | **NOT MET — mechanism exists and is verified; the owner configuration act is absent** | Mechanism verified end to end over HTTP in the E-11 run: real `POST /api/tasks/assign` → **HTTP 503 `ENGINE_NOT_LIVE`** before anything was written (§12.1). `enabled.describe(...)` returns `processEnabled: true, configEnabled: false, live: false, decisionPath: "NONE"`. **No code change is needed** (`Backend/src/engine/cutover/enabled.js`) | **The owner has not published the binding.** The harness deliberately does not (`v1CorePath.js:196-210`) | **Owner** | Publish and pin a config version binding `cutover.engine_enabled = true` at `region` scope (§10, D-2) | `cutoverEnabled.describe(...)` reports `live: true`, `decisionPath: ENGINE` |
+| **S-5** | A config version binding `cutover.engine_enabled = true` at region scope is published and pinned, and the process runs with `ENGINE_ENABLED=true` | **NOT MET — and RECLASSIFIED 2026-09-06: BLOCKED BY FD-3 = NO.** *(This cell previously read "mechanism exists and is verified; the owner configuration act is absent", which was true and incomplete: it described the act as **available and untaken**. Measured, the act is **refused**.)* | Mechanism verified end to end over HTTP in the E-11 run: real `POST /api/tasks/assign` → **HTTP 503 `ENGINE_NOT_LIVE`** before anything was written (§12.1). `enabled.describe(...)` returns `processEnabled: true, configEnabled: false, live: false, decisionPath: "NONE"`. **No code change is needed** (`Backend/src/engine/cutover/enabled.js`). **S5-1, 2026-09-05, on a disposable PG 18.3 cluster:** a labelled non-production publish binding **only** `cutover.engine_enabled = true` at region scope, with no Safety binding and no accommodation, is **REFUSED** — `ConfigValidationError`, 2 BLOCKING findings, **0 `ConfigVersion` rows written** (§16) | **Two independent refusals, neither of which is "the owner has not got round to it".** **V9** — the register's *own defaults* give a combined degraded conservatism of `2.0125` against a cap of `1.6`; it is in `validateCandidate`'s blocking set for a candidate binding only `cutover.engine_enabled`, so it blocks **every** publish, first or subsequent, until a Safety decision moves `route.degraded_reserve_factor` or `energy.max_combined_conservatism`. **S2** — a first publish has no `previousValues`, so `safetyClassChanges` returns **47** names and §22.3's two-person rule fires **whatever is bound**; measured, a *subsequent* publish changing no Safety value returns **0** and S2 does not fire. `cutover.engine_enabled` is `STRUCTURAL` and is **not** in either set — its own change class was never the constraint | **Safety** (via **D-1**/B8), then **Owner** | **S5-1 — DISCHARGED 2026-09-05, and it is the evidence in the cell to the left.** The approved plan set this row's next action to *"run S5-1"*; S5-1 has been run and its verdict is recorded, so the next action is no longer a measurement. **There is none available in this repository**: both refusals need a Safety authority and a second approver, and **FD-3 = NO** means neither exists. ~~What follows is **§11 step 7 (S5-2 → S5-4)**, behind steps 4, 5 and 6.~~ **MEASURED 2026-09-06 — §7.1: S5-2 is itself BLOCKED, and not only by its position in the order.** Its fine-cell derivation has no answer that is neither empty nor `containmentOverlapping`, which the owner has **refused** as a standing decision, and whose escalation target is **NOT DEFINED** (§7.1.2). **S5-3 = classification B — FD-3 = NO**, on V9 *and* S2, re-derived against the full S5-2 candidate (§7.1.3). Do **not** add an accommodation to obtain a publish, and **do not choose a containment mode to obtain a non-empty cover** | `cutoverEnabled.describe(...)` reports `live: true`, `decisionPath: ENGINE` — reachable only once V9 and S2 are discharged |
 | **S-6** | One real request over HTTP against a live PostgreSQL reaches a durable `Commitment` row and an `Outbox` row in the same transaction, with a `Round` row and a per-Leg decision record | **NOT MET — ATTEMPTED for the first time, did not complete** | Harness exists (`Backend/tools/verify/v1CorePath.js`, 468 lines) and was run: PG 18.3, **28** migrations, seeded region/shard/agent-class/agent/battery/position, `server.js` as a separate process, real JWT, real HTTP POST. **Exits 1 at S-5, with S-3 reported from the same process** — **re-run independently 2026-09-05 on a fresh disposable PG 18.3 cluster (§5.6): same exit 1, same two boundaries, same order** | S-5, then S-3 | Owner (via S-5 and S-3) | **W-D1 done** — the numerator is **26 of 34** (§5.6). Full closure needs S-3 + S-5 | `node tools/verify/v1CorePath.js` **exit 0** |
 | **S-7** | `npm test` exit 0 **and** `npm run gates` exit 0 | **NOT MET — one half holds** | `npm test` **exit 0** — **167 suites / 7 429 tests / 0 failures**, re-run after the 2026-09-05 repository-only pass *(166 / 7 411 before it; +1 suite and +18 tests, all added by that pass)*. `npm run gates` **exit 1** — 7 PASS, 1 FAIL, **unchanged and not weakened**. **F17's `VIOLATED` does not contribute** (§6.8) | `gate:composition`, i.e. S-4 → S-3 | Owner (via S-3) | Nothing independent. S-4 closes it | Both commands exit 0 |
 | **S-8** | The V1 documentation states plainly what V1 does **not** guarantee | **MET** | `V1_CONTRACT_AND_STOP_CONDITION.md` §I.1 and §G; restated and extended by §12 of this document | — | Repository | Keep §12 current as classifications change | This document plus the contract, both current at the released tree |
@@ -641,6 +712,188 @@ were verified against this tree, not copied.
 > **V1 is not complete and must not be described as complete while any of the five remains open.**
 > Four of the five (S-4, S-6, S-7, and S-5's blocked half) are **mechanical consequences** of S-3
 > and S-5. The repository closes none of them.
+
+### 7.1 S5-2 AND S5-3 — MEASURED 2026-09-06. **BOTH BLOCKED, and the blockers are not the same one.**
+
+**Nothing was published, pinned, seeded or written. Every number below is produced by the shipped
+modules, read-only, at HEAD `10a527c`.** No region, zone, cell assignment, shard, charger, router
+or calibration value was created on any store.
+
+#### 7.1.1 S5-2 — **BLOCKED.** Two independent missing prerequisites, and only one of them was expected.
+
+The six prerequisites, each checked against code rather than against a document:
+
+| # | Prerequisite | Verdict | Measured evidence |
+|---|---|---|---|
+| 1 | **Authoritative region declaration** | **ABSENT** | `regionBoundary.validateRegionDeclaration({ boundary: <the adopted `way/1120154292` Polygon> })` → `status` not `VALID`, **six named problems**: `regionId`, `name`, `kind`, `crs` (*"required and is never assumed"*, V-6), `version`, `versionDate`. `RD-2026-08-30-01` §7 item 3 said exactly this in prose; this is the same finding produced by the validator |
+| 2 | **Authoritative boundary** | **ADOPTED AS INTENT, NOT SUPPLIED** | `RD-2026-08-30-01` §1 adopts the geometry; its own §7 gives four independent reasons D1 is unmoved, including that the file is **this repository's own tracked demo data**, which `B1_EXTERNAL_INPUT_HANDOFF.md` §1.1 forbids as D1 data and whose STOP rule 5 refuses to promote without human approval |
+| 3 | **Valid fine-cell derivation** | ★ **REFUSED BY A STANDING OWNER DECISION** | See §7.1.2. This is the prerequisite whose absence is *decisive*, and it is not the one the plan expected |
+| 4 | **Region / zone / site relationships** | **UNDECLARED** | `cells.validateAssignment` requires a `zoneId` on every FINE assignment — *"an unassigned fine cell is a hole in the pricing surface"* (§3.6). No zone identity is declared anywhere for either campus, and a zone is where §6.4's `λ_zone` is estimated, so inventing one is a modelling act with pricing consequences, not a label |
+| 5 | **Configuration / version records** | **REFUSED** | Identical to S5-3's refusal — see §7.1.3. The spatial payload is provably **not** the constraint |
+| 6 | **Shard row semantics** | **MECHANISM EXISTS; NOTHING CALLS IT** | See §7.1.4 |
+
+#### 7.1.2 The decisive finding — **every non-empty fine-cell derivation from the adopted boundary IS `containmentOverlapping`, which the owner has REFUSED**
+
+Measured on this tree with `h3-js@4.5.0` at the unchanged `@structural B5` resolutions. **No
+resolution was changed and no cover utility was written.**
+
+| Derivation | Cells | Assigned area | Ratio to the campus |
+|---|---:|---:|---:|
+| Campus polygon `way/1120154292` | — | **0.0998 km²** | 1× |
+| `polygonToCells` (standard / `containmentCenter`), res 8 | **0** | 0 | — |
+| `containmentFull`, res 8 | **0** | 0 | — |
+| **The ring's 18 unique vertices → `latLngToCell(…, 8)`** | **3** | **2.2759 km²** | **22.8× — 95.6% of the assigned ground lies outside the campus** |
+| `containmentOverlapping`, res 8 | **3** | **2.2759 km²** | **22.8×** |
+| `containmentOverlappingBbox`, res 8 | 5 | 3.7932 km² | 38.0× |
+
+> **The vertex derivation and `containmentOverlapping` return the same three cells.** So
+> *"derive the minimal fine-cell assignments from the adopted boundary"* has, on this geometry, no
+> third answer: it is either **empty** — which assigns nothing and is what the standard path
+> returns — or it is **`containmentOverlapping` under another name.**
+>
+> `B1_EXTERNAL_INPUT_HANDOFF.md` §1.8.4 item 2 is a **standing refusal, not an unfilled blank**:
+> *"`containmentOverlapping` is REFUSED. `containmentOverlappingBbox` is REFUSED. The owner does
+> not authorise geographic over-assignment of non-campus area into a RobotX region … a mode chosen
+> for validator success is the check answering itself."* Reaching the same three cells through
+> `latLngToCell` on the vertices rather than through `polygonToCells` **is that mode, chosen for a
+> different reason**, and §17 rule 3 forbids fabricating a region.
+
+**Classification: OWNER DECISION — and specifically the escalation that `B1_EXTERNAL_INPUT_HANDOFF.md`
+§1.8.5 records as `OPEN WITH NO TARGET`.** It is **not** repository-owned; it is not repository-fixable;
+and it must not be resolved by this or any future session choosing a containment mode.
+
+*(New measurement: §1.8.3 recorded this for **JSSATE** — 0.1022 km², 1 cell, ≈86% outside. **RNSIT
+is worse on the same arithmetic**: 3 cells, 95.6% outside. The two campuses are behind the same
+blocker, and RNSIT's exposure is larger, not equal.)*
+
+#### 7.1.3 S5-3 — **BLOCKED. Classification: B — FD-3 = NO / Safety approval policy. Not a repository defect.**
+
+S5-1's refusal was re-derived read-only against the **S5-2 candidate** — the full payload, not
+S5-1's bare one: the `cutover.engine_enabled = true` region binding **plus** `regions[]`,
+`zones[]`, the three fine-cell assignments and a well-formed `shards[]` definition.
+
+```
+validateCandidate(<the full S5-2 candidate>)  →  199 findings, blocking = ["V9"]
+safetyClassChanges(entries, values, previousValues = null)  →  47
+checkSafetyApproval({ publishedBy: 1 identity }, 47 changes)  →  ["S2"]   (SAFETY_APPROVAL_QUORUM = 2)
+```
+
+**Two results, and the second is new:**
+
+1. **The refusal is unchanged and is not repository-owned.**
+   - **V9** is arithmetically correct and does not double-count. Measured from the register's own
+     defaults: nominal `= 1.15 × 1.25 × 1.0 = 1.4375` (`energy.charger_availability_margin`,
+     `energy.uncalibrated_reserve_factor`, `energy.f_derate`); degraded `= 1.4375 × 1.4 = 2.0125`
+     (`route.degraded_reserve_factor`); cap `energy.max_combined_conservatism = 1.6`. **Both
+     movable parameters are `changeClass: SAFETY`, `PROVISIONAL`** — so discharging V9 is D-1/B8,
+     which **FD-3 = NO** blocks.
+   - **S2** fires on the *version*, not the parameter: a first publish has `previousValues = null`,
+     so 47 Safety-class parameters count as changed **whatever is bound**. One approver identity
+     against a quorum of 2. **FD-3 = NO** says there is no second approver and no self-approval.
+   - **There is nothing legitimate to fix.** Neither finding is a defect; both are the checks
+     working. No accommodation was added, no approver was synthesised, no gate was touched.
+2. ★ **The spatial payload is provably not the constraint.** Adding the region, the zone, the three
+   fine-cell assignments and the shard definition to the candidate produced **zero additional
+   blocking findings** — `hierarchy.validate`, `cells.validateAssignment`, A6, V-4 and V-8 all pass
+   on it. **So S5-2's config half and S5-3 are one refusal, not two**, and any future reader must
+   not record S5-2 as *"blocked on a spatial problem at publish"*: it is blocked **before** publish,
+   at §7.1.2, and blocked **at** publish for S5-3's reasons.
+
+#### 7.1.4 One previously unrecorded fact, on the S5-2 path — **recorded, deliberately NOT changed**
+
+**`shardModel.ensureShard` — the repository's own path for creating a `Shard` row, the one S5-2
+would use — is called from nowhere in `src/`, nowhere in `server.js`, and by no harness.**
+
+- It exists, validates its input, creates the `ShardLeadership` row inside the same transaction, is
+  idempotent, and is unit-tested (`tests/engine/shardModel.test.js`). Its own docstring states why
+  the leadership row must go first: *"a shard that existed without one would be a shard against
+  which every commit aborts for a reason that names neither the shard nor the missing row."*
+- The control plane has no create path: `src/routes/shards.routes.js` exposes `GET /` and
+  `POST /:id/rebalance` only.
+- The one place a `Shard` row is created in practice is `tools/verify/v1CorePath.js:124-125`, which
+  hand-rolls **both** rows and therefore takes the schema default `leadershipFence = 0`, where
+  `leadership.ensureShard` explicitly sets **1** *"so that 'has not moved' is distinguishable from
+  'there is no leadership record'"*.
+
+**This is the *producer exists and nothing calls it* family at an eighth place — and, measured, it
+has no correctness consequence today.** Every consumer of `leadershipFence` tests it explicitly
+against `null`/`undefined` and never for truthiness: `guards.js:103`, `tierA.js:325`,
+`membership.js:339`, `app.js:214`. The distinguishability the comment describes is carried by those
+null checks, not by the value being non-zero.
+
+**It is therefore NOT given a W-item and NOT fixed, and both halves of that are deliberate.** It is
+in `tools/verify/`, which §11.A's W-A4 note already establishes is **not the core path**, so
+**§3.1's status does not revert**. Editing the S-6 harness's seed with no measured defect to point
+at would be touching the instrument S-6's verdict rests on — the symmetric case of §14.3's rule —
+and inventing a work item for it would extend a list §11 declares closed. **The recommendation, for
+whoever executes S5-2 when it is unblocked, is that the `Shard` row be created through
+`shardModel.ensureShard` rather than hand-rolled.**
+
+#### 7.1.5 The assignment-engine composition, re-measured independently — **it is NOT "released by B1"**
+
+`coordinatorPipeline.requirements()` was run read-only against a context supplying exactly what
+`server.js:657-722` supplies — the six `PROCESS_DEPENDENCY` rows and the expansion wall-clock
+budget. **It reproduces the live E-11 figure exactly:**
+
+```
+26 of 34 inputs unresolved   { EXTERNAL_ROUTING: 5, REGISTER_UNRESOLVED: 15, NO_PRODUCER: 6 }
+satisfied (8): prisma, kv, runSerializable, selectForUpdate, signingKey, snapshot,
+               Ω correction, candidate.max_radius_by_sla_class
+```
+
+*(A first run of the same probe reported `27` — with `candidate.max_radius_by_sla_class` missing —
+because that probe honours §6.3's **disjunction** and reads `context.expansionWallClockBudgetMs`,
+which the synthetic context had not supplied. Supplying it reproduces `26`. **Recorded because the
+difference is the instrument's context, not a disagreement**, and an unexplained 27 would have read
+as a seventh widening.)*
+
+> **B1 releases 5 of the 26.** The other 21 are **15** register rows that are `null` by declaration
+> and belong to §22.4's calibration owner — §22.3 forbids an automated process from choosing them —
+> and **6** input families with no schema column and no data source anyone has named. **A routing
+> source arriving tomorrow starts no coordinator.** The shorthand *"the coordinator is blocked on
+> B1"* is the sentence §E.1 of the contract already records as having survived six passes
+> unexamined, and it must not be restored.
+
+**No new repository-owned defect was found in the composition path by this pass**, and the check
+was not a reading exercise:
+
+- The **F33 consumption seam** — the one an executed S5-2 would feed — was exercised against the
+  exact spatial payload §7.1.2 derives. Measured: with no map published, every stop keeps
+  `serviceable` **absent**; with the map published, a stop at the campus centroid resolves
+  `serviceable: true` and a stop outside the map keeps `serviceable` **absent, not `false`**. That
+  is §17 rule 4 and §M.2's *"an unassigned cell is not an out-of-area one"*, holding at runtime.
+- A **mechanical sweep for the recurring family** — an exported producer with no caller — was run
+  over all **81** modules reachable from `coordinatorSolvePath.js`. It returned **116** candidates
+  and is **not reported as 116 findings**, because the instrument does not discriminate: it cannot
+  see a comparator passed by reference (`sort(compareX)`) or an assertion helper a test calls, and
+  substantially all 116 are those. **A detector with that false-positive rate is not evidence, and
+  presenting its output as a defect list would be worse than not running it.** The one candidate it
+  surfaced that survived reading is §7.1.4's `shardModel.ensureShard`, which is on the S5-2 path
+  rather than the solve path and has no measured runtime consequence.
+
+**Verdict: the coordinator's composition failure is B1-blocked *in part* — 5 of 26 — and
+owner/calibration-blocked for the remaining 21. `gate:composition` stays RED and was not touched.**
+
+#### 7.1.6 STEP 4 — doable V1 cleanup: **there is none, and that is a measured state, not a shrug**
+
+§11.A holds **zero open repository items**: W-A1…W-A5 closed 2026-09-05, W-A6 and W-A7 closed in the
+N-1/N-2 pass, and §11.A's own closing line — *"There is no W-A8"* — stands after this pass. §14
+forbids the four ways that state is usually misread, one of which is by name **"do not hunt for new
+work."**
+
+Two candidates were considered and **declined, each for a stated reason**:
+
+| Candidate | Declined because |
+|---|---|
+| Route the S-6 harness's `Shard` seed through `shardModel.ensureShard` | §7.1.4 — no measured defect, `tools/verify/` is not the core path, and editing the instrument S-6's verdict rests on without one is §14.3's rule in mirror image |
+| Add a regression test pinning §7.1.2's cell derivation and §7.1.3's `blocking = ["V9"]` | It would commit a **fabricated** `regionId`, zone id and cell-assignment set into the suite, where a later reader could mistake it for a declared region — the exact shape of §17 rule 3. The measurement belongs in this document, where it is labelled as a measurement |
+
+#### 7.1.7 What §7.1 changed, and what it did not
+
+**No stop condition moved. The score is 3 of 8.** S-5 remains NOT MET and remains blocked by
+FD-3 = NO; §7's S-5 row is unchanged in verdict and gains §7.1 as further evidence. S5-2 is now
+recorded as **BLOCKED on an owner decision with no defined escalation target** — which is a
+*harder* boundary than "behind steps 4, 5 and 6", and it is stated rather than softened.
 
 ---
 
@@ -820,6 +1073,91 @@ to decide.**
 
 ---
 
+### 9.2 N-2 — THE §7.5 AGENT-RECORD FIELD INVENTORY *(measured 2026-09-05)*
+
+**All nineteen fields the §7.5 predicates read off the agent snapshot and
+`agentSnapshotLoaderFor` does not supply, checked against `prisma/schema.prisma` and `src/`
+directly — not against the sentences that previously classified them.** `V1_DISCOVERY_AND_OWNER_QUESTIONS.md`
+§12.6 measured nine as absent from the schema; **the other ten had never been checked**, and
+two of those ten turned out to be columns on a row this loader already fetches.
+
+> **Tree.** `10a527c85bd8a314be54a5aaa681af3ab1502e89` (HEAD at measurement), working tree
+> clean at the start of the pass. Every row below is a `grep`/`node` measurement on that tree.
+
+#### 9.2.1 The premise this inventory corrected
+
+The scoping brief expected `AgentCertificate` and `CapabilityAttestation` to have **live
+producers in `src/engine/security/`**. They have producer *functions* and **no callers.**
+Measured: `attestation.record()` (`attestation.js:340`, the only writer of a
+`CapabilityAttestation` row) and `attestation.verify()` are called from **nowhere in `src/`**;
+the two socket handlers that require the module call only `findCapabilityClaims`, and
+`trustBoundaries.js:365` calls `admitClaim` — which *rejects* telemetry-origin claims rather
+than recording an attestation. `AgentCertificate` likewise has **no `create` in `src/`**;
+`certificateRotation.worker.js:110` updates rows and `sessionBinding.js` reads them.
+
+**So the attested-firmware family is bucket (b), not bucket (a)** — a column with no producer —
+and had the premise been accepted rather than measured, this pass would have written a read
+path against a table nothing fills.
+
+#### 9.2.2 The inventory
+
+Buckets are the three the brief defines: **(a)** column *and* producer exist and the loader
+ignores them — a repository-owned V1 core-path defect; **(b)** column exists, no producer — a
+data gap; **(c)** no column at all — schema work, BLOCKED-EXTERNAL behind **FD-1 = A**.
+
+| # | Field | Reader | Column | Producer | Bucket |
+|---:|---|---|---|---|---|
+| 1 | `commissioning` | F1 | **NO.** No model. The word occurs in comments only (`schema.prisma:3774`), and `attestation.js:95-112`'s signed manifest carries `agentId`/`issuedAt`/`notAfter`/`firmwareVersion`/`hardwareRevision`/`secureElement`/`capabilities` — **no commissioning record** | — | **(c)** |
+| 2 | `operatorHold` | F3 | **NO.** `grep -i operatorHold` over the schema → **0** | — | **(c)** |
+| 3 | `quarantined` | F3 | **NO** as a flag — but the predicate's *first* condition reads `lifecycleState`, which **is** loaded, against `LifecycleState.QUARANTINED` (`schema.prisma:733`, `f03.js:46`). The separate flag is §16.4's race-window supplement | — | **(c)**, and **not** what makes F3 absent — `operatorHold` is |
+| 4 | `firmwareVersion` | F5 | **YES.** `CapabilityAttestation.manifest` + `outcome` (`schema.prisma:3781-3812`) | **NO — see §9.2.1** | **(b)** |
+| 5 | `firmwareVersionSource` | F5 | **YES**, same row | **NO**, same reason | **(b)** |
+| 6 | **`supportedFirmwareByMissionType`** | F5 | **YES.** `AgentClass.firmwareVersionSet Json?` (`schema.prisma:1121`). **F5 names the column in its own refusal** — *"the agent class's firmwareVersionSet"* (`f05.js:73-79`) | The `AgentClass` row **the loader already fetches** | ★ **(a) — FIXED** |
+| 7 | `calibrations` | F6 | **NO.** The four `calibration` hits are `CalibrationStatus`/`calibrationStatus` on the **parameter register** (`:574`, `:666`, `:678`, `:695`), not an agent's sensor calibrations | — | **(c)** |
+| 8 | `emergencyStop` | F7 | **NO.** `grep -i "emergency"` over the schema → **0**, and over `src/` → nothing outside `fencing.js`'s `ESTOP_CLEAR` label | — | **(c)** |
+| 9 | `faults` | F8 | **NO.** All 230 `fault` hits are the string `@default` | — | **(c)** |
+| 10 | `healthTier` | F9 | **NO.** `grep -i healthTier` → **0.** `BatteryState.soh` *"feeds the health tier"* (`:2599`) and **is not one** — reading it as one is §9 row 8's limit-is-not-a-mass error | — | **(c)** |
+| 11 | `localisation` | F10 | **PARTLY.** `Observation` exists (`:1993`) with `confidence Float?` and a `kind` comment naming `localisation_confidence` (`:1999`) | **NO.** The only `observation.create` in `src/` is `offer.handler.js:218`, a **feasibility-rejection** observation. Even `kind: "position"` has two readers (`dtaro.handler.js:513`, `indexMaintainer.worker.js:90`) and **no writer in `src/`** | **(b)** |
+| 12 | `reliability` | F11 | **NO.** `reliability`/`interventionRate` → **0**; `src/engine/reliability/` still holds one `.gitkeep` | — | **(c)** |
+| 13 | `advisories` | F12 | **NO.** Both `advisory` hits are about *cache* advisories (§3.3, `:917`, `:2949`) | — | **(c)** |
+| 14 | **`hardwareRevision`** | F12 | **YES.** `AgentClass.hardwareRevision String?` (`schema.prisma:1120`) | The `AgentClass` row **the loader already fetches** | ★ **(a) — FIXED** |
+| 15 | `session` | F13, F14, F15 | **NO — and by design.** F13 requires liveness *"established from a live session rather than from a database column that may lag reality"* (`f13.js:66-73`). A live producer does exist, in **KV**: `robotRegistry.service.markOnline/markOffline/updateTelemetry` write `{connected, lastHeartbeat}` (`:194-228`) and `robot.handler.js:725` calls it — keyed by **`robotId`**, on the legacy path. `session.linkQuality` (F15) has **no producer anywhere**: `grep linkQuality` over `src/` outside the predicates → **0** | a KV producer for liveness; **none** for link quality | **Neither (a) nor (c) cleanly.** Not schema work; a live-session-registry integration, and BLOCKED-EXTERNAL behind **FD-1 = A** because there is no agent to hold a session |
+| 16 | `autonomousDeadZoneCertified` | F15 | **NO.** `deadZone`/`autonomous` → **0** | — | **(c)** |
+| 17 | `safetyRelevantObservations` | F16 | **PARTLY** — `Observation`, as row 11 | **NO**, as row 11 | **(b)** |
+| 18 | `reservations` | F18 | **YES.** `ChargerReservation` (`:2676`) with `targetSoc Float?`, and the `Agent.chargerReservations` back-relation (`:1212`) | **NO.** No `create`/`upsert` on `chargerReservation` anywhere in `src/`. `diagnostics.controller.js:286` **reads** them (and maps `targetSoc` at `:412`) — a read path exists outside the decision path and not on it | **(b)** |
+| 19 | `maintenance` | F36 | **NO.** Both hits are `LifecycleState.MAINTENANCE` / `MAINTENANCE_TRANSIT` (`:734`, `:748`) — **states, not counters** | — | **(c)** |
+
+**Totals: (a) 2 · (b) 5 · (c) 11 · 1 that fits none of the three (row 15).**
+
+#### 9.2.3 What was fixed, and what deliberately was not
+
+**Fixed — rows 6 and 14, and only because they need no new schema, no new data source and no
+fabricated value.** `agentSnapshotLoaderFor` already fetches the `AgentClass` row and dropped
+two of its declared columns on the way through the mapper. **This is §M.4's `MobilityModel`
+finding and W-A5's `EnergyModelParams.stressCurves` finding at a third row** — *a mapper that
+narrows a row makes a predicate report an absent record when the record exists.* The columns
+are passed through **exactly as declared**: an undeclared column reaches the snapshot as
+`undefined`, a declared-null one as `null`, and both are absent to the predicates. **No shape
+is asserted by the mapper** — F5 answers `absent` for a non-object, `indeterminate` for a
+non-array member and `indeterminate` for an unlisted mission type, three verdicts a
+"normalising" mapper would collapse into one.
+
+**Not fixed, and each for a stated reason:**
+
+| | Why not |
+|---|---|
+| **Rows 4–5** (attested firmware) | Bucket **(b)** — §9.2.1. Nothing writes a `CapabilityAttestation`. And even with rows, §2.3 requires a certified validity window to be *"checked against **mission end time**, not decision time"*; F5 performs no expiry check and the loader does not know the mission end, so a read path here would be **weaker than the specification on a safety credential** |
+| **Row 18** (`reservations`) | Bucket **(b)**, and loading it would be **permissive**: an empty table would arrive as `[]`, and F18 states in its own words that this is *"not 'no reservations'. An unconsulted reservation store is precisely how two schedulers collide"* (`f18.js:81-84`). `INDETERMINATE` is the truthful answer while no Scheduler publishes |
+| **Rows 11, 17** (observations) | Bucket **(b)**. `Observation.kind` is a free string with **no declared vocabulary** (`domain/observation.js` exports `OBSERVATION_SOURCE` and `FRESHNESS` and no kinds), so there is no mapping from rows to F7/F10/F16's shapes to write |
+| **Row 15** (`session`) | The KV producer is keyed by `robotId`, is written by the **legacy** socket path, and carries no link quality. Reading it as *"this agent has a live session"* would admit on evidence §23.5 makes untrusted for expanding eligibility |
+| **Rows 1–3, 7–10, 12–13, 16, 19** | Bucket **(c)**. Schema work, **BLOCKED-EXTERNAL behind FD-1 = A** |
+
+**Effect on the counts: none.** No requirement was satisfied, no probe row cleared, no S-3 row
+added or removed. **S-3 stays 28, the runtime numerator stays 26, and `gate:composition` stays
+RED.** Rows 6 and 14 are not S-3 inputs — they are columns this repository already held.
+
+---
+
 ## §10 OWNER DECISIONS — DISTINCT FROM EXTERNAL DATA
 
 **A decision is an act of authority. An input is a value that exists and must be transmitted. They
@@ -828,10 +1166,13 @@ relabel one as the other.** Everything in §9 that is *data* stays in §9.
 
 | ID | Decision | Owner | The exact act | Why V1 needs it | Blocks | Evidence of closure |
 |---|---|---|---|---|---|---|
-| **D-1** | **B8 Safety-class calibration and two-person approval** | **Safety** | Decide `route.degraded_reserve_factor` **or** `energy.max_combined_conservatism` so validator V9's product clears the cap, **and** discharge §22.3's two-person rule (S2) for the first publish. **No value is proposed here** | An **unaccommodated production-intent** first publish is rejected. A labelled verification publish is precedented (§4.2), so this gates *production* configuration, not the harness | Production configuration publication; not, on its own, S-5 or S-6 | A Safety decision record with **two named approvers**, under `docs/release-decisions/` |
+| **D-1** | **B8 Safety-class calibration and two-person approval** | **Safety** | Decide `route.degraded_reserve_factor` **or** `energy.max_combined_conservatism` so validator V9's product clears the cap, **and** discharge §22.3's two-person rule (S2) for the first publish. **No value is proposed here** | An **unaccommodated production-intent** first publish is rejected. A labelled verification publish is precedented (§4.2), so this gates *production* configuration, not the harness. **CORRECTED 2026-09-06 by S5-1: it also gates S-5 itself.** V9 is in the blocking set of a candidate binding *only* `cutover.engine_enabled`, and S2 fires on a first publish whatever is bound — so this decision stands between the deployment and S-5, not only between it and production | ~~Production configuration publication; not, on its own, S-5 or S-6~~ **Production configuration publication, AND S-5, AND S-6 through it** | A Safety decision record with **two named approvers**, under `docs/release-decisions/` |
+| | **STATUS 2026-09-06: BLOCKED-EXTERNAL by FD-3 = NO** — `RD-2026-09-05-02` §1. There is no second Safety approver and there is to be no self-approval. **Satisfiable later by one named person**; nothing else about D-1 changes when it is | | | | | | |
 | **D-2** | **`cutover.engine_enabled = true` at region scope** | **Owner** | Publish a config version binding it at **`region`** scope, **pin it**, and run the process with `ENGINE_ENABLED=true`. **Both halves are required** — `forShard` ANDs them | Without it `task.service.assignTask` returns **503 `ENGINE_NOT_LIVE`** and nothing is written. That is §22.4's designed fail-closed staging, not a defect. **The mechanism exists and needs no code change** | **S-5** → S-6 | `cutoverEnabled.describe(...)` reports `live: true, decisionPath: ENGINE` |
+| | **STATUS 2026-09-06: AUTHORISED AND SEQUENCED — §11 step 7 (S5-2 → S5-4), behind steps 4, 5 and 6.** FD-1 = A makes S-5 the one condition left reachable, so D-2 is the act that would take the score from 3 of 8 to 4 of 8. **It is not currently performable**: S5-1 measured the publish itself as refused by V9 and S2 (§7, §16), both of which need D-1, which FD-3 = NO blocks. **Sequenced is not available** | | | | | | |
 | **D-3** | **Serviceable region declaration** | **Owner** | Declare that a named region is the V1 operating region and publish its minimal fine-cell assignment (§9 row 12) | F33 denies every candidate of every Leg without it. §3.6 forbids deriving containment from geometry at query time | S-3 → S-4 → S-6; F33 | A decision record naming the region, plus the pinned config version carrying the assignments |
 | **D-4** | **Depot charger declaration** and **the return-leg energy rate** | **Owner** | Declare **one depot-class charger with a `cellId`**, *and* the per-profile return-leg Wh/metre. **§N.2: the estate and the rate are supplied together, or F35 stays `INDETERMINATE`** | F34/F35; `plan.energy` is `null` without it | S-3; F34, F35 | A decision record plus the `Charger` row(s) and the declared rate |
+| | **STATUS 2026-09-06: AUTHORISED by FD-2 = YES; CONTENT STILL ABSENT** — `RD-2026-09-05-02` §1. One real plug-in location **will be** provided and **has not been**. **An authorisation to supply a value is not the value**: until the place and the rate are both declared, F34 and F35 deny for every candidate at every state of charge, exactly as they do today. This is §11 step 5, and it is one of only two actions on the whole plan that require the owner | | | | | | |
 | **D-5** | **Declared shard/consensus store posture** | **Owner / Operator** | Declare `SHARD_CONSENSUS_REPLICATION` as a **statement of fact about the store this deployment runs on** | **This is a decision, not a value.** §19.5's prohibition *"cannot be discharged by assumption"* — the code refuses `UNDECLARED` precisely so that nobody asserts a posture the deployment does not have. The E-11 harness declares `SINGLE_PRIMARY_NO_AUTOMATIC_FAILOVER` **about its own disposable cluster**, which is **not** a claim about production | Leader election → every round | The declared posture recorded against the named deployment |
 | **D-6** | **Boundedness acceptance: `MaxTicks = 3`** | **Release owner (§7.6)** | Sign, or decline, `MaxTicks = 3` as the global tick budget over 2 Legs in `lifecycle_c1` | §7.3a item 8. `commitment_c1` and `lifecycle_c1` both close exhaustively; the budget under which they close is unsigned | **Not a V1 stop condition.** Recorded because it is a genuine outstanding owner decision (§12 classifies it) | A signed or declined acceptance |
 
@@ -877,8 +1218,58 @@ Phase 15 audit is reopened and no Phase 15 release scope is imported.**
 > fixed, tested, mutation-checked and closed in the same session, and §3.1's status is re-earned
 > on this tree rather than carried forward.
 >
-> **There is no W-A6.** No further repository-owned V1 **core-path** defect is currently known.
+> ~~**There is no W-A6.** No further repository-owned V1 **core-path** defect is currently known.
+> If one is found, it is added here with its evidence and §3.1's status reverts again.~~
+>
+> ### **CORRECTED BY MEASUREMENT 2026-09-06. There is a W-A6, and a W-A7.**
+>
+> **The sentence above was not wrong when it was written and it was not disproved by argument.**
+> It was disproved by the two measurements §11 steps 2 and 3 ordered — N-1 and N-2 — each of which
+> found a defect of exactly the family this document has now recorded six times: *a producer
+> exists, and the composition root does not use it.* §11.A's own rule was applied as written: a new
+> core-path defect is added here with its evidence, **§3.1's status reverted**, and it was re-earned
+> in the same pass by fixing, testing and mutation-checking both.
+>
+> | ID | Action | Why required | Owner | Dependency | Verification | Status | Closure evidence |
+> |---|---|---|---|---|---|---|---|
+> | **W-A6** | **N-1 — resolve `targetSoc` through the Charging Scheduler's own client at the composition root** | `chargingSchedulerClient.resolveTargetSoc()` was exported, unit-tested and **called from nowhere in `src/`**, while `planInputFor` read `input.targetSoc` and `input.targetSocSource` and **no caller set either**. So `plan/planBuilder.insertChargingStop` refused every insertion (`planBuilder.js:619-635`) saying *"with neither a published target nor the class fallback resolved"* — while `energy.target_soc_fallback` resolves to `0.8` and `energy.target_soc_max_age` to `300` on the published register. **The refusal was true about the outcome and false about the attempt.** Stage 7/9 of the critical path, so **core-path** | Repository | none | The resolver is called per candidate with the round's pinned time; a fresh published target is consumed with `SCHEDULER` provenance; **no target SoC is defaulted, derived or invented**; `targetSoc` does **not** become a 35th requirement | **✅ CLOSED 2026-09-05.** §14.7's `TARGET_SOC_CLASS_DEFAULT` substitution is **declined by name**, not taken: §14.6 admits it only where recorded as a degradation flag on every affected decision, and `decisionRecord.writeRound`'s `context.perLeg[legId].degradations` channel (`decisionRecord.js:574`) **has no producer** — both workers that call it forward `input.perLeg` unchanged. Declining preserves today's behaviour exactly and replaces a refusal that misdescribed the register with one that names what is absent | 11 tests in `coordinatorSolvePathComposition.test.js`; mutants **M-N1a** (revert the wiring), **M-N1b** (take the class default unrecorded), **M-N1c** (reconcile disagreeing targets), **M-N1d** (synthesise a publication time) — **4 built, 4 killed**, source restored and byte-verified |
+> | **W-A7** | **N-2 — the §7.5 nineteen-field agent-record inventory, and the two `AgentClass` columns the snapshot mapper dropped** | `agentSnapshotLoaderFor` already fetches the `AgentClass` row and dropped **`firmwareVersionSet`** — which F5 names in its own refusal, *"the agent class's firmwareVersionSet"* — and **`hardwareRevision`**, which F12 matches a hardware-scoped advisory against and whose absence makes such an advisory match nothing, **silently**, in the permissive direction. **This is §M.4's `MobilityModel` finding and W-A5's `stressCurves` finding at a third row**: a mapper that narrows a row makes a predicate report an absent record when the record exists | Repository | none | Both columns pass through **exactly as declared**; an undeclared column stays `undefined` and a declared-null one stays `null`; **the mapper asserts no shape**, because F5's three distinct verdicts for three distinct malformations are what a normalising mapper would collapse | **✅ CLOSED 2026-09-05.** The full three-way classification of all nineteen fields is **§9.2** — **(a) 2 · (b) 5 · (c) 11 · 1 fitting none of the three.** Only the two bucket-(a) rows were fixed, and only because they needed no new schema, no new data source and no fabricated value. §9.2.3 states, per row, why nothing else was built | 5 tests incl. the load-bearing negative *"F5 still denies, because the attested firmware version has no read path"*; mutants **M-N2a/b/c** — **3 built, 3 killed**, source restored and byte-verified |
+>
+> **One repository-owned core-path item is now known and deliberately NOT fixed, and it is named
+> rather than left as a silence.** §2.3 requires a certified validity window to be checked against
+> **mission end time**; F5 performs no expiry check and `agentSnapshotLoaderFor` does not know the
+> mission end, so an attested-firmware read path built today would be **weaker than the
+> specification on a safety credential** (§9.2.3). It is bucket **(b)** regardless — nothing in
+> `src/` writes a `CapabilityAttestation` row. **It is not given a W-item**, because the work it
+> implies is a predicate change plus a data source that does not exist, and inventing a W-item for
+> it would extend the V1 worklist §11 declares closed.
+>
+> **There is no W-A8.** No further repository-owned V1 **core-path** defect is currently known.
 > If one is found, it is added here with its evidence and §3.1's status reverts again.
+>
+> ---
+>
+> ### F — V1-ENG: THE SIMULATION TRACK
+>
+> **These are engineering work, not V1 worklist items.** They are here, in their own sub-section,
+> and **deliberately not in §11.A** — adding them there would extend the V1 worklist, which §11's
+> own opening forbids. Their authority is `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` **§24.4** and
+> **`ADR-31 — Simulator trust`**, cited and not restated, and their classification is fixed by
+> [`RD-2026-09-05-02`](../release-decisions/RD-2026-09-05-02-v1-agent-boundary-and-simulation-track.md) §4.
+>
+> > **EVERY ROW BELOW DISCHARGES NO STOP CONDITION.** Not S-6, not S-4, not S-7, not any other.
+> > Nothing this track produces may be offered as evidence for any of the eight, and no count,
+> > gate, harness exit code or verdict in any V1 document may cite it. **A simulated agent is not
+> > admitted as V1's agent** (`RD-2026-09-05-02` §2), and FD-1 = A is precisely the decision not to
+> > take the option that would have changed that.
+>
+> | ID | Action | Depends on | Discharges | Note |
+> |---|---|---|---|---|
+> | **SIM-1** | **Provenance and containment**, including the `tools/verify/v1CorePath.js` refusal | **N-2 (W-A7) — done** | **No stop condition** | **No other simulation work starts before this lands.** Containment first is the whole point: the mechanism that makes simulated facts unable to reach a V1 verdict must exist before anything can produce them |
+> | **SIM-2** | The world model, wired through the **existing six accessors** | SIM-1 | **No stop condition** | Through the accessors that exist — **not a second architecture** (`RD-2026-09-05-02` §3) |
+> | **SIM-3** | The fleet model, same wiring | SIM-1, SIM-2 | **No stop condition** | As SIM-2 |
+> | **SIM-4** | The simulated control plane | SIM-1, SIM-2, SIM-3 | **No stop condition** | **Requires an explicit owner sign-off on the containment design before a line is written.** This row is the one place the track touches the path agent facts travel, and it does not start on a repository judgement |
+> | **SIM-5** | Scenario driver, adversarial scenarios, §26.2 matrix checking, reporting | SIM-4 | **No stop condition** | — |
 
 ### B — EXTERNAL DATA / INPUT WORK
 
@@ -948,7 +1339,7 @@ Verified against §I.1, §G and §F.1 of the canonical contract.
 | The six **`NO_PRODUCER`** families | **V1 REQUIRED** | Missing code **and** missing data sources | §F.0, §M.6 |
 | **D-2** cutover binding at region scope | **V1 REQUIRED** | **S-5** | §I.2 S-5, §K.2 |
 | **D-1** B8 Safety decision for a production publish | **V1 REQUIRED (narrow)** | Only the single V9/S2 decision. **Not** the 39 parameters | §N.6, §G |
-| **D-5** declared consensus-store posture | **V1 REQUIRED** | No leader, no round, no coordinator | §19.5, §N.6 step 3 |
+| **D-5** declared consensus-store posture | **V1 REQUIRED — per deployment.** *(Sharpened 2026-09-06, status unchanged.)* | No leader, no round, no coordinator — **but this is not where the V1 verification path currently stops.** The S-6 harness declares the true posture of the disposable cluster it builds (`v1CorePath.js:350`) and **leadership is acquired** (§5.6.1). D-5 is an owner declaration of an observable fact about a *specific* cluster, and no session may make it on an operator's behalf; §4.1's step 3, which presented it as a live stop, is **superseded — see §4.3** | §19.5, ~~§N.6 step 3~~ → **§4.3** |
 | **`candidate.max_radius_by_sla_class`** | **V1 NON-BLOCKING** | Satisfied by §6.3's wall-clock disjunction. Still owed by Operations | §M.6, E-8 |
 | **F17's `VIOLATED`** | **V1 NON-BLOCKING** | Correct behaviour of a correct predicate (§6) | §N.4, spec `:3129-3132` |
 | **`plan.max_admissible_mission_duration`** unread by any predicate | **V1 NON-BLOCKING** | *"not a service limit"* by declaration; publish-time algebra only | `supplementary.json:26` |
@@ -966,6 +1357,8 @@ Verified against §I.1, §G and §F.1 of the canonical contract.
 | **X3** — no `TASK` timer producer; §4.2 has no transition table | **V1-EXTERNAL-INPUT (specification)** | A specification gap, not an engineering task | §G.2 |
 | **Phase 16**; `preemption.js`, `setPartitioning.js`, `branchAndBound.js`, `localSearch.js` | **V2 — FUTURE ARCHITECTURE** | Every §22.5 kill switch is thrown. **Do not start** | §G |
 | `stores/roles.js`, `deps/registry.js`, `circuitBreaker.js`, `routing/client.js`, **A9** | **V2 — FUTURE ARCHITECTURE** | **Do not create.** Each protects or documents something V1 has not selected | §G |
+| **The high-fidelity multi-robot simulation track** — SIM-1 … SIM-5 (§11.F) | **V1-ENG** | An **intentional engineering track**, classified by `RD-2026-09-05-02` §4. **It discharges no stop condition** — not S-6, not S-4, not S-7, not any other — and nothing it produces may be cited by any count, gate, harness exit code or verdict in these documents. It is tracked in **§11.F** and deliberately not in §11.A, because §11.A is the V1 worklist and §11 declares that list closed | `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` **§24.4** · **`ADR-31`** — cited, not restated · `RD-2026-09-05-02` §4 |
+| **The §7.5 agent-record programme** — schema, ingestion and a mapper for the fields §9.2 classifies as buckets (b) and (c) | **BLOCKED-EXTERNAL** | **Behind FD-1 = A.** S-6 requires all 38 §7.5 predicates to admit for one agent–Leg pairing, and the fields that stop it are attestations, sensor readings and control-plane facts **about physical hardware that does not exist**. Eleven of the nineteen have no column at all; five have a column and no producer. **No part of it is repository-owned work today**, and seeding any of it would be the specific way a fake green is manufactured here | §9.2 · `V1_DISCOVERY_AND_OWNER_QUESTIONS.md` §12.6 and §13.5 · `RD-2026-09-05-02` §1, §3 |
 
 ---
 
@@ -997,11 +1390,54 @@ Verified against §I.1, §G and §F.1 of the canonical contract.
 
 > ### ✅ W-D1 — DONE, 2026-09-05. `26 of 34`. See §5.6.
 > ### ✅ W-D2 — DONE, 2026-09-05. The request is issued. See §14.5.
+> ### ✅ S5-1 — DONE, 2026-09-05. **The S-5 publish is REFUSED.** See §7's S-5 row and §16.
 > **W-D1's and W-D2's own records, and the reasoning that ordered them, are kept in §14.1–§14.4
 > unchanged**, because the argument for measuring before asking is the same argument that
 > governed the request that has now been issued.
 
-> ## ▶ **AWAITING THE OWNER'S RESPONSE TO `RD-2026-09-05-01`.**
+> ## ▶ **THE ONE IMMEDIATE NEXT ACTION WAS S5-1. IT IS DISCHARGED.**
+> *(This heading replaced W-D2 as the immediate action per the approved plan §12.3, and S5-1 was
+> then executed in the same pass. What follows is recorded here rather than left implicit.)*
+>
+> **S5-1's result changed the shape of the boundary rather than the score.** Before it, S-5 read as
+> *"the mechanism exists and the owner has not performed the act."* Measured, **the act is
+> refused** — by V9 and by S2, independently, with zero `ConfigVersion` rows written — and both
+> refusals need a Safety authority and a second approver that **FD-3 = NO** says do not exist.
+> **The one stop condition FD-1 = A left reachable is not currently reachable.**
+>
+> **The next actions, in §11's order:**
+>
+> | | Action | Owner | Available now? |
+> |---|---|---|---|
+> | §11 step 5 | Name the charger location (campus + lat/lon or a precise description) **and** the per-profile return-leg Wh/metre, in a decision record. **Both or neither** | **Owner** | **Yes** — FD-2 = YES authorises it |
+> | §11 step 6 | Write the 13 provisional cost values, sole named author, one config version. §11.7 of the discovery document is the sheet, unchanged | **Owner** | **Yes** — needs no second person, no hardware, no engine, no deployment |
+> | §11 step 8 | **SIM-1** — provenance and containment, including the `v1CorePath.js` refusal. **No other simulation work starts before this lands** | Repository | **Yes** — its dependency (N-2) is discharged. **V1-ENG: it discharges no stop condition** (§11.F) |
+> | §11 step 7 | S5-2 → S5-4, closing S-5 and taking 3 of 8 → 4 of 8 | Repository + Owner | **No** — ~~behind steps 4, 5 and 6, and behind D-1, which FD-3 = NO blocks~~ · **MEASURED 2026-09-06 (§7.1): also blocked in its own right.** S5-2 needs a containment-semantics decision the owner has **refused** in both available forms, with **no defined escalation target**; S5-3 needs D-1, which FD-3 = NO blocks. **S5-4 is NOT REACHED** |
+>
+> **Steps 5 and 6 are the only two things that require the owner. Everything else is repository
+> work** — and the only repository work available is V1-ENG, which closes nothing.
+
+> ### ✅ S5-2 and S5-3 — MEASURED 2026-09-06. **BOTH BLOCKED. S5-4 NOT REACHED.** See §7.1.
+>
+> **The boundary moved once more, and again in the unfavourable direction.** Before this pass, S5-2
+> read as *repository work waiting its turn behind steps 4, 5 and 6.* Measured, **it is not
+> repository work at all**: the one prerequisite that decides it — how a 0.0998 km² campus is
+> covered by 0.7373 km² cells — is an owner decision recorded as **refused in both available forms**,
+> whose escalation target `B1_EXTERNAL_INPUT_HANDOFF.md` §1.8.5 declares **NOT DEFINED**.
+>
+> **A third owner-facing item now exists, and it is not a new request** (§14's single-request rule
+> is intact — this is an existing §9/§10 row measured to be larger than it read, which §14 says is
+> recorded here and amended in place):
+>
+> | | Action | Owner | Available now? |
+> |---|---|---|---|
+> | §7.1.2 | **The polygon→H3 containment-semantics decision**, or a decision that removes the need for one. `containmentOverlapping` and `containmentOverlappingBbox` are refused; the standard path returns **0 cells** and fails V-8; there is **no V-8 exception mechanism**. **No session may choose here** | **Owner** — and it is the escalation §1.8.5 records as having no target | **Yes**, in the sense that only the owner can make it. It has been open since 2026-08-30 |
+>
+> **Nothing in §14's prohibitions was breached by this pass**: no second owner request, no
+> fabricated answer, W-D3…W-D6 not started, and no work hunted for — §7.1.6 records the two
+> candidates that were considered and declined, with reasons.
+
+> ## ▶ **AND STILL AWAITING THE OWNER'S RESPONSE TO `RD-2026-09-05-01`.**
 >
 > **There is no repository-owned, V1-blocking action available on this tree.** This is not a
 > deferral and not an idle state — it is the honest position of a repository that has completed
@@ -1178,6 +1614,10 @@ documentation was changed; no source, test, gate, formal model, or configuration
 | **11** | The implication that the S-6 harness's own output reports the measurement it takes | `v1CorePath.js:452`, and §13's harness row | **It did not.** `.slice(0, 2400)` cut the `MEASURED …` clause, which begins at index 3 291 of a 16 942-character line. **FIXED 2026-09-05 (W-A4): it does now**, and a second silent cap — `refusals.slice(0, 12)` — went with it. The clause was, for the two runs on record, reachable only through the harness's exported `startServer` | **§5.6.3**, §11.A |
 | **12** | *"`EnergyModel` carries `chargePowerCurve` and `thermalDeratingCurve` and **no wear curve at all**"*, offered as the reason §14.4's wear inputs have no producer — and, more strongly, *"**no schema column carries either**"* | `coordinatorPipeline.js` (the `battery wear inputs (§14.4)` row) and `coordinatorSolvePath.js` (the phi seam) — **source, not prose** | **True of `EnergyModel`, and the wrong row. `EnergyModelParams.stressCurves` is declared as *"the vendor cycle-life-versus-DoD curves §14.4 prices wear from"***, `wear.js:93` names it as its own source, and `agentSnapshotLoaderFor` already loaded it. The curves half had a column all along; **the mission half (`socThroughput`, `dod`, `socMid`, `tempC`, `cRate`) genuinely has none**, so the requirement stands and is narrowed rather than closed | **§9.1**, **W-A5**; `prisma/schema.prisma` `model EnergyModelParams`; `coordinatorSolvePath.js:308`, `:373` |
 | **13** | *"B8 … stops a deployment publishing its first configuration version **at all**"* — the sentence **in the canonical contract**, as distinct from row 2 above which recorded the correction here | contract §N.8 closing note | **Corrected in the contract itself, 2026-09-05 (W-A3)**, under its supersession convention with the original struck rather than removed. Row 2 of this table recorded the correction; §N.8 now carries it | contract §N.8; **§4.2** |
+| **14** | *"no leader could be elected → §19.5 `assertConsensusStore` refuses a store whose replication posture is UNDECLARED"*, presented as step 3 of a chain headed **"exactly as it occurred"** | **this document, §4.1** | **It never occurred.** `v1CorePath.js:350` declares `SINGLE_PRIMARY_NO_AUTOMATIC_FAILOVER`, `server.js:562` reads it, and the assertion **passes**. The line has been present since the harness's first commit `3ff92ae`, so §4.1 was wrong **when written** — and §5.6.1 of the same document already recorded *"Leadership: **Acquired**"* from an independent re-run. Struck in place, not deleted; **D-5's status as an owner declaration is unchanged** | **§4.3**; `v1CorePath.js:343-350`; `server.js:560-565`; `shardSupervisor.worker.js:581`; §5.6.1 |
+| **15** | The reading that S5-2's *"publish the fine-cell assignments"* half might fail on a **spatial** problem at publish time | the S5-2 plan step | **The spatial payload is provably not the constraint.** The full S5-2 candidate — region, zone, three FINE assignments, a well-formed shard definition, and the `cutover.engine_enabled` region binding — adds **zero** blocking findings over the bare S5-1 candidate: `blocking = ["V9"]` either way. S5-2's config half and S5-3 are **one refusal, not two**; S5-2 is blocked **before** publish, at §7.1.2 | **§7.1.3**, measured read-only against the shipped `service.js` |
+| **15a** | *"`docs/v1/` holds **three** files"*, and *"no **fourth** file may be added"* | **this document, §2 and §17 rule 13** | **It holds four**, and it did on the tree the sentence was written against: `git show --name-status 10a527c` adds `V1_DISCOVERY_AND_OWNER_QUESTIONS.md`, `V1_IMPLEMENTATION_CONTROL.md` and `V1_OWNER_ACTION_CHECKLIST.md` **in one commit**, and the correction counted only two of the three. **Only the count is corrected; rule 13's prohibition is unchanged, and this pass added no file.** Whether the discovery document engages rule 13's *substance* is flagged to the owner and **deliberately not decided here** | `ls docs/v1/` → 4 · `git log --diff-filter=A -- docs/v1/` → `2b367e4`, `10a527c` · **§2**'s 2026-09-06 correction block |
+| **16** | Any future statement that the coordinator's composition failure is *"blocked on B1"* | shorthand in circulation since the E-7 pass | **B1 releases 5 of the 26.** Re-measured 2026-09-06 through `coordinatorPipeline.requirements()`: `EXTERNAL_ROUTING 5` (B1) · `REGISTER_UNRESOLVED 15` (§22.4's calibration owner — §22.3 **forbids** an automated process choosing them) · `NO_PRODUCER 6` (missing code against a data source nobody has named). **21 of the 26 are not B1's**, and B1 arriving alone starts no coordinator | **§7.1.5**; the same `{5, 15, 6}` breakdown the live E-11 run reported (§5.6.2) |
 
 ---
 
@@ -1205,6 +1645,22 @@ documentation was changed; no source, test, gate, formal model, or configuration
 | 2026-09-05 | `4e2155a`, working tree not clean (7 modified, 3 untracked — **not committed; no commit was requested**) | **FULL VERIFICATION OF THE PASS, at the closing tree.** `npm test` → **exit 0 — `Test Suites: 167 passed, 167 total · Tests: 7429 passed, 7429 total · Snapshots: 0 total · Ran all test suites in 5 projects`**, zero failures, zero skips *(166 / 7 411 before the pass: **+1 suite, +18 tests**, all added by it)*. `npm run gates` → **exit 1 — 7 PASS / 1 FAIL**, and every PASS line is numerically identical to the pre-pass run: `gate:tiers` 292 modules / 459 edges · `gate:params` 193 engine + 289 runtime · `gate:tenets` 289 · `gate:privacy` 16 · `gate:erasure` 3 · `gate:legacy` 350 files · `gate:columngen` NOT_REQUIRED. `gate:composition` **FAIL — 1 violation across 19 registered workers**, `LEADER_ONLY_NOT_COMPOSABLE` for `coordinator`, requires-list still **34**. The declared contract re-measured read-only: **34 total — 5 EXTERNAL_ROUTING / 16 REGISTER_UNRESOLVED / 6 NO_PRODUCER / 6 PROCESS_DEPENDENCY / 1 ADMISSIBILITY**, identical to §5.1 | Both commands run from `Backend/` at this tree · `node -e` measurement of `coordinatorPipeline.REQUIREMENTS` · `git status --short` | **S-7** (unchanged, one half); **S-4** (unchanged) |
 | 2026-09-05 | `4e2155a` | **NO STOP CONDITION CHANGED BY THIS PASS. The score is 3 of 8 — S-1, S-2, S-8 met; S-3, S-4, S-5, S-6, S-7 not met.** S-3 stays at **28** and the runtime numerator stays at **26**: W-A5 satisfied no requirement, cleared no probe row, and reduced no count — it corrected a false statement and read a column that is empty in every deployment this repository can see. `gate:composition` stays **RED**, `LEADER_ONLY_NOT_COMPOSABLE` for `coordinator`. **No external value was fabricated**: no router, region, charger, terrain figure, calibration constant, temperature, mass, `p_fail`, hazard cost, battery-wear quantity or energy rate; `cutover.engine_enabled` remains unbound and B8 unresolved. **No second owner request was issued** — §9 row 11 was amended, which is what §14 prescribes | §7 unchanged · §11.B/§11.C statuses unchanged · the *"still declares `battery wear inputs (§14.4)` as unsatisfied"* test | **S-1…S-8** (all unchanged) |
 | 2026-09-05 | `4e2155a`, working tree carrying the repository-only pass (uncommitted) | **OWNER ACTION CHECKLIST ADDED — documentation only, no code, no test, no config, no formal model touched.** `docs/v1/V1_OWNER_ACTION_CHECKLIST.md`, written at the owner's instruction to make collecting the already-defined boundary items as small and unambiguous as possible. It carries **22 actionable rows** — 16 input rows (A1…A14, with **A6a** as two of A6's fifteen and **A11** in Amendment 1's two halves, together the **28** S-3 values) and 6 decisions (**D-1…D-6**, D-6 marked non-blocking) — each with type (A: owner supplies · B: owner decides · C: another party supplies/decides), the exact artefact, source, format, what it blocks, the validation that closes it, and its status. **It is NOT a second owner request, NOT a status document and NOT a source of truth**; every row traces to `RD-2026-09-05-01` and the record governs where they differ. **No value is proposed, defaulted or illustrated in it**, and **no Safety-class number is offered** (A6a, D-1 flagged as requiring an actual authority). §2 and §17 rule 13's file count are corrected from two files to three, with the prohibition on a competing V1 status document **unchanged**. **NO STOP CONDITION CHANGED — S-1, S-2, S-8 met; S-3, S-4, S-5, S-6, S-7 not met; the score is 3 of 8; S-3 is still 28 and the runtime numerator still 26; `gate:composition` is still RED** | The checklist itself · §2, §14.7, §17 rule 13 · mechanical verification: A1…A14 + A6a + D-1…D-6 each appear exactly once and map 1:1 to `RD-2026-09-05-01` §4/§5 and thence to §9 rows 1–18 / §10; every V2 / Phase-15-release term appears **only** in its §3 "explicitly not required" list; no source, test, gate, fixture, formal model or configuration file was modified | §2, §14.7, §17 rule 13; **S-1…S-8 all unchanged** |
+| 2026-09-06 | `10a527c85bd8a314be54a5aaa681af3ab1502e89` (HEAD) | **THE THREE DECISIONS RECORDED — §11 step 1.** [`docs/release-decisions/RD-2026-09-05-02-v1-agent-boundary-and-simulation-track.md`](../release-decisions/RD-2026-09-05-02-v1-agent-boundary-and-simulation-track.md) drafted with §12.1's six sections and the owner's name, date and signature **left blank**. **FD-1 = A** — the V1 contract is unchanged, a real commissioned physical agent is required for S-6, RobotX hardware is in active development. **FD-2 = YES** — recorded as an **authorisation, not a supply**; no charger location, region, `isDepot` or return-leg rate is stated anywhere in it. **FD-3 = NO FOR NOW** — no second Safety approver, no self-approval, **satisfiable later by one named person**. §2 of the record states what is **not** decided: the V1 contract, S-1…S-8 and S-6 are unchanged, and **no simulated agent is admitted as V1's agent.** §3 records that physical RobotX is expected to connect through the existing control-plane/commissioning path, **not a second architecture**. §4 classifies the simulation track **V1-ENG** on the authority of `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` §24.4 and `ADR-31` — **cited, not restated**, because ADR-31's own text says it does not restate §24.4 and a fourth statement of one rule is how a register rots. **Documentation-only updates made alongside it**: `V1_DISCOVERY_AND_OWNER_QUESTIONS.md` gains **§13** (§12 not edited — a correction sits beside the record), this document's §10 (D-1 BLOCKED-EXTERNAL by FD-3 = NO · D-2 authorised and sequenced to step 7 · D-4 authorised by FD-2 = YES, content still absent), §11.A (**W-A6**, **W-A7**, and the *"There is no W-A6"* sentence corrected **by measurement**), the new **§11.F** for SIM-1…SIM-5, §12 (two new rows), §7's S-5 next action and §14. `V1_OWNER_ACTION_CHECKLIST.md` updated as a collection sheet only | The record itself · §13.1–§13.5 of the discovery document · **the record is DRAFTED AND UNSIGNED and therefore does not satisfy S-3's closure requirement**, which is stated in its own §6 rather than left to a reader | **§11 step 1**; **D-1, D-2, D-4** statuses; **W-A6, W-A7**; §11.F; §12; **no stop condition changed** |
+| 2026-09-06 | `10a527c` | **ONE DEVIATION FROM THE APPROVED PLAN, RECORDED RATHER THAN ABSORBED.** §12.1 section 5 and §12.3's §7 row were both written **before** S5-1 ran, and both describe S-5's reachability as *"unmeasured pending S5-1"* / the next action as *"run S5-1"*. **S5-1 ran in this same pass.** Writing either sentence as approved would have published a question that had already been answered, so in both places the pending-measurement clause is **replaced by its result**, with the replacement marked as such. **No section was added, removed or renumbered; §12.1's six sections are exactly the six it names, in order** | `RD-2026-09-05-02` §5 (the addendum is inside section 5, not a seventh section) · §7's S-5 next-action cell · §14's replaced heading | §11 steps 1 and 4 |
+| 2026-09-05 measured · 2026-09-06 recorded | `10a527c85bd8a314be54a5aaa681af3ab1502e89` (HEAD), working tree **clean at the start of the pass** | **N-1 — `targetSoc` RESOLVED. Verdict (a): a producer exists and the composition root did not use it — the E-8b family for the fifth time. FIXED.** `coordinatorSolvePath.planInputFor` read `input.targetSoc` and `input.targetSocSource` and **no caller set either**, so `plan/planBuilder.insertChargingStop` refused every insertion (`planBuilder.js:619-635`) with a sentence reading *"with neither a published target nor the class fallback resolved"* — **while `energy.target_soc_fallback` resolves to `0.8` and `energy.target_soc_max_age` to `300` on the published register.** The refusal was true about the outcome and **false about the attempt**, because no attempt was made. `chargingSchedulerClient.resolveTargetSoc()` — the shipped resolver — was exported, unit-tested and **called from nowhere in `src/`**. It is now called, per candidate, from `evaluateExactFor`, with the round's **pinned** decision time and a scope carrying `agent_class` (`energy.target_soc_fallback` is indexed by it — §M.4's `capacity` lesson at a second parameter). **§14.7's `TARGET_SOC_CLASS_DEFAULT` substitution is DECLINED by name, not taken**: §14.6 admits it only where it is *"recorded as a degradation flag on every affected decision"*, and the channel that would carry it — `decisionRecord.writeRound`'s `context.perLeg[legId].degradations` (`decisionRecord.js:574`) — **has no producer**; both workers that call it forward `input.perLeg` unchanged (`coordinator.worker.js:396`, `shadow.worker.js:126`) and Tier A's `degradation` section carries shard modes and relaxations, not a per-decision flag list (`tierA.js:485-495`). Declining keeps today's behaviour exactly and replaces a refusal that misdescribed the register with one that names what is absent; taking it would have been E-1's dropped `achievedGapProven` in a new place. **No target SoC is defaulted, derived or invented.** **`targetSoc` is NOT registered as a 35th requirement** — it is §5.6.6's blind spot again: the dependency it needs (`prisma`) is *satisfied* and what is absent is data inside it, which no dependency probe can see at any depth | BEFORE reproduced against the shipped modules: `planInputFor(…).charging.targetSoc === undefined` with **every** field the composition root actually supplies (`coordinatorSolvePath.js:1209-1222`), and `insertChargingStop` refusing verbatim · `REQUIREMENT_IDS.length` = **34**, rows matching `/soc\|target/i` = **[]** · AFTER matrix: a fresh published target → `0.85`/`SCHEDULER`; a target past `energy.target_soc_max_age` → declined; a target with no publication time → declined; two disagreeing targets → refused by name, neither picked; a `MAINTENANCE` reservation → not a charging target · **10 new tests** in `coordinatorSolvePathComposition.test.js` · **4 mutants built, 4 killed**: **M-N1a** revert the wiring (1 failure), **M-N1b** take the class default unrecorded (4), **M-N1c** reconcile disagreeing targets by taking the first (1), **M-N1d** synthesise a publication time (2). Source restored and **byte-verified** after each | **N-1**; §3.1 (reverted and re-earned); **no stop condition changed** |
+| 2026-09-05 measured · 2026-09-06 recorded | `10a527c` | **N-2 — THE §7.5 AGENT-RECORD FIELD INVENTORY. All nineteen fields classified; §9.2 is the table.** **(a) 2 · (b) 5 · (c) 11 · 1 fitting none of the three.** **The scoping premise was wrong and measuring it is the finding**: `AgentCertificate` and `CapabilityAttestation` were expected to have live producers in `src/engine/security/`, and they have producer *functions with no callers* — `attestation.record()` (the only writer of an attestation row) and `attestation.verify()` are called from **nowhere in `src/`**; the two socket handlers call only `findCapabilityClaims`, and `agentCertificate` has no `create` at all. So the attested-firmware family is **(b)**, not (a), and accepting the premise would have produced a read path against a table nothing fills. **Two bucket-(a) defects found and FIXED**, both the same shape as §M.4's `MobilityModel` and W-A5's `stressCurves`: `agentSnapshotLoaderFor` already fetches the `AgentClass` row and dropped **`firmwareVersionSet`** (which F5 names in its own refusal — *"the agent class's firmwareVersionSet"*) and **`hardwareRevision`** (which F12 matches a hardware-scoped advisory against, and whose absence makes such an advisory match nothing, **silently**, in the permissive direction). Both are passed through **exactly as declared** — the mapper asserts no shape, because F5's three distinct verdicts for three distinct malformations are what a normalising mapper would collapse. **Nothing else was built**: rows 4–5 because §2.3 requires the validity window checked against *mission end time* and neither F5 nor the loader can do that; row 18 because an empty `ChargerReservation` table would arrive as `[]` and F18 says in its own words that this is *"not 'no reservations'"*; rows 11/17 because `Observation.kind` is a free string with no declared vocabulary; row 15 because the KV session producer is keyed by `robotId` on the legacy path and carries no link quality | §9.2's nineteen-row table, each row a `grep`/`node` measurement on this tree · **5 new tests** incl. the load-bearing negative *"F5 still denies, because the attested firmware version has no read path"* and *"an undeclared column stays absent — nothing is defaulted or inferred"* · **3 mutants built, 3 killed**: **M-N2a** revert both columns (4 failures), **M-N2b** fabricate `{}` where the class declares no set (1), **M-N2c** normalise the shape in the mapper instead of letting F5 own it (1). Source restored and **byte-verified** | **N-2**; §9.2; §3.1 (reverted and re-earned); **no stop condition changed, no count moved** |
+| 2026-09-05 measured · 2026-09-06 recorded | `10a527c`; disposable **PostgreSQL 18.3** cluster, `initdb`-ed for this run on port **55432**, **28** migrations applied by `npx prisma migrate deploy` (*"Database schema is up to date"*). Neither Neon nor the local 5432 was used | **S5-1 — THE S-5 PUBLISH MEASURED UNDER FD-3 = NO. IT REFUSES, on two independent grounds, and §12.2 of the feasibility report is REFUTED.** A **labelled, non-production** config version was attempted binding **exactly one** parameter — `cutover.engine_enabled = true` at **region** scope, for the campus adopted in `RD-2026-08-30-01` — with **no Safety-class binding of any kind, no accommodation, no relabelling and no bypass**, and **no approvals** (FD-3 = NO; no second approver exists and none was self-supplied). **Result: `ConfigValidationError` — "configuration rejected at publish time: 2 blocking finding(s)". 200 findings: 2 BLOCKING, 198 LAUNCH_GATE. `ConfigVersion` rows after the attempt: 0.** **(1) V9** — *"combined degraded energy conservatism 2.0124999999999997 exceeds `energy.max_combined_conservatism` 1.6 (nominal 1.4375 × `route.degraded_reserve_factor`=1.4). Raising the cap is an explicit Safety-class decision"*. **(2) S2** — *"Safety-class change to \[47 parameters] carries 1 distinct approver identities; two-person approval requires 2 (§22.3)"*. **Both documents were partly right and §12.2's conclusion was wrong.** §12.2 is correct that `cutover.engine_enabled` is `STRUCTURAL` (measured: `changeClass = "STRUCTURAL"`, and it is **not** in the Safety change set) — and wrong that this makes S-5 achievable today, because the approver rule is a property of **the version**, not of the parameter: on a first publish `previousValues` is `null`, so `safetyClassChanges` returns **47** names (`service.js:299`) and S2 fires whatever is bound. **§4.2 of this document is confirmed and sharpened**: it attributes the two-approver requirement to the harness's own `route.degraded_reserve_factor` binding — measured, S2 fires with **no Safety binding at all**, and **V9 is not about approvers in any way**: it is computed from the register's own defaults and appears in `validateCandidate`'s blocking set for a candidate that binds only `cutover.engine_enabled`. **S-5 IS RECLASSIFIED AS BLOCKED BY FD-3 = NO.** No accommodation was added to get a green | Verbatim refusal recorded above and in full in the run log · read-only counterfactual against the shipped `service.js` (nothing published, nothing written): first publish → **47** Safety-class changes, S2 fires; subsequent publish changing no Safety value → **0** changes, S2 does **not** fire; `validateCandidate` blocking ids for this candidate → **`["V9"]`**; `SAFETY_APPROVAL_QUORUM` = **2**; `cutover.engine_enabled.changeClass` = **`STRUCTURAL`**, present in the first-publish Safety set = **false** | **S-5** (reclassified: blocked by **FD-3 = NO**, on **V9** *and* **S2**); **S-6** (unchanged, behind S-5); §4.2 sharpened; §12.2 of the feasibility report refuted |
+| 2026-09-06 | `10a527c`, working tree **3 modified files** — `Backend/src/workers/coordinatorSolvePath.js`, `Backend/tests/engine/coordinatorSolvePathComposition.test.js`, this document. **Not committed; no commit was requested** | **FULL VERIFICATION OF THE N-1 / N-2 / S5-1 PASS, at the closing tree.** `npm test` → **exit 0 — `Test Suites: 167 passed, 167 total · Tests: 7445 passed, 7445 total · Snapshots: 0 total · Time: 351.022 s · Ran all test suites in 5 projects`**, zero failures, zero skips. **The delta reconciles exactly**: `git show HEAD:…coordinatorSolvePathComposition.test.js` holds **76** tests and the working tree holds **92** — **+16**, and the suite total moved **7 429 → 7 445 = +16**. No other test file was touched. `npm run gates` → **exit 1 — 7 PASS / 1 FAIL**, and **every PASS line is numerically identical to the pre-pass run**: `gate:tiers` 292 modules / 459 edges · `gate:params` 193 engine against 250 registered + 289 runtime · `gate:tenets` 289 · `gate:privacy` 16 · `gate:erasure` 3 · `gate:legacy` 4 retired absent across 350 files · `gate:columngen` NOT_REQUIRED. **`gate:composition` FAIL — 1 violation across 19 registered workers**, `LEADER_ONLY_NOT_COMPOSABLE` for `coordinator`, requires-list still **34**. **It was not weakened and no row was removed from `UNCOMPOSABLE`** (§17 rule 6) | Both commands run from `Backend/` at this tree · `git status --short` → 3 modified, 0 untracked · `git show HEAD:…` test count | **S-7** (unchanged, one half); **S-4** (unchanged) |
+| 2026-09-06 | `10a527c` | **NO STOP CONDITION WAS MET BY THIS PASS, AND ONE WAS RECLASSIFIED HARDER. The score is 3 of 8 — S-1, S-2, S-8 met; S-3, S-4, S-5, S-6, S-7 not met.** S-3 stays at **28** and the runtime numerator at **26**: N-1 satisfied no requirement (`targetSoc` is not and must not become a 35th row), and N-2's two columns are not S-3 inputs — they are columns this repository already held. **S-5 moved in the *unfavourable* direction**: from *"the mechanism exists and the owner has not performed the act"* to **"the act is refused, measured, on two independent grounds, and FD-3 = NO means neither can be discharged"**. **No external value was fabricated**: no target SoC, no router, region, charger, terrain figure, calibration constant, temperature, mass, `p_fail`, hazard cost or energy rate; no commissioning record, attestation, e-stop, heartbeat, fault list or health tier was seeded; `cutover.engine_enabled` remains unbound in every environment this repository can see, and the S5-1 attempt wrote **0** `ConfigVersion` rows. **No predicate was weakened, no `skipPredicates` or bypass added, no Safety approval self-supplied, no gate algebra touched, `formal/` untouched, Phase 15 not reopened, no release evidence re-collected, and no SIM item started** | §7 (S-5 row rewritten with its prior text preserved) · §3.1 (reverted twice, re-earned) · §9.2 · the three §16 rows above | **S-1…S-8**; **S-5** reclassified |
+| 2026-09-06 | `10a527c85bd8a314be54a5aaa681af3ab1502e89` (HEAD); working tree carrying the prior pass's uncommitted changes | **S5-2 — MEASURED AND BLOCKED, on a prerequisite that is NOT the one the plan expected.** All six prerequisites checked against code, read-only; **nothing published, pinned, seeded or written; zero rows created on any store.** The decisive one is the **fine-cell derivation**: measured with `h3-js@4.5.0` at the unchanged `@structural B5` resolutions, the adopted `way/1120154292` polygon is **0.0998 km²** against a res-8 cell average of **0.7373 km²**, so standard `polygonToCells` and `containmentFull` both return **0 cells**, while **the ring's 18 unique vertices under `latLngToCell` return the same 3 cells — 2.2759 km², 22.8× the campus, 95.6% of the assigned ground outside it — as `containmentOverlapping`**. So *"derive the minimal fine-cell assignments from the adopted boundary"* has **no third answer**: it is empty, or it is `containmentOverlapping` under another name, and `B1_EXTERNAL_INPUT_HANDOFF.md` §1.8.4 item 2 records that mode as a **standing owner refusal** whose escalation target §1.8.5 declares **NOT DEFINED**. **No containment mode was chosen and §17 rule 3 was obeyed.** The other five prerequisites: the **region declaration** is absent — `validateRegionDeclaration` on the adopted Polygon names **six** missing fields (`regionId`, `name`, `kind`, `crs`, `version`, `versionDate`); the **boundary** is adopted as intent and forbidden as D1 data by handoff §1.1/STOP rule 5; **no zone identity** is declared and `cells.validateAssignment` requires one per FINE cell; the **config version** is refused (see the next row); the **Shard row** mechanism exists and nothing calls it (§7.1.4). ***(New measurement: §1.8.3 recorded 1 cell / ≈86% outside for JSSATE. RNSIT is worse on the same arithmetic — 3 cells, 95.6% outside.)*** | **§7.1.1**, **§7.1.2** · `h3.polygonToCells` / `polygonToCellsExperimental` / `latLngToCell` / `cellArea` at res 8, plus a shoelace area on the committed geojson · `regionBoundary.validateRegionDeclaration({boundary: <the adopted Polygon>})` verbatim problem list · `RD-2026-08-30-01` §7, §8.3 · `B1_EXTERNAL_INPUT_HANDOFF.md` §1.8.3–§1.8.5 | **S5-2 BLOCKED** — owner decision, no escalation target; **S-5** unchanged (NOT MET); **no stop condition changed** |
+| 2026-09-06 | `10a527c` | **S5-3 — MEASURED. Classification B: FD-3 = NO / Safety approval policy. NOT a repository defect, and there is nothing legitimate to fix.** S5-1's refusal re-derived read-only against the **full S5-2 candidate** — the `cutover.engine_enabled = true` region binding **plus** `regions[]`, `zones[]`, three FINE assignments and a well-formed `shards[]` definition. Result: `blocking = ["V9"]` at `validateCandidate`, and `safetyClassChanges(…, previousValues = null)` → **47**, `checkSafetyApproval` → **`["S2"]`** against `SAFETY_APPROVAL_QUORUM = 2`. **V9's arithmetic was independently checked for a repository defect and is correct with no double-counting**: nominal `1.15 × 1.25 × 1.0 = 1.4375` (`energy.charger_availability_margin`, `energy.uncalibrated_reserve_factor`, `energy.f_derate`), degraded `× route.degraded_reserve_factor 1.4 = 2.0125`, cap `1.6`; **both movable parameters are `changeClass: SAFETY`, `PROVISIONAL`**, so discharging V9 is D-1/B8 and **FD-3 = NO** blocks it. S2 is a property of the *version*, not the parameter. ★ **And a second result: the spatial payload is provably NOT the constraint** — adding region, zone, cells and shard produced **zero** additional blocking findings over S5-1's bare candidate, so **S5-2's config half and S5-3 are one refusal, not two.** No accommodation was added, no approver synthesised, no gate algebra touched, and **0** `ConfigVersion` rows were written | **§7.1.3** · read-only `validateCandidate` / `safetyClassChanges` / `checkSafetyApproval` against the shipped `src/engine/config/service.js` · `buildSnapshot().derivationEvidence.factors` · `entries.get(name).changeClass` for both Safety parameters | **S5-3 BLOCKED (B)**; **S5-4 NOT REACHED**; **S-5** unchanged; **no stop condition changed** |
+| 2026-09-06 | `10a527c` | **THE ASSIGNMENT-ENGINE COMPOSITION RE-MEASURED INDEPENDENTLY — and the shorthand "blocked on B1" is refuted by the measurement, not by argument.** `coordinatorPipeline.requirements()` run read-only against a context supplying exactly what `server.js:657-722` supplies reproduces the live E-11 figure **exactly**: **26 of 34 unresolved, `{EXTERNAL_ROUTING: 5, REGISTER_UNRESOLVED: 15, NO_PRODUCER: 6}`**, 8 satisfied. **B1 releases 5 of the 26**; the other **21** belong to §22.4's calibration owner (15 rows §22.3 forbids an automated process from choosing) and to six families with no schema column and no named data source. **A routing source arriving alone starts no coordinator.** *(A first probe run reported `27` because the synthetic context omitted `expansionWallClockBudgetMs`, which §6.3's disjunction reads; supplying it reproduces 26. **Recorded rather than quietly corrected** — an unexplained 27 would have read as a seventh widening.)* **No new repository-owned composition defect was found.** The **F33 consumption seam** was exercised against the exact payload §7.1.2 derives: no map → `serviceable` **absent**; map published → `serviceable: true` inside, and **absent, not `false`**, outside — §17 rule 4 holding at runtime. A mechanical sweep for the *producer-exists-with-no-caller* family over all **81** modules reachable from `coordinatorSolvePath.js` returned **116** candidates and **is not reported as 116 findings**, because the instrument cannot see a comparator passed by reference or a test-only assertion helper and substantially all 116 are those — **a detector with that false-positive rate is not evidence** | **§7.1.5** · `node -e` against `coordinatorPipeline.REQUIREMENTS` / `requirements()` · `coordinatorSolvePath.serviceabilityFor` exercised on the derived map · the sweep script and its output, retained in the session scratchpad and deliberately **not** committed | **S-4** unchanged (`gate:composition` RED, untouched); **S-3** unchanged at 28, numerator 26; **no stop condition changed** |
+| 2026-09-06 | `10a527c` | **A DOCUMENTATION DEFECT FOUND BY MEASUREMENT — §4.1's step 3 NEVER HAPPENED.** §4.1's chain is headed *"exactly as it occurred"* and its third step reads *"no leader could be elected → `assertConsensusStore` refuses a store whose replication posture is UNDECLARED."* **`v1CorePath.js:350` sets `SHARD_CONSENSUS_REPLICATION = "SINGLE_PRIMARY_NO_AUTOMATIC_FAILOVER"`, `server.js:562` reads exactly that, and the assertion passes.** The line has been present since the harness's first commit `3ff92ae`, so **§4.1 was wrong when written**, and §5.6.1 of the same document already recorded the contradicting measurement — *"Leadership: **Acquired**"* — from an independent re-run. **This is the fourth instance of the same class**: a published claim gone stale against a measurement standing beside it in the same file (§N.6 step 5's *"all 34"*, `registry.js`'s `cadenceParameter`, `UNCOMPOSABLE`'s *"four input families"*). Struck in place under this document's convention, not deleted. **D-5's status is UNCHANGED and is not discharged in general**: the harness declares a fact about the one disposable cluster it built, `ASYNCHRONOUS_FAILOVER` is still refused by name, `UNDECLARED` is still unsafe, and **no session may declare a posture on an operator's behalf**. What changes is only that D-5 is not where the V1 verification path stops | **§4.3**, **§15** row 14 · `v1CorePath.js:343-350` · `server.js:560-565` · `shardSupervisor.worker.js:581` · `election.js` `REPLICATION_POSTURE` · git: the line is in `3ff92ae`, the harness's first commit | **§4.1** corrected; **D-5** sharpened, status unchanged; **no stop condition changed** |
+| 2026-09-06 | `10a527c` | **ONE PREVIOUSLY UNRECORDED FACT ON THE S5-2 PATH — RECORDED, DELIBERATELY NOT CHANGED, AND NOT GIVEN A W-ITEM.** `shardModel.ensureShard` — the repository's own `Shard`-creation path, which validates its input, creates the `ShardLeadership` row in the same transaction, is idempotent and is unit-tested — **is called from nowhere in `src/`, nowhere in `server.js`, and by no harness.** `src/routes/shards.routes.js` exposes `GET /` and `POST /:id/rebalance` only; the one place a `Shard` row is created in practice is `v1CorePath.js:124-125`, which hand-rolls both rows and so takes the schema default `leadershipFence = 0` where `ensureShard` sets **1** for a stated §19.5 reason. **This is the *producer exists and nothing calls it* family at an eighth place — and it has NO measured correctness consequence today**: every consumer of `leadershipFence` tests it explicitly against `null`/`undefined` and never for truthiness (`guards.js:103`, `tierA.js:325`, `membership.js:339`, `app.js:214`). **Not fixed, and both halves deliberate**: `tools/verify/` is not the core path (W-A4's own note), so **§3.1's status does NOT revert**; editing the instrument S-6's verdict rests on with no measured defect to point at is §14.3's rule in mirror image; and inventing a W-item would extend a list §11 declares closed. **Recommendation recorded for whoever executes S5-2 when it is unblocked: create the `Shard` row through `shardModel.ensureShard`** | **§7.1.4** · `grep` for `ensureShard` across `src/`, `server.js`, `tools/` — the only callers are `shardModel.js:442` → `leadership.js:116`, and one test file · `prisma/schema.prisma` `model ShardLeadership` `leadershipFence BigInt @default(0)` · the four consumer call sites | **§7.1.4**; **no W-item**; **§3.1 does not revert**; **no stop condition changed** |
+| 2026-09-06 | `10a527c` | **A FIFTH STALE COUNT — §2 and §17 rule 13 say `docs/v1/` holds THREE files; it holds FOUR, and it did when the sentence was written.** `ls docs/v1/` returns the contract, this document, `V1_OWNER_ACTION_CHECKLIST.md` and **`V1_DISCOVERY_AND_OWNER_QUESTIONS.md`**; `git show --name-status 10a527c` adds all three new files **in the same commit** as the "three files" correction, which counted two of them. **Only the count is corrected. §17 rule 13's prohibition on a competing V1 status document is NOT weakened, NOT reinterpreted and NOT discharged, and this pass added no file to `docs/v1/`.** **One question is deliberately NOT decided and is flagged to the owner instead**: the discovery document carries status-shaped material (its §1.1 stop-condition table, its §12.2 feasibility matrix), and whether that engages rule 13's *substance* is a documentation-governance question — a session that declared the file compliant would be the check answering itself, and one that deleted or demoted it would destroy a record this document actively cites (§13) | **§2**'s 2026-09-06 correction block; **§15** row 15a · `ls docs/v1/` · `git log --diff-filter=A -- docs/v1/` | **§2**, **§17 rule 13** (count only); routed to the **owner**; **no stop condition changed** |
+| 2026-09-06 | `10a527c` | **STEP 4 — NO DOABLE V1 CLEANUP EXISTS, and two candidates were declined with reasons rather than silently skipped.** §11.A holds **zero** open repository items (W-A1…W-A7 all closed; *"There is no W-A8"* stands after this pass). **Declined: (1)** routing the S-6 harness's `Shard` seed through `shardModel.ensureShard` — §7.1.4's reasons; **(2)** adding a regression test pinning §7.1.2's derivation and §7.1.3's `blocking = ["V9"]` — it would commit a **fabricated** `regionId`, zone id and cell-assignment set into the suite where a later reader could mistake it for a declared region, which is the exact shape of §17 rule 3. **The measurement belongs in this document, labelled as a measurement.** §14's *"do not hunt for new work"* was obeyed | **§7.1.6**; §11.A; §14 | **no repository item opened or closed**; **no stop condition changed** |
+| 2026-09-06 | `10a527c`, working tree **3 modified source/test/doc files from the prior pass, plus this document and 1 untracked RD record. This pass modified NO source, NO test, NO gate, NO fixture, NO formal model and NO configuration file — only this document.** Not committed; no commit was requested | **FULL VERIFICATION OF EXECUTION PASS 2, at the closing tree.** `npm test` → **exit 0 — `Test Suites: 167 passed, 167 total · Tests: 7445 passed, 7445 total · Snapshots: 0 total · Time: 598.954 s · Ran all test suites in 5 projects`**, zero failures, zero skips — **numerically identical to the prior pass's closing figure**, which is the expected result of a pass that changed no source or test. `npm run gates` → **exit 1 — 7 PASS / 1 FAIL**, `gate:composition` **FAIL — 1 violation across 19 registered workers**, `LEADER_ONLY_NOT_COMPOSABLE` for `coordinator`, requires-list still **34**. **It was not weakened and no row was removed from `UNCOMPOSABLE`** (§17 rule 6). `npm run routing:readiness` → **OVERALL: BLOCKED**, exit 0 by design — **D1, D3, D8 all BLOCKED**, D1 naming the same five missing declaration fields §7.1.1 measured independently through `validateRegionDeclaration`. **The S-6 harness was deliberately NOT re-run, and the omission is stated rather than left as a silence**: its result is a function of source and external inputs, **neither of which moved this pass**, so a re-run would reproduce §5.6's exit 1 at S-5 and could not change a verdict. Building a disposable cluster to re-decorate a known number is the mirror image of §14.3's rule. **The last recorded run stands and is not restated as new evidence** | Both commands run from `Backend/` at this tree · `git status --short` · `git diff --stat` → **this document only**, 0 source/test files touched by this pass | **S-7** (unchanged, one half); **S-4** (unchanged); **S-6** (unchanged, not re-attempted) |
+| 2026-09-06 | `10a527c` | **NO STOP CONDITION WAS MET BY THIS PASS, AND TWO WERE MEASURED HARDER. The score is 3 of 8 — S-1, S-2, S-8 met; S-3, S-4, S-5, S-6, S-7 not met.** S-3 stays at **28** and the runtime numerator at **26**, re-measured independently this pass and reproducing the live E-11 breakdown exactly. **S-5's blockage is now known to be deeper than its position in the order**: S5-2 is refused before publish by a containment-semantics decision the owner has refused in both available forms with **no defined escalation target**, and S5-3 is refused at publish by V9 and S2, both needing D-1, which FD-3 = NO blocks. **S5-4 NOT REACHED.** **Nothing was fabricated**: no containment mode chosen, no region, zone, cell assignment, shard, charger, router, terrain figure, calibration constant, temperature, mass, `p_fail`, hazard cost or energy rate; no accommodation added, no approver synthesised, no self-approval; `cutover.engine_enabled` remains unbound in every environment this repository can see and **0** `ConfigVersion` rows were written. **No predicate weakened, no gate algebra touched, no fail-closed behaviour turned permissive, `formal/` untouched, Phase 15 not reopened, no release evidence re-collected, no SIM item started, no second owner request issued, and no file added to `docs/v1/`** | §7.1 · §7 (S-5 row's next-action cell) · §4.3 · §15 rows 14, 15, 15a, 16 · the six §16 rows above | **S-1…S-8**; **S5-2 BLOCKED**, **S5-3 BLOCKED (B)**, **S5-4 NOT REACHED** |
 | 2026-09-05 | `4e2155a` | **The immediate next action moves: W-D2 → AWAITING THE OWNER'S RESPONSE.** §14 now records that **no repository-owned, V1-blocking action is available on this tree**, and forbids the four ways that state is usually misread: a second owner request, a fabricated answer, starting W-D3…W-D6, and hunting for new work. **§14.6** lists the four open repository items (W-A1, W-A2, W-A3 partial, W-A4) precisely so that "none is available" is not misread as "none exists" — **none of the four is V1-blocking and none is authorised by W-D2.** §14.1–§14.4 are kept as written; §14.4 gains a discharge note recording that its rules were obeyed at issue | §14, §14.5, §14.6; §11.A unchanged | §14; **W-A1…W-A4** (statuses unchanged) |
 
 ---
@@ -1244,6 +1700,11 @@ A future session must **NOT**:
     third states no status**: the checklist added 2026-09-05 is an operational collection sheet
     with no authority, subordinate to the record it summarises (§2, §14.7). **The prohibition is
     unchanged — only the file count is corrected — and no fourth file may be added.**
+    > **The count is wrong again, corrected 2026-09-06: `docs/v1/` holds FOUR files and already did
+    > when the sentence above was written** — `V1_DISCOVERY_AND_OWNER_QUESTIONS.md` landed in the
+    > same commit and was not counted. **See §2. The prohibition in this rule stands exactly as
+    > written and is not discharged by the correction**; whether the discovery document engages its
+    > substance is flagged to the owner there and is not decided by any session.
 14. **Reopen a broad Phase 15 audit, or import Phase 15 release scope into V1** — Phase 15 is
     FROZEN; §24, `formal/`, `docs/phase15/` and the release evidence were untouched by E-11 and
     stay untouched by V1 work.
