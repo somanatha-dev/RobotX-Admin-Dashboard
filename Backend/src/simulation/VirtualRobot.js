@@ -108,6 +108,55 @@ const DEDUP_KEY_TTL = 1800; // agent.dedup_retention, Appendix A default (30 min
 // invariant I2 is explicitly suspended. Overridable per instance.
 const AUTONOMOUS_CONTINUATION_LIMIT_SEC = 900;
 
+/**
+ * Is this path something the agent can actually traverse?
+ *
+ * Two waypoints is the floor, and it is not an arbitrary one: `_advanceTask` ends a
+ * phase at `pathIndex >= activePath.length - 1`, which a zero- or one-point path
+ * satisfies on the *first* tick. Such a path does not describe a short journey; it
+ * describes no journey at all, and the phase machine walks straight through
+ * TO_PICKUP → WAIT_PICKUP → TO_DROP → WAIT_DROP and emits `TASK_COMPLETE` for a
+ * mission during which the robot never moved.
+ *
+ * @param {unknown} path
+ * @returns {boolean}
+ */
+function isTraversablePath(path) {
+  if (!Array.isArray(path) || path.length < 2) return false;
+  return path.every(
+    (point) =>
+      point !== null &&
+      typeof point === "object" &&
+      Number.isFinite(point.lat) &&
+      Number.isFinite(point.lon),
+  );
+}
+
+/**
+ * Can this assignment be executed, or would accepting it be a claim the agent cannot
+ * honour?
+ *
+ * The agent is the authority on its own physical condition (§11.2), and "I was handed
+ * no route to drive" is a condition it is the authority on. Naming *which* half of the
+ * mission is missing is deliberate: a missing producer must be diagnosable from the
+ * refusal alone, because the whole point of failing closed here is that no downstream
+ * evidence of the mission is ever produced.
+ *
+ * @param {{ pathToPickup: unknown, pathToDrop: unknown }} assignment
+ * @returns {{ executable: boolean, reason: string|null }}
+ */
+function assessExecutability(assignment) {
+  const pickupOk = isTraversablePath(assignment.pathToPickup);
+  const dropOk = isTraversablePath(assignment.pathToDrop);
+
+  if (pickupOk && dropOk) return { executable: true, reason: null };
+
+  const missing = [];
+  if (!pickupOk) missing.push("pathToPickup");
+  if (!dropOk) missing.push("pathToDrop");
+  return { executable: false, reason: `NO_EXECUTABLE_PATH:${missing.join(",")}` };
+}
+
 class VirtualRobot {
   constructor({
     robotId,
@@ -906,15 +955,44 @@ class VirtualRobot {
       return;
     }
 
-    respond("OFFER_ACCEPT", {});
+    // The mission the offer describes, as this agent would execute it. Built *before*
+    // the response, because whether it can be executed is part of what is being
+    // answered — §11.2's ACCEPT is "plan received, validated **locally**, and
+    // accepted", and this is that local validation.
     const plan = envelope.payload || {};
-    if (Array.isArray(plan.stopSequence) && plan.stopSequence.length > 0) {
-      this._onTaskAssign({
-        taskId: plan.legId || envelope.commitmentId,
-        pathToPickup: plan.stopSequence[0]?.path || [],
-        pathToDrop: plan.stopSequence[1]?.path || [],
-      });
+    const stops = Array.isArray(plan.stopSequence) ? plan.stopSequence : [];
+    const assignment = {
+      taskId: plan.legId || envelope.commitmentId,
+      pathToPickup: stops[0]?.path || [],
+      pathToDrop: stops[1]?.path || [],
+    };
+
+    const executability = assessExecutability(assignment);
+    if (!executability.executable) {
+      // Fail closed. An offer carrying no route is not a mission this agent can
+      // perform, and §11.2's disposition for that is REJECT, not silence and not a
+      // hopeful ACCEPT: rejecting releases the commitment, returns the Leg to QUEUED,
+      // and — the part that matters here — records the reason as a *feasibility
+      // observation* to be reconciled against the server's model. §11.2 says exactly
+      // what that reconciliation is for: "if an agent rejects ... while the server
+      // believed it feasible, that is a discrepancy between the server's model and the
+      // agent's — a calibration defect worth alerting on."
+      //
+      // A missing route producer is precisely such a discrepancy, so the protocol's
+      // own channel carries it. Accepting instead would make the agent claim a
+      // commitment it cannot discharge, and — because the phase machine treats an
+      // empty path as an already-finished one — would emit `TASK_COMPLETE` for a
+      // delivery that never happened. A false completion is worse than no assignment:
+      // it retires the Leg, satisfies the task, and leaves the payload where it was.
+      this.log.warn(
+        `[VR] ${this.robotId} OFFER ${envelope.commitmentId} rejected — ${executability.reason} (§11.2)`,
+      );
+      respond("OFFER_REJECT", { reason: executability.reason });
+      return;
     }
+
+    respond("OFFER_ACCEPT", {});
+    this._onTaskAssign(assignment);
   }
 
   /**
@@ -1053,6 +1131,23 @@ class VirtualRobot {
   _onTaskAssign(payload) {
     const { taskId, pathToPickup, pathToDrop } = payload || {};
     if (!taskId) return;
+
+    // The single seam where a task becomes executable — this is the only assignment to
+    // `this.task` in the file — so it is the one place the fail-closed rule has to
+    // hold, whatever the producer.
+    //
+    // Refused *before* the charging branch below, deliberately: stashing an
+    // unexecutable assignment in `_pendingResume` would only replay the same refusal
+    // once the pack filled, and would hold a slot for a mission that can never run.
+    const executability = assessExecutability({ pathToPickup, pathToDrop });
+    if (!executability.executable) {
+      this.log.error(
+        `[VR] ${this.robotId} TASK_ASSIGN ${taskId} refused — ${executability.reason}. ` +
+          "The robot stays IDLE and no TASK_COMPLETE is emitted: a mission with no route " +
+          "is not executed, and must not be reported as if it were.",
+      );
+      return;
+    }
 
     if (this.status === "CHARGING") {
       if (this.battery < CHARGING_INTERRUPT_BATTERY) {

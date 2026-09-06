@@ -79,7 +79,62 @@ function makeAgent(flash, socket, overrides) {
   return robot;
 }
 
-/** A correctly signed mission command envelope. */
+/**
+ * A stop sequence in **exactly** the shape the production coordinator emits today.
+ *
+ * The field list is copied from `workers/coordinatorSolvePath.js`'s `sideEffects`
+ * offer builder, and the absence of `path` is copied from it too: the engine's routing
+ * seam (`engine/routing/cellPairCache.js`) answers with six scalars — distance, travel
+ * time and its standard deviation, climb, descent, stop-start cycles — and no
+ * geometry, and `routeReference` is deliberately `null` there ("Absent rather than
+ * invented"). This fixture is the producer's real output, not a degraded one.
+ */
+function productionShapedStopSequence() {
+  return [
+    { sequence: 1, stopType: "PICKUP", siteId: "SITE-A", lat: 12.9081, lon: 77.5012, projectedArrivalMs: 0, departureMs: 60_000 },
+    { sequence: 2, stopType: "DROP", siteId: "SITE-B", lat: 12.9105, lon: 77.5044, projectedArrivalMs: 300_000, departureMs: 360_000 },
+  ];
+}
+
+/**
+ * The same production shape, plus the route geometry an executable offer would carry.
+ *
+ * This is **test fixture data**, and it stands for the offer the engine would produce
+ * once a route producer exists. It is deliberately not derived from the stop
+ * coordinates: a straight line between two stops is not a route, and inventing one in
+ * production is the thing the fail-closed path exists to prevent.
+ */
+function executableStopSequence() {
+  const [pickup, drop] = productionShapedStopSequence();
+  return [
+    {
+      ...pickup,
+      path: [
+        { lat: 12.9060, lon: 77.4990 },
+        { lat: 12.9071, lon: 77.5001 },
+        { lat: 12.9081, lon: 77.5012 },
+      ],
+    },
+    {
+      ...drop,
+      path: [
+        { lat: 12.9081, lon: 77.5012 },
+        { lat: 12.9093, lon: 77.5028 },
+        { lat: 12.9105, lon: 77.5044 },
+      ],
+    },
+  ];
+}
+
+/**
+ * A correctly signed mission command envelope.
+ *
+ * The default payload is an **executable** offer. It used to be `{ stopSequence: [] }`,
+ * which meant every test in this file answered an offer that named no mission at all —
+ * and so the `_onTaskAssign` branch of `_respondToOffer`, the branch that actually puts
+ * the robot on a road, was never once reached by the suite that certifies this file as
+ * "the reference implementation and the conformance fixture".
+ */
 function missionEnvelope(overrides) {
   const base = {
     outboxId: "outbox-1",
@@ -93,7 +148,7 @@ function missionEnvelope(overrides) {
     fenceFloor: null,
     sequence: 0,
     notValidAfter: new Date(Date.now() + HOUR_MS),
-    payload: { stopSequence: [] },
+    payload: { legId: "LEG-1", stopSequence: executableStopSequence() },
     ...(overrides || {}),
   };
   return { ...base, signature: commandSigning.sign(base, fixtures.TEST_SIGNING_KEY) };
@@ -849,6 +904,222 @@ describe("offer responses (§11.2)", () => {
     expect(reject[0].payload.reason).toMatch(/BATTERY_CRITICAL/);
   });
 
+  /* ─────────────────────────────────────────────────────────────────────────
+     The offer must be executable, or it is refused (§11.2 local validation)
+
+     The defect these cover, measured on the production producer: the coordinator's
+     offer carries stops with `lat`/`lon` but no `path`, so `_respondToOffer` read
+     `stopSequence[i].path` as `undefined`, handed `_onTaskAssign` two empty arrays,
+     and the phase machine — which ends a phase at `pathIndex >= length - 1`, true on
+     tick one for an empty path — walked TO_PICKUP → WAIT_PICKUP → TO_DROP →
+     WAIT_DROP and emitted `TASK_COMPLETE`. The robot accepted a delivery, reported it
+     done, and never moved.
+     ───────────────────────────────────────────────────────────────────────── */
+
+  test("the offer the production coordinator actually builds today is refused, not accepted", async () => {
+    const socket = makeSocket();
+    const agent = makeAgent(makeFlash(), socket);
+    await agent.loadDedupState();
+    agent.battery = 90;
+
+    await agent._onMissionCommand(
+      "OFFER",
+      missionEnvelope({ payload: { legId: "LEG-1", stopSequence: productionShapedStopSequence() } }),
+    );
+
+    expect(socket.of("OFFER_ACCEPT")).toHaveLength(0);
+    const reject = socket.of("OFFER_REJECT");
+    expect(reject).toHaveLength(1);
+    // Both halves named, so a missing producer is diagnosable from the refusal alone.
+    expect(reject[0].payload.reason).toBe("NO_EXECUTABLE_PATH:pathToPickup,pathToDrop");
+    // Nothing was started, so there is nothing to falsely finish.
+    expect(agent.task).toBeNull();
+    expect(agent.status).not.toBe("ACTIVE");
+  });
+
+  test("a refused offer never produces TASK_COMPLETE, however long the machine runs", async () => {
+    const socket = makeSocket();
+    const agent = makeAgent(makeFlash(), socket);
+    await agent.loadDedupState();
+    agent.battery = 90;
+
+    await agent._onMissionCommand(
+      "OFFER",
+      missionEnvelope({ payload: { legId: "LEG-1", stopSequence: productionShapedStopSequence() } }),
+    );
+
+    // Drive the phase machine well past every wait window the mission would have had.
+    let now = Date.now();
+    for (let tick = 0; tick < 200; tick++) {
+      now += 1000;
+      agent._advanceTask(now);
+    }
+
+    expect(socket.of("TASK_COMPLETE")).toHaveLength(0);
+    expect(agent.distanceTravelled).toBe(0);
+  });
+
+  test("an offer carrying route geometry is accepted and the robot actually moves", async () => {
+    const socket = makeSocket();
+    const agent = makeAgent(makeFlash(), socket);
+    await agent.loadDedupState();
+    agent.battery = 90;
+
+    await agent._onMissionCommand("OFFER", missionEnvelope());
+
+    expect(socket.of("OFFER_REJECT")).toHaveLength(0);
+    expect(socket.of("OFFER_ACCEPT")).toHaveLength(1);
+
+    // The branch that was previously unreachable from this suite: a real task, on a
+    // real path, in an executing state.
+    expect(agent.task).toMatchObject({ taskId: "LEG-1" });
+    expect(agent.status).toBe("ACTIVE");
+    expect(agent.task.pathToPickup.length).toBeGreaterThan(1);
+    expect(agent.task.pathToDrop.length).toBeGreaterThan(1);
+
+    // §11.5 — the assignment snapped the robot onto the route. It is no longer at the
+    // (0, 0) it was constructed at.
+    expect(agent.lat).toBeCloseTo(12.9060, 3);
+    expect(agent.lon).toBeCloseTo(77.4990, 3);
+
+    // ...and it travels. Motion is the property under test, so it is measured, not
+    // inferred from a state flag.
+    const startLat = agent.lat;
+    const startLon = agent.lon;
+    let now = Date.now();
+    for (let tick = 0; tick < 20; tick++) {
+      now += 1000;
+      agent._updateSpeed();
+      agent._advanceTask(now);
+    }
+
+    expect(agent.distanceTravelled).toBeGreaterThan(0);
+    expect(agent.lat !== startLat || agent.lon !== startLon).toBe(true);
+  });
+
+  test("an executable offer runs the whole mission and completes exactly once", async () => {
+    const socket = makeSocket();
+    const agent = makeAgent(makeFlash(), socket);
+    await agent.loadDedupState();
+    agent.battery = 90;
+
+    await agent._onMissionCommand("OFFER", missionEnvelope());
+
+    let now = Date.now();
+    for (let tick = 0; tick < 600 && socket.of("TASK_COMPLETE").length === 0; tick++) {
+      now += 1000;
+      agent._updateSpeed();
+      agent._advanceTask(now);
+    }
+
+    const complete = socket.of("TASK_COMPLETE");
+    expect(complete).toHaveLength(1);
+    expect(complete[0].payload).toMatchObject({ taskId: "LEG-1" });
+    // The completion is backed by travel: this one was earned, unlike the false
+    // completion the refusal path now prevents.
+    expect(agent.distanceTravelled).toBeGreaterThan(0);
+    // And it ended where the drop is.
+    expect(agent.lat).toBeCloseTo(12.9105, 3);
+    expect(agent.lon).toBeCloseTo(77.5044, 3);
+  });
+
+  test("a half-routed offer is refused — one traversable path is not a mission", async () => {
+    const socket = makeSocket();
+    const agent = makeAgent(makeFlash(), socket);
+    await agent.loadDedupState();
+    agent.battery = 90;
+
+    const [pickup, drop] = executableStopSequence();
+    await agent._onMissionCommand(
+      "OFFER",
+      missionEnvelope({ payload: { legId: "LEG-1", stopSequence: [pickup, { ...drop, path: [] }] } }),
+    );
+
+    const reject = socket.of("OFFER_REJECT");
+    expect(reject).toHaveLength(1);
+    expect(reject[0].payload.reason).toBe("NO_EXECUTABLE_PATH:pathToDrop");
+    expect(agent.task).toBeNull();
+  });
+
+  test("a single-point path is refused — it ends on the tick it starts", async () => {
+    const socket = makeSocket();
+    const agent = makeAgent(makeFlash(), socket);
+    await agent.loadDedupState();
+    agent.battery = 90;
+
+    const [pickup, drop] = executableStopSequence();
+    await agent._onMissionCommand(
+      "OFFER",
+      missionEnvelope({
+        payload: {
+          legId: "LEG-1",
+          stopSequence: [{ ...pickup, path: [{ lat: 12.9081, lon: 77.5012 }] }, drop],
+        },
+      }),
+    );
+
+    expect(socket.of("OFFER_REJECT")[0].payload.reason).toBe("NO_EXECUTABLE_PATH:pathToPickup");
+    expect(socket.of("TASK_COMPLETE")).toHaveLength(0);
+  });
+
+  test("a path of malformed waypoints is refused, not driven", async () => {
+    const socket = makeSocket();
+    const agent = makeAgent(makeFlash(), socket);
+    await agent.loadDedupState();
+    agent.battery = 90;
+
+    const [pickup, drop] = executableStopSequence();
+    await agent._onMissionCommand(
+      "OFFER",
+      missionEnvelope({
+        payload: {
+          legId: "LEG-1",
+          stopSequence: [{ ...pickup, path: [{ lat: "12.9", lon: null }, { lat: 12.91 }] }, drop],
+        },
+      }),
+    );
+
+    expect(socket.of("OFFER_REJECT")[0].payload.reason).toBe("NO_EXECUTABLE_PATH:pathToPickup");
+    expect(agent.task).toBeNull();
+  });
+
+  test("the refusal is a REJECT, so the engine releases the Leg rather than waiting out the TTL", async () => {
+    const socket = makeSocket();
+    const agent = makeAgent(makeFlash(), socket);
+    await agent.loadDedupState();
+    agent.battery = 90;
+
+    await agent._onMissionCommand(
+      "OFFER",
+      missionEnvelope({ payload: { legId: "LEG-1", stopSequence: [] } }),
+    );
+
+    // Not silence: an unanswered offer costs the Leg a full `dispatch.offer_ttl` before
+    // §11.4 step 2 withdraws it. A REJECT returns it to QUEUED now, and §11.2 has the
+    // engine record the reason as a feasibility observation — which is how a missing
+    // route producer becomes an alertable discrepancy instead of a stalled fleet.
+    expect(socket.of("OFFER_REJECT")).toHaveLength(1);
+    expect(socket.of("OFFER_DEFER")).toHaveLength(0);
+    expect(socket.of("OFFER_ACCEPT")).toHaveLength(0);
+  });
+
+  test("the agent's own physical condition still outranks the plan's shape", async () => {
+    const socket = makeSocket();
+    const agent = makeAgent(makeFlash(), socket);
+    await agent.loadDedupState();
+    agent.battery = 5;
+
+    // Both grounds for refusal at once. The energy reason is the one reported: it is
+    // the safety signal §11.2 wants reconciled against the server's energy model, and
+    // it would be lost if the plan-shape check pre-empted it.
+    await agent._onMissionCommand(
+      "OFFER",
+      missionEnvelope({ payload: { legId: "LEG-1", stopSequence: productionShapedStopSequence() } }),
+    );
+
+    expect(socket.of("OFFER_REJECT")[0].payload.reason).toMatch(/BATTERY_CRITICAL/);
+  });
+
   test("charging below the interrupt threshold defers — the invisible wait becomes a priced trade", async () => {
     const socket = makeSocket();
     const agent = makeAgent(makeFlash(), socket);
@@ -897,7 +1168,16 @@ describe("agent.autonomous_continuation_limit (§18.5)", () => {
   test("an idle agent is not halted — there is nothing to halt", async () => {
     const agent = makeAgent(makeFlash(), makeSocket(), { autonomousContinuationLimitSeconds: 60 });
     await agent.loadDedupState();
-    await agent._onMissionCommand("OFFER", missionEnvelope());
+    // A supervised exchange that leaves the agent with no mission: the offer is
+    // admitted (so `_lastSupervisedAt` is stamped, which is what this test needs) and
+    // then refused for carrying no route, so the agent is genuinely idle afterwards.
+    // The default envelope is executable now, and an agent driving a mission is not
+    // the subject of this test.
+    await agent._onMissionCommand(
+      "OFFER",
+      missionEnvelope({ payload: { legId: "LEG-1", stopSequence: productionShapedStopSequence() } }),
+    );
+    expect(agent.task).toBeNull();
 
     expect(agent._enforceAutonomousContinuationLimit(agent._lastSupervisedAt + 10 * HOUR_MS)).toBe(false);
   });
