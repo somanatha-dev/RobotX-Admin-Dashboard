@@ -299,7 +299,19 @@ async function main() {
         prisma,
         kv: sweepKv,
         now: () => Date.UTC(2026, 7, 18, 12, 0, 0),
-        chargingStatusFor: async () => ({ charging: true, chargingInterruptible: false, projectedFreeAtMs: null }),
+        // BATCH 2 — `known` is now part of the classifier's contract, and it is supplied
+        // here for a reason that decides what this check measures. `assembleRecord` refuses
+        // an agent whose charging state is UNKNOWN, so a classifier that omitted `known`
+        // would make this check pass by the wrong route — "not indexed because nobody could
+        // answer" instead of "not indexed because it is charging and cannot leave the
+        // charger". P9-DB-8's subject is the second one, so the verdict is stated in full.
+        chargingStatusFor: async () => ({
+          known: true,
+          charging: true,
+          waiting: false,
+          chargingInterruptible: false,
+          projectedFreeAtMs: null,
+        }),
       },
       [agentB.id],
     );
@@ -318,7 +330,22 @@ async function main() {
         prisma,
         kv: sweepKv2,
         now: () => Date.UTC(2026, 7, 18, 12, 0, 0),
-        chargingStatusFor: async () => ({ charging: false, chargingInterruptible: false, projectedFreeAtMs: null }),
+        // BATCH 2 — the same contract migration, and this is the call site that caught it.
+        // Without `known: true` the classifier reads as an absence, `assembleRecord` returns
+        // null, and P9-DB-9 fails with `mirror row class: null` — the index blanked rather
+        // than narrowed, which is precisely what this check exists to forbid. The fix is on
+        // the CALLER: `assembleRecord`'s refusal is the fail-closed behaviour Batch 2 added
+        // deliberately and is not weakened to accommodate an old caller.
+        //
+        // `known: true, charging: false, waiting: false` is the one verdict that admits an
+        // agent to the index, and it is the verdict this check has always meant.
+        chargingStatusFor: async () => ({
+          known: true,
+          charging: false,
+          waiting: false,
+          chargingInterruptible: false,
+          projectedFreeAtMs: null,
+        }),
       },
       [agentB.id],
     );

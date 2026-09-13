@@ -490,11 +490,38 @@ async function main() {
     // ══════════════════════════════════════════════════════════════════════
     section("7. indexMaintainer turns those Observations into AgentCellPosition");
 
-    // Driven EXPLICITLY. `start()` is deliberately not called: the worker's registered
-    // blocker — an absent `chargingStatusFor`, whose default widens a charging agent into
-    // IDLE_READY — is unresolved, and scheduling it to make a readiness count move is the
-    // thing Step 5 was told not to do.
-    const sweep = await indexMaintainer.sweepOnce({ prisma, kv: null });
+    // Driven EXPLICITLY. `start()` is deliberately not called here: this harness is about
+    // the position pipeline, and a scheduled worker would make the sweep's timing part of
+    // what the assertions below depend on.
+    //
+    // ── BATCH 2: the charging classifier is now a REQUIRED input ──────────────
+    //
+    // Step 5 ran these sweeps with no `chargingStatusFor` at all, because the worker then
+    // defaulted to `charging: false`. That default was the worker's registered blocker and
+    // Batch 2 removed it: it is a WIDENING — "not charging" plus "no commitments" is
+    // `IDLE_READY`, the partition §6.3 searches first — so an agent whose charging state
+    // nobody owns is now left out of the index entirely.
+    //
+    // Step 5's subject is unchanged and so are its claims: an accepted frame becomes one
+    // canonical Observation, the maintainer turns it into `AgentCellPosition`, and the
+    // mirror carries the agent's own instant. To assert any of that there has to be an
+    // indexable agent, so a classifier is supplied — and it is supplied for **both**
+    // fleets, which models a deployment whose Charging Scheduler covers the whole estate.
+    //
+    // That is deliberately NOT the charging boundary. Whether a PHYSICAL agent may be
+    // covered at all is Batch 2's question, not Step 5's, and
+    // `tools/verify/batch2ChargingScheduler.js` is where it is asked — that harness checks
+    // that a physical agent no scheduler covers reads `known: false` and is NOT indexed.
+    // Supplying a covering classifier here keeps Step 5 measuring Step 5.
+    const coveredByAScheduler = async () => ({
+      known: true,
+      charging: false,
+      chargingInterruptible: false,
+      waiting: false,
+      projectedFreeAtMs: null,
+    });
+
+    const sweep = await indexMaintainer.sweepOnce({ prisma, kv: null, chargingStatusFor: coveredByAScheduler });
     record(
       "one explicit sweep indexed every agent that has a position Observation",
       sweep.failed === 0 && sweep.indexed >= 3,
@@ -540,7 +567,7 @@ async function main() {
 
     const beforeSecondSweep = physicalMirror && String(physicalMirror.observedAtMs);
     await sleep(1_500);
-    await indexMaintainer.sweepOnce({ prisma, kv: null });
+    await indexMaintainer.sweepOnce({ prisma, kv: null, chargingStatusFor: coveredByAScheduler });
     const afterSecondSweep = (
       await admin.$queryRawUnsafe(
         `SELECT p."observedAtMs" FROM "AgentCellPosition" p WHERE p."agentId" = $1`, physicalAgentRowId,

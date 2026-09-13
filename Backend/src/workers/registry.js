@@ -283,32 +283,44 @@ const WORKERS = Object.freeze([
     module: "workers/indexMaintainer.worker",
     section: "§6.2",
     tier: 1,
-    readiness: READINESS.DEFERRED,
+    // ── BATCH 2 — DEFERRED → SCHEDULED, and precisely what cleared ─────────────
+    //
+    // The blocker this row carried was the charging classifier and the direction of its
+    // absent default: `chargingStatusFor` was unsupplied, `assembleRecord` substituted
+    // `charging: false`, and `availabilityIndex.classify` then filed an agent parked on a
+    // charger as `IDLE_READY` — a WIDENING into the partition §6.3 searches first.
+    //
+    // `services/chargingStatus.service.js` is that classifier. It answers from
+    // `ChargerReservation` — §14.7's durable, Scheduler-owned artefact — and it answers in
+    // three states rather than two, so "nobody owns the answer for this agent" is no longer
+    // spelled "not charging". `assembleRecord` declines to index an agent in that state and
+    // in the queued state, both of which narrow.
+    //
+    // ── What this row does NOT now claim ──────────────────────────────────────
+    // `SCHEDULED` says this process starts the worker. It does not say the index will hold
+    // anything. The only Charging Scheduler that exists is the development simulation
+    // publisher, so for every PHYSICAL agent the classifier answers `known: false` and the
+    // worker indexes nothing — the same empty index as before, reached by a classifier that
+    // refuses rather than by a worker that is switched off. Blocking decision B2 is
+    // untouched, §14.7 still has no production publisher, and no V1 stop condition moves
+    // because this row changed.
+    //
+    // The second classifier, `capabilityAndContainerClassesFor`, is STILL ABSENT and was
+    // not fabricated to get here. It is not a blocker: §6.2's capability/container-class
+    // vocabularies are undeclared, `candidates/expansion.js` passes no secondary filters at
+    // any of its three index call sites, and no feasibility predicate reads the fields off
+    // the snapshot — so the documented `[]` default is inert rather than narrowing. The gap
+    // is recorded in the worker's own header instead of being closed by a guess.
+    readiness: READINESS.SCHEDULED,
     cadenceParameter: null,
     cadenceNote:
-      "`index.sweep_interval` is NOT in the register. Nothing starts this worker (see `blockedBy`); its own " +
-      "`start()` would use `indexMaintainer.worker.SWEEP_INTERVAL_MS` (5 s).",
+      "`index.sweep_interval` is NOT in the register and nothing reads it. `server.js` starts this worker " +
+      "without an interval, so it runs at `indexMaintainer.worker.SWEEP_INTERVAL_MS` (5 s), annotated " +
+      "@structural: 'a batching choice, not a behavioural threshold'. §3.3 I16 makes the index advisory and " +
+      "feasibility is re-verified at commit, so staleness here costs candidate-search quality and never " +
+      "correctness — which is why no register entry is invented for it.",
     purpose: "Keep the cell-partitioned availability index consistent with agent state.",
-    blockedBy:
-      "needs the capability/container and charging classifiers (capabilityAndContainerClassesFor, " +
-      "chargingStatusFor). " +
-      // STEP 5 — two corrections to this entry, both found by building the input it was
-      // waiting for. (1) "The index is otherwise maintained on the telemetry path" was
-      // FALSE when written and stayed false for six passes: nothing on the telemetry path
-      // wrote `AgentCellPosition` or the Redis index, and the table was empty. Step 5 made
-      // the *first* half true — the telemetry path now writes the position Observations
-      // this worker consumes — and the second half is still false: this worker remains the
-      // only producer of `AgentCellPosition`. (2) "would evict live agents" understates the
-      // direction that actually matters: the absent `chargingStatusFor` defaults to
-      // `charging: false`, and `availabilityIndex.classify` then files an agent parked on a
-      // charger as `IDLE_READY` — a WIDENING into the partition §6.3 searches first, not an
-      // eviction. That is why the worker is still not started.
-      "STEP 5 CORRECTION: the index is NOT maintained on the telemetry path — this worker is still the only " +
-      "producer of AgentCellPosition. What Step 5 supplied is its INPUT: the telemetry path now writes the " +
-      "kind='position' Observations it reads (services/positionObservation.service.js), which before had no " +
-      "production writer at all. The blocker is unchanged and is the charging classifier, whose absent default " +
-      "(charging: false) makes availabilityIndex.classify report a charging agent as IDLE_READY — a widening " +
-      "into §6.3's first-searched partition, which is worse than the eviction this entry used to name.",
+    blockedBy: null,
   },
   {
     id: "capacity_pricing",

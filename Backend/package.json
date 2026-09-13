@@ -31,6 +31,8 @@
     "test:scale": "jest --runInBand --forceExit --selectProjects scale",
     "test:watch": "jest --runInBand --watch",
     "verify": "npm run gates && npm test",
+    "verify:batch2": "node tools/verify/batch2ChargingScheduler.js",
+    "verify:batch2:mutants": "node tools/verify/batch2Mutants.js",
     "verify:step2": "node tools/verify/step2SimulatedOwnership.js",
     "verify:step3": "node tools/verify/step3SimulationIdentity.js",
     "verify:step4": "node tools/verify/step4SimulationBehaviour.js",

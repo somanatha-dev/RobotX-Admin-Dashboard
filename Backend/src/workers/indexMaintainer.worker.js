@@ -18,12 +18,20 @@
  *
  *   - **Charging state and projected free time** — whether an agent is currently
  *     charging, whether that session is interruptible, and when a busy agent is
- *     projected to free up. These live in mission progress and the energy model
- *     (§12.3, §14.6), which this phase does not own the read path for. Supplied as
- *     `deps.chargingStatusFor(agentId)`; defaults to "not charging, not finishing
- *     soon" when omitted, which only *narrows* an agent's partition (never widens
- *     it into `IDLE_READY`), so an unwired deployment degrades to fewer indexed
- *     agents rather than a wrong classification.
+ *     projected to free up. These are the Charging Scheduler's (§14.6, §14.7), which
+ *     this worker does not own the read path for. Supplied as
+ *     `deps.chargingStatusFor(agentId)`.
+ *
+ *     **BATCH 2 — the default is now an absence, not a negative.** It returned
+ *     "not charging" when omitted, and the sentence that used to stand here claimed
+ *     that only *narrowed* an agent's partition. It did the reverse: "not charging"
+ *     plus "no commitments" is `IDLE_READY`, §6.3's first-searched partition. The
+ *     classifier now answers in three states — `known: false` (nobody owns the
+ *     answer), `waiting: true` (queued for a plug), or a positive charging verdict —
+ *     and `assembleRecord` declines to index an agent in either of the first two. An
+ *     unwired deployment now indexes **nothing**, which is the honest degradation:
+ *     with no Charging Scheduler (blocking decision B2) there is no authority on
+ *     whether any agent may leave a charger.
  *   - **Capability and container classes** — §6.2's secondary indices. These come
  *     from the `CapabilityBundle`/`ContainerModel` Phase 2 landed, whose exact
  *     relation shape this phase does not re-derive. Supplied as `deps.
@@ -38,29 +46,47 @@
  * re-run after a crash mid-sweep reprocesses every agent and converges to the same
  * index — nothing here accumulates.
  *
- * ── Built, tested, and still not started — and STEP 5 did not change that ────
- * Nothing in `server.js` calls `start()`. Step 5 supplied this worker's *input* — the
- * telemetry path now writes the `kind = "position"` Observations it reads
- * (`services/positionObservation.service.js`), where before there was no production
- * writer at all and `AgentCellPosition` was consequently empty. Supplying an input is not
- * clearing a blocker, and the blocker registered against this worker in
- * `workers/registry.js` is a different one:
+ * ── Started at BATCH 2, and exactly what that does and does not mean ────────
+ * Step 5 supplied this worker's *input* — the telemetry path now writes the
+ * `kind = "position"` Observations it reads (`services/positionObservation.service.js`),
+ * where before there was no production writer at all and `AgentCellPosition` was
+ * consequently empty. Supplying an input was not clearing the blocker, and the blocker
+ * registered against this worker in `workers/registry.js` was the charging classifier and
+ * its widening default (described above).
  *
- *   **`chargingStatusFor` is absent, and its default is the wrong direction.** With no
- *   charging classifier, `assembleRecord` supplies `charging: false`, and
- *   `availabilityIndex.classify` then reads an agent parked on a charger with no
- *   commitments as `IDLE_READY` — the *largest* partition, searched first at §6.3 tier 1.
- *   That is a widening, and the maintainer's own contract two paragraphs above says its
- *   defaults "only *narrow* an agent's partition (never widen it into `IDLE_READY`)". The
- *   contract and the code disagree, the code is what runs, and a scheduled sweep would
- *   offer real work to agents that cannot leave the charger.
+ * That classifier now exists — `services/chargingStatus.service.js` — and it reads the
+ * Charging Scheduler's own durable artefact (`ChargerReservation`), not a simulator
+ * variable, a socket state or a `Robot.status` column. With it supplied, the worker is
+ * started from the composition root and its registry row is `SCHEDULED`.
  *
- * So the minimum safe way to start it is: supply `chargingStatusFor` from the charging
- * state §12.3/§14.6 own, and `capabilityAndContainerClassesFor` from the
- * `CapabilityBundle`/`ContainerModel` relations. Neither exists as a read path today.
- * Until then this worker is driven explicitly — by `tools/verify/step5PositionPipeline.js`
- * and `tools/verify/phase9LiveDatabase.js` — which is a fail-closed disposition and not a
- * scheduling one. **Starting it to make a readiness count move would be the opposite.**
+ * **What starting it does not mean.** The classifier is authoritative only for agents a
+ * Charging Scheduler actually covers, and the only scheduler that exists is the
+ * development simulation publisher (`simulation/devChargingScheduler.js`). For every
+ * physical agent it answers `known: false` and this worker indexes nothing — which is the
+ * same set of rows the index held before Batch 2 (none), reached honestly rather than by
+ * the worker being switched off. B2 is still open; §14.7 still has no production
+ * publisher; no V1 stop condition moves because this worker runs.
+ *
+ * ── The second classifier is still absent, and is NOT fabricated ────────────
+ * `capabilityAndContainerClassesFor` has no producer and Batch 2 did not invent one.
+ * Activation was assessed against it rather than assumed past it:
+ *
+ *   * §6.2's capability-class and container-class **vocabularies are undeclared** — no
+ *     module, register entry or document states what string names a class — so any
+ *     derivation from `CapabilityBundle`/`ContainerModel` would be a taxonomy this batch
+ *     invented and later readers would trust.
+ *   * **No production consumer reads the secondary index.** `candidates/expansion.js` is
+ *     the only caller of `candidatesInFineCell`/`candidatesInCoarseCell` and passes no
+ *     `filters` argument at any of its three call sites, so `capabilityKey`/`containerKey`
+ *     are written and never queried.
+ *   * **No feasibility predicate reads the fields.** F21 matches a requested chassis
+ *     through §2.3's typed algebra on the agent's *bundle*, which
+ *     `agentSnapshotLoaderFor` carries whole (`capabilityBundle`, `containerModel`) —
+ *     `capabilityClasses` and `containerClasses` reach the snapshot and nothing consumes
+ *     them.
+ *
+ * So the documented `[]` default stands, it is inert rather than narrowing, and it is
+ * recorded as an open gap rather than closed by a guess.
  *
  * Tier 1 by path (`src/workers/` default). Outside `guards/tenets.js`'s
  * `DECISION_PATH_SCOPE` (that scope is `src/engine/**`, not `src/workers/**`), so —
@@ -131,10 +157,41 @@ async function assembleRecord(deps, agentId, nowMs) {
   const observedAtMs = new Date(latestPosition.observedAt).getTime();
   if (!Number.isFinite(observedAtMs)) return null;
 
+  // ── BATCH 2 — the charging classifier, and the default that is now an absence ──
+  //
+  // This read `{ charging: false, … }` when no classifier was supplied, and that default
+  // was the registered blocker on this worker: `availabilityIndex.classify` reads an agent
+  // with no commitments and `charging: false` as `IDLE_READY`, the partition §6.3 searches
+  // FIRST — so an agent parked on a charger was offered work ahead of a genuinely idle one.
+  // The header two screens up claimed the defaults "only *narrow* … never widen"; the code
+  // did the opposite, and the code is what runs.
+  //
+  // The replacement is not the mirror-image default. Flipping it to `charging: true` would
+  // fabricate a session for every agent nobody can answer for, which is the same defect
+  // pointing the other way. `services/chargingStatus.service.js` answers in THREE states and
+  // this is where the third one is honoured: an agent whose charging state is **unknown**,
+  // and an agent **queued** for a plug, are both left out of the index entirely.
+  //
+  // Both are narrowings, and both are free: §3.3 I16 makes the index advisory and
+  // feasibility is re-verified at commit, so an agent missing from the index costs candidate
+  // quality and never correctness. An agent wrongly *in* it costs correctness.
   const charging =
     typeof deps.chargingStatusFor === "function"
       ? await deps.chargingStatusFor(agent.id)
-      : { charging: false, chargingInterruptible: false, projectedFreeAtMs: null };
+      : { known: false, charging: false, chargingInterruptible: false, waiting: false, projectedFreeAtMs: null };
+
+  // `known === false` is "nobody owns the answer for this agent" — §14.7 gives charging
+  // state to the Charging Scheduler and B2 has not produced one for the physical fleet. It
+  // is NOT "not charging", and the difference is the whole point of this change.
+  //
+  // Read as an explicit `!== true` rather than `=== false`, so a classifier that returns
+  // the old three-field shape — or any object that simply does not carry the field — is
+  // treated as an absence rather than as permission.
+  if (charging.known !== true) return null;
+  // Docked, holding a place in the charging queue. Not charging, and not available either:
+  // `classify()` has no vocabulary for "waiting at a charger", so the narrowing is applied
+  // here rather than by misreporting it through `charging`.
+  if (charging.waiting === true) return null;
 
   const secondary =
     typeof deps.capabilityAndContainerClassesFor === "function"

@@ -447,6 +447,35 @@ describe("Step 5.6 — physical and simulated agents coexist and stay independen
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe("Step 5.7 — indexMaintainer turns position Observations into AgentCellPosition", () => {
+  /**
+   * BATCH 2 — the charging classifier every sweep below now has to be given.
+   *
+   * These tests are about the *position* pipeline: an accepted telemetry frame becomes a
+   * `kind = "position"` Observation and the maintainer turns it into an
+   * `AgentCellPosition` row. They were written when the maintainer's absent charging
+   * classifier defaulted to `charging: false`, so a sweep with no classifier indexed the
+   * agent and the position assertions ran.
+   *
+   * Batch 2 removed that default, because it was a **widening**: "not charging" plus "no
+   * commitments" is `IDLE_READY`, the partition §6.3 searches first, so an agent parked on
+   * a charger was offered work ahead of a genuinely idle one. An agent whose charging
+   * state nobody owns is now left out of the index entirely.
+   *
+   * So the classifier is supplied here rather than the worker's refusal being softened:
+   * the subject of these tests is the position pipeline, and it needs an agent that is
+   * *indexable* to have anything to assert about. `known: true` with `charging: false` is
+   * the one verdict that makes an agent indexable, and it is a positive statement from a
+   * scheduler rather than the absence of one. `tests/engine/devChargingScheduler.test.js`
+   * is where the refusal itself is asserted.
+   */
+  const NOT_CHARGING = async () => ({
+    known: true,
+    charging: false,
+    chargingInterruptible: false,
+    waiting: false,
+    projectedFreeAtMs: null,
+  });
+
   /** A prisma double for the maintainer's three reads and its mirror write. */
   function maintainerPrisma(observationRow) {
     const rows = new Map();
@@ -479,7 +508,7 @@ describe("Step 5.7 — indexMaintainer turns position Observations into AgentCel
     const observedAt = new Date(1_700_000_000_000);
     const prisma = maintainerPrisma({ value: { lat: BENGALURU.lat, lon: BENGALURU.lon, provenance: "PHYSICAL" }, observedAt });
 
-    const outcome = await indexMaintainer.sweepAgents({ prisma, kv: null }, ["a1"]);
+    const outcome = await indexMaintainer.sweepAgents({ prisma, kv: null, chargingStatusFor: NOT_CHARGING }, ["a1"]);
 
     expect(outcome).toMatchObject({ processed: 1, indexed: 1, failed: 0 });
     const row = prisma.rows.get("a1");
@@ -495,7 +524,7 @@ describe("Step 5.7 — indexMaintainer turns position Observations into AgentCel
     const prisma = maintainerPrisma({ value: { lat: BENGALURU.lat, lon: BENGALURU.lon }, observedAt });
 
     const sweepClock = 1_700_000_600_000; // ten minutes after the fix was taken
-    await indexMaintainer.sweepAgents({ prisma, kv: null, now: () => sweepClock }, ["a1"]);
+    await indexMaintainer.sweepAgents({ prisma, kv: null, chargingStatusFor: NOT_CHARGING, now: () => sweepClock }, ["a1"]);
 
     expect(prisma.rows.get("a1").observedAtMs).toBe(BigInt(observedAt.getTime()));
     expect(prisma.rows.get("a1").observedAtMs).not.toBe(BigInt(sweepClock));
@@ -507,15 +536,15 @@ describe("Step 5.7 — indexMaintainer turns position Observations into AgentCel
     const observedAt = new Date(1_700_000_000_000);
     const prisma = maintainerPrisma({ value: { lat: BENGALURU.lat, lon: BENGALURU.lon }, observedAt });
 
-    await indexMaintainer.sweepAgents({ prisma, kv: null, now: () => 1_700_000_005_000 }, ["a1"]);
-    await indexMaintainer.sweepAgents({ prisma, kv: null, now: () => 1_700_000_600_000 }, ["a1"]);
+    await indexMaintainer.sweepAgents({ prisma, kv: null, chargingStatusFor: NOT_CHARGING, now: () => 1_700_000_005_000 }, ["a1"]);
+    await indexMaintainer.sweepAgents({ prisma, kv: null, chargingStatusFor: NOT_CHARGING, now: () => 1_700_000_600_000 }, ["a1"]);
 
     expect(prisma.rows.get("a1").observedAtMs).toBe(BigInt(observedAt.getTime()));
   });
 
   test("no AgentCellPosition is created when no position Observation exists", async () => {
     const prisma = maintainerPrisma(null);
-    const outcome = await indexMaintainer.sweepAgents({ prisma, kv: null }, ["a1"]);
+    const outcome = await indexMaintainer.sweepAgents({ prisma, kv: null, chargingStatusFor: NOT_CHARGING }, ["a1"]);
     expect(outcome).toMatchObject({ processed: 1, indexed: 0, failed: 0 });
     expect(prisma.agentCellPosition.upsert).not.toHaveBeenCalled();
     expect(prisma.rows.size).toBe(0);
@@ -523,23 +552,23 @@ describe("Step 5.7 — indexMaintainer turns position Observations into AgentCel
 
   test("no AgentCellPosition is created when the observation carries no usable coordinates", async () => {
     const prisma = maintainerPrisma({ value: { reason: "NACK" }, observedAt: new Date(1_000) });
-    await indexMaintainer.sweepAgents({ prisma, kv: null }, ["a1"]);
+    await indexMaintainer.sweepAgents({ prisma, kv: null, chargingStatusFor: NOT_CHARGING }, ["a1"]);
     expect(prisma.agentCellPosition.upsert).not.toHaveBeenCalled();
   });
 
   test("no AgentCellPosition is created when the observation's observedAt is unreadable", async () => {
     const prisma = maintainerPrisma({ value: { lat: 1, lon: 2 }, observedAt: new Date("not-a-date") });
-    await indexMaintainer.sweepAgents({ prisma, kv: null }, ["a1"]);
+    await indexMaintainer.sweepAgents({ prisma, kv: null, chargingStatusFor: NOT_CHARGING }, ["a1"]);
     expect(prisma.agentCellPosition.upsert).not.toHaveBeenCalled();
   });
 
   test("an existing mirror row is removed once its agent has no indexable position", async () => {
     const prisma = maintainerPrisma({ value: { lat: BENGALURU.lat, lon: BENGALURU.lon }, observedAt: new Date(1_000) });
-    await indexMaintainer.sweepAgents({ prisma, kv: null }, ["a1"]);
+    await indexMaintainer.sweepAgents({ prisma, kv: null, chargingStatusFor: NOT_CHARGING }, ["a1"]);
     expect(prisma.rows.size).toBe(1);
 
     prisma.observation.findFirst = jest.fn(async () => null);
-    const outcome = await indexMaintainer.sweepAgents({ prisma, kv: null }, ["a1"]);
+    const outcome = await indexMaintainer.sweepAgents({ prisma, kv: null, chargingStatusFor: NOT_CHARGING }, ["a1"]);
     expect(outcome.removed).toBe(1);
     expect(prisma.rows.size).toBe(0);
   });
@@ -549,7 +578,7 @@ describe("Step 5.7 — indexMaintainer turns position Observations into AgentCel
       value: { lat: BENGALURU.lat, lon: BENGALURU.lon, provenance: "SIMULATED" },
       observedAt: new Date(1_000),
     });
-    await indexMaintainer.sweepAgents({ prisma, kv: null }, ["a1"]);
+    await indexMaintainer.sweepAgents({ prisma, kv: null, chargingStatusFor: NOT_CHARGING }, ["a1"]);
     const row = prisma.rows.get("a1");
     expect(row).toBeTruthy();
     expect(Object.keys(row)).not.toContain("provenance");

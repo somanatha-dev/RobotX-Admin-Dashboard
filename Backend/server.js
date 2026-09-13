@@ -69,6 +69,11 @@ const cutoverWorker = require("./src/workers/cutover.worker");
 // model are driven by the LEADER_ONLY timer worker through §4.3's `ESCALATION_LADDER`;
 // this is the third module, whose signal is an absence and therefore needs a tick.
 const fairnessWorker = require("./src/workers/fairness.worker");
+// BATCH 2 — §6.2's availability index maintainer, and the charging classifier it was
+// blocked on. The worker's registry row moved DEFERRED → SCHEDULED because that classifier
+// now exists; `src/workers/registry.js` records what that does and does not claim.
+const indexMaintainer = require("./src/workers/indexMaintainer.worker");
+const chargingStatus = require("./src/services/chargingStatus.service");
 const cutoverStore = require("./src/engine/cutover/store");
 const cutoverEnabled = require("./src/engine/cutover/enabled");
 // PHASE 15 remediation — the two halves of the cutover switch that had no production
@@ -344,6 +349,21 @@ function startScheduledWorkers(context) {
     ),
   );
 
+  // ── BATCH 2 — §6.2's availability index maintainer ──────────────────────────
+  //
+  // Started here for an engine process, and beside the simulator for a development
+  // simulation process where `ENGINE_ENABLED` is false. Exactly one of the two runs, and
+  // the caller decides which by supplying `indexMaintainerDeps` only on this path.
+  //
+  // The dependency object is built by the caller rather than here because its classifier
+  // needs the simulator's roster, which `start()` holds and this function does not. What
+  // matters for correctness is that the classifier is REAL: without one, `assembleRecord`
+  // now refuses to index any agent at all rather than defaulting to "not charging", so a
+  // mis-wired composition degrades to an empty index instead of a widened one.
+  if (typeof context.indexMaintainerDeps === "function") {
+    started("index_maintainer", indexMaintainer.start(context.indexMaintainerDeps(), {}));
+  }
+
   const summary = workerRegistry.report({ running });
   log.info("Engine workers scheduled (§15 production scheduling)", {
     running: running.length,
@@ -509,6 +529,45 @@ async function start() {
   });
 
   let virtualSimulator = null;
+  /**
+   * BATCH 2 — the §6.2 index maintainer's handle, when this process starts it outside the
+   * `ENGINE_ENABLED` gate (a development simulation process). Held so shutdown can stop
+   * it: a 5 s interval that outlived `disconnectPrisma()` would keep a Prisma client alive
+   * and turn a clean stop into a hang.
+   */
+  let indexMaintainerHandle = null;
+
+  /**
+   * BATCH 2 — the index maintainer's dependency object, built once and used by both start
+   * sites so the two cannot drift.
+   *
+   * The classifier is the whole point of this function. `chargingStatusFor` is composed
+   * from `services/chargingStatus.service.js` and given its scope predicate from the
+   * simulator's roster — which is how a physical agent comes to have **no** authoritative
+   * charging state and is therefore left out of the index, rather than being widened into
+   * `IDLE_READY` by a default.
+   *
+   * `capabilityAndContainerClassesFor` is deliberately **not** supplied. It has no
+   * producer, §6.2's class vocabularies are undeclared, and nothing reads the secondary
+   * index (`candidates/expansion.js` passes no filters at any of its three call sites).
+   * Passing a fabricated one would be worse than the documented `[]` default, which is
+   * inert. The gap is recorded, not filled.
+   *
+   * @returns {object}
+   */
+  const indexMaintainerDeps = () => ({
+    prisma,
+    kv,
+    snapshot: app.locals.config,
+    chargingStatusFor: chargingStatus.createChargingStatusReader({
+      prisma,
+      inScope: (subject) => (virtualSimulator ? virtualSimulator.managesAgent(subject) === true : false),
+      onError: (error, agentRowId) =>
+        logger.warn("Charging status could not be read", { agentRowId, message: error && error.message }),
+    }),
+    onError: (error, agentId) =>
+      logger.error("Index maintainer sweep failed", { agentId, message: error && error.message }),
+  });
 
   // ─────────────────────────────────────────────────────────────────────────
   // PHASE 13 — the coordinator lifecycle (§19.3, §19.5).
@@ -986,6 +1045,9 @@ async function start() {
       // T1-04 — `fairness.idle_alert_period` is region-scoped, as is
       // `ops.escalation_capacity`. Resolved above, from `Shard → Region`.
       regionId,
+      // BATCH 2 — the index maintainer's dependencies, built here because its charging
+      // classifier needs the simulator's roster for its scope predicate.
+      indexMaintainerDeps,
     });
   } else {
     logger.info(
@@ -1000,6 +1062,11 @@ async function start() {
     try {
       logger.warn(`Shutdown received (${signal}) — draining connections…`);
       try { virtualSimulator?.stop?.(); } catch { /* ignore */ }
+      // BATCH 2 — the index maintainer, when this process started it outside the
+      // `ENGINE_ENABLED` gate. The engine-path handle is in `engineWorkers.handles` and is
+      // stopped with the rest below; this is the development-simulation one, which nothing
+      // else holds.
+      try { indexMaintainerHandle?.stop?.(); } catch { /* ignore */ }
       try { certificateWorker?.stop?.(); } catch { /* ignore */ }
       // PHASE 15 remediation (D-5) — stop the LEADER_ONLY workers before the leadership
       // release below. Releasing first would advance the fence while a drain pass was still
@@ -1075,6 +1142,17 @@ async function start() {
       serverUrl,
       logger,
       enabled: simulatorEnabled,
+      // BATCH 2 — the two transaction primitives the development Charging Scheduler needs
+      // to enforce its plug count. Injected here because no module under `src/simulation/`
+      // may import a database dependency of its own (`simulationBoundary.test.js` holds
+      // that as a structural guard), and because the composition root is already where
+      // `prisma` and `kv` reach the simulator.
+      runSerializable,
+      selectForUpdate,
+      // The SQLSTATE check, injected for the same reason: a serialisation failure is an
+      // ordinary outcome for several robots docking at once, and the scheduler must be
+      // able to tell one apart from a real error without importing a database module.
+      isSerializationFailure,
     });
     app.locals.virtualSimulator = virtualSimulator;
 
@@ -1088,7 +1166,46 @@ async function start() {
         : `Disabled (${simulationPolicy.SIMULATOR_ENV_VAR} is not true) — physical fleet only`,
     });
 
-    if (simulatorEnabled) virtualSimulator.start();
+    // ── BATCH 2: the development Charging Scheduler, then the index maintainer ──
+    //
+    // Ordered, and awaited, for a reason that is about truth rather than tidiness. The
+    // scheduler must have published its availability projection before any robot asks for
+    // a plug (`requestPlug` refuses without one) and before the index maintainer's first
+    // sweep, because `chargingStatusFor` reads the reservations the scheduler owns — a
+    // sweep that ran first would find no scheduler, answer `known: false` for every agent,
+    // and index nothing. That is the correct answer for an absent scheduler and the wrong
+    // one for a scheduler that has not finished booting.
+    if (simulatorEnabled) {
+      virtualSimulator
+        .provisionCharging()
+        .catch((e) => logger.warn("Development charging scheduler could not be provisioned", { message: e?.message }))
+        .finally(() => { virtualSimulator.start(); });
+    }
+
+    // §6.2's index maintainer. Its registry row moved from DEFERRED to SCHEDULED at
+    // Batch 2 because the classifier it was blocked on now exists — see
+    // `src/workers/registry.js` for what that does and does not claim.
+    //
+    // ── Why it is started HERE and not in `startScheduledWorkers` ─────────────
+    // Every other SCHEDULED worker starts inside the `ENGINE_ENABLED` gate, and this one
+    // must also run for a development simulation process where the engine is off: the
+    // whole point of Batch 2 is that a simulated fleet becomes *visible* to candidate
+    // search. So the condition is the union, and the worker is started once in whichever
+    // of the two postures applies. Starting it twice would run two sweeps over one table.
+    //
+    // It is safe in both. The classifier answers `known: false` for every agent no
+    // Charging Scheduler covers, and the worker then indexes nothing — so an engine
+    // process with no simulator writes exactly the rows it wrote before Batch 2 (none).
+    if (simulatorEnabled && !engineEnabled) {
+      indexMaintainerHandle = indexMaintainer.start(indexMaintainerDeps(), {});
+      logger.info("Availability index maintainer started (development simulation)", {
+        worker: "index_maintainer",
+        engineEnabled: false,
+        note:
+          "the availability index is advisory (§3.3 I16). Agents no Charging Scheduler covers are NOT indexed; " +
+          "this closes no V1 stop condition and is not physical evidence",
+      });
+    }
 
     // Re-hydrate VirtualRobot instances for the robots that are *simulated* units.
     // Runs async after listen so it doesn't block the HTTP server from becoming ready.

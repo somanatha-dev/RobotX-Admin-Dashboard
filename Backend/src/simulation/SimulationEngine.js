@@ -31,6 +31,12 @@ const simulationPolicy = require("./simulationPolicy");
 // `simulationConfig.js` for why this is nine numbers rather than a configuration framework.
 const simulationConfig = require("./simulationConfig");
 const { hashSeed } = require("./random");
+// BATCH 2 — the development Charging Scheduler. It is driven from here and from nowhere
+// else, which is what confines its scope: every robot in `robots` passed
+// `simulationPolicy.maySpawnVirtualRobot`, so "the scheduler acts only on simulated units"
+// is inherited from the gate that already establishes it rather than re-derived from the
+// discriminator beside it.
+const devChargingScheduler = require("./devChargingScheduler");
 
 /**
  * STEP 3 — the commissioned specification a `VirtualRobot` is constructed with.
@@ -86,18 +92,125 @@ function specificationInputsFor(row) {
 }
 
 /**
+ * BATCH 2 — how often the scheduler's reconciliation pass runs.
+ *
+ * @structural a sweep cadence, not a behavioural threshold. Every ordinary plug hand-over
+ * is synchronous — `devChargingScheduler.release` promotes the next robot in the same
+ * call — so this pass exists only for the promotions nothing announced: a reservation
+ * that outlived its published window because the process holding it died. Ten seconds is
+ * a batching choice against a window measured in tens of minutes, and no register entry
+ * is invented for it because no behaviour changes with its value.
+ */
+const SCHEDULER_PASS_INTERVAL_MS = 10_000;
+
+/**
  * @param {object} deps
+ * @param {Function} [deps.runSerializable] `db/prisma.runSerializable`, and
+ *   @param {Function} [deps.selectForUpdate] `db/prisma.selectForUpdate` — the two
+ *   transaction primitives the development Charging Scheduler enforces its plug count
+ *   with. **Injected, never imported**, for the same reason `prisma` is: no module under
+ *   `src/simulation/` may take a database dependency of its own, and
+ *   `tests/engine/simulationBoundary.test.js` holds that as a structural guard. Absent
+ *   means no plug can be granted — `requestPlug` refuses rather than counting occupancy
+ *   outside a lock, because a count that can interleave with an insert is how a
+ *   three-plug charger comes to have four robots on it.
  * @param {boolean} [deps.enabled] the process-level posture; defaults to
  *   `simulationPolicy.isSimulatorEnabled()`, i.e. `ENABLE_VIRTUAL_SIMULATOR=true`, off
  *   otherwise. Injected so the composition root can state it once and so a test need not
  *   mutate `process.env`.
  */
-function createVirtualRobotSimulator({ prisma, kv, serverUrl, logger, enabled } = {}) {
+function createVirtualRobotSimulator({
+  prisma, kv, serverUrl, logger, enabled, runSerializable, selectForUpdate, isSerializationFailure,
+} = {}) {
   const log   = logger || console;
   const simulatorEnabled =
     typeof enabled === "boolean" ? enabled : simulationPolicy.isSimulatorEnabled();
   let robots  = [];
   let started = false;
+  /**
+   * BATCH 2 — the scheduler's periodic pass, and the deps it runs with.
+   *
+   * `promote`/`reconcile` need a tick of their own because the events they respond to are
+   * not the agent's: a plug freed by robot A is what promotes robot B, and B is not
+   * ticking on A's schedule. Every exit from charging also promotes synchronously (see
+   * `devChargingScheduler.release`), so this pass is the safety net for the case no exit
+   * announced — a process that died mid-session — rather than the primary mechanism.
+   */
+  let schedulerTimer = null;
+  const chargingDeps = { prisma, runSerializable, selectForUpdate, isSerializationFailure };
+
+  /**
+   * BATCH 2 — is this agent one the development Charging Scheduler covers?
+   *
+   * The roster is the answer, and the roster is `robots`: every entry passed
+   * `simulationPolicy.maySpawnVirtualRobot`, which re-read the row and required the
+   * database itself to say the unit is simulated. So membership here *is* the
+   * discriminator, obtained through the one gate allowed to read it.
+   *
+   * `services/chargingStatus.service.js` receives this as its injected `inScope`
+   * predicate, which is why that module reads no flag of its own: a physical agent is not
+   * in this list and cannot be, so it can never be told that it is free of a charger.
+   *
+   * Matches on the robot's business identifier — the `Agent.agentId` seeded from
+   * `Robot.robotId`, and the `Robot.robotId` itself — so a caller holding either can ask.
+   *
+   * @param {{ robotId?: string|null, agentId?: string|null }} subject
+   * @returns {boolean}
+   */
+  function managesAgent(subject) {
+    const source = subject || {};
+    const wanted = [source.robotId, source.agentId].filter((value) => typeof value === "string" && value !== "");
+    if (wanted.length === 0) return false;
+    return robots.some((vr) => wanted.includes(vr.robotId));
+  }
+
+  /**
+   * The scheduler client one `VirtualRobot` is handed. Bound to that agent's row, so the
+   * agent cannot name another.
+   *
+   * @param {string} agentRowId `Agent.id`
+   * @returns {{ request: Function, release: Function, state: Function }}
+   */
+  function chargingClientFor(agentRowId) {
+    return {
+      async request(targetSoc) {
+        const verdict = await devChargingScheduler.requestPlug(chargingDeps, {
+          agentRowId,
+          targetSoc,
+          nowMs: Date.now(),
+        });
+        if (!verdict.ok) {
+          // `retryable` means PostgreSQL declined to serialise the transaction against a
+          // concurrent request — several robots docking in the same instant is the ordinary
+          // case for a three-plug charger, not an incident. It is logged at debug and the
+          // agent asks again on its next tick, which is the bounded retry `db/prisma`'s own
+          // "deliberately performs no retry" note assigns to the caller.
+          const level = verdict.retryable === true ? "debug" : "warn";
+          if (typeof log[level] === "function") {
+            log[level]("[VR] plug request not granted", { agentRowId, retryable: verdict.retryable === true, problems: verdict.problems });
+          }
+          // `null`, never `"NONE"`. "The scheduler did not answer" is not "you hold
+          // nothing"; reporting the second would let a charging agent conclude its
+          // reservation had been taken away because one transaction lost a race.
+          return { state: null, retryable: verdict.retryable === true, problems: verdict.problems };
+        }
+        // A newly queued robot is promoted by the same pass everybody else is, so the
+        // request does not grant its own plug. Running the pass here keeps the common
+        // case — a free plug and an empty queue — one round trip rather than one tick.
+        await devChargingScheduler.promote(chargingDeps, { nowMs: Date.now() });
+        const live = await devChargingScheduler.liveReservationFor(chargingDeps, agentRowId);
+        return { state: live ? live.state : "NONE", problems: [] };
+      },
+      async release(reason) {
+        return devChargingScheduler.release(chargingDeps, { agentRowId, nowMs: Date.now(), reason });
+      },
+      async state() {
+        const live = await devChargingScheduler.liveReservationFor(chargingDeps, agentRowId);
+        return { state: live ? live.state : "NONE" };
+      },
+    };
+  }
+
   /**
    * STEP 4 — the current tunables, `{}` until something sets them. Applied to robots as
    * they are added, and — for the two `LIVE` parameters — to robots already running.
@@ -165,6 +278,18 @@ function createVirtualRobotSimulator({ prisma, kv, serverUrl, logger, enabled } 
       }
     }
 
+    // BATCH 2 — the development Charging Scheduler's periodic pass. Started with the
+    // fleet and stopped with it, because a scheduler promoting robots that are not running
+    // would hand plugs to agents that cannot use them.
+    if (prisma && schedulerTimer === null) {
+      schedulerTimer = setInterval(() => {
+        devChargingScheduler
+          .reconcile(chargingDeps, { nowMs: Date.now() })
+          .catch((e) => log.warn("[VR] charging scheduler pass failed", { message: e?.message }));
+      }, SCHEDULER_PASS_INTERVAL_MS);
+      if (typeof schedulerTimer.unref === "function") schedulerTimer.unref();
+    }
+
     const running = robots.filter((vr) => vr.isRunning()).length;
     log.info(
       wasStarted
@@ -174,8 +299,53 @@ function createVirtualRobotSimulator({ prisma, kv, serverUrl, logger, enabled } 
     return { started: true, running, total: robots.length, reason: null };
   }
 
+  /**
+   * BATCH 2 — provision the development charger and clear any reservation the previous
+   * process left behind.
+   *
+   * Separate from `start()` and awaited by the composition root, because it is the one
+   * step that must have completed before a robot can ask for a plug: `requestPlug` refuses
+   * when no projection has been published, and a fleet that started first would spend its
+   * first ticks being refused for a reason that is about boot order rather than about
+   * charging.
+   *
+   * @param {{ nowMs?: number }} [options]
+   * @returns {Promise<object>}
+   */
+  async function provisionCharging(options) {
+    if (!prisma) return { ok: false, problems: ["no prisma client"] };
+    const nowMs = options && Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+
+    const provisioned = await devChargingScheduler.provision({ prisma }, { nowMs });
+    if (!provisioned.ok) {
+      log.warn("[VR] development charger not provisioned", { problems: provisioned.problems });
+      return provisioned;
+    }
+
+    // Restart reconciliation, before the first robot asks for anything. A process that
+    // died with three robots ACTIVE left three occupied plugs and no in-memory state;
+    // without this the charger is full forever and every request queues behind agents that
+    // are gone.
+    const reconciled = await devChargingScheduler.reconcile(chargingDeps, { nowMs });
+
+    log.info("[VR] development charging scheduler ready", {
+      chargerId: devChargingScheduler.DEVELOPMENT_CHARGER.chargerId,
+      plugCount: devChargingScheduler.DEVELOPMENT_CHARGER.plugCount,
+      projectionVersion: provisioned.projectionVersion,
+      publishedNewVersion: provisioned.published,
+      staleReservationsExpired: reconciled.expired,
+      evidence: "DEVELOPMENT SIMULATION — not physical charger evidence, and no V1 stop condition is affected",
+    });
+
+    return { ...provisioned, expired: reconciled.expired };
+  }
+
   function stop() {
     started = false;
+    if (schedulerTimer !== null) {
+      clearInterval(schedulerTimer);
+      schedulerTimer = null;
+    }
     for (const vr of robots) {
       try { vr.stop(); } catch { /* ignore */ }
     }
@@ -250,6 +420,11 @@ function createVirtualRobotSimulator({ prisma, kv, serverUrl, logger, enabled } 
             massKg: true,
             agent: {
               select: {
+                // BATCH 2 — the `Agent` primary key. `ChargerReservation.agentId` is a
+                // foreign key to it, so the charging client cannot be bound without it.
+                // A String uuid, so the BigInt-serialisation hazard the comment above
+                // names does not apply.
+                id: true,
                 batteryState: {
                   select: { kappa: true, kappaSampleCount: true, soh: true, lastObservedSoc: true },
                 },
@@ -331,6 +506,16 @@ function createVirtualRobotSimulator({ prisma, kv, serverUrl, logger, enabled } 
       // value, and `VirtualRobot` then falls back to the module constant — a fallback
       // fills a gap and never overrides a value that is present.
       ...specificationInputsFor(row),
+      // ── BATCH 2: the Charging Scheduler client, or nothing ────────────────────
+      //
+      // Supplied only when this unit has an `Agent` row for a reservation to reference.
+      // A simulated `Robot` with no backing `Agent` — a unit predating the Phase 2
+      // backfill — gets no client and keeps Batch 1's local docking delay. That is the
+      // fail-closed direction: `ChargerReservation.agentId` is a foreign key, a
+      // reservation cannot be written for an agent that does not exist, and inventing the
+      // agent to make the charger work would be inventing a fleet participant.
+      chargingClient:
+        prisma && row && row.agent && row.agent.id ? chargingClientFor(row.agent.id) : null,
     });
 
     try {
@@ -364,6 +549,11 @@ function createVirtualRobotSimulator({ prisma, kv, serverUrl, logger, enabled } 
     const idx = robots.findIndex((r) => r.robotId === robotId);
     if (idx < 0) return;
     try { robots[idx].stop(); } catch { /* ignore */ }
+    // BATCH 2 — a retired unit must not keep a plug. `stop()` halts the tick, so the
+    // agent will never reach its target and never release; without this the charger loses
+    // a plug for every decommission and the queue behind it stops moving. Issued before
+    // the splice, while the instance still holds its bound client.
+    try { robots[idx]._clearCharging(devChargingScheduler.RELEASE_REASON.DEREGISTERED); } catch { /* ignore */ }
     robots.splice(idx, 1);
     log.info(`[VR] ${robotId} virtual robot removed`);
   }
@@ -484,6 +674,14 @@ function createVirtualRobotSimulator({ prisma, kv, serverUrl, logger, enabled } 
     setConfig,
     inspectTransport,
     isEnabled: () => simulatorEnabled,
+    // ── BATCH 2 ───────────────────────────────────────────────────────────────
+    provisionCharging,
+    // The scope predicate `services/chargingStatus.service.js` is composed with. Exposed
+    // as a function rather than as the roster itself, so no caller can take a copy that
+    // goes stale the moment a robot is added or retired.
+    managesAgent,
+    // The charger's occupancy, for diagnostics and the live verification harness.
+    chargingStatus: () => devChargingScheduler.status(chargingDeps),
   };
 }
 

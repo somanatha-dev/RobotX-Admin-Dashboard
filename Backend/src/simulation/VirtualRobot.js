@@ -132,6 +132,9 @@ const commandSigning = require("../engine/security/commandSigning");
 // rather than a second implementation of the same curve that a future edit could
 // desynchronise. Importing it is the point, not an optimisation.
 const chargeCurve = require("../engine/energy/chargeCurve");
+// BATCH 2 — the release reasons the development Charging Scheduler records. Imported so
+// the agent and the scheduler spell them the same way; there is no agent-side copy.
+const { RELEASE_REASON: CHARGE_RELEASE_REASON } = require("./devChargingScheduler");
 
 // Redis key for persisting battery across restarts (separate from live-state key)
 const batteryKey = (robotId) => `vr:battery:${robotId}`;
@@ -362,6 +365,19 @@ class VirtualRobot {
     // different keys in one process.
     commandSigningKey,
     autonomousContinuationLimitSeconds,
+    // ── BATCH 2: the Charging Scheduler's agent-side client ───────────────────
+    //
+    // The development Charging Scheduler (§14.7), bound to THIS agent's row. Supplied by
+    // `SimulationEngine.addRobot`, which is the only caller that can obtain it — it holds
+    // the roster, and membership of that roster is what establishes that this unit is in
+    // the scheduler's scope at all.
+    //
+    // **Absent means Batch 1's behaviour, unchanged.** A `VirtualRobot` constructed
+    // without a client (a standalone harness, an existing unit test) keeps the local
+    // `CHARGING_WAIT_MS` docking delay it has always had. Batch 2 does not remove that
+    // path; it adds a scheduled one beside it, so no existing assertion about charging
+    // moves. See `_handleCharging`.
+    chargingClient,
     // STEP 1 — the target row's simulation discriminator, carried explicitly.
     //
     // Not defaulted to `true` "because this is a simulator". The instance is constructed
@@ -574,6 +590,21 @@ class VirtualRobot {
     this._chargingPhase    = null;   // null | 'WAITING' | 'CHARGING'
     this._chargeWaitUntil  = null;
     this._pendingResume    = null;   // TASK_ASSIGN payload deferred while charging on low battery
+
+    // ── BATCH 2: the scheduler client and the verdict it last gave ────────────
+    //
+    // `_chargingClient` is null for an unscheduled instance, which is what keeps Batch 1's
+    // local docking delay intact for every existing caller.
+    //
+    // `_schedulerState` is the **last verdict this agent was told**, never a guess: `null`
+    // until the scheduler has answered once, then one of `NONE`/`QUEUED`/`ACTIVE`. The tick
+    // is synchronous and the scheduler is a database round trip, so the two are joined by a
+    // single in-flight promise (`_schedulerPending`) rather than by awaiting inside the
+    // tick — a tick that awaited would make the agent's clock depend on database latency,
+    // which is exactly the kind of coupling that makes a simulated run unreproducible.
+    this._chargingClient   = typeof chargingClient === "object" && chargingClient !== null ? chargingClient : null;
+    this._schedulerState   = null;
+    this._schedulerPending = false;
 
     // ── PHASE 7: §14.6's inputs, as the agent receives them ────────────────
     // Both arrive on the offer and neither is computed here. §14.6: "the *agent*
@@ -1796,6 +1827,13 @@ class VirtualRobot {
       running:       this.isRunning(),
       heading:       this._heading !== null ? Math.round(this._heading) : null,
       chargingPhase: this._chargingPhase,
+      // BATCH 2 — the agent's view of the reservation the scheduler holds for it, and
+      // whether it is scheduled at all. Reported for the same reason the energy basis is:
+      // a run must not be able to look scheduled when it is running Batch 1's local
+      // docking timer. `null` means the scheduler has not answered yet — deliberately
+      // distinct from `"NONE"`, which is an answer.
+      chargingScheduled: this._chargingClient !== null,
+      chargingReservationState: this._schedulerState,
       pendingResumeTaskId: this._pendingResume?.taskId || null,
 
       // ── STEP 8: where in the mission this agent actually is ────────────────
@@ -2035,27 +2073,142 @@ class VirtualRobot {
     this._carryingPayload = false;
   }
 
-  _clearCharging() {
+  /**
+   * Leave the charger.
+   *
+   * ── BATCH 2: leaving the charger RELEASES THE PLUG ─────────────────────────
+   * Every exit from charging routes through here — reaching the target, a `TASK_ASSIGN`
+   * that interrupts, a `STOP`, a `reset()`. That is what makes "charging completion
+   * releases the plug" a property of one code path instead of a rule several paths have
+   * to remember, and it is why the release is issued here rather than beside the
+   * target-reached branch alone: a robot that drove off the charger without releasing
+   * would hold a plug forever and the queue behind it would never move.
+   *
+   * The release is fire-and-forget because every caller is synchronous. It is still
+   * durable and still idempotent — `devChargingScheduler.release` is a no-op for an agent
+   * holding nothing — and a release that never lands is caught by `reconcile()`, which
+   * expires the reservation on its own published window.
+   */
+  _clearCharging(reason) {
+    const held = this._schedulerState === "ACTIVE" || this._schedulerState === "QUEUED";
     this._chargingPhase   = null;
     this._chargeWaitUntil = null;
+
+    if (this._chargingClient && held) {
+      this._schedulerState = "NONE";
+      Promise.resolve(this._chargingClient.release(reason))
+        .catch((e) => this.log.warn(`[VR] ${this.robotId} charging release failed`, { message: e?.message }));
+    }
   }
 
   // ── Charging state machine ────────────────────────────────────────────────
 
-  _enterCharging() {
+  /**
+   * Dock and ask for a plug.
+   *
+   * ── BATCH 2: the wait is now the QUEUE, not a timer ────────────────────────
+   * Batch 1 waited `CHARGING_WAIT_MS` and then declared current flowing, which modelled
+   * a docking delay and nothing else — four robots at a three-plug charger all charged.
+   * With a scheduler client the same `WAITING` phase now means "queued", and only the
+   * scheduler's `ACTIVE` verdict advances it. The phase machine is unchanged; what
+   * changed is who decides when it moves.
+   */
+  _enterCharging(nowMs) {
+    const at = Number.isFinite(nowMs) ? nowMs : Date.now();
     this.status          = "CHARGING";
     this._chargingPhase  = "WAITING";
-    this._chargeWaitUntil = Date.now() + CHARGING_WAIT_MS;
+    this._chargeWaitUntil = at + CHARGING_WAIT_MS;
     this.speed           = 0;
+
+    if (this._chargingClient) {
+      // The target the session is charging TO travels with the request, because §14.6
+      // makes it the Scheduler's field and the scheduler is what records it. The agent
+      // still does not choose one — `_targetSocPercent()` reads the offer's published
+      // value or the class default, and this hands that same number back as a fraction.
+      this._schedulerState = null;
+      this._requestPlug(this._targetSocPercent() / 100); // @structural percentage to fraction
+      this.log.info(
+        `[VR] ${this.robotId} battery critical (${this.battery.toFixed(1)}%) — docking and requesting a plug`
+      );
+      return;
+    }
+
     this.log.info(
       `[VR] ${this.robotId} battery critical (${this.battery.toFixed(1)}%) — docking to charge`
     );
+  }
+
+  /**
+   * Ask the scheduler for a plug, and keep at most one request in flight.
+   *
+   * The request is **idempotent at the scheduler**, so a repeat while one is outstanding
+   * is harmless; the in-flight guard exists to stop a 2 s tick from opening a new
+   * transaction before the previous one has committed, not to make the request safe.
+   *
+   * @param {number} targetSoc as a fraction in [0, 1]
+   */
+  _requestPlug(targetSoc) {
+    if (!this._chargingClient || this._schedulerPending) return;
+    this._schedulerPending = true;
+    Promise.resolve(this._chargingClient.request(targetSoc))
+      .then((verdict) => {
+        this._schedulerState = verdict && verdict.state ? verdict.state : "NONE";
+      })
+      .catch((e) => {
+        // A request that failed granted nothing. The agent stays in `WAITING` and asks
+        // again next tick; it must never advance to `CHARGING` on an unanswered request,
+        // because drawing current from a plug nobody granted is the four-robots-on-three-
+        // plugs defect arriving by a different route.
+        this._schedulerState = null;
+        this.log.warn(`[VR] ${this.robotId} plug request failed`, { message: e?.message });
+      })
+      .finally(() => { this._schedulerPending = false; });
+  }
+
+  /**
+   * Re-read this agent's reservation state from the scheduler. A read, never a request.
+   *
+   * Shares the single in-flight slot with `_requestPlug`, so the tick never has more than
+   * one scheduler round trip outstanding.
+   */
+  _refreshSchedulerState() {
+    if (!this._chargingClient || this._schedulerPending) return;
+    this._schedulerPending = true;
+    Promise.resolve(this._chargingClient.state())
+      .then((verdict) => {
+        this._schedulerState = verdict && verdict.state ? verdict.state : "NONE";
+      })
+      .catch((e) => {
+        // A failed read establishes nothing, so the last known verdict stands. It must not
+        // be read as a release: tearing a live session down on a transient database error
+        // would make the fleet's charging depend on database availability rather than on
+        // the reservation the scheduler actually granted.
+        this.log.warn(`[VR] ${this.robotId} charging state read failed`, { message: e?.message });
+      })
+      .finally(() => { this._schedulerPending = false; });
   }
 
   _handleCharging(nowMs) {
     if (this.status !== "CHARGING") return;
 
     if (this._chargingPhase === "WAITING") {
+      // ── BATCH 2: scheduled charging ─────────────────────────────────────────
+      if (this._chargingClient) {
+        if (this._schedulerState === "ACTIVE") {
+          this._chargingPhase = "CHARGING";
+          this.log.info(`[VR] ${this.robotId} plug granted — charging current flowing`);
+          return;
+        }
+        // Still queued, or no verdict yet. Re-ask: the first call enqueues, and every
+        // later one is the scheduler restating this agent's place in the queue. It cannot
+        // move the agent up the queue — `requestPlug` returns the existing reservation
+        // unchanged, whose `reservedFrom` is the original enqueue instant — so a robot
+        // that asks often is not a robot that jumps.
+        this._requestPlug(this._targetSocPercent() / 100); // @structural percentage to fraction
+        return;
+      }
+
+      // Batch 1's local docking delay, for an instance with no scheduler client.
       if (nowMs >= (this._chargeWaitUntil || 0)) {
         this._chargingPhase = "CHARGING";
         this.log.info(`[VR] ${this.robotId} charging current flowing`);
@@ -2063,7 +2216,26 @@ class VirtualRobot {
       return;
     }
 
+    // ── BATCH 2: the plug can be taken away ─────────────────────────────────
+    // A session whose reservation has been released or expired underneath it (a
+    // `reconcile()` sweep, an operator release) must stop drawing current. The agent's
+    // opinion is not the authority on whether it holds a plug; the scheduler that granted
+    // it is, and this is where the agent yields to that.
+    if (this._chargingPhase === "CHARGING" && this._chargingClient && this._schedulerState === "NONE") {
+      this.status = "IDLE";
+      this._clearCharging(CHARGE_RELEASE_REASON.AGENT_RELEASED);
+      this.log.info(`[VR] ${this.robotId} charging stopped — the reservation is no longer held`);
+      return;
+    }
+
     if (this._chargingPhase === "CHARGING") {
+      // Keep the agent's view of its own reservation current, so the branch above can see
+      // a release that happened elsewhere. Read, never asserted: this asks the scheduler
+      // what it holds and does not re-request a plug, because re-requesting after a
+      // release would silently put the agent back at the *end* of the queue while it was
+      // still drawing current.
+      this._refreshSchedulerState();
+
       const targetPercent = this._targetSocPercent();
 
       // ── STEP 4: charging can never *lower* the battery ────────────────────────
@@ -2088,7 +2260,11 @@ class VirtualRobot {
         // fabrication one line up.
         this.battery = Math.max(this.battery, targetPercent);
         this.status  = "IDLE";
-        this._clearCharging();
+        // BATCH 2 — the plug is freed here, named by the reason it was freed. The owner's
+        // rule is that a robot stops at its authoritative target and does not need 100 %,
+        // and this is that rule's only exit: the session ends at `targetPercent`, and
+        // `_clearCharging` hands the plug to whoever is at the front of the queue.
+        this._clearCharging(CHARGE_RELEASE_REASON.TARGET_REACHED);
 
         const pending = this._pendingResume;
         this._pendingResume = null;
@@ -2310,7 +2486,9 @@ class VirtualRobot {
       this.status !== "CHARGING" &&
       this.phase === null
     ) {
-      this._enterCharging();
+      // BATCH 2 — the tick's own instant, so docking is stamped with the same clock read
+      // every other step of this tick uses rather than a second one taken inside.
+      this._enterCharging(nowMs);
     }
 
     // 5) Battery drain (skipped during charging — handled by _handleCharging)
