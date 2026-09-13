@@ -409,7 +409,24 @@ const REQUIREMENTS = Object.freeze([
     why:
       "`legProfiles` needs the vehicle's own mass to project consumption. `AgentClass.totalMassLimitKg` is a " +
       "**limit**, not a mass, and reading a limit as a mass would overstate consumption on every candidate " +
-      "equally — which is the kind of error that looks conservative and is simply wrong. No mass column exists.",
+      "equally — which is the kind of error that looks conservative and is simply wrong. " +
+      "~~No mass column exists.~~\n" +
+      "*(CORRECTED 2026-09-12. **A mass column exists.** `Robot.massKg` was added by migration " +
+      "`20260906120000_robot_specification_and_chassis_class`, is documented on the schema as being there " +
+      "\"because §14.2's consumption equation has a `β_mass` term that needs one\", and " +
+      "`services/robotSpecification.js` is its declared sole writer — the operator supplies it at " +
+      "commissioning. So the sentence this row carried was true when written and has been false since that " +
+      "migration landed.*\n" +
+      "*What is still absent is the **producer**: nothing builds the `vehicleMassKgFor` accessor this row's " +
+      "probe asks for, so the column is written and never read on the decision path — the E-8b family, at " +
+      "another place. **The class is deliberately left `NO_PRODUCER` and the probe is unchanged**: the input " +
+      "is still unresolved, the requirement still fails, and every published class count " +
+      "(`EXTERNAL_ROUTING` 5 · `REGISTER_UNRESOLVED` 15 · `NO_PRODUCER` 6) is unmoved. What the class name " +
+      "now understates is that the data source is named and populated, which is a smaller gap than \"nobody " +
+      "has named a source\" — and a reader acting on the old sentence would have gone looking for a fleet " +
+      "specification exercise instead of writing an accessor. `owner` is likewise left as written rather " +
+      "than re-attributed to the commissioning operator, because these strings are quoted in the frozen " +
+      "boundary documents.)*",
     probe: (context) => isFunction(context.vehicleMassKgFor) || isPositive(context.vehicleMassKg),
   },
   {

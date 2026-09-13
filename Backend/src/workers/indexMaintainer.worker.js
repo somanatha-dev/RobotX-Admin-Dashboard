@@ -38,10 +38,29 @@
  * re-run after a crash mid-sweep reprocesses every agent and converges to the same
  * index — nothing here accumulates.
  *
- * ── Built, tested, and not started ───────────────────────────────────────────
- * Nothing in `server.js` calls `start()`. Phase 15 owns production scheduling, the
- * same disposition every worker since Phase 4 has carried while `ENGINE_ENABLED`
- * is false.
+ * ── Built, tested, and still not started — and STEP 5 did not change that ────
+ * Nothing in `server.js` calls `start()`. Step 5 supplied this worker's *input* — the
+ * telemetry path now writes the `kind = "position"` Observations it reads
+ * (`services/positionObservation.service.js`), where before there was no production
+ * writer at all and `AgentCellPosition` was consequently empty. Supplying an input is not
+ * clearing a blocker, and the blocker registered against this worker in
+ * `workers/registry.js` is a different one:
+ *
+ *   **`chargingStatusFor` is absent, and its default is the wrong direction.** With no
+ *   charging classifier, `assembleRecord` supplies `charging: false`, and
+ *   `availabilityIndex.classify` then reads an agent parked on a charger with no
+ *   commitments as `IDLE_READY` — the *largest* partition, searched first at §6.3 tier 1.
+ *   That is a widening, and the maintainer's own contract two paragraphs above says its
+ *   defaults "only *narrow* an agent's partition (never widen it into `IDLE_READY`)". The
+ *   contract and the code disagree, the code is what runs, and a scheduled sweep would
+ *   offer real work to agents that cannot leave the charger.
+ *
+ * So the minimum safe way to start it is: supply `chargingStatusFor` from the charging
+ * state §12.3/§14.6 own, and `capabilityAndContainerClassesFor` from the
+ * `CapabilityBundle`/`ContainerModel` relations. Neither exists as a read path today.
+ * Until then this worker is driven explicitly — by `tools/verify/step5PositionPipeline.js`
+ * and `tools/verify/phase9LiveDatabase.js` — which is a fail-closed disposition and not a
+ * scheduling one. **Starting it to make a readiness count move would be the opposite.**
  *
  * Tier 1 by path (`src/workers/` default). Outside `guards/tenets.js`'s
  * `DECISION_PATH_SCOPE` (that scope is `src/engine/**`, not `src/workers/**`), so —
@@ -100,6 +119,18 @@ async function assembleRecord(deps, agentId, nowMs) {
   const position = latestPosition.value || {};
   if (!isFiniteNumber(position.lat) || !isFiniteNumber(position.lon)) return null;
 
+  // STEP 5 — the instant the **agent** measured this position, carried out of the
+  // Observation rather than taken from the sweep.
+  //
+  // The row is refused when it is unreadable, and this is the fail-closed direction rather
+  // than the tidy one: `AgentCellPosition.observedAtMs` is documented as "when the position
+  // this row reflects was observed (§2.7) — distinct from `updatedAt`, which is when the
+  // row was written", and `coordinatorSolvePath.agentSnapshotLoaderFor` copies it straight
+  // onto the agent snapshot the engine reasons over. Substituting anything for it would
+  // publish a freshness the fleet never reported.
+  const observedAtMs = new Date(latestPosition.observedAt).getTime();
+  if (!Number.isFinite(observedAtMs)) return null;
+
   const charging =
     typeof deps.chargingStatusFor === "function"
       ? await deps.chargingStatusFor(agent.id)
@@ -126,6 +157,10 @@ async function assembleRecord(deps, agentId, nowMs) {
     shardId: "default", // static single-shard, per Phase 3's ShardLeadership precedent ahead of Phase 13
     lat: position.lat,
     lon: position.lon,
+    // Carried alongside the record `positionRecord()` builds rather than inside it:
+    // `availabilityIndex` is Tier 1 and pure, its record is the Redis index key material,
+    // and a timestamp is neither. The durable mirror needs it; the index does not.
+    observedAtMs,
     capabilityClasses: secondary.capabilityClasses,
     containerClasses: secondary.containerClasses,
     decisionTimeMs: nowMs,
@@ -200,6 +235,15 @@ async function sweepAgents(deps, agentIds) {
       await availabilityIndex.applyPosition({ kv: deps.kv }, previous, next.record);
 
       if (next.record) {
+        // STEP 5 — the Observation's own `observedAt`, not the sweep's clock.
+        //
+        // This read `BigInt(nowMs)` in both branches, so every mirror row claimed to have
+        // been measured at the instant the sweep happened to run. On a 5 s sweep that
+        // republished a five-minute-old fix as a five-second-old one every five seconds:
+        // the column can never have gone stale, because the loop refreshed it. Freshness
+        // is the one thing this column exists to record (§2.7), and a value that is
+        // renewed by the act of reading it is not a measurement.
+        const observedAtMs = BigInt(assembled.observedAtMs);
         // eslint-disable-next-line no-await-in-loop
         await prisma.agentCellPosition.upsert({
           where: { agentId },
@@ -213,7 +257,7 @@ async function sweepAgents(deps, agentIds) {
             availabilityClass: next.record.availabilityClass,
             capabilityClasses: next.record.capabilityClasses,
             containerClasses: next.record.containerClasses,
-            observedAtMs: BigInt(nowMs),
+            observedAtMs,
           },
           update: {
             shardId: next.record.shardId,
@@ -224,7 +268,7 @@ async function sweepAgents(deps, agentIds) {
             availabilityClass: next.record.availabilityClass,
             capabilityClasses: next.record.capabilityClasses,
             containerClasses: next.record.containerClasses,
-            observedAtMs: BigInt(nowMs),
+            observedAtMs,
           },
         });
         indexed += 1;

@@ -1,0 +1,47 @@
+-- STEP 2 CORRECTION — remove the one-simulated-robot-per-owner uniqueness rule.
+--
+-- ── What was wrong ──────────────────────────────────────────────────────────
+-- `20260907130000_robot_simulation_owner` created:
+--
+--     CREATE UNIQUE INDEX "Robot_one_simulated_per_owner"
+--       ON "Robot" ("simulationOwnerId")
+--       WHERE "simulated" AND "simulationOwnerId" IS NOT NULL;
+--
+-- on the reading that the product rule was "one user → one simulated robot". It is not.
+-- The rule is "one SUPER_ADMIN → MANY simulated robots", with no per-operator limit at
+-- all. The index was therefore enforcing an invariant nobody asked for, and the surface
+-- it protected — `POST /api/simulator/robot` — was refusing legitimate requests with a
+-- 409 the moment an operator had created their first unit.
+--
+-- ── What is dropped, and what is deliberately kept ──────────────────────────
+-- ONLY the index. `Robot.simulationOwnerId` stays, along with its foreign key to
+-- `User(id)` and its `ON DELETE SET NULL` rule, because the column is still useful and
+-- still correct: it records **which authenticated operator created this simulated unit**.
+--
+-- That is creator/ownership *metadata*. It was never the thing that made the rule true —
+-- the index was — so removing the index removes the rule and leaves the record intact.
+-- After this migration the same `simulationOwnerId` may appear on arbitrarily many rows
+-- where `simulated = true`, which is exactly the valid state the requirement describes:
+--
+--     SUPER_ADMIN
+--       ├── SIM-001
+--       ├── SIM-002
+--       └── SIM-003
+--
+-- ── Nothing else on Robot is touched ────────────────────────────────────────
+-- `UNIQUE ("robotId")` is untouched and still load-bearing: the server generates each
+-- simulated identifier and that constraint is what decides whether the drawn value is
+-- free. `Robot.simulated`, the foreign key, and every unrelated uniqueness constraint on
+-- this table are left exactly as they are.
+--
+-- ── Additive and reversible ─────────────────────────────────────────────────
+-- Dropping a unique index only *widens* what the table accepts, so no existing row can
+-- violate anything as a result and no read path changes. Re-creating the index would
+-- restore the prior schema — but only on a table that has not meanwhile acquired the
+-- second simulated robot this migration exists to permit, which is the honest statement
+-- of the reverse direction.
+--
+-- `IF EXISTS` so the migration is idempotent and so it applies cleanly to a database
+-- provisioned after the correction, where the index was never created.
+
+DROP INDEX IF EXISTS "Robot_one_simulated_per_owner";

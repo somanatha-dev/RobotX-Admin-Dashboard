@@ -14,6 +14,7 @@ import useNotificationsDismiss from '@/hooks/useNotificationsDismiss.js';
 
 import * as authApi from '@/lib/api/auth.js';
 import * as robotsApi from '@/lib/api/robots.js';
+import * as simulatorApi from '@/lib/api/simulator.js';
 import * as tasksApi from '@/lib/api/tasks.js';
 import * as locationsApi from '@/lib/api/locations.js';
 import { socket, DASHBOARD_EVENTS, ENGINE_NOT_LIVE } from '@/lib/socket.js';
@@ -49,6 +50,12 @@ export default function AppProvider({ children }) {
   const [robots, setRobots] = useState([]);
   const robotsRef = useRef([]);
   useEffect(() => { robotsRef.current = robots; }, [robots]);
+
+  // The simulator's runtime snapshot, or `null` when it could not be read. Held beside
+  // the robot list rather than derived from it, because the two answer different
+  // questions: a robot row says a unit *is* simulated, and this says whether anything is
+  // currently running it. `null` is rendered as "status unknown", never as "not running".
+  const [simulatorStatus, setSimulatorStatus] = useState(null);
 
   const [tasks, setTasks] = useState([]);
   // Persistent cache of task route paths — survives re-renders and page navigation.
@@ -98,12 +105,17 @@ export default function AppProvider({ children }) {
     if (refreshingRef.current) return;
     refreshingRef.current = true;
     try {
-      const [robotsNext, tasksNext] = await Promise.all([
+      const [robotsNext, tasksNext, simulatorNext] = await Promise.all([
         robotsApi.getRobotsState(),
         tasksApi.listTasks(),
+        // Already failure-tolerant: it resolves to `null` rather than rejecting, so a
+        // simulator that is unreachable cannot take the robot and task lists down with
+        // it — and `null` is rendered honestly as "status unknown".
+        simulatorApi.getSimulatorStatus(),
       ]);
       setRobots(Array.isArray(robotsNext) ? robotsNext : []);
       setTasks(Array.isArray(tasksNext) ? tasksNext : []);
+      setSimulatorStatus(simulatorNext || null);
     } finally {
       refreshingRef.current = false;
     }
@@ -278,6 +290,14 @@ export default function AppProvider({ children }) {
           locationId: location.id,
           lat,
           lon,
+          // The chassis the form collected. It used to be gathered and then dropped here,
+          // so every unit reached the backend with no type at all — and the backend, having
+          // never been told, could not key the unit's `AgentClass` and its model rows.
+          chassisType: robotData?.chassisType ?? robotData?.type ?? null,
+          // The six specification values plus the declared initial state of charge. Sent as
+          // one object so the server validates them as a set — a normal speed above the
+          // maximum is only wrong in combination.
+          specification: robotData?.specification ?? null,
         });
 
         await refreshDbState();
@@ -286,6 +306,109 @@ export default function AppProvider({ children }) {
       });
     },
     [addEvent, navigate, refreshDbState, requestAuth]
+  );
+
+  /**
+   * Create exactly ONE simulated robot, recorded against the signed-in operator.
+   *
+   * ── Why this is a separate action from `commission` ─────────────────────
+   * Because they are separate product flows with separate backends. `commission` records
+   * hardware somebody bought and installed: the operator names it and it later proves who
+   * it is by pairing. This provisions a test agent the server names, that no hardware will
+   * ever claim, and that only a SUPER_ADMIN may ask for. The two never share a form and
+   * never share an endpoint — expressing the second as a checkbox on the first is exactly
+   * what let simulated units be created with no record of who made them and no role check.
+   *
+   * ── One call, one robot, as many times as you like ──────────────────────
+   * There is no count and no loop here, and there is no per-operator limit either. A
+   * SUPER_ADMIN builds SIM-001, SIM-002, SIM-003 by calling this three times. An earlier
+   * version of this comment described a one-simulated-robot-per-operator rule enforced by
+   * a partial unique index; that rule was a misreading of the requirement and the index
+   * has been dropped.
+   *
+   * ── Why it is not routed through `requestAuth` ──────────────────────────
+   * The step-up challenge guards acts that change what the physical fleet *is* or *is
+   * doing* — commissioning, decommissioning, task creation, the global stop. Creating a
+   * simulated agent is not one of those. What the backend added instead is a server-side
+   * SUPER_ADMIN check on the route itself (`requireElevatedRole()` in
+   * `simulator.routes.js`), which is authorisation rather than re-authentication and does
+   * not belong in front of a form.
+   *
+   * ── Authorisation is the server's, and stays the server's ───────────────
+   * Nothing here checks a role. A caller who is not SUPER_ADMIN receives the server's 403,
+   * and it reaches the page as an ordinary rejection. A client-side guard would be a
+   * second copy of a rule that lives on the server, and it would be the copy that is wrong.
+   *
+   * @param {object} draft what the form collected
+   * @returns {Promise<object>} the created robot, projected (no creator id)
+   */
+  const createSimulatedRobot = useCallback(
+    async (draft) => {
+      const zoneName = String(draft?.zone || '').trim();
+      if (!zoneName) {
+        const err = new Error('An operating zone is required.');
+        err.status = 400;
+        throw err;
+      }
+
+      const lat = draft?.lat ?? draft?.zoneLat ?? null;
+      const lon = draft?.lon ?? draft?.zoneLon ?? null;
+
+      // Create/reuse a Location row for this address — the same step physical
+      // commissioning takes, through the same API.
+      const location = await locationsApi.createLocation({
+        name: zoneName,
+        type: 'AREA',
+        lat,
+        lon,
+      });
+
+      // No robotId, no count, no simulated flag, no owner. The server decides all four.
+      const result = await simulatorApi.createSimulatedRobot({
+        name: String(draft?.name || '').trim() || null,
+        locationId: location.id,
+        lat,
+        lon,
+        chassisType: draft?.chassisType ?? null,
+        specification: draft?.specification ?? null,
+      });
+
+      await refreshDbState();
+      addEvent(
+        `Simulated unit ${result?.robot?.robotId || ''} created (${result?.status || 'unknown state'})`,
+        'info',
+      );
+      return result;
+    },
+    [addEvent, refreshDbState],
+  );
+
+  /**
+   * Edit a commissioned unit's configuration.
+   *
+   * Not routed through `requestAuth`: the step-up challenge guards commissioning,
+   * decommissioning, task creation and the global stop — acts that change what the fleet
+   * *is* or *is doing*. Correcting a payload capacity is an ordinary administrative edit,
+   * and putting a PIN prompt in front of every keystroke's worth of it would train
+   * operators to type the PIN without reading what it is authorising.
+   *
+   * Resolves to the updated unit so the caller can close its form only on success; a
+   * rejection carries the server's own sentence, which is the one that names the field.
+   */
+  const updateRobotSpecification = useCallback(
+    async (robotId, patch) => {
+      const id = String(robotId || '').trim();
+      if (!id) return null;
+
+      const robot = await robotsApi.updateRobot(id, patch);
+
+      setRobots((prev) =>
+        prev.map((r) => (String(r.robotId || '').trim() === id ? { ...r, ...robot } : r)),
+      );
+      addEvent(`Unit ${id} configuration updated`, 'info');
+      return robot;
+    },
+    [addEvent]
   );
 
   const retire = useCallback(
@@ -320,6 +443,16 @@ export default function AppProvider({ children }) {
           drop,
           dropLat: taskDraft?.dropLat,
           dropLon: taskDraft?.dropLon,
+          // §15.1's payload specification, as declared. Mass **and** its tolerance:
+          // feasibility uses the upper bound of the tolerance, so a mass without one is a
+          // payload the gate cannot reason about, and the server refuses it rather than
+          // inventing a precision nobody stated.
+          payload: taskDraft?.payload ?? null,
+          // The agent class this task is asking for. It becomes a §2.3 requirement on the
+          // Task's RequirementSet and is matched by predicate F21 against the unit's
+          // attested capability bundle — the existing eligibility path, not a filter of
+          // its own and nothing hard-coded about which unit goes.
+          requestedChassisType: taskDraft?.requestedChassisType ?? null,
         });
 
         await refreshDbState();
@@ -391,6 +524,26 @@ export default function AppProvider({ children }) {
       if (data?.fault || data?.healthStatus === 'FAULT') {
         addEvent(`Fault on ${robotId}: ${data?.fault?.message || 'hardware fault'}`, 'critical');
       }
+    };
+
+    // A unit's configuration changed — from this session's edit form, or another
+    // operator's. Merged rather than replaced so the live telemetry fields on the row
+    // (battery, position, speed) are not rolled back to whatever the edit response
+    // happened to carry.
+    const onRobotSpecificationUpdated = (data) => {
+      const robotId = String(data?.robotId || '').trim();
+      if (!robotId || !data?.specification) return;
+      setRobots((prev) =>
+        prev.map((r) =>
+          String(r.robotId || '').trim() === robotId
+            ? {
+                ...r,
+                specification: data.specification,
+                ...(typeof data.name === 'string' ? { name: data.name } : {}),
+              }
+            : r,
+        ),
+      );
     };
 
     // New PENDING task created — add to list immediately so spinner shows.
@@ -574,6 +727,7 @@ export default function AppProvider({ children }) {
     // backend; subscribing to all three was firing the same handler 3× per tick.
     socket.on(DASHBOARD_EVENTS.ROBOT_UPDATE, onRobotUpdate);
     socket.on(DASHBOARD_EVENTS.ROBOT_UPDATED, onRobotUpdated);
+    socket.on(DASHBOARD_EVENTS.ROBOT_SPECIFICATION_UPDATED, onRobotSpecificationUpdated);
     socket.on(DASHBOARD_EVENTS.TASK_CREATED, onTaskCreated);
     socket.on(DASHBOARD_EVENTS.TASK_ACCEPTED, onTaskAccepted);
     socket.on(DASHBOARD_EVENTS.TASK_ERROR, onTaskError);
@@ -586,6 +740,7 @@ export default function AppProvider({ children }) {
     return () => {
       socket.off(DASHBOARD_EVENTS.ROBOT_UPDATE, onRobotUpdate);
       socket.off(DASHBOARD_EVENTS.ROBOT_UPDATED, onRobotUpdated);
+      socket.off(DASHBOARD_EVENTS.ROBOT_SPECIFICATION_UPDATED, onRobotSpecificationUpdated);
       socket.off(DASHBOARD_EVENTS.TASK_CREATED, onTaskCreated);
       socket.off(DASHBOARD_EVENTS.TASK_ACCEPTED, onTaskAccepted);
       socket.off(DASHBOARD_EVENTS.TASK_ERROR, onTaskError);
@@ -616,6 +771,7 @@ export default function AppProvider({ children }) {
       session,
       preferences,
       robots,
+      simulatorStatus,
       tasks,
       events,
       systemOnline,
@@ -632,6 +788,7 @@ export default function AppProvider({ children }) {
       session,
       preferences,
       robots,
+      simulatorStatus,
       tasks,
       events,
       systemOnline,
@@ -654,6 +811,8 @@ export default function AppProvider({ children }) {
       requestAuth,
       stopAll,
       commission,
+      createSimulatedRobot,
+      updateRobotSpecification,
       retire,
       createTask,
       cancelTask,
@@ -673,6 +832,8 @@ export default function AppProvider({ children }) {
       requestAuth,
       stopAll,
       commission,
+      createSimulatedRobot,
+      updateRobotSpecification,
       retire,
       createTask,
       cancelTask,

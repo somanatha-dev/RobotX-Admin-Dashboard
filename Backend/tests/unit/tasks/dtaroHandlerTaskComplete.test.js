@@ -18,6 +18,12 @@ describe("dtaro.handler — TASK_COMPLETE (task lifecycle: completion)", () => {
     io = createFakeIo();
     socket = createFakeSocket();
     socket.data.robotId = "R1";
+    // §2.4 — the handler resolves the identifier the agent reported to a `Task.taskId`
+    // before acting on it, because an agent may report the `Leg` it was offered instead.
+    // A completion is about a Task that exists, so the fake client says so; without this
+    // the resolver would find no Task, fall through to the Leg lookup, and these tests
+    // would be asserting the behaviour of an unresolvable identifier.
+    prisma.task.findUnique.mockResolvedValue({ taskId: "TSK-1" });
     registerDtaroHandlers(io, socket, { prisma, kv, logger: silentLogger });
   });
 

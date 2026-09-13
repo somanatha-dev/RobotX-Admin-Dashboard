@@ -16,8 +16,8 @@ through replacing its task-assignment engine.
 | | |
 |---|---|
 | **Legacy DTARO assignment engine** | **Deleted.** Removed from the build by Phase 15, not merely bypassed. A build gate fails if it returns |
-| **Next-generation assignment engine** | **Built and tested — 185 modules — but switched off.** `ENGINE_ENABLED` defaults to `false`, and no production composition root constructs a solve path |
-| **`POST /api/tasks`** | Returns **`503 ENGINE_NOT_LIVE`** |
+| **Next-generation assignment engine** | **Built and tested — 196 modules — but not deciding.** `ENGINE_ENABLED` defaults to `false`, and the coordinator's round loop **refuses to compose**: 26 of its 34 declared inputs are unresolved |
+| **`POST /api/tasks/assign`** | Returns **`503 ENGINE_NOT_LIVE`** |
 | **Phase 15** (verification, gates, cutover) | **BLOCKED** |
 | **Phase 16** (Tier 2 enablement) | **NOT READY — must not begin** |
 | **B1** (routing engine selection) | **BLOCKED** behind the region definition (D1), which awaits an operations/commercial decision |
@@ -39,7 +39,8 @@ Read these in this order depending on what you need.
 
 | Document | What it is |
 |---|---|
-| **[`ARCHITECTURE.md`](ARCHITECTURE.md)** | **Start here.** What RobotX is *today* — the live host platform, the engine's real status, known gaps, and a source-of-truth map |
+| **[`ARCHITECTURE.md`](ARCHITECTURE.md)** | **Start here.** What RobotX is *today* — the live host platform, the engine's real status, the database and Redis architecture, every end-to-end workflow, a traceability matrix, known gaps, and a source-of-truth map |
+| **[`ROBOTX_SYSTEM_HANDBOOK.md`](ROBOTX_SYSTEM_HANDBOOK.md)** | **Read second.** The practical companion: mental models, how each subsystem works in plain language, debugging, testing, the benchmark story, and interview/presentation material |
 | [`NEXT_GENERATION_ASSIGNMENT_ENGINE.md`](NEXT_GENERATION_ASSIGNMENT_ENGINE.md) | **The frozen architecture.** Architectural authority. Where anything disagrees with it, the other thing is defective |
 | [`docs/adr/`](docs/adr/) | **40 architecture decision records** — the 38 frozen Appendix C decisions, plus **ADR-33** and **ADR-34**, integration decisions numbered from 33 upward. Each fixes one decision's identity **and its rejected alternative** |
 | [`IMPLEMENTATION_EXECUTION_PLAN.md`](IMPLEMENTATION_EXECUTION_PLAN.md) | The plan of record: 16 phases, capability inventory, blocking decisions, release gates |
@@ -75,12 +76,13 @@ Backend/
     app.js               Express pipeline: helmet → CORS → JSON/cookies → logging → /api
     routes/              13 route groups mounted under /api
     controllers/         HTTP handlers
-    services/            15 transport-agnostic service modules
+    services/            18 transport-agnostic service modules
     sockets/             Socket.IO server, 5 handlers, per-event rate limiting
     cache/kv.js          The sole Redis facade — pipelining, fail-closed locks, fallback
     db/                  Prisma client
-    engine/              Next-generation assignment engine — 185 modules, NOT ENABLED
-    workers/             19 engine workers — none on production scheduling
+    engine/              Next-generation assignment engine — 196 modules, NOT DECIDING
+    workers/             19 registered workers — 9 run at boot, 3 more on leadership,
+                         1 refuses (B1), 6 deferred with declared blockers
     simulation/          VirtualRobot + SimulationEngine
     middlewares/         auth, rate limiting, error handling
     config/              env, logger, CORS, constants
@@ -127,8 +129,19 @@ MAPBOX_ACCESS_TOKEN="YOUR_MAPBOX_TOKEN"
 # Optional
 # GOOGLE_CLIENT_ID=...
 # ADMIN_EMAIL=... / ADMIN_PASSWORD=...      bootstrap admin
-# DISABLE_VIRTUAL_SIMULATOR=true
 # LOG_LEVEL=debug
+
+# The virtual robot simulator. OFF unless this says true.
+#
+# When true, the server spawns an in-process VirtualRobot for each Robot row whose
+# `simulated` column is true — and for no others. Physical robots (simulated = false,
+# which is the default for every row) never receive one: a VirtualRobot mints the
+# `session:{robotId}` credential and writes the live-state key, so adopting a physical
+# unit would replace its credentials and fabricate its telemetry.
+#
+# Simulation is a facility for exercising the agent protocol and for demonstrations. It
+# is never evidence about physical hardware.
+ENABLE_VIRTUAL_SIMULATOR=false
 
 # The assignment engine master switch. Leave false — see "Current status".
 ENGINE_ENABLED=false
@@ -232,7 +245,7 @@ npm run build
 
 ## Troubleshooting
 
-**`POST /api/tasks` returns 503 `ENGINE_NOT_LIVE`.**
+**`POST /api/tasks/assign` returns 503 `ENGINE_NOT_LIVE`.**
 Expected. See "Current status" above. The legacy dispatcher is deleted and the engine is off.
 
 **Telemetry not updating.**

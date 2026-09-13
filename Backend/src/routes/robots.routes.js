@@ -47,6 +47,14 @@ router.post("/:robotId/pairing/unlock", commandLimiter, quarantineOverride, robo
 router.post("/:robotId/command", commandLimiter, robotsController.sendRobotCommand);
 // F33: deliberate fault-recovery — clears ERROR/healthStatus:FAULT back to a live state.
 router.post("/:robotId/clear-fault", commandLimiter, quarantineOverride, robotsController.clearRobotFault);
+// Edit a commissioned unit's configuration — name, chassis family, and the six
+// specification values. Observed state and assignment state are deliberately not
+// editable; the controller rejects any other field by name rather than ignoring it.
+//
+// Rate-limited with the command limiter rather than a new bucket: an edit is an ordinary
+// operator action at the same cadence as a STOP or a PAUSE, and a fourth limiter for one
+// route is a fourth thing to keep in step.
+router.patch("/:robotId", commandLimiter, robotsController.updateRobot);
 // Decommission a robot
 router.delete("/:robotId", retireLimiter, robotsController.deleteRobot);
 router.post("/", legacyCommissionLimiter, robotsController.commissionRobot);

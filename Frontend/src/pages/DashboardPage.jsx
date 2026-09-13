@@ -6,6 +6,7 @@ import { useAppState } from '@/context/appContext.js';
 import { Badge } from '@/components/ui/badge.jsx';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card.jsx';
 import BatteryPieChart from '@/components/charts/BatteryPieChart.jsx';
+import { RobotIdentityBadge } from '@/components/system/RobotIdentity.jsx';
 import { PIE_COLORS } from '@/components/system/pieColors.js';
 
 export default function DashboardPage() {
@@ -136,7 +137,11 @@ export default function DashboardPage() {
                       className="flex items-center justify-between py-2 border-b last:border-none border-border/30 hover:bg-muted/30 rounded-sm px-1 transition"
                     >
                       <div>
-                        <p className="text-sm font-medium">{robot.robotId}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium">{robot.robotId}</p>
+                          {/* Wherever a robot is identified, it says which kind it is. */}
+                          <RobotIdentityBadge robot={robot} />
+                        </div>
                         <p className="text-xs text-muted-foreground">{String(robot.status || '').toLowerCase()}</p>
                       </div>
 
@@ -178,7 +183,10 @@ export default function DashboardPage() {
                       className="flex items-center justify-between py-2 border-b last:border-none border-border/30 hover:bg-muted/30 rounded-sm px-1 transition"
                     >
                       <div>
-                        <p className="text-sm font-medium">{robot.robotId}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium">{robot.robotId}</p>
+                          <RobotIdentityBadge robot={robot} />
+                        </div>
                         <p className="text-xs text-muted-foreground">{String(robot.status || '').toLowerCase()}</p>
                       </div>
 

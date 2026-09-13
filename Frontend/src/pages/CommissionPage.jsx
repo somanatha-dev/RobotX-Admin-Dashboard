@@ -23,29 +23,42 @@ import {
 
 import { LocationCombobox } from '@/components/system/LocationCombobox.jsx';
 import { useAppActions, useAppState } from '@/context/appContext.js';
+import {
+  CHASSIS_OPTIONS,
+  INITIAL_BATTERY_FIELD,
+  SPECIFICATION_FIELDS,
+  validateSpecification,
+} from '@/lib/robotSpecification.js';
 
 export default function CommissionPage() {
   const rrNavigate = useNavigate();
   const { commission } = useAppActions();
   const { robots } = useAppState();
 
-  const chassisOptions = useMemo(
-    () => [
-      { label: 'Rover (Ground)', value: 'Rover (Ground)' },
-      { label: 'Drone (Aerial)', value: 'Drone (Aerial)' },
-    ],
-    []
-  );
+  // The chassis vocabulary is the backend's own — the value sent is the token the
+  // `AgentClass` is keyed by, not a display string the server then has to guess at.
+  const chassisOptions = useMemo(() => CHASSIS_OPTIONS, []);
 
   const [formData, setFormData] = useState({
     id: 'RBT-1000',
     name: '',
-    type: chassisOptions[0].value,
+    type: CHASSIS_OPTIONS[0].value,
     zone: '',
     zoneLat: null,
     zoneLon: null,
   });
+
+  // The unit's specification. Empty rather than pre-filled: a pre-filled mass is a number
+  // the operator did not choose but the fleet would be run on.
+  const [spec, setSpec] = useState(() =>
+    Object.fromEntries([...SPECIFICATION_FIELDS, INITIAL_BATTERY_FIELD].map((f) => [f.key, ''])),
+  );
   const [formError, setFormError] = useState('');
+
+  const setSpecField = (key, value) => {
+    setFormError('');
+    setSpec((prev) => ({ ...prev, [key]: value }));
+  };
 
   const handleCancel = () => {
     // Prefer back navigation to preserve context; fall back to dashboard.
@@ -53,8 +66,14 @@ export default function CommissionPage() {
     else rrNavigate('/');
   };
 
+  const specComplete = [...SPECIFICATION_FIELDS, INITIAL_BATTERY_FIELD].every(
+    (field) => String(spec[field.key] ?? '').trim().length > 0,
+  );
+
   const canSubmit =
-    String(formData.id || '').trim().length > 0 && String(formData.zone || '').trim().length > 0;
+    String(formData.id || '').trim().length > 0 &&
+    String(formData.zone || '').trim().length > 0 &&
+    specComplete;
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -81,11 +100,21 @@ export default function CommissionPage() {
       return;
     }
 
+    // Checked here for immediate feedback; the server validates the same values again and
+    // its refusal is what the operator sees if the two ever disagree.
+    const validated = validateSpecification(spec, { required: true });
+    if (!validated.ok) {
+      setFormError(validated.problems.join(' '));
+      return;
+    }
+
     commission({
       ...formData,
       id: robotId,
       name,
       zone,
+      chassisType: formData.type,
+      specification: validated.values,
     });
   };
 
@@ -248,6 +277,79 @@ export default function CommissionPage() {
                         </Button>
                       </div>
                     ) : null}
+                  </div>
+                </div>
+
+              </CardContent>
+            </Card>
+
+            {/* Specification — the values the assignment engine reasons from */}
+            <Card className="rounded-2xl border border-border/60 shadow-sm hover:shadow-sm">
+              <CardHeader className="p-6">
+                <CardTitle className="text-lg font-medium">Unit Specification</CardTitle>
+                <CardDescription>
+                  The physical configuration of this unit. These are the values the
+                  assignment engine reasons from — the energy model reads the pack, the
+                  feasibility gate reads the payload limit — so they are entered, never
+                  defaulted.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="p-6 pt-0">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {SPECIFICATION_FIELDS.map((field) => (
+                    <div key={field.key}>
+                      <Label htmlFor={`spec-${field.key}`} className="mb-2 block">
+                        {field.label} <span className="text-muted-foreground font-normal">({field.unit})</span>
+                      </Label>
+                      <Input
+                        id={`spec-${field.key}`}
+                        type="number"
+                        inputMode="decimal"
+                        min={field.min}
+                        max={field.max}
+                        step={field.step}
+                        value={spec[field.key]}
+                        onChange={(e) => setSpecField(field.key, e.target.value)}
+                        placeholder={field.placeholder}
+                        required
+                        autoComplete="off"
+                        className="font-mono"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-6 border-t border-border/60 pt-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <div>
+                      <Label htmlFor="spec-initialBatteryPct" className="mb-2 block">
+                        {INITIAL_BATTERY_FIELD.label}{' '}
+                        <span className="text-muted-foreground font-normal">({INITIAL_BATTERY_FIELD.unit})</span>
+                      </Label>
+                      <Input
+                        id="spec-initialBatteryPct"
+                        type="number"
+                        inputMode="decimal"
+                        min={INITIAL_BATTERY_FIELD.min}
+                        max={INITIAL_BATTERY_FIELD.max}
+                        step={INITIAL_BATTERY_FIELD.step}
+                        value={spec[INITIAL_BATTERY_FIELD.key]}
+                        onChange={(e) => setSpecField(INITIAL_BATTERY_FIELD.key, e.target.value)}
+                        placeholder={INITIAL_BATTERY_FIELD.placeholder}
+                        required
+                        autoComplete="off"
+                        className="font-mono"
+                      />
+                    </div>
+                    <div className="sm:col-span-2 flex items-end">
+                      <div className="text-xs text-muted-foreground">
+                        <span className="font-medium text-foreground">
+                          Configured initial state, not a measured reading.
+                        </span>{' '}
+                        This is the state of charge the unit is declared to start at. It is
+                        recorded as configuration and is not fleet history.
+                      </div>
+                    </div>
                   </div>
                 </div>
 

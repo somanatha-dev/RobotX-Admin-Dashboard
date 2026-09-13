@@ -61,6 +61,11 @@ const { PURPOSES } = require("../engine/domain/purpose");
 const identityStore = require("../engine/privacy/identityStore");
 const surrogateKeys = require("../engine/privacy/surrogateKeys");
 const cells = require("../engine/spatial/cells");
+// The §2.3 RequirementSet a submission produces, and the chassis vocabulary it names.
+// Shared with commissioning so a task asking for a rover and a unit commissioned as one
+// are speaking about the same token — two spellings of "rover" would be a filter that
+// silently matches nothing.
+const robotSpecification = require("./robotSpecification");
 // REMEDIAL PHASE T1-04 — §4.5's deadline for the `QUEUED` state a newly admitted Leg is
 // created in, and §17.4's ladder, which owns the rung timing that deadline is armed at.
 const clock = require("../engine/commitment/clock");
@@ -388,7 +393,33 @@ async function admitToRound(prisma, pending, options = {}) {
 
   // Materialised idempotently: the ids are a pure function of `Task.taskId`, so a retry
   // converges on the same rows rather than creating a second Leg for one request.
-  await prisma.mission.upsert({ where: { id: work.mission.id }, create: work.mission, update: {} });
+  //
+  // ── The Mission is connected to its Task, and it was not ──────────────────
+  //
+  // §2.8 draws `Task >──< Mission`, and §2.4 puts the RequirementSet, the payload
+  // specification, the SLA class and the tenant on the **Task**. `legLoaderFor` in
+  // `workers/coordinatorSolvePath.js` reads all four *through that relation* — its own
+  // comment says "the decision path reads them through this relation or not at all" — and
+  // `taskAttributesFor` returns `undefined` for every one of them when the Mission has no
+  // Tasks.
+  //
+  // Nothing connected them. `taskToWork` is a pure mapper and correctly produces no
+  // relation write, and this was the only place that could make it, so every Mission the
+  // running system created had an empty `tasks` list. The consequence was not a missing
+  // field: F21 (requirements), F22 (payload) and F25 (tenant) each denied on an input that
+  // was populated on a row the query did not reach — a class I predicate denying for lack
+  // of data that existed. Connecting here is what makes a declared payload and a requested
+  // agent class reach the gate at all.
+  //
+  // `connect` on both branches, because the upsert converges rather than creates on a
+  // retry, and a connect that only ran on `create` would leave a retried submission's
+  // Mission unlinked. Prisma's implicit join table makes a repeated connect idempotent.
+  const connectTask = { tasks: { connect: { id: pending.id } } };
+  await prisma.mission.upsert({
+    where: { id: work.mission.id },
+    create: { ...work.mission, ...connectTask },
+    update: connectTask,
+  });
 
   // ── REMEDIAL PHASE T1-04 — the Leg and its §4.5 deadline, in one transaction ─
   //
@@ -497,6 +528,83 @@ function straightLineRoute({ from, to, points = 40 } = {}) {
 }
 
 /**
+ * §15.1's payload declaration, as a submission states it.
+ *
+ * ── Why a tolerance is required rather than defaulted ───────────────────────
+ * §15.1: *"Mass is specified with a **tolerance**, because declared masses are frequently
+ * wrong: feasibility uses the upper bound of the tolerance and energy estimation uses the
+ * expectation."* `engine/payload/spec.itemMassForFeasibilityKg` returns `null` for an item
+ * with a mass and no tolerance, which makes the load-state projection report a problem and
+ * F22 deny — so a defaulted tolerance is not a convenience, it is the difference between
+ * a payload the gate can reason about and one it cannot.
+ *
+ * Defaulting it to zero would be worse than refusing: it declares perfect precision on
+ * behalf of somebody who declared nothing, and feasibility would then admit a plan on a
+ * bound nobody stated. The submitter states both, or states neither.
+ *
+ * ── A task with no payload is legitimate ────────────────────────────────────
+ * `{ ok: true, spec: null }` — a repositioning or inspection task carries nothing, and
+ * refusing it would be inventing a requirement. What is refused is a *partial*
+ * declaration, which is a submitter who meant to state a payload and did not finish.
+ *
+ * @param {unknown} input
+ * @returns {{ ok: boolean, spec: object|null, problems: string[] }}
+ */
+function parsePayloadDeclaration(input) {
+  if (input === undefined || input === null) return { ok: true, spec: null, problems: [] };
+  if (typeof input !== "object" || Array.isArray(input)) {
+    // Refused, not ignored. A caller that sent `payload: "7.5kg"` meant to declare a
+    // payload; accepting the submission without one would put a parcel on a robot the gate
+    // never checked the mass against, and the caller would have no way to know.
+    return {
+      ok: false,
+      spec: null,
+      problems: ["payload must be an object stating massKg and massToleranceKg."],
+    };
+  }
+
+  const massKg = toNumberOrNull(input.massKg);
+  const massToleranceKg = toNumberOrNull(input.massToleranceKg);
+  const itemCount = toNumberOrNull(input.itemCount);
+  const description = toStringOrNull(input.description);
+
+  if (massKg === null && massToleranceKg === null) return { ok: true, spec: null, problems: [] };
+
+  const problems = [];
+  if (massKg === null) problems.push("payload.massKg is required when a payload is declared.");
+  else if (massKg <= 0) problems.push("payload.massKg must be greater than zero.");
+  else if (massKg > 5000) problems.push("payload.massKg must be at most 5000 kg.");
+
+  if (massToleranceKg === null) {
+    problems.push(
+      "payload.massToleranceKg is required: §15.1 specifies mass with a tolerance, and feasibility " +
+        "uses the upper bound of that tolerance. A payload with no tolerance cannot be gated.",
+    );
+  } else if (massToleranceKg < 0) {
+    problems.push("payload.massToleranceKg must not be negative.");
+  } else if (massKg !== null && massToleranceKg > massKg) {
+    problems.push("payload.massToleranceKg must not exceed the declared mass.");
+  }
+
+  if (itemCount !== null && (!Number.isInteger(itemCount) || itemCount < 1)) {
+    problems.push("payload.itemCount must be a positive whole number.");
+  }
+
+  if (problems.length > 0) return { ok: false, spec: null, problems };
+
+  return {
+    ok: true,
+    spec: {
+      massKg,
+      massToleranceKg,
+      ...(itemCount === null ? {} : { itemCount }),
+      ...(description === null ? {} : { shapeClass: description }),
+    },
+    problems: [],
+  };
+}
+
+/**
  * Public API — §3.4's request path. One path, no branch.
  *
  * Validate, create the `Task` row, and admit it to the round. The response carries the
@@ -544,6 +652,40 @@ async function assignTask(prisma, task, { kv, io, ...options } = {}) {
     throw err;
   }
 
+  // ── The payload, and the agent class the submitter is asking for ──────────
+  //
+  // Both are validated here, before the cutover gate and before any row is written, for
+  // the same reason the gate is checked before the row: a submission that cannot be
+  // admitted must leave nothing behind.
+  const payload = parsePayloadDeclaration(task?.payload);
+  if (!payload.ok) {
+    const err = new Error(`Invalid payload: ${payload.problems.join(" ")}`);
+    err.status = 400;
+    err.problems = payload.problems;
+    throw err;
+  }
+
+  // The requested agent class. `requestedChassisType` is the additive, explicit task-side
+  // field the architecture needed: §2.4's Task carries a RequirementSet and §2.3's algebra
+  // matches it, so the *request* is a chassis token and the *matching* is F21's — no new
+  // predicate, no candidate filter of its own, and nothing hard-coded about which unit
+  // goes. An unrecognised token is refused rather than dropped: silently ignoring it would
+  // send a drone mission to a rover.
+  const requestedRaw = toStringOrNull(task?.requestedChassisType ?? task?.requestedClass);
+  const requestedChassisType = robotSpecification.normaliseChassisType(requestedRaw);
+  if (requestedRaw !== null && requestedChassisType === null) {
+    const err = new Error(
+      `requestedChassisType must be one of ${robotSpecification.CHASSIS_TYPES.join(", ")}`,
+    );
+    err.status = 400;
+    throw err;
+  }
+
+  const requirements = robotSpecification.requirementSetFor({
+    chassisType: requestedChassisType,
+    payloadMassKg: payload.spec ? payload.spec.massKg : null,
+  });
+
   // ── The cutover gate, checked before anything is written ──────────────────
   //
   // Before the row, not after it. A refused request that had already created a PENDING
@@ -563,12 +705,41 @@ async function assignTask(prisma, task, { kv, io, ...options } = {}) {
     throw err;
   }
 
+  // §15.1's task-side payload specification, materialised before the Task so the Task can
+  // reference it. `specId` is a pure function of the task id, so a retried submission
+  // converges on the same row rather than minting a second specification for one parcel —
+  // the same idempotence `taskToWork` gives the Mission, Leg and Stops.
+  let payloadSpecId = null;
+  if (payload.spec) {
+    const stored = await prisma.payloadSpec.upsert({
+      where: { specId: `PLD-${taskId}` },
+      create: { specId: `PLD-${taskId}`, ...payload.spec },
+      update: payload.spec,
+    });
+    payloadSpecId = stored.id;
+  }
+
   // Create the PENDING task. Fast and synchronous: no routing provider is consulted on
   // the request path (§3.4), because the plan that will be routed is built inside the
   // round, before the choice, from the same artefact the cost model scores (§13.1).
   const pending = await prisma.task.create({
-    data: { taskId, pickup, pickupLat, pickupLon, drop, dropLat, dropLon, status: "PENDING" },
-    include: { robot: { select: { robotId: true } } },
+    data: {
+      taskId,
+      pickup,
+      pickupLat,
+      pickupLon,
+      drop,
+      dropLat,
+      dropLon,
+      status: "PENDING",
+      // §2.4's own columns, populated by the submission that states them. `requirements`
+      // is left **null** when the submitter stated none: `[]` would assert "this task has
+      // no requirements", and null is "nobody stated any" — F21 reads the two differently
+      // and only one of them is true here.
+      ...(requirements.length > 0 ? { requirements } : {}),
+      ...(payloadSpecId ? { payloadSpecId } : {}),
+    },
+    include: { robot: { select: { robotId: true } }, payloadSpec: true },
   });
 
   // Notify dashboard so the UI shows the PENDING card with spinner right away.
@@ -730,4 +901,11 @@ async function rerouteTask(prisma, taskId, { kv, io } = {}) {
   return { taskId, robotId, segment, points: newPoints.length };
 }
 
-module.exports = { assignTask, rerouteTask, straightLineRoute, admitToRound, engineEnabled };
+module.exports = {
+  assignTask,
+  rerouteTask,
+  straightLineRoute,
+  admitToRound,
+  engineEnabled,
+  parsePayloadDeclaration,
+};

@@ -31,6 +31,10 @@
     "test:scale": "jest --runInBand --forceExit --selectProjects scale",
     "test:watch": "jest --runInBand --watch",
     "verify": "npm run gates && npm test",
+    "verify:step2": "node tools/verify/step2SimulatedOwnership.js",
+    "verify:step3": "node tools/verify/step3SimulationIdentity.js",
+    "verify:step4": "node tools/verify/step4SimulationBehaviour.js",
+    "verify:step5": "node tools/verify/step5PositionPipeline.js",
     "verify:t104": "node tools/verify/t104LadderLiveDatabase.js",
     "verify:v10": "node tools/verify/v10RollbackRunbook.js",
     "verify:v1CorePath": "node tools/verify/v1CorePath.js"

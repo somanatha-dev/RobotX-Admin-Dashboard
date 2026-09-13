@@ -14,6 +14,11 @@ const trustBoundaries = require("../../engine/security/trustBoundaries");
 // PHASE 15 remediation (D-6) — the cutover switch is a conjunction; this handler now reads
 // both halves through the module that owns the question.
 const agentGate = require("../../engine/cutover/agentGate");
+// STEP 5 — the position Observation writer. This handler is the canonical telemetry
+// ingestion path, and it is where §2.7's position fact enters the record that
+// `indexMaintainer.worker.js` turns into `AgentCellPosition` and the Assignment Engine
+// reads. See the module header for why the agent's own timestamp is mandatory.
+const positionObservation = require("../../services/positionObservation.service");
 
 // §23.5 — "Persistent implausibility triggers quarantine and a security event."
 //
@@ -381,6 +386,16 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
       battery: numOpt,
       status: z.union([z.string(), z.number()]).optional().nullable().transform((v) => (v === null || v === undefined ? v : String(v))),
       distanceTravelled: numOpt,
+      // STEP 5 — the agent's own measurement instant and its per-frame ordinal. Declared
+      // rather than left to `passthrough()` so the wire contract is stated where a reader
+      // looks for it: `timestamp` is epoch milliseconds measured **by the agent**, and
+      // §2.7 forbids the server substituting its own receipt time for it. Both were
+      // already on the wire — `VirtualRobot._emitTelemetry` has sent them since Step 4 —
+      // and physical firmware sends the same two fields. One contract, not one per kind
+      // of agent. Optional in the schema because a frame without them is still a valid
+      // legacy telemetry frame; it simply produces no position Observation.
+      timestamp: numOpt,
+      sequence: numOpt,
     })
     .passthrough();
 
@@ -774,6 +789,45 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
           JSON.stringify(buildSnapshotStateValue({ lat: fullState.lat, lon: fullState.lon, battery: fullState.battery })),
           { ex: 86400 }
         );
+
+        // ── STEP 5 — the canonical position Observation (§2.7) ─────────────
+        //
+        // Here, and not earlier, for three reasons that are each load-bearing:
+        //
+        //   1. **After acceptance.** Every refusal above has already returned or been
+        //      recorded: an unauthenticated frame never reaches this line (F26), a frame
+        //      carrying a capability claim was dropped whole (§23.2), and a frame the
+        //      §23.5 trust boundaries refused is skipped below. An Observation is the
+        //      durable record of a fact about the physical world; writing one from a frame
+        //      the server has just called implausible would put a known-bad position into
+        //      the evidence log and, through the index, into candidate search.
+        //   2. **On the existing throttle, not a new one.** This shares `shouldSnapshot`
+        //      with the `Telemetry` history write beside it — 15 s, or 10 m of movement,
+        //      or a 2 % battery swing. The availability index is advisory (§3.3, I16) and
+        //      feasibility is re-verified at commit, so a few seconds of index lag costs
+        //      candidate-search quality and never correctness. Adding a second cadence
+        //      would be a second thing to tune and a second thing to get wrong.
+        //   3. **The reported position, never `fullState`.** `fullState.lat/lon` fall back
+        //      to the previous tick's or the DB row's values, and pairing one of those
+        //      with this frame's agent timestamp would manufacture a measurement that was
+        //      never taken. `recordPositionObservation` refuses a frame with no reported
+        //      position of its own.
+        //
+        // Not gated on the cutover switch. An Observation is a *measurement*, in the same
+        // category as the `Telemetry` row written one line above, and recording what an
+        // agent reported is not the engine acting as the decision path. The gate belongs
+        // where a decision is taken — `offer.handler.js` and the coordinator — and it is
+        // untouched there.
+        if (!trustVerdict.refused) {
+          await writePositionObservation({
+            prisma,
+            log,
+            robotId,
+            lat,
+            lon,
+            payload,
+          });
+        }
       }
 
       // DTARO: telemetry fields + utilization EMA + zone membership, merged
@@ -907,6 +961,75 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
 }
 
 /**
+ * STEP 5 — the last position-observation outcome logged for each robot.
+ *
+ * Logged on *change* rather than per frame, and per robot rather than per process, because
+ * the two outcomes an operator needs are opposite in shape. `NO_AGENT_TIMESTAMP` is a
+ * deployment-level condition — this unit's firmware does not send the field, so it will
+ * never be indexed and will never be a candidate — and it is true of every frame until
+ * somebody changes the agent. A line per tick would bury it; a line the first time, and
+ * again whenever the answer changes, is what makes it findable. `STALE_SEQUENCE` and
+ * `STALE_OBSERVED_AT`, by contrast, are ordinary and expected on a reconnect.
+ *
+ * Per-process and bounded by fleet size, exactly like `lastDbFlushAt` and
+ * `thresholdWarningIssued` above it.
+ */
+const lastPositionOutcome = new Map();
+
+/**
+ * Append one accepted telemetry position to the §2.7 Observation log.
+ *
+ * ── Contained, and deliberately not silent ──────────────────────────────────
+ * A failure here must not take down the telemetry pipeline: the live state, the dashboard
+ * and the legacy read model do not depend on the engine's evidence log, and turning an
+ * insert failure into a thrown handler would trade a missing index entry for a lost
+ * telemetry frame. But it is logged at `error`, not swallowed — a pipeline that quietly
+ * stopped producing observations would present as "the Assignment Engine has no
+ * candidates", which is the hardest possible place to diagnose it from.
+ *
+ * @param {object} input `{ prisma, log, robotId, lat, lon, payload }`
+ * @returns {Promise<object|null>} the writer's result, or null when it threw
+ */
+async function writePositionObservation(input) {
+  const { prisma, log, robotId, lat, lon, payload } = input;
+  try {
+    const result = await positionObservation.recordPositionObservation(prisma, {
+      robotId,
+      lat,
+      lon,
+      agentTimestampMs: positionObservation.agentTimestampFrom(payload),
+      sequence: positionObservation.sequenceFrom(payload),
+    });
+
+    if (lastPositionOutcome.get(robotId) !== result.outcome) {
+      lastPositionOutcome.set(robotId, result.outcome);
+      if (result.written) {
+        log.debug?.("position Observation recorded (§2.7)", {
+          robotId,
+          provenance: result.provenance,
+          observedAtMs: result.observedAtMs,
+        });
+      } else {
+        log.warn("no position Observation recorded for this telemetry frame (§2.7)", {
+          robotId,
+          outcome: result.outcome,
+          detail: result.detail,
+          consequence:
+            "this agent produces no AgentCellPosition row and is therefore not a candidate for assignment " +
+            "until the outcome changes",
+        });
+      }
+    }
+
+    if (lastPositionOutcome.size > 50_000) lastPositionOutcome.clear();
+    return result;
+  } catch (e) {
+    log.error("position Observation write failed", { robotId, message: e?.message });
+    return null;
+  }
+}
+
+/**
  * PHASE 5 (§12.3) — the progress-supervision feed.
  *
  * Per-process, bounded-by-fleet-size, exactly like `lastDbFlushAt` above: one entry per
@@ -1033,6 +1156,14 @@ function resetTrustBoundaryState() {
   lastAcceptedFixAt.clear();
 }
 
+/**
+ * STEP 5 — clear the per-process outcome-log gate, for the same reason as the two above:
+ * one test's first frame must not be another test's "outcome unchanged, do not log".
+ */
+function resetPositionObservationLogState() {
+  lastPositionOutcome.clear();
+}
+
 module.exports = {
   registerTelemetryHandlers,
   feedProgressSupervision,
@@ -1040,4 +1171,5 @@ module.exports = {
   assessAgentReport,
   recordImplausibleReport,
   resetTrustBoundaryState,
+  resetPositionObservationLogState,
 };

@@ -244,9 +244,77 @@ is free first: a cluster left running by an earlier session will answer `pg_isre
 ```powershell
 $env:DATABASE_URL = "postgresql://pgverify@127.0.0.1:55432/robotx_demo"
 npx prisma migrate deploy
+npx prisma generate
 ```
 
-**Expected:** `28 migrations found` → *"All migrations have been successfully applied."*
+**Expected:** `30 migrations found` → *"All migrations have been successfully applied."*, then
+*"Generated Prisma Client"*.
+
+> **`prisma generate` is not optional and its omission is silent.** The P0 pass added
+> `20260906120000_robot_specification_and_chassis_class` and Step 1 added
+> `20260907120000_robot_simulated_discriminator`, so the schema now has four columns
+> the generated client does not know about until it is regenerated. Skipping it produces a
+> `PrismaClientValidationError` on the **first commission**, surfaced to the browser as a bare
+> `HTTP 500 Internal Server Error` with nothing in it that names the cause. This was measured,
+> not anticipated.
+
+#### 5.2.1 Simulation is off unless you turn it on
+
+The simulator is **opt-in as of Step 1**, and the demonstration below does **not** need it. Leave
+it unset, or state it explicitly:
+
+```powershell
+$env:ENABLE_VIRTUAL_SIMULATOR = "false"
+```
+
+What changed, and why it matters for anything you record from this runbook:
+
+| Before Step 1 | Now |
+|---|---|
+| The simulator ran unless `DISABLE_VIRTUAL_SIMULATOR=true` | It runs only if `ENABLE_VIRTUAL_SIMULATOR=true` |
+| Boot spawned a `VirtualRobot` for **every** `Robot` row | Only for rows with `simulated = true` |
+| Commissioning auto-started a `VirtualRobot` for every unit | Only for a unit commissioned with `simulated: true` |
+| Boot wrote `isOnline: true` on every `Robot` row | Boot writes no liveness at all |
+| Commissioning wrote `isOnline: true` | Commissioning writes `isOnline: false` |
+
+So a robot commissioned in step 2 below now shows as **offline** on the dashboard until something
+actually authenticates as it. That is the correct reading and it is the point: previously the map
+showed every commissioned unit online and moving because a simulated twin had been started for it,
+and that twin had already overwritten the physical unit's `session:{robotId}` credential.
+
+To demonstrate a simulated unit deliberately, set `ENABLE_VIRTUAL_SIMULATOR=true` and create it
+through **`POST /api/simulator/robot`**, as a SUPER_ADMIN.
+
+> **Corrected at Step 4.** This paragraph used to say "commission with `"simulated": true` in the
+> request body". That route no longer exists: Step 2 closed it, and `POST /api/robots` now answers
+> `SIMULATED_NOT_ALLOWED_HERE` for a body carrying the flag. Following the old instruction produces
+> a 400 in the middle of a demonstration.
+
+One request creates one robot — there is no `count` and no fleet endpoint, so three simulated
+robots are three requests. The server names them (`SIM-<12 hex>`); the caller cannot. Several
+simulated robots run side by side with a physical one, each with its own session, position,
+battery, route and telemetry stream.
+
+Useful controls, all of which mean what they say as of Step 4:
+
+| Call | What it does |
+| --- | --- |
+| `GET /api/simulator/status` | Per-robot snapshot. `running` is the instance's own tick timer, so it distinguishes "the engine holds an instance" from "that instance is ticking" |
+| `POST /api/simulator/stop` | Stops every robot. They are **retained**, not lost |
+| `POST /api/simulator/start` | Restarts every robot it holds, and reports how many actually started |
+| `PATCH /api/simulator/config` | Applies simulator tunables. Refuses an unknown or protected field with a 400 naming it, rather than accepting and discarding it |
+
+For a repeatable demonstration, pin the run:
+
+```
+PATCH /api/simulator/config   { "randomSeed": 4242, "obstacleProbability": 0 }
+```
+
+Each robot's speed jitter is then deterministic and reproducible, and no obstacle interrupts the
+route. The seed is still mixed with each robot's identifier, so the fleet does not move in lockstep.
+
+**A simulated agent discharges no stop condition** — see FD-1 in §6. Simulated telemetry, battery,
+position and charging are simulation outputs and are never physical evidence.
 
 #### 5.3 Run the core-path harness
 
@@ -329,6 +397,59 @@ evidence, and that **no engine is selected, ranked or recommended by it**.
 > **`routing:readiness` can never print PASS and always exits 0. That is by design, not a
 > defect** (`../phase15/B1_EXTERNAL_INPUT_HANDOFF.md` §0.1). Do not read its exit code as a
 > verdict; read the `OVERALL:` line.
+
+---
+
+### Step 7 — the Admin UI workflow, end to end as far as it goes
+
+**Added by the P0 pass.** Steps 1–6 exercise the engine from the command line; this one is the
+operator's path through the browser, and it is the sequence to follow on the day.
+
+#### 7.1 Start the two processes
+
+```powershell
+# terminal 1 — backend, against the disposable cluster from step 5.1
+cd Backend
+$env:DATABASE_URL = "postgresql://pgverify@127.0.0.1:55432/robotx_demo"
+npx prisma migrate deploy ; npx prisma generate
+node prisma/seed.js          # spatial map + the default agent class
+npm run dev
+
+# terminal 2 — frontend
+cd Frontend
+npm run dev                  # http://localhost:5173
+```
+
+An admin account is needed to sign in: set `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` before
+starting the backend, or create the `User` row directly.
+
+#### 7.2 The sequence
+
+| # | Where | What to do | What happens |
+|---|---|---|---|
+| 1 | `/login` | Sign in | Session cookie; robots and tasks load |
+| 2 | `/commission` | **Commission Robot A.** Identifier `RBT-1000`, chassis **Rover (Ground)**, zone via the Mapbox search, then the six specification values and the initial battery | The chassis resolves to `AgentClass AC-RBT-1000`; the six values land on that class's `MobilityModel` / `EnergyModel` / `ContainerModel` and on two `Robot` columns |
+| 3 | `/commission` | **Commission Robot B** as `RBT-2000`, chassis **Drone (Aerial)**, its own specification | A second, independent parameter set — editing one unit cannot change the other |
+| 4 | `/robots` | The Units list shows each unit's **model** and **payload capacity**; *Control* opens the full configuration | Read from the same `specification` projection the API returns |
+| 5 | `/robots/RBT-1000` | **Edit** → change a value → **Save configuration** | `PATCH /api/robots/RBT-1000`. Battery, position and the current assignment are **not** editable and are refused by name |
+| 6 | `/tasks` | **Create Task**: pickup and drop through the Mapbox search, payload **mass and tolerance**, required **model** | |
+| 7 | — | Submit | **The task is refused with HTTP 503 `ENGINE_NOT_LIVE`, and the card says so.** |
+
+#### 7.3 Step 7 is where it stops, and why that is the honest result
+
+The refusal is **S-5** — `cutover.engine_enabled` is not bound for the region, which is the
+owner's act and not this repository's. Behind it stands **S-3**: even with S-5 bound, the
+coordinator refuses to compose on 26 of 34 inputs (step 4's gate prints the list).
+
+So on this tree the browser workflow runs **admin login → commission → specify → display →
+edit → create task → refused at intake**, and no robot is assigned, moves, or completes. The
+four seams the P0 pass built downstream of a commitment — the route handoff, the legacy read
+model, the completion mapping and the Mapbox execution geometry — are covered by tests and
+have **not** been observed on a running system, because nothing on this tree can produce a
+commitment for them to act on.
+
+**Do not bind `cutover.engine_enabled` to get past step 7.** It would not help — S-3 stops the
+coordinator one layer further in — and it is the owner's decision, measured as refused.
 
 ---
 
@@ -426,9 +547,47 @@ Every figure in this runbook was executed on the tree named here, not carried fo
 document. **Re-measure before quoting any of them against a different tree; the digest is how
 you tell.**
 
-> ### ⚠ THE DIGEST BELOW HAS MOVED. RE-MEASURE BEFORE PRESENTING.
+> ### RE-MEASURED 2026-09-07 — steps 1, 4 and 6, on the P0 working tree
 >
-> **A later pass changed source and tests** — the W-A8 fail-closed fix
+> Executed during the architecture/handbook reconstruction, at HEAD `1223574` with the **P0 pass
+> still uncommitted** (22 modified files, 11 new paths). Nothing was published, seeded, collected or
+> modified to produce these.
+>
+> | Step | Command | Exit | Result 2026-09-07 |
+> |---|---|---|---|
+> | 1 | `npm test` | **0** | **175 suites / 7 581 tests** / 0 failures / 0 skips · 406.5 s |
+> | 4 | `npm run gates` | **1** | **7 PASS / 1 FAIL** — `gate:composition`, 1 violation across **19** workers. `tier-dependencies` 295 modules / 459 edges · `parameter-register` 193 engine modules / **250** parameters / 292 runtime modules · `tenets` 292 · `identity-isolation` 16 · `erasure` 3 · `legacy-retirement` **353** files · `column-generation` NOT_REQUIRED |
+> | — | `npm run gate:calibration` | **1** | **FAIL at 39.** 250 entries: **52 DERIVED / 160 PROVISIONAL / 38 UNCALIBRATED**; 54 Safety-class |
+> | — | `npm run release:verdict` | **1** | **RELEASE: BLOCKED** — **0 green, 17 red, 7 NOT_EVALUATED.** Every RED is `[STALE]`: the evidence is ≈8.5 days old against an 86 400 s window. **This is evidence ageing out, not a new regression** |
+> | 5 | — | — | **Migration count confirmed at 29** — 29 dated directories under `Backend/prisma/migrations/` (a bare `ls | wc -l` reports 30 because it counts `migration_lock.toml`). §5.2's `prisma generate` warning stands |
+>
+> **Steps 2, 3, 5 and 7 were NOT re-run on 2026-09-07.** Their figures below are unverified on this
+> tree. The gates and the suite both moved, so **re-run them or say they were not re-run** — this
+> runbook's own §7 rule.
+>
+> **The two boundaries are unchanged and were not re-measured live**: 503 `ENGINE_NOT_LIVE` at S-5,
+> then the coordinator's S-3 refusal at 26 of 34. `gate:composition`'s printed contract still
+> enumerates 34 inputs with their owners, and was read directly.
+
+> ### ⚠ THE DIGEST BELOW HAS MOVED TWICE. RE-MEASURE BEFORE PRESENTING.
+>
+> **The P0 implementation pass changed source, schema, tests and the Frontend.** It added a
+> migration (`20260906120000_robot_specification_and_chassis_class`, so **29** not 28), three
+> backend service modules, eight test files, and the Admin UI work described in **step 7**
+> above. Steps 1–4 and 6 were re-run on it; **steps 2, 3 and 5 as written below were not**,
+> and step 5's figures are superseded for the migration count only.
+>
+> | | After W-A8 | After the P0 pass |
+> |---|---|---|
+> | **Step 1** — `npm test` | 167 suites / 7 454 tests | re-measured; see the P0 report |
+> | **Step 4** — `npm run gates` | exit 1, 7 PASS / 1 FAIL | **unchanged** — `legacy-retirement` still PASS, `composition-root` still the only FAIL and not weakened |
+> | **Step 5** — migrations | 28 | **29**, and `prisma generate` is now required (§5.2) |
+> | **Step 5** — boundary | 503 `ENGINE_NOT_LIVE`, 26 of 34 unresolved | **unchanged**, re-measured on the P0 tree |
+>
+> **The pass changed no gate, weakened no refusal and published no binding.** The 503 and the
+> coordinator's 26-of-34 refusal are the same two boundaries, reached in the same order.
+>
+> **A prior caution, still standing.** The W-A8 fail-closed fix
 > (`V1_IMPLEMENTATION_CONTROL.md` §11.A): the coordinator's offer carries no route geometry,
 > and the agent used to accept it and emit `TASK_COMPLETE` for a mission it never drove.
 > Two files changed, `src/simulation/VirtualRobot.js` and

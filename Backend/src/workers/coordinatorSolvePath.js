@@ -64,6 +64,12 @@
 const coordinatorPipeline = require("./coordinatorPipeline");
 const coordinatorWorker = require("./coordinator.worker");
 
+const logger = require("../config/logger");
+// The drivable route an offer's stops carry. An **execution-path** producer, resolved
+// outside the commit transaction and read by no cost term — see the module header for why
+// it is not, and must not be presented as, the §5 routing source the composition declares.
+const executionGeometry = require("../services/executionGeometry.service");
+
 const cells = require("../engine/spatial/cells");
 const hierarchy = require("../engine/spatial/hierarchy");
 const expansion = require("../engine/candidates/expansion");
@@ -551,6 +557,21 @@ function taskAttributesFor(mission) {
   const tasks = (mission && mission.tasks) || [];
   return {
     taskCount: tasks.length,
+    // ── The customer-visible identifiers this Leg discharges ────────────────
+    //
+    // Carried because the *agent* needs one. A `Leg` is the unit of assignment and a
+    // `Task` is the unit of customer-visible work (§2.4), and completion is reported
+    // against the second: `sockets/handlers/dtaro.handler.js` matches `TASK_COMPLETE` on
+    // `Task.taskId`. Without an identifier on the offer the agent has only the Leg's
+    // primary key to report, which matches no Task row, so the mission completes on the
+    // agent and the Task stays open forever.
+    //
+    // Ordered, so an offer built twice from the same Mission names its Tasks in the same
+    // order — §9.6's determinism applied to a field that reaches a durable outbox row.
+    taskIds: tasks
+      .map((task) => task.taskId)
+      .filter((taskId) => typeof taskId === "string" && taskId !== "")
+      .sort(),
     tenantId: agreedTaskAttribute(tasks, (task) => task.tenantId),
     // The RequirementSet is a JSON document on the Task (§2.3). Carried only when it is
     // the list `domain/capability.matchRequirements` reads; anything else is left absent
@@ -1702,6 +1723,56 @@ function commitFor(context, round) {
       return Object.freeze({ committed: false, outcome: "ABORTED", reason: "AGENT_NOT_FOUND", detail: `no agent "${assignment.agentId}"` });
     }
 
+    // ── The executable geometry, resolved BEFORE the transaction opens ───────
+    //
+    // §10.3.2's commit is a SERIALIZABLE transaction over rows it has locked. A provider
+    // call inside it would hold those locks across an external round trip, so a slow
+    // Mapbox response would become a store-wide stall on the decision path. The route is
+    // therefore fetched here, in the composition root, and the `sideEffects` writer below
+    // closes over the resolved points: the transaction sees data, never a socket.
+    //
+    // **This changes no assignment.** The agent has already been chosen — by candidate
+    // generation, the feasibility gate and the solve — and the geometry describes the
+    // journey that choice implies. Nothing here is read by a cost term, and
+    // `coordinatorPipeline.requirements()` is untouched: the §5 `route` contract the
+    // composition declares is six fields and remains unresolved, so a polyline here is
+    // not, and must never be presented as, the missing traversal source.
+    //
+    // A failure to route attaches nothing. The agent's own `assessExecutability` then
+    // refuses the offer by name (`NO_EXECUTABLE_PATH`), which returns the Leg to `QUEUED`
+    // and records the reason as a feasibility observation — the correct disposition, and
+    // one a fabricated straight line would silently defeat.
+    const plannedStops = entry
+      ? entry.plan.stops.map((stop) => ({
+          sequence: stop.sequence,
+          stopType: stop.stopType,
+          siteId: stop.siteId ?? null,
+          lat: stop.lat ?? null,
+          lon: stop.lon ?? null,
+          projectedArrivalMs: stop.projectedArrivalMs ?? null,
+          departureMs: stop.departureMs ?? null,
+        }))
+      : [];
+
+    const geometry = await executionGeometry.attachStopPaths({
+      from: { lat: agentSnapshot.lat, lon: agentSnapshot.lon },
+      stops: plannedStops,
+      directions: context.directions,
+    });
+
+    if (geometry.unroutable.length > 0) {
+      logger.warn(
+        `[coordinator] no execution geometry for stop(s) ${geometry.unroutable.join(", ")} of Leg ` +
+          `${assignment.legId}; the offer carries none for them and the agent will refuse it by name`,
+      );
+    }
+
+    // §2.4's customer-visible identifier for the work this Leg discharges. Exactly one, or
+    // none: a Leg discharging two Tasks has no single Task to report completion against,
+    // and naming an arbitrary one of them would be worse than naming none.
+    const taskIds = (state.leg.tasks && state.leg.tasks.taskIds) || [];
+    const taskId = taskIds.length === 1 ? taskIds[0] : null;
+
     return commitment.commit(
       {
         prisma: context.prisma,
@@ -1725,17 +1796,14 @@ function commitFor(context, round) {
             signingKey: context.signingKey,
             offer: {
               missionPlan: entry ? entry.plan.planId : null,
-              stopSequence: entry
-                ? entry.plan.stops.map((stop) => ({
-                    sequence: stop.sequence,
-                    stopType: stop.stopType,
-                    siteId: stop.siteId ?? null,
-                    lat: stop.lat ?? null,
-                    lon: stop.lon ?? null,
-                    projectedArrivalMs: stop.projectedArrivalMs ?? null,
-                    departureMs: stop.departureMs ?? null,
-                  }))
-                : [],
+              // The plan's stops, each carrying the drivable geometry resolved above.
+              // Built outside this closure: `sideEffects` runs inside the SERIALIZABLE
+              // transaction and must do no I/O of its own.
+              stopSequence: geometry.stops,
+              // §2.4's Task, so the agent reports completion against the row that
+              // represents the customer's work rather than against a Leg key no legacy
+              // consumer can resolve.
+              taskId,
               // Absent rather than invented. §5.2's route reference belongs to the routing
               // engine that produced the traversal, and the cell-pair seam carries hops
               // rather than a route identity.

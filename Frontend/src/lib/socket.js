@@ -66,6 +66,16 @@ export const DASHBOARD_EVENTS = Object.freeze({
 	TASK_ERROR: "task_error",
 	ROBOT_UPDATE: "robot:update",
 	ROBOT_UPDATED: "ROBOT_UPDATED",
+	/**
+	 * A unit's **configuration** changed — its chassis family or one of the six
+	 * specification values.
+	 *
+	 * Its own event, deliberately not folded into `ROBOT_UPDATE`. That one carries live
+	 * telemetry at the tick rate and its consumers merge only the observed fields; a
+	 * specification change is not a reading, and sending it down the telemetry channel
+	 * would make a page that shows configuration re-render on every heartbeat.
+	 */
+	ROBOT_SPECIFICATION_UPDATED: "ROBOT_SPECIFICATION_UPDATED",
 	ALERT_CREATED: "ALERT_CREATED",
 	REROUTE_ALERT: "REROUTE_ALERT",
 });

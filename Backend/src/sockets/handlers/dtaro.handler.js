@@ -30,6 +30,50 @@ const trustBoundaries = require("../../engine/security/trustBoundaries");
 const agentFailures = require("../../engine/failure/agentFailures");
 const catalogue = require("../../engine/failure/catalogue");
 
+/**
+ * Resolve the identifier an agent reported completion under to a `Task.taskId`.
+ *
+ * ── Why this exists at all ──────────────────────────────────────────────────
+ * A `Leg` is the unit of assignment and a `Task` is the unit of customer-visible work
+ * (§2.4); the two have different identifiers and this handler matches on the second. The
+ * offer now carries `taskId` for exactly that reason, so an agent on the current contract
+ * reports a Task id and this function returns it unchanged on the first branch.
+ *
+ * The second branch is for an agent that predates that field, or firmware built against an
+ * older envelope: it reported the `Leg` it was offered, which matches no Task row, and the
+ * completion silently did nothing — `updateMany` matched zero rows, the Task stayed
+ * `ASSIGNED` forever and the robot stayed bound to it. Resolving through the Mission is the
+ * relationship §2.8 already draws (`Task >──< Mission >──< Leg`); no parallel completion
+ * path and no new column.
+ *
+ * Ambiguity is refused rather than guessed. A Leg discharging two Tasks has no single Task
+ * this completion is about, and closing an arbitrary one would report a delivery that did
+ * not happen.
+ *
+ * @param {object} prisma
+ * @param {string|null} reported
+ * @returns {Promise<{ taskId: string|null, resolvedFrom: string }>}
+ */
+async function resolveCompletedTaskId(prisma, reported) {
+  if (!reported) return { taskId: null, resolvedFrom: "ABSENT" };
+
+  const direct = await prisma.task.findUnique({ where: { taskId: reported }, select: { taskId: true } });
+  if (direct) return { taskId: direct.taskId, resolvedFrom: "TASK_ID" };
+
+  // Not a Task. It may be the Leg the agent was offered, under either of its identifiers —
+  // `Leg.legId` is the business key and `Leg.id` is what the commitment row points at.
+  const leg = await prisma.leg.findFirst({
+    where: { OR: [{ legId: reported }, { id: reported }] },
+    select: { mission: { select: { tasks: { select: { taskId: true } } } } },
+  });
+
+  const tasks = (leg && leg.mission && leg.mission.tasks) || [];
+  if (tasks.length === 1) return { taskId: tasks[0].taskId, resolvedFrom: "LEG_VIA_MISSION" };
+  if (tasks.length > 1) return { taskId: null, resolvedFrom: "LEG_DISCHARGES_SEVERAL_TASKS" };
+
+  return { taskId: null, resolvedFrom: "UNRESOLVED" };
+}
+
 const obstacleSchema = z.object({
   lat: z.number(),
   lon: z.number(),
@@ -107,8 +151,25 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       const robotId = toStringOrNull(socket.data.robotId);
       if (!robotId) return;
 
-      const taskId = toStringOrNull(payload?.taskId);
-      log.info("TASK_COMPLETE received", { robotId, taskId });
+      const reportedId = toStringOrNull(payload?.taskId);
+      // §2.4 — the agent may report the Leg it was offered rather than the Task the work
+      // belongs to. Resolved here, through the relationship §2.8 already draws, so a
+      // completion is never silently applied to zero rows.
+      const resolved = await resolveCompletedTaskId(prisma, reportedId);
+      const taskId = resolved.taskId;
+
+      log.info("TASK_COMPLETE received", { robotId, reportedId, taskId, resolvedFrom: resolved.resolvedFrom });
+
+      if (reportedId && taskId === null) {
+        // Named and unresolvable. Reported rather than swallowed: before this, the
+        // `updateMany` below matched nothing and the handler went on to release the robot,
+        // leaving a Task that no component would ever close and no record of why.
+        log.error("TASK_COMPLETE names an identifier that resolves to no single Task", {
+          robotId,
+          reportedId,
+          resolvedFrom: resolved.resolvedFrom,
+        });
+      }
 
       // PHASE 5 (§12.5) — the verification pipeline.
       //
@@ -524,4 +585,4 @@ async function readAcceptedTrack(prisma, agentRowId, since) {
     .filter((fix) => typeof fix.lat === "number" && typeof fix.lon === "number");
 }
 
-module.exports = { registerDtaroHandlers, verifyCompletionClaim };
+module.exports = { registerDtaroHandlers, verifyCompletionClaim, resolveCompletedTaskId };

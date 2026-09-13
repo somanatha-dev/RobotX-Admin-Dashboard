@@ -2430,3 +2430,157 @@ describe("E — what this suite does NOT establish", () => {
     expect(leaderWorkers.UNCOMPOSABLE.coordinator.requires).toBe(pipeline.REQUIREMENT_IDS);
   });
 });
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   H — the execution geometry an offer carries (P0-11)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe("H — the offer's drivable route is resolved outside the commit transaction", () => {
+  /**
+   * §10.3.2's commit is a SERIALIZABLE transaction over locked rows. A provider call inside
+   * it would hold those locks across an external round trip, so a slow provider response
+   * would become a store-wide stall on the decision path. The **ordering** is therefore the
+   * property under test: the route is fetched by the composition root before
+   * `runSerializable` opens, and the `sideEffects` writer that runs inside closes over
+   * already-resolved points.
+   *
+   * ── Why the plan is placed in the memo rather than produced by the fixture ──
+   * Geometry is resolved only for a pairing that reached the commit **with a priced plan**,
+   * and no fixture in this file produces one: `evaluateExact` runs the real §7.5 gate, one
+   * predicate is `VIOLATED` and the rest `INDETERMINATE` against a snapshot with no routing
+   * source, so nothing is ever memoised into `round.priced` (group A says as much —
+   * *"whether it survived is a decision this test does not assert"*).
+   *
+   * So the memo is seeded with the entry `round.plan` would have written. That is a **test
+   * double for the round's own memo**, not for a decision: the plan is placed there, the
+   * gate is not persuaded to admit anything, and no assertion below reads a cost. It is the
+   * only way to reach the geometry seam on a tree where the coordinator cannot compose.
+   */
+  const PRICED_PLAN = Object.freeze({
+    planId: "plan-geometry-1",
+    stops: Object.freeze([
+      Object.freeze({ sequence: 1, stopType: "PICKUP", siteId: "site-a", lat: PICKUP.lat, lon: PICKUP.lon, projectedArrivalMs: 0, departureMs: 60_000 }),
+      Object.freeze({ sequence: 2, stopType: "DROP", siteId: "site-b", lat: DROP.lat, lon: DROP.lon, projectedArrivalMs: 300_000, departureMs: 360_000 }),
+    ]),
+    reserves: null,
+    charging: null,
+  });
+
+  /**
+   * An assembly whose round has already expanded `leg-1` and priced it against the agent.
+   *
+   * @param {object} settings `{ directions, runSerializable }`
+   */
+  async function assemblyWithPricedPlan(settings) {
+    const { context, store } = completeContext({
+      kv: kvHandle.kv,
+      context: { directions: settings.directions, timeBucket: settings.timeBucket || "geometry-bucket" },
+      runSerializable: settings.runSerializable,
+    });
+    const assembly = solvePath.create(context);
+
+    await assembly.deps.expandCandidates({
+      legId: "leg-1",
+      shardId: SHARD_ID,
+      decisionTimeMs: DECISION_TIME_MS,
+      queueAgeSeconds: 60,
+    });
+
+    assembly.round.priced.set(`${store.leg.legId}|${store.agent.agentId}`, { plan: PRICED_PLAN });
+    return { assembly, store };
+  }
+
+  const abortingTransaction = (onOpen) => async (client, fn) => {
+    if (onOpen) onOpen();
+    return fn({
+      commitment: { findUnique: async () => null },
+      agent: { findFirst: async () => null },
+      leg: { findFirst: async () => null },
+    });
+  };
+
+  test("the routing provider is called, and called before the transaction opens", async () => {
+    const events = [];
+    const directions = jest.fn(async ({ from, to }) => {
+      events.push("directions");
+      return { points: [{ lat: from.lat, lon: from.lon }, { lat: to.lat, lon: to.lon }], distanceMeters: 120 };
+    });
+
+    const { assembly, store } = await assemblyWithPricedPlan({
+      directions,
+      runSerializable: abortingTransaction(() => events.push("transaction")),
+    });
+
+    await assembly.deps.commit(
+      { legId: store.leg.legId, agentId: store.agent.agentId },
+      { roundId: "round-geometry", leadershipFence: 1 },
+    );
+
+    expect(directions).toHaveBeenCalled();
+    expect(events).toContain("transaction");
+    expect(events.indexOf("directions")).toBeLessThan(events.indexOf("transaction"));
+    // Every call is before the transaction, not merely the first.
+    expect(events.lastIndexOf("directions")).toBeLessThan(events.indexOf("transaction"));
+  });
+
+  test("the first leg runs from the agent's own position, not from the first stop", async () => {
+    const seen = [];
+    const directions = jest.fn(async ({ from, to }) => {
+      seen.push({ from, to });
+      return { points: [{ lat: from.lat, lon: from.lon }, { lat: to.lat, lon: to.lon }], distanceMeters: 1 };
+    });
+
+    const { assembly, store } = await assemblyWithPricedPlan({
+      directions,
+      runSerializable: abortingTransaction(),
+      timeBucket: "geometry-bucket-2",
+    });
+
+    await assembly.deps.commit(
+      { legId: store.leg.legId, agentId: store.agent.agentId },
+      { roundId: "round-geometry-2", leadershipFence: 1 },
+    );
+
+    expect(seen).toHaveLength(2);
+    // A stop sequence says where to be; it does not say how to reach the first of them.
+    // `ORIGIN` is where the fixture's `AgentCellPosition` puts the agent.
+    expect(seen[0].from).toEqual({ lat: ORIGIN.lat, lon: ORIGIN.lon });
+    expect(seen[0].to).toEqual({ lat: PICKUP.lat, lon: PICKUP.lon });
+    // …and the second leg runs from the pickup to the drop.
+    expect(seen[1].from).toEqual({ lat: PICKUP.lat, lon: PICKUP.lon });
+    expect(seen[1].to).toEqual({ lat: DROP.lat, lon: DROP.lon });
+  });
+
+  test("a provider that cannot answer invents nothing, and the commit still reaches its guards", async () => {
+    const directions = jest.fn(async () => {
+      throw new Error("provider unavailable");
+    });
+
+    let opened = 0;
+    const { assembly, store } = await assemblyWithPricedPlan({
+      directions,
+      runSerializable: abortingTransaction(() => { opened += 1; }),
+      timeBucket: "geometry-bucket-3",
+    });
+
+    const outcome = await assembly.deps.commit(
+      { legId: store.leg.legId, agentId: store.agent.agentId },
+      { roundId: "round-geometry-3", leadershipFence: 1 },
+    );
+
+    // No geometry is attached and no straight line is substituted for it. The agent's own
+    // `assessExecutability` is what refuses such an offer, by name (`NO_EXECUTABLE_PATH`),
+    // which returns the Leg to QUEUED and records a feasibility observation. The commit
+    // itself is unaffected and still aborts on the shipped guards.
+    expect(directions).toHaveBeenCalled();
+    expect(opened).toBe(1);
+    expect(outcome.outcome).toBe("ABORTED");
+  });
+
+  test("the route is not the §5 routing contract — the composition still requires `route`", () => {
+    // Geometry for an agent that has already been chosen is not a traversal source for
+    // choosing one. `gate:composition` must not go green because a polyline exists.
+    expect(pipeline.REQUIREMENT_IDS).toContain("route");
+    expect(leaderWorkers.UNCOMPOSABLE.coordinator.external).toBe(true);
+  });
+});

@@ -1,0 +1,30 @@
+-- ROBOT SIMULATION DISCRIMINATOR — one boolean, and deliberately only one.
+--
+-- ── What it is ──────────────────────────────────────────────────────────────
+-- `Robot.simulated` says whether the unit on the other end of the socket is a simulated
+-- agent (`src/simulation/VirtualRobot.js`) or physical hardware. Nothing else about the
+-- row changes: a simulated unit is the same `Robot`, projects the same `Agent`, keys the
+-- same `AgentClass`, and speaks the same AUTH/TELEMETRY/command protocol. The simulator is
+-- an agent-protocol test facility, not a second kind of robot, so it gets a discriminator
+-- rather than a type system of its own.
+--
+-- ── Why NOT NULL DEFAULT false ──────────────────────────────────────────────
+-- Every row that exists when this migration runs was commissioned as a physical unit, and
+-- the default is what says so. The failure mode this column exists to prevent is the
+-- simulator adopting a physical robot — spawning a VirtualRobot for it, minting a
+-- `session:{robotId}` over its credentials, or reporting it online — and a nullable column
+-- would give that decision a third state ("unknown") that some caller would eventually
+-- read as permission. `false` is a decision, `NULL` would be an invitation.
+--
+-- ── Additive and reversible ─────────────────────────────────────────────────
+-- No existing write path acquires a requirement: `Robot` inserts that omit the column get
+-- `false`. No read path acquires one either — the column is consulted at exactly one
+-- decision (`src/simulation/simulationPolicy.js#maySpawnVirtualRobot`) and by the boot
+-- rehydration query that filters on it. Dropping the column restores the prior schema.
+--
+-- ── No index ────────────────────────────────────────────────────────────────
+-- The only query that filters on it (`WHERE simulated = true` at boot) runs once per
+-- process start over the whole fleet, which a sequential scan already answers. An index
+-- here would be schema surface bought for nothing.
+
+ALTER TABLE "Robot" ADD COLUMN "simulated" BOOLEAN NOT NULL DEFAULT false;

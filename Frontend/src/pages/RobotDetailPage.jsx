@@ -1,18 +1,84 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Camera, Trash2 } from 'lucide-react';
+import { ArrowLeft, Camera, Pencil, Trash2, X } from 'lucide-react';
 import { useAppActions, useAppState } from '@/context/appContext.js';
 import useRobotCommand from '@/hooks/useRobotCommand.js';
+import { RobotIdentityBadge, SimulatorRuntimeBadge } from '@/components/system/RobotIdentity.jsx';
+import {
+  identityOf,
+  isSimulated,
+  runtimeLabel,
+  runtimeReason,
+  runtimeStatusOf,
+} from '@/lib/simulationIdentity.js';
 import { normalizeStatus, isActive, isIdle } from '@/lib/robotStatus.js';
+import {
+  CHASSIS_LABEL,
+  CHASSIS_OPTIONS,
+  SPECIFICATION_FIELDS,
+  formatSpecValue,
+  hasSpecification,
+  validateSpecification,
+} from '@/lib/robotSpecification.js';
+
+/** The edit form's initial values, read from what is stored. */
+function draftFrom(specification) {
+  const draft = Object.fromEntries(
+    SPECIFICATION_FIELDS.map((field) => [
+      field.key,
+      typeof specification?.[field.key] === 'number' ? String(specification[field.key]) : '',
+    ]),
+  );
+  draft.chassisType = specification?.chassisType || CHASSIS_OPTIONS[0].value;
+  return draft;
+}
 
 export default function RobotDetailPage() {
-  const { robots } = useAppState();
-  const { retire } = useAppActions();
+  const { robots, simulatorStatus } = useAppState();
+  const { retire, updateRobotSpecification } = useAppActions();
   const navigate = useNavigate();
   const { id } = useParams();
   const sendCommand = useRobotCommand();
 
   const robot = robots.find((r) => r.robotId === id);
+  const specification = robot?.specification || null;
+
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState(() => draftFrom(specification));
+  const [saveError, setSaveError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Re-seed the draft when the stored specification changes underneath the form — an edit
+  // made in another session, or the first load arriving after this page mounted. Skipped
+  // while editing, so a live update never overwrites what the operator is typing.
+  useEffect(() => {
+    if (!isEditing) setDraft(draftFrom(specification));
+  }, [specification, isEditing]);
+
+  const handleSave = async () => {
+    setSaveError('');
+
+    const validated = validateSpecification(draft);
+    if (!validated.ok) {
+      setSaveError(validated.problems.join(' '));
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      // Only the configuration fields. The endpoint refuses anything else by name, and
+      // sending a rendered telemetry value here would be an operator asserting a reading.
+      await updateRobotSpecification(robot.robotId, {
+        chassisType: draft.chassisType,
+        ...validated.values,
+      });
+      setIsEditing(false);
+    } catch (e) {
+      setSaveError(e?.message || 'Could not save the configuration.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   if (!robot && robots.length === 0) {
     return <div className="p-8 text-center font-bold text-slate-500">Loading unit…</div>;
@@ -53,6 +119,8 @@ export default function RobotDetailPage() {
               >
                 {normalizeStatus(robot.status)}
               </span>
+              <RobotIdentityBadge robot={robot} />
+              <SimulatorRuntimeBadge robot={robot} simulatorStatus={simulatorStatus} />
             </div>
           </div>
         </div>
@@ -136,10 +204,37 @@ export default function RobotDetailPage() {
           <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
             <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Unit Info</h3>
             <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3 text-sm shadow-sm">
+              {/* ── Three rows that are deliberately three rows ─────────────
+                  Type is what the unit IS. Online is whether it currently holds an
+                  authenticated session — reported by the fleet, identical for a
+                  simulated agent and for hardware. Simulator runtime is whether a
+                  simulator process is driving this record at all, and it exists only for
+                  a simulated unit. None of the three is derived from either of the
+                  others; a simulated robot with the simulator disabled is
+                  PERSISTED_NOT_RUNNING and offline, and that is the honest reading. */}
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 font-medium">Type</span>
+                <span className="font-mono font-bold text-slate-700">{identityOf(robot)}</span>
+              </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-500 font-medium">Online</span>
                 <span className={`font-mono font-bold ${robot.isOnline ? 'text-emerald-600' : 'text-slate-500'}`}>{robot.isOnline ? 'YES' : 'NO'}</span>
               </div>
+              {isSimulated(robot) ? (
+                <div className="flex justify-between items-start gap-3">
+                  <span className="text-slate-500 font-medium shrink-0">Simulator runtime</span>
+                  <span className="text-right">
+                    <span className="font-mono font-bold text-slate-700">
+                      {runtimeLabel(runtimeStatusOf(robot, simulatorStatus))}
+                    </span>
+                    {runtimeReason(runtimeStatusOf(robot, simulatorStatus), simulatorStatus, robot) ? (
+                      <span className="block text-[11px] font-normal text-slate-500 mt-0.5 max-w-64">
+                        {runtimeReason(runtimeStatusOf(robot, simulatorStatus), simulatorStatus, robot)}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              ) : null}
               <div className="flex justify-between items-center">
                 <span className="text-slate-500 font-medium">Last Seen</span>
                 <span className="font-mono font-bold text-slate-700">{robot.lastSeenAt ? new Date(robot.lastSeenAt).toLocaleString() : '—'}</span>
@@ -153,6 +248,118 @@ export default function RobotDetailPage() {
                 <span className="font-mono font-bold text-blue-600">{robot.currentTask?.taskId || 'None'}</span>
               </div>
             </div>
+          </div>
+
+          {/* ── Configuration ──────────────────────────────────────────────────
+              What was entered at commissioning, kept visually apart from the live
+              state above because none of it is a reading. Editing writes only these
+              fields; the endpoint refuses any other by name. */}
+          <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                Configuration
+              </h3>
+              {isEditing ? (
+                <button
+                  onClick={() => { setIsEditing(false); setSaveError(''); setDraft(draftFrom(specification)); }}
+                  className="text-xs font-semibold text-slate-500 hover:text-slate-800 flex items-center gap-1"
+                >
+                  <X className="w-3.5 h-3.5" /> Cancel
+                </button>
+              ) : (
+                <button
+                  onClick={() => { setIsEditing(true); setDraft(draftFrom(specification)); }}
+                  className="text-xs font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                >
+                  <Pencil className="w-3.5 h-3.5" /> Edit
+                </button>
+              )}
+            </div>
+
+            {isEditing ? (
+              <div className="space-y-4">
+                <div>
+                  <label htmlFor="edit-chassis" className="block text-xs font-medium text-slate-600 mb-1.5">
+                    Model
+                  </label>
+                  <select
+                    id="edit-chassis"
+                    value={draft.chassisType}
+                    onChange={(e) => { setSaveError(''); setDraft((d) => ({ ...d, chassisType: e.target.value })); }}
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  >
+                    {CHASSIS_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  {SPECIFICATION_FIELDS.map((field) => (
+                    <div key={field.key}>
+                      <label htmlFor={`edit-${field.key}`} className="block text-xs font-medium text-slate-600 mb-1.5">
+                        {field.label} <span className="text-slate-400 font-normal">({field.unit})</span>
+                      </label>
+                      <input
+                        id={`edit-${field.key}`}
+                        type="number"
+                        inputMode="decimal"
+                        min={field.min}
+                        max={field.max}
+                        step={field.step}
+                        value={draft[field.key]}
+                        onChange={(e) => { setSaveError(''); setDraft((d) => ({ ...d, [field.key]: e.target.value })); }}
+                        placeholder={field.placeholder}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                {saveError ? (
+                  <div className="rounded-lg bg-rose-50 border border-rose-200 text-rose-700 px-3 py-2 text-xs font-medium">
+                    {saveError}
+                  </div>
+                ) : null}
+
+                <div className="text-[10px] text-slate-500">
+                  Battery level, position and the current assignment are not editable here:
+                  the first two are reported by the unit and the third is the assignment
+                  engine&apos;s.
+                </div>
+
+                <button
+                  onClick={handleSave}
+                  disabled={isSaving}
+                  className="w-full bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white py-2.5 rounded-lg text-xs font-bold transition-colors shadow-sm"
+                >
+                  {isSaving ? 'SAVING…' : 'SAVE CONFIGURATION'}
+                </button>
+              </div>
+            ) : (
+              <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3 text-sm shadow-sm">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500 font-medium">Model</span>
+                  <span className="font-bold text-slate-700">
+                    {CHASSIS_LABEL[specification?.chassisType] || '—'}
+                  </span>
+                </div>
+                {SPECIFICATION_FIELDS.map((field) => (
+                  <div key={field.key} className="flex justify-between items-center">
+                    <span className="text-slate-500 font-medium">{field.label}</span>
+                    <span className="font-mono font-bold text-slate-700">
+                      {formatSpecValue(specification?.[field.key], field.unit)}
+                    </span>
+                  </div>
+                ))}
+                {!hasSpecification(specification) ? (
+                  <div className="text-xs text-slate-500 pt-1">
+                    No specification recorded for this unit — it was commissioned before the
+                    configuration was collected. Use <span className="font-semibold">Edit</span> to enter one.
+                  </div>
+                ) : null}
+              </div>
+            )}
           </div>
         </div>
       </div>

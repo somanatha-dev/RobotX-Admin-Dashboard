@@ -108,6 +108,16 @@ model User {
   pinAuth             AdminPinAuth?
   webauthnCredentials WebAuthnCredential[]
 
+  // STEP 2 (as corrected) — the simulated units this operator created.
+  //
+  // A list, and genuinely a list: one SUPER_ADMIN may have MANY simulated robots, and
+  // there is no per-operator limit of any kind. Step 2 originally read the requirement as
+  // "one user → one simulated robot" and enforced it with a partial unique index; that
+  // was wrong, and `20260912120000_drop_one_simulated_per_owner` removed the index. The
+  // relation was already `Robot[]` and is unchanged — what changed is that nothing now
+  // constrains how many rows it can hold.
+  simulatedRobots Robot[] @relation("SimulatedRobotOwner")
+
   createdAt DateTime @default(now())
 }
 
@@ -210,6 +220,93 @@ model Robot {
 
   status  RobotStatus @default(IDLE)
   battery Float?
+
+  //////////////////////////////////////////////////
+  // UNIT SPECIFICATION — the two values with no existing home
+  //
+  // Every other value an operator enters at commissioning lands on the model row that
+  // already means it: battery capacity on `EnergyModel.packNominalWh`, payload capacity
+  // on `ContainerModel.totalMassLimitKg`, the two speeds on `MobilityModel`, and the
+  // chassis family on `AgentClass.chassisType`. `src/services/robotSpecification.js`
+  // holds that mapping and is the only writer of these two columns.
+  //
+  // `massKg` is here because no column in this schema carries a vehicle's mass, and
+  // §14.2's consumption equation has a `β_mass` term that needs one.
+  //
+  // `batteryReservePct` is the **unit's own** hardware protection floor as configured at
+  // commissioning. It is deliberately NOT §14.5's reserve stack: that is four additive
+  // layers composed in watt-hours from published register parameters at decision time
+  // (`engine/energy/reserves.js`), and writing an operator-entered percentage into it
+  // would be a calibration value nobody calibrated. Two quantities, kept apart because
+  // they are apart.
+  //////////////////////////////////////////////////
+
+  massKg            Float?
+  batteryReservePct Float?
+
+  //////////////////////////////////////////////////
+  // SIMULATION DISCRIMINATOR
+  //
+  // Whether this unit is a *simulated* agent rather than a physical one. It is the only
+  // fact that distinguishes the two, and it is deliberately one boolean rather than a
+  // second robot/agent type system: a simulated unit is the same `Robot`, the same
+  // `Agent`, the same `AgentClass`, and speaks the same wire protocol. What differs is
+  // solely who is on the other end of the socket.
+  //
+  // `false` by default, which is the whole point. A row that predates this column, and a
+  // row created by any caller that does not explicitly say otherwise, is **physical** —
+  // so no existing unit can be spawned, credentialed, or marked online by the simulator
+  // as a consequence of this column appearing.
+  //
+  // It is read at exactly one decision (`src/simulation/simulationPolicy.js`): may a
+  // VirtualRobot be instantiated for this row. It is not read by the assignment engine,
+  // which must not be able to decide anything differently for a simulated agent.
+  //////////////////////////////////////////////////
+
+  simulated Boolean @default(false)
+
+  //////////////////////////////////////////////////
+  // SIMULATION OWNERSHIP (STEP 2, as corrected)
+  //
+  // Which operator *created* this simulated unit. `NULL` for every physical robot, and
+  // there is deliberately no companion owner column for physical units: a physical robot
+  // belongs to the deployment, not to whoever happened to commission it.
+  //
+  // ── This column is metadata, NOT a uniqueness boundary ───────────────────
+  // Step 2 originally carried the rule "one authenticated user may own at most one
+  // simulated robot at a time", enforced by a partial unique index. That reading of the
+  // requirement was wrong. The actual rule is:
+  //
+  //     one SUPER_ADMIN → MANY simulated robots, with no per-operator limit
+  //
+  // so `20260912120000_drop_one_simulated_per_owner` dropped
+  // `Robot_one_simulated_per_owner`, and the same value may now appear on arbitrarily
+  // many rows where `simulated = true`. What survives is the record of who asked for the
+  // unit, which is worth keeping and was never the part that was wrong.
+  //
+  // There is consequently no uniqueness to enforce here and no conflict to translate: the
+  // only constraint the creation path can violate is `UNIQUE ("robotId")`, which is about
+  // the generated identifier and not about the operator.
+  //
+  // How many simulated robots may exist is not a database question at all. It is
+  // `POST /api/simulator/robot` being available only to SUPER_ADMIN, one robot per
+  // request — see `src/routes/simulator.routes.js`.
+  //
+  // ── Not visible to the assignment engine ─────────────────────────────────
+  // Ownership is an authorisation fact about who may create and control a simulated
+  // agent. It is not an attribute of the agent as a fleet participant, so it is not
+  // exposed through telemetry, the VirtualRobot protocol, the robot id, or any input the
+  // engine reads. `tests/engine/simulationBoundary.test.js` holds that as a structural
+  // guard.
+  //
+  // ── SetNull, not Cascade ─────────────────────────────────────────────────
+  // Deleting a user account must not silently destroy fleet rows. A simulated robot whose
+  // creator is gone becomes unowned, which is a recoverable state; a cascade would be an
+  // unrelated lifecycle change of exactly the kind this step is told not to introduce.
+  //////////////////////////////////////////////////
+
+  simulationOwnerId String?
+  simulationOwner   User?   @relation("SimulatedRobotOwner", fields: [simulationOwnerId], references: [id], onDelete: SetNull)
 
   isOnline   Boolean   @default(false)
   socketId   String?
@@ -1116,6 +1213,20 @@ model AgentClass {
   id      String @id @default(uuid())
   classId String @unique
   name    String
+
+  /// The chassis family this class belongs to — ROVER or DRONE.
+  ///
+  /// The class is already "what keys every model-specific parameter set", so the family
+  /// belongs on it rather than on the legacy `Robot` row: a second type column there
+  /// would be a second answer to "what kind of vehicle is this", and the two would
+  /// eventually disagree. Nullable because classes predating this column carry no
+  /// family, and a non-null default would assert one nobody chose.
+  ///
+  /// This column is for **display and administration**. The decision path matches a
+  /// requested chassis through the §2.3 typed algebra — the `chassis_type` capability on
+  /// the agent's bundle, evaluated by F21 — never by reading this column, because a
+  /// second matching route is a second set of semantics to keep in step.
+  chassisType String?
 
   hardwareRevision   String?
   firmwareVersionSet Json?

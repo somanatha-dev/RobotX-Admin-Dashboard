@@ -19,6 +19,8 @@ const {
 const { initKv } = require("./src/cache/kv");
 const initSocketServer = require("./src/sockets/socket.server");
 const { createVirtualRobotSimulator } = require("./src/simulation/SimulationEngine");
+const simulationPolicy = require("./src/simulation/simulationPolicy");
+const { rehydrateSimulatedRobots } = require("./src/simulation/rehydrate");
 const { dispatchTaskAssign, outboxDeliveryArm: dispatchOutboxCommand } = require("./src/services/commandDispatcher.service");
 const { safeJsonParse } = require("./src/utils/json");
 const { ensureAdminUser } = require("./src/services/adminBootstrap.service");
@@ -1055,71 +1057,70 @@ async function start() {
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-  // Benchmark harness sets this so an external load-generator is the sole
-  // source of robot traffic — otherwise every commissioned/seeded Robot row
-  // gets its own in-process VirtualRobot socket.io-client on every boot
-  // (below), which would compete with the server for CPU on the same
-  // process and invalidate capacity measurements. Default (unset) preserves
-  // existing behavior exactly.
-  const disableVirtualSimulator = String(process.env.DISABLE_VIRTUAL_SIMULATOR || "").toLowerCase() === "true";
+  // ── STEP 1: simulation is opt-in ──────────────────────────────────────────
+  //
+  // `ENABLE_VIRTUAL_SIMULATOR=true` turns the in-process simulator on; unset means off.
+  // The previous posture was the inverse — the simulator ran unless `DISABLE_VIRTUAL_
+  // SIMULATOR=true` said otherwise — which meant every boot of every deployment spawned an
+  // in-process VirtualRobot for every `Robot` row, physical hardware included. The legacy
+  // kill switch is still honoured (`simulationPolicy` documents why) so the benchmark
+  // configuration keeps meaning what it says.
+  const simulatorEnabled = simulationPolicy.isSimulatorEnabled();
 
   server.listen(port, host, () => {
     const serverUrl = `http://127.0.0.1:${port}`;
-    virtualSimulator = createVirtualRobotSimulator({ prisma, kv, serverUrl, logger });
+    virtualSimulator = createVirtualRobotSimulator({
+      prisma,
+      kv,
+      serverUrl,
+      logger,
+      enabled: simulatorEnabled,
+    });
     app.locals.virtualSimulator = virtualSimulator;
-
-    if (disableVirtualSimulator) {
-      logger.startup({
-        env:       process.env.NODE_ENV || "development",
-        port,
-        db:        true,
-        redis:     redisLive,
-        simulator: "Disabled (DISABLE_VIRTUAL_SIMULATOR=true) — benchmark mode",
-      });
-      return;
-    }
-
-    virtualSimulator.start();
 
     logger.startup({
       env:       process.env.NODE_ENV || "development",
       port,
       db:        true,
       redis:     redisLive,
-      simulator: "Ready — re-hydrating commissioned robots…",
+      simulator: simulatorEnabled
+        ? "Enabled — re-hydrating simulated robots…"
+        : `Disabled (${simulationPolicy.SIMULATOR_ENV_VAR} is not true) — physical fleet only`,
     });
 
-    // Re-hydrate VirtualRobot instances for every robot that was commissioned
-    // in a previous session.  Runs async after listen so it doesn't block the
-    // HTTP server from becoming ready.
+    if (simulatorEnabled) virtualSimulator.start();
+
+    // Re-hydrate VirtualRobot instances for the robots that are *simulated* units.
+    // Runs async after listen so it doesn't block the HTTP server from becoming ready.
+    //
+    // ── What was removed, and why it was not a convenience ────────────────
+    // This block used to run `updateMany({ data: { isOnline: true, lastSeenAt: now } })`
+    // over every Robot row, on the reasoning that DTARO should be able to assign tasks in
+    // "the brief window before their VirtualRobot socket connects". For a physical fleet
+    // that window never closes: nothing was connecting, so the write was not a head start
+    // on the truth, it was a substitute for it — every robot in the database reported
+    // itself online because a process had restarted. F13 reads `Robot.isOnline` as
+    // liveness. Liveness is now established the only way it can be, by a session: AUTH
+    // sets it (`sockets/handlers/robot.handler.js`), disconnect clears it, and the
+    // staleness sweeper in `socket.server.js` retires whatever is left.
     (async () => {
       try {
-        const existing = await prisma.robot.findMany({
-          select: { robotId: true, lat: true, lon: true },
+        await rehydrateSimulatedRobots({
+          prisma,
+          simulator: virtualSimulator,
+          logger,
+          enabled: simulatorEnabled,
         });
 
-        if (existing.length === 0) return;
-
-        // Mark all robots online immediately so DTARO can assign tasks to them
-        // even in the brief window before their VirtualRobot socket connects.
-        await prisma.robot.updateMany({
-          where: { robotId: { in: existing.map((r) => r.robotId) } },
-          data:  { isOnline: true, lastSeenAt: new Date() },
-        });
-
-        for (const r of existing) {
-          try {
-            await virtualSimulator.addRobot({ robotId: r.robotId, lat: r.lat, lon: r.lon });
-          } catch (e) {
-            logger.warn(`[VR] Re-hydration failed for ${r.robotId}`, { message: e?.message });
-          }
-        }
-
-        logger.info(`[VR] Re-hydrated ${existing.length} robot(s) from DB`);
-
-        // After a brief window (5 s) for VirtualRobots to connect + authenticate,
-        // re-dispatch any tasks that were active when the server was last shut down.
-        // Without this, robots know they have tasks in DB but never receive TASK_ASSIGN.
+        // After a brief window (5 s) for agents to connect + authenticate, re-dispatch any
+        // tasks that were active when the server was last shut down. Without this, robots
+        // know they have tasks in DB but never receive TASK_ASSIGN.
+        //
+        // Outside the simulator branch on purpose. Recovering an interrupted task is a
+        // property of the fleet, not of the simulator, and it used to run only because the
+        // simulator was on by default; leaving it there would have made turning simulation
+        // off silently disable task recovery for physical robots. Same dispatch path as
+        // before — `dispatchTaskAssign`, addressed to whichever robot holds the task.
         setTimeout(async () => {
           try {
             const activeTasks = await prisma.task.findMany({

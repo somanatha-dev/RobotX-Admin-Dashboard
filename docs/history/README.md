@@ -29,6 +29,27 @@ Three reasons, and none of them is sentiment:
 3. **Auditability.** Some of these documents record findings, corrections, and reversals that are
    evidence about how the programme works, not just about what it built.
 
+## Two documents here are NOT about a deleted system
+
+`architecture-snapshot-2026-08-29.md` and `handbook-snapshot-2026-08-11.md` are **dated snapshots of
+the two living root documents**, taken byte-for-byte before the 2026-09-07 reconstruction rewrote
+them. They describe the *current* system as it was understood on those dates — not a deleted one.
+
+They are kept for the same reason the Phase 15 archive is kept: **so that a claim made in a
+presentation, a report or an interview on an earlier date can be traced to the document that
+supported it.** Several of their counts were already registered as known drift in their own headers,
+and the reconstruction's drift report (`../../ARCHITECTURE.md` §33) records exactly which ones moved
+and to what.
+
+| Snapshot | Was | Superseded by |
+|---|---|---|
+| `architecture-snapshot-2026-08-29.md` | `ARCHITECTURE.md` at HEAD `b68dc5d`, digest `431010ace1…` (565 files) | [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md) |
+| `handbook-snapshot-2026-08-11.md` | `ROBOTX_SYSTEM_HANDBOOK.md` at HEAD `63f5c58` | [`../../ROBOTX_SYSTEM_HANDBOOK.md`](../../ROBOTX_SYSTEM_HANDBOOK.md) |
+
+**Read them for provenance, never for current fact.** Both are superseded on every count.
+
+---
+
 ## What is NOT here
 
 **`PHASE_*` reports for Phases 0–14 stay at the repository root.** The implementation reports, the

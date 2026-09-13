@@ -122,6 +122,15 @@ function buildOfferPayload(input) {
     commitmentId: source.commitmentId,
     fence: String(BigInt(source.fence)),
     legId: source.legId === undefined ? null : source.legId,
+    // §2.4's customer-visible identifier for the work this Leg discharges.
+    //
+    // A `Leg` is the unit of assignment; a `Task` is the unit of customer-visible work,
+    // and completion is reported against the second — `dtaro.handler`'s `TASK_COMPLETE`
+    // matches on `Task.taskId`. Before this field the agent had only `legId` to report,
+    // which matches no Task row, so a mission that completed on the agent left its Task
+    // open and its robot bound to it. Null when the Leg discharges no Task or more than
+    // one: naming an arbitrary one of several would be worse than naming none.
+    taskId: source.taskId === undefined ? null : source.taskId,
     missionPlan: source.missionPlan === undefined ? null : source.missionPlan,
     stopSequence: Array.isArray(source.stopSequence) ? source.stopSequence : [],
     routeReference: source.routeReference === undefined ? null : source.routeReference,

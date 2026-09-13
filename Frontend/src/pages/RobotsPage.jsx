@@ -15,7 +15,14 @@ import {
 
 import { useAppActions, useAppState } from '@/context/appContext.js';
 import useRobotCommand from '@/hooks/useRobotCommand.js';
+import { RobotIdentityBadge, SimulatorRuntimeBadge } from '@/components/system/RobotIdentity.jsx';
 import { normalizeStatus, isActive, isIdle, isIssues, isCharging } from '@/lib/robotStatus.js';
+import {
+  CHASSIS_LABEL,
+  SPECIFICATION_FIELDS,
+  formatSpecValue,
+  hasSpecification,
+} from '@/lib/robotSpecification.js';
 
 function formatLocationName(name) {
   if (!name) return '—';
@@ -30,7 +37,7 @@ function batteryColors(pct) {
 }
 
 export default function RobotsPage() {
-  const { robots } = useAppState();
+  const { robots, simulatorStatus } = useAppState();
   const { retire } = useAppActions();
   const navigate = useNavigate();
   const [filter, setFilter] = useState('All');
@@ -160,6 +167,14 @@ export default function RobotsPage() {
                         <div className="text-xs text-slate-500 font-medium mt-0.5 uppercase tracking-wide">
                           {normalizeStatus(r.status)}
                         </div>
+                        {/* What the unit IS, and — only for a simulated one — what is
+                            currently running it. Two separate facts: the green dot above
+                            is liveness (`isOnline`), which the fleet reports by
+                            connecting, and neither of these badges substitutes for it. */}
+                        <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+                          <RobotIdentityBadge robot={r} />
+                          <SimulatorRuntimeBadge robot={r} simulatorStatus={simulatorStatus} />
+                        </div>
                       </div>
 
                       {/* Battery */}
@@ -188,6 +203,23 @@ export default function RobotsPage() {
                         <span className="text-slate-500 text-xs shrink-0">Location</span>
                         <span className="font-medium text-slate-700 text-right text-xs max-w-[65%] leading-snug">
                           {formatLocationName(r.location?.name)}
+                        </span>
+                      </div>
+
+                      {/* The unit's configuration, as commissioned. Two headline values on
+                          the card — the model and what it can carry — with the full set on
+                          the detail page. A unit with no stored specification shows so
+                          rather than showing defaults nobody entered. */}
+                      <div className="pt-2 border-t border-slate-200/70 flex justify-between items-start gap-2">
+                        <span className="text-slate-500 text-xs shrink-0">Model</span>
+                        <span className="font-medium text-slate-700 text-xs">
+                          {CHASSIS_LABEL[r.specification?.chassisType] || 'Not configured'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-start gap-2">
+                        <span className="text-slate-500 text-xs shrink-0">Payload capacity</span>
+                        <span className="font-mono font-medium text-slate-700 text-xs">
+                          {formatSpecValue(r.specification?.payloadCapacityKg, 'kg')}
                         </span>
                       </div>
                     </div>
@@ -236,6 +268,10 @@ export default function RobotsPage() {
                       <div className="text-xs text-slate-500 font-medium">{selectedRobot.name}</div>
                     ) : null}
                     <div className="font-mono text-xl font-bold text-slate-900">{selectedRobot.robotId}</div>
+                    <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                      <RobotIdentityBadge robot={selectedRobot} />
+                      <SimulatorRuntimeBadge robot={selectedRobot} simulatorStatus={simulatorStatus} />
+                    </div>
                   </div>
                   <span
                     className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${
@@ -323,6 +359,36 @@ export default function RobotsPage() {
                         {selectedRobot.currentTask?.taskId || 'None'}
                       </span>
                     </div>
+                  </div>
+                </div>
+
+                {/* Configuration — what was entered at commissioning, distinguished from
+                    the live state above. Nothing here is a reading. */}
+                <div>
+                  <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">
+                    Configuration
+                  </h3>
+                  <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3 text-sm shadow-sm">
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 font-medium">Model</span>
+                      <span className="font-bold text-slate-700">
+                        {CHASSIS_LABEL[selectedRobot.specification?.chassisType] || '—'}
+                      </span>
+                    </div>
+                    {SPECIFICATION_FIELDS.map((field) => (
+                      <div key={field.key} className="flex justify-between items-center">
+                        <span className="text-slate-500 font-medium">{field.label}</span>
+                        <span className="font-mono font-bold text-slate-700">
+                          {formatSpecValue(selectedRobot.specification?.[field.key], field.unit)}
+                        </span>
+                      </div>
+                    ))}
+                    {!hasSpecification(selectedRobot.specification) ? (
+                      <div className="text-xs text-slate-500 pt-1">
+                        No specification recorded for this unit. Open{' '}
+                        <span className="font-semibold">Inspect</span> to enter one.
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </div>

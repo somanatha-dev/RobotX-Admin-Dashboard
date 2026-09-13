@@ -55,6 +55,11 @@ const agentGate = require("../../engine/cutover/agentGate");
 // live. See `cutover/legEntryDeadline.js` for why this arms the deadline rather than
 // routing the write through `transitions.apply`.
 const legEntryDeadline = require("../../engine/cutover/legEntryDeadline");
+// The legacy read model. A **projection** of the authoritative commitment onto the columns
+// the existing UI reads — it decides nothing, runs only after the decision exists, and
+// writes no row the engine reasons from. See the module header for the four rules that
+// keep it a projection and the test that asserts them structurally.
+const assignmentProjection = require("../../services/assignmentProjection.service");
 
 /**
  * Resolve the Agent row backing a robot socket.
@@ -81,6 +86,86 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
   // handler's own dispatch settings and is a different object; the shard half of the
   // cutover switch resolves against the published snapshot, which only `appLocals` carries.
   const configOf = () => appLocals?.config ?? null;
+
+  /**
+   * Publish an accepted assignment to the surfaces built against the legacy schema.
+   *
+   * Three effects, in the order a reader needs them, none of which touches the authority:
+   *
+   *   1. **The read model** — `Task.robotId`, `Task.status`, `Robot.currentTaskId`, so the
+   *      Units list, the Tasks list and the dashboard stop rendering an assigned task as
+   *      PENDING with no robot.
+   *   2. **`TASK_ASSIGNED`** — the event the frontend has never stopped subscribing to,
+   *      carrying `pathToPickup` and `pathToDrop` read back from the offer the agent was
+   *      actually sent. What disappeared at the cutover was this producer, not the
+   *      contract, so the event name and every field of it are unchanged.
+   *   3. **The route cache** — `taskPath:*` and `robotTaskState:*`, which `rerouteTask`
+   *      reads and `cancelTask` deletes. Completing an existing contract, not adding one.
+   *
+   * ── Every failure here is contained ─────────────────────────────────────────
+   * Wrapped whole. The assignment has already been made and durably recorded; a read model
+   * that cannot be written is a screen that is out of date, and turning that into a thrown
+   * handler would turn a display defect into a lost agent response.
+   *
+   * @param {{ commitmentId: string, legRowId: string|null, robotId: string }} input
+   */
+  async function publishAssignment(input) {
+    try {
+      const projected = await assignmentProjection.projectAcceptedAssignment(prisma, {
+        legRowId: input.legRowId,
+        robotCode: input.robotId,
+      });
+
+      if (!projected.projected) {
+        log.warn("assignment read model not projected", {
+          robotId: input.robotId,
+          commitmentId: input.commitmentId,
+          reason: projected.reason,
+        });
+      }
+
+      if (!projected.task) return;
+
+      // The legacy status change, for the Tasks list and the dashboard cards. Emitted even
+      // when the route is absent: "assigned to RBT-1000" is true and useful on its own,
+      // and withholding it because no line can be drawn would hide the assignment.
+      if (projected.projected) {
+        io.to("dashboard").emit("TASK_UPDATED", {
+          taskId: projected.task.taskId,
+          robotId: input.robotId,
+          status: assignmentProjection.PROJECTED_STATUS,
+          timestamp: Date.now(),
+        });
+      }
+
+      const route = await assignmentProjection.offeredRouteFor(prisma, input.commitmentId);
+      if (!route) {
+        // No geometry on the offer the agent was sent. The agent will have refused it by
+        // name; saying so here is what keeps a blank map from looking like a map bug.
+        log.warn("offer carried no execution geometry; no TASK_ASSIGNED emitted", {
+          robotId: input.robotId,
+          commitmentId: input.commitmentId,
+          taskId: projected.task.taskId,
+        });
+        return;
+      }
+
+      const payload = assignmentProjection.taskAssignedPayload({
+        task: projected.task,
+        robotId: input.robotId,
+        route,
+      });
+      if (payload) io.to("dashboard").emit("TASK_ASSIGNED", payload);
+
+      await assignmentProjection.writeRouteCache(kv, {
+        taskId: projected.task.taskId,
+        robotId: input.robotId,
+        route,
+      });
+    } catch (e) {
+      log.error("assignment read model failed", { commitmentId: input.commitmentId, message: e?.message });
+    }
+  }
 
   /**
    * The shared preamble: authenticate, resolve, match the response against the offer
@@ -162,7 +247,12 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
           });
         }
 
-        return applied;
+        // The Leg row this disposition applied to, carried out of the transaction so the
+        // read model can resolve the Task without re-reading the commitment. Added here
+        // rather than in `offers.js` because it is this handler's need, and widening an
+        // engine module's return shape for a socket handler's convenience is how a Tier 0
+        // contract acquires callers it was not written for.
+        return { ...applied, legRowId: leg.id };
       });
 
       if (result.outcome === offers.OUTCOME.APPLIED) {
@@ -173,6 +263,24 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
           response: event,
           legState: result.legState || null,
         });
+
+        // ── The legacy read model, and the route handoff ────────────────────
+        //
+        // **After** the authoritative transaction has committed, and outside it. Both
+        // properties are load-bearing: running before the commit would let a read model
+        // describe a decision that had not been taken, and running inside the transaction
+        // would let a projection failure roll back an assignment the engine had made.
+        //
+        // Only on ACCEPT. A rejected or deferred offer produced no assignment for the
+        // legacy columns to reflect, and projecting one would be a screen showing a
+        // binding that does not exist.
+        if (event === "OFFER_ACCEPT" && result.legState === offers.LEG_STATE.ACCEPTED) {
+          await publishAssignment({
+            commitmentId: parsed.data.commitmentId,
+            legRowId: result.legRowId || null,
+            robotId,
+          });
+        }
       }
 
       log.info(`${event} handled`, {
@@ -249,7 +357,6 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
     ),
   );
 
-  void kv;
 }
 
 module.exports = {

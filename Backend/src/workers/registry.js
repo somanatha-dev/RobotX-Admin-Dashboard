@@ -291,8 +291,24 @@ const WORKERS = Object.freeze([
     purpose: "Keep the cell-partitioned availability index consistent with agent state.",
     blockedBy:
       "needs the capability/container and charging classifiers (capabilityAndContainerClassesFor, " +
-      "chargingStatusFor). The index is otherwise maintained on the telemetry path; the sweep is the " +
-      "self-healing pass, and running it with a classifier that answers 'unknown' would evict live agents.",
+      "chargingStatusFor). " +
+      // STEP 5 — two corrections to this entry, both found by building the input it was
+      // waiting for. (1) "The index is otherwise maintained on the telemetry path" was
+      // FALSE when written and stayed false for six passes: nothing on the telemetry path
+      // wrote `AgentCellPosition` or the Redis index, and the table was empty. Step 5 made
+      // the *first* half true — the telemetry path now writes the position Observations
+      // this worker consumes — and the second half is still false: this worker remains the
+      // only producer of `AgentCellPosition`. (2) "would evict live agents" understates the
+      // direction that actually matters: the absent `chargingStatusFor` defaults to
+      // `charging: false`, and `availabilityIndex.classify` then files an agent parked on a
+      // charger as `IDLE_READY` — a WIDENING into the partition §6.3 searches first, not an
+      // eviction. That is why the worker is still not started.
+      "STEP 5 CORRECTION: the index is NOT maintained on the telemetry path — this worker is still the only " +
+      "producer of AgentCellPosition. What Step 5 supplied is its INPUT: the telemetry path now writes the " +
+      "kind='position' Observations it reads (services/positionObservation.service.js), which before had no " +
+      "production writer at all. The blocker is unchanged and is the charging classifier, whose absent default " +
+      "(charging: false) makes availabilityIndex.classify report a charging agent as IDLE_READY — a widening " +
+      "into §6.3's first-searched partition, which is worse than the eviction this entry used to name.",
   },
   {
     id: "capacity_pricing",

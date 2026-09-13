@@ -1,12 +1,22 @@
 const asyncHandler = require("../utils/asyncHandler");
 const { getPrisma } = require("../db/prisma");
 const robotService = require("../services/robot.service");
+const robotSpecification = require("../services/robotSpecification");
+// STEP 3 — the one public shape of a Robot row. See `robotProjection.js` for why the
+// projection moved out of this file: `simulator.controller.js` had grown a second copy,
+// and the two facts they could drift on are the two this step is about (does the payload
+// say the unit is simulated, and does it leak who owns it).
+const robotProjection = require("../services/robotProjection");
 const { toStringOrNull } = require("../utils/parse");
 const crypto = require("crypto");
 const { dispatchCommand } = require("../services/commandDispatcher.service");
 const { getRobotState, updateHealthStatus } = require("../services/robotRegistry.service");
 const { z } = require("zod");
 const robotStateCache = require("../cache/robotStateCache");
+// STEP 5 — the position-Observation writer keeps two per-process facts about each robot
+// (its resolved Agent.id and its telemetry ordering high-water mark). Decommissioning is
+// the one event that invalidates both.
+const positionObservation = require("../services/positionObservation.service");
 // PHASE 14 — §23.6's override discipline. The rules live in the engine module; this
 // controller applies them at the one operator surface that returns a withdrawn agent to
 // service.
@@ -38,6 +48,19 @@ async function writeRobotLiveState(kv, robot, { exSeconds = 15 } = {}) {
   ]);
 }
 
+/**
+ * The operator-facing projection of a Robot row.
+ *
+ * Kept as a local name because every response in this file already read as
+ * `withSpecification(robot)`, but it is now `robotProjection.toPublicRobot` — which does
+ * the same specification join **and** guarantees the two identity facts STEP 3 is about:
+ * `simulated` is always a boolean, and `simulationOwnerId` never leaves the process.
+ *
+ * @param {object} robot
+ * @returns {object}
+ */
+const withSpecification = robotProjection.toPublicRobot;
+
 function emitRobotUpdate(req, payload) {
   const io = req.app?.locals?.io;
   if (!io) return;
@@ -68,7 +91,11 @@ const commissionRobot = asyncHandler(async (req, res) => {
     battery: robot.battery,
     status:  robot.status || "IDLE",
     speed:   robot.speed || 0,
-    isOnline: true,
+    // The row's own value, not a hardcoded `true`. A unit that has not connected is not
+    // online, and the dashboard is entitled to be told the truth about that: it draws the
+    // marker on ROBOT_COMMISSIONED regardless, and the unit turns online when it AUTHs.
+    isOnline: robot.isOnline === true,
+    simulated: robot.simulated === true,
   };
 
   emitRobotUpdate(req, livePayload);
@@ -86,25 +113,84 @@ const commissionRobot = asyncHandler(async (req, res) => {
     // ignore
   }
 
-  // Auto-start a VirtualRobot for this unit so it appears alive on the map immediately.
-  // If a physical robot later connects via AUTH, it seamlessly replaces the virtual one.
-  const virtualSimulator = req.app?.locals?.virtualSimulator;
-  if (virtualSimulator && typeof virtualSimulator.addRobot === "function") {
-    try {
-      await virtualSimulator.addRobot({
-        robotId: robot.robotId,
-        lat:     typeof robot.lat === "number" ? robot.lat : null,
-        lon:     typeof robot.lon === "number" ? robot.lon : null,
-      });
-    } catch (e) {
-      // Non-fatal — simulator may not be running yet or DB not ready
-      (req.app?.locals?.logger || console).warn(
-        `[commission] VirtualRobot addRobot failed for ${robot.robotId}: ${e?.message}`
-      );
-    }
+  // ── No simulator is started here, because nothing simulated is created here ──
+  //
+  // This block used to start a VirtualRobot for every commissioned robot, physical
+  // hardware included. Step 1 narrowed it to units the row said were simulated; Step 2
+  // removes it, because `robotService.commissionRobot` now refuses `simulated: true`
+  // outright and this endpoint can only produce a physical unit.
+  //
+  // Deliberately deleted rather than left as an unreachable guard. A branch that cannot
+  // fire is not a safety property — it is a statement that stops being checked, and the
+  // next person to read it learns that this endpoint is a place simulators get started.
+  // The one place they get started is `POST /api/simulator/robot`, and the engine's own
+  // row re-read still refuses anything else.
+
+  res.json({ ok: true, robot: withSpecification(robot) });
+});
+
+// PATCH /api/robots/:robotId
+//
+// The smallest proper edit capability for a commissioned unit's **configuration**.
+//
+// ── The field list is the whole security argument ─────────────────────────────
+// Exactly seven fields are editable: the display name, the chassis family, and the six
+// specification values. Everything else on a `Robot` row is either telemetry the fleet
+// reports (`battery`, `lat`, `lon`, `speed`, `status`, `isOnline`, `lastSeenAt`) or state
+// the assignment engine owns (`currentTaskId`, `zoneId`, `utilization`). An edit endpoint
+// that could write those would let an operator assert a measurement or an assignment,
+// which is precisely what §23.5 makes untrusted and what §7.2 forbids: "the operator's
+// power is to choose which agent, never to make an infeasible agent feasible."
+//
+// The list is enforced by rejecting unknown keys rather than by ignoring them. A silently
+// dropped `battery: 100` would leave the caller believing it took effect.
+const updateRobot = asyncHandler(async (req, res) => {
+  const prisma = getPrisma();
+  const robotCode = toStringOrNull(req.params?.robotId);
+
+  const EDITABLE = new Set([
+    "name",
+    "chassisType",
+    "type",
+    "specification",
+    ...robotSpecification.SPECIFICATION_FIELDS,
+  ]);
+
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const rejected = Object.keys(body).filter((key) => !EDITABLE.has(key));
+  if (rejected.length > 0) {
+    const err = new Error(
+      `Not an editable robot configuration field: ${rejected.join(", ")}. ` +
+        "Observed state (battery, position, status, online) is reported by the fleet, and " +
+        "assignment state (currentTaskId) is the engine's; neither is settable here.",
+    );
+    err.status = 400;
+    throw err;
   }
 
-  res.json({ ok: true, robot });
+  if (Object.keys(body).length === 0) {
+    const err = new Error("Nothing to update");
+    err.status = 400;
+    throw err;
+  }
+
+  const robot = await robotService.updateRobotSpecification(prisma, robotCode, body);
+
+  // The dashboard learns that the configuration moved. Deliberately its own event rather
+  // than `ROBOT_UPDATE`: that one carries live telemetry, and a specification change is
+  // not a telemetry reading.
+  try {
+    req.app?.locals?.io?.to("dashboard")?.emit("ROBOT_SPECIFICATION_UPDATED", {
+      robotId: robot.robotId,
+      name: robot.name || null,
+      specification: robotSpecification.specificationOf(robot),
+      timestamp: Date.now(),
+    });
+  } catch {
+    // ignore
+  }
+
+  res.json({ ok: true, robot: withSpecification(robot) });
 });
 
 const listRobots = asyncHandler(async (req, res) => {
@@ -115,7 +201,7 @@ const listRobots = asyncHandler(async (req, res) => {
   // Main API behavior: DB robots + Redis live overlay (when available).
   // This keeps robot ownership/metadata in DB, and live state in Redis.
   if (!kv) {
-    res.json({ ok: true, robots });
+    res.json({ ok: true, robots: robotProjection.toPublicRobots(robots) });
     return;
   }
 
@@ -135,9 +221,9 @@ const listRobots = asyncHandler(async (req, res) => {
       live = null;
     }
 
-    if (!live || typeof live !== "object") return r;
+    if (!live || typeof live !== "object") return withSpecification(r);
 
-    return {
+    return withSpecification({
       ...r,
       ...(typeof live.lat === "number" ? { lat: live.lat } : {}),
       ...(typeof live.lon === "number" ? { lon: live.lon } : {}),
@@ -145,7 +231,7 @@ const listRobots = asyncHandler(async (req, res) => {
       ...(typeof live.battery === "number" ? { battery: live.battery } : {}),
       ...(typeof live.status === "string" ? { status: live.status } : {}),
       live,
-    };
+    });
   });
 
   res.json({ ok: true, robots: merged });
@@ -158,12 +244,21 @@ const getRobotsState = asyncHandler(async (req, res) => {
   const kv = req.app?.locals?.kv;
 
   const robots = await prisma.robot.findMany({
-    include: { campus: true, location: true, currentTask: true },
+    include: {
+      campus: true,
+      location: true,
+      currentTask: true,
+      // The specification the Units list and the detail page render. Same include
+      // constant as `robotService.listRobots`, so the two endpoints cannot diverge on
+      // which levels of the class were joined — a page that forgot one would show a
+      // fully-configured unit as unconfigured.
+      ...robotSpecification.SPECIFICATION_INCLUDE,
+    },
     orderBy: [{ isOnline: "desc" }, { lastSeenAt: "desc" }],
   });
 
   if (!kv) {
-    res.json({ ok: true, robots });
+    res.json({ ok: true, robots: robotProjection.toPublicRobots(robots) });
     return;
   }
 
@@ -183,7 +278,7 @@ const getRobotsState = asyncHandler(async (req, res) => {
       live = null;
     }
 
-    if (!live || typeof live !== "object") return r;
+    if (!live || typeof live !== "object") return withSpecification(r);
 
     // Overlay common live fields when available.
     const next = {
@@ -197,7 +292,7 @@ const getRobotsState = asyncHandler(async (req, res) => {
       live,
     };
 
-    return next;
+    return withSpecification(next);
   });
 
   res.json({ ok: true, robots: merged });
@@ -351,7 +446,12 @@ const commissionRobotWithPairing = asyncHandler(async (req, res) => {
     speed: robot.speed || 0,
   });
 
-  res.json({ ok: true, robot, pairingCode: code, expiresIn: 300 });
+  // Stripped, not fully projected. This endpoint reads its row without
+  // `SPECIFICATION_INCLUDE`, so attaching `specificationOf`'s answer would report a
+  // configured unit as unconfigured; see `robotProjection.stripInternalFields`. What it
+  // must still do is keep `simulationOwnerId` off the wire — this route can act on an
+  // existing row, and an existing row may be a simulated one.
+  res.json({ ok: true, robot: robotProjection.stripInternalFields(robot), pairingCode: code, expiresIn: 300 });
 });
 
 // POST /api/robots/:robotId/pairing/unlock
@@ -540,6 +640,13 @@ const deleteRobot = asyncHandler(async (req, res) => {
 
   await prisma.robot.delete({ where: { robotId: robotCode } });
   robotStateCache.del(robotCode);
+  // STEP 5 — drop what the position-Observation writer remembers about this robot: its
+  // resolved `Agent.id` and its ordering high-water mark. The binding would expire on its
+  // own TTL, but the high-water mark would not, and a `robotId` re-commissioned after a
+  // decommission would then be measured against the previous unit's newest timestamp —
+  // refusing its telemetry until it happened to overtake a mark belonging to a robot that
+  // no longer exists. Fail-closed rather than dangerous, and wrong either way.
+  positionObservation.forget(robotCode);
 
   if (kv) {
     try {
@@ -679,7 +786,12 @@ const sendRobotCommand = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  // Exported so `simulator.controller.js` writes the `robot:{id}` live-state key through
+  // the same writer rather than a second one. The shape of that key is read by the list
+  // and dashboard-state overlays, and two writers of one shape is one that drifts.
+  writeRobotLiveState,
   commissionRobot,
+  updateRobot,
   listRobots,
   getRobotsState,
   getRobotHistory,

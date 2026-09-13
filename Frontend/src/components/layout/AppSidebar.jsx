@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   ArrowLeft,
+  Cpu,
   Grid,
   LayoutDashboard,
   LogOut,
@@ -57,8 +58,21 @@ export default function AppSidebar() {
         </nav>
       </div>
       <div className="p-4 border-t border-border/40 space-y-3">
+        {/* Two buttons, because they are two product flows. Commissioning registers
+            hardware somebody installed; creating a simulated robot provisions a test
+            agent owned by this operator. Neither is a mode of the other, and there is no
+            Physical/Simulated choice inside either form. */}
         <Button type="button" onClick={() => navigate('/commission')} className="w-full" size="sm">
-          <Plus className="w-4 h-4" /> Commission Unit
+          <Plus className="w-4 h-4" /> Commission Physical Robot
+        </Button>
+        <Button
+          type="button"
+          onClick={() => navigate('/simulator/new')}
+          className="w-full"
+          size="sm"
+          variant="secondary"
+        >
+          <Cpu className="w-4 h-4" /> Create Simulated Robot
         </Button>
         <Button type="button" onClick={logout} className="w-full" size="sm" variant="outline">
           <LogOut className="w-4 h-4" /> Logout

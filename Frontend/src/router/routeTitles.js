@@ -9,6 +9,7 @@ export function getRouteTitle(pathname) {
   if (p === '/tasks') return 'Tasks';
   if (p === '/profile') return 'Profile';
   if (p === '/commission') return 'Commission New Unit';
+  if (p === '/simulator/new') return 'Create Simulated Robot';
   if (p === '/dashboard') return 'Dashboard';
 
   return 'Dashboard';

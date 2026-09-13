@@ -37,6 +37,42 @@
  *
  * The legacy `TASK_ASSIGN` / `COMMAND` / `STOP` path below is untouched and stays live
  * until the Phase 15 cutover.
+ *
+ * ── STEP 4: known limitations, found and deliberately NOT fixed ──────────────
+ *
+ * Recorded here rather than in a report nobody re-reads, because each is a real behaviour
+ * somebody will eventually meet and wonder about. None is a Step 4 regression; each was
+ * either pre-existing or is out of Step 4's scope, and none is needed for the runtime
+ * behaviour Step 4 is about.
+ *
+ *   1. **A server-initiated disconnect is not recovered from.** Reconnection here is
+ *      socket.io-client's, and it deliberately does *not* retry when the server sends a
+ *      namespace-disconnect packet — the client reports `io server disconnect` and stops.
+ *      `robot.handler.js` takes that path on an AUTH refusal and on session supersession, so
+ *      a simulated agent dismissed that way stays down until the engine restarts it. An
+ *      involuntary transport drop — the field failure — *is* recovered from, and
+ *      `tools/verify/step4SimulationBehaviour.js` proves it against the real library.
+ *      Fixing the other case means deciding a retry policy for an agent the server has just
+ *      refused, which is a protocol decision and not a simulator one.
+ *   2. **A robot with an active task never docks.** `_tick` enters charging only when
+ *      `phase === null`, so an agent mid-mission drives on at `BATTERY_MIN` (5 %) instead of
+ *      charging. Asserted as a test so the behaviour is deliberate and visible.
+ *   3. **`dedup.tombstones` is never pruned**, though its own comment says it is retained for
+ *      `agent.dedup_retention` and then pruned. It grows with the number of settled
+ *      commitments for the life of the process. (Step 4's own `_appliedCommands` map *is*
+ *      pruned, on the same window — see `_pruneAppliedCommands`.)
+ *   4. **§18.5's continuation limit never fires on the legacy path.** `_lastSupervisedAt` is
+ *      set only when a §10.3.1 command is applied, so an agent driving a legacy
+ *      `TASK_ASSIGN` has no supervision timestamp and is never halted by the limit. That is
+ *      the documented meaning of `null` ("not yet supervised"), not an oversight, but it
+ *      means the bound is inert for exactly the path still in production use.
+ *   5. **Battery persistence is counted in ticks, not seconds.** `BATTERY_PERSIST_TICKS` is
+ *      60, which is two minutes only at the default cadence; a configured tick period
+ *      changes the wall-clock snapshot interval with it. Harmless, and worth knowing before
+ *      reading the "every 2 minutes" comment as a guarantee.
+ *   6. **`/api/simulator/start|stop|reset` remain fleet-wide** and are gated by `authUser`
+ *      alone — a pre-existing Step 2/3 limitation, unchanged here and documented in
+ *      `routes/simulator.routes.js`.
  */
 
 const { io: ioClient } = require("socket.io-client");
@@ -75,6 +111,18 @@ const {
   TARGET_SOC_FALLBACK,
 } = require("./constants");
 
+const simulationPolicy = require("./simulationPolicy");
+// STEP 4 — the simulated thermal environment. Ambient inside the owner's declared
+// 25–35 °C band, and a pack temperature that responds to load and relaxes toward ambient.
+const { createSimulatedEnvironment } = require("./simulatedEnvironment");
+// STEP 5 — consumption through §14.2's model. This module holds no energy equation; it
+// builds the leg profile and calls the same `legEnergyWh` the assignment engine calls.
+const simulatedEnergy = require("./simulatedEnergy");
+// STEP 4 — one deterministic pseudo-random stream per robot, so a run is reproducible and
+// two robots are not coupled through a shared generator. See `random.js` for why the
+// global `Math.random()` was a correctness problem and not merely an aesthetic one.
+const { createRandom, forkSeed } = require("./random");
+
 const fencing = require("../engine/commitment/fencing");
 const sequence = require("../engine/dispatch/sequence");
 const commandSigning = require("../engine/security/commandSigning");
@@ -109,6 +157,17 @@ const DEDUP_KEY_TTL = 1800; // agent.dedup_retention, Appendix A default (30 min
 const AUTONOMOUS_CONTINUATION_LIMIT_SEC = 900;
 
 /**
+ * Speed jitter for a commissioned unit, as a fraction of its own nominal speed.
+ *
+ * `SPEED_JITTER` is ±1.5 m/s, which is larger than the entire declared speed of every
+ * simulation preset (1.0–1.5 m/s) and would swamp it. Ten per cent of nominal keeps the
+ * trace recognisably that unit's.
+ *
+ * @structural a DEVELOPMENT simulation figure, not a measured speed variance
+ */
+const SPEED_JITTER_FRACTION_OF_NOMINAL = 0.1;
+
+/**
  * Is this path something the agent can actually traverse?
  *
  * Two waypoints is the floor, and it is not an arbitrary one: `_advanceTask` ends a
@@ -133,28 +192,160 @@ function isTraversablePath(path) {
 }
 
 /**
- * Can this assignment be executed, or would accepting it be a claim the agent cannot
- * honour?
+ * The dwell an agent holds at a stop, by stop type.
+ *
+ * `CHARGE` is present because §14.6's Charging Scheduler can insert one into a plan, and
+ * an agent that did not know the type would drive to it and leave immediately. The dwell
+ * used is the existing docking delay.
+ *
+ * **No charge is delivered at a CHARGE stop by this batch.** The Charging Scheduler is
+ * out of scope here, and simulating a charge session against a target SoC nobody
+ * published would be inventing the Scheduler's decision. The stop is *executed* — driven
+ * to, dwelt at, departed from — and `_chargeStopsVisited` records that it happened, so
+ * the gap is visible rather than silently absorbed.
+ *
+ * @structural the per-stop-type dwell, in milliseconds
+ */
+const STOP_DWELL_MS = Object.freeze({
+  PICKUP: PICKUP_WAIT_MS,
+  DROP: DROP_WAIT_MS,
+  CHARGE: CHARGING_WAIT_MS,
+});
+
+/**
+ * The phase names a stop of each type presents while travelling to it and while waiting
+ * at it.
+ *
+ * The existing four names are preserved exactly. `getStatus().phase` is read by the
+ * dashboard and asserted by several suites, and a generalisation that renamed
+ * `TO_PICKUP` to something uniform would be a gratuitous break — the phase vocabulary is
+ * part of this file's observable contract, not an implementation detail.
+ *
+ * @structural the phase vocabulary
+ */
+const STOP_PHASES = Object.freeze({
+  PICKUP: Object.freeze({ moving: "TO_PICKUP", waiting: "WAIT_PICKUP" }),
+  DROP: Object.freeze({ moving: "TO_DROP", waiting: "WAIT_DROP" }),
+  CHARGE: Object.freeze({ moving: "TO_CHARGE", waiting: "WAIT_CHARGE" }),
+});
+
+/** The phases used for a stop whose type the offer did not state. */
+const UNTYPED_STOP_PHASES = Object.freeze({ moving: "TO_STOP", waiting: "WAIT_STOP" });
+
+/**
+ * @param {string|null|undefined} stopType
+ * @returns {{ moving: string, waiting: string }}
+ */
+function phasesForStopType(stopType) {
+  return STOP_PHASES[stopType] || UNTYPED_STOP_PHASES;
+}
+
+/**
+ * Can this mission be executed, or would accepting it be a claim the agent cannot honour?
  *
  * The agent is the authority on its own physical condition (§11.2), and "I was handed
- * no route to drive" is a condition it is the authority on. Naming *which* half of the
+ * no route to drive" is a condition it is the authority on. Naming *which* part of the
  * mission is missing is deliberate: a missing producer must be diagnosable from the
  * refusal alone, because the whole point of failing closed here is that no downstream
  * evidence of the mission is ever produced.
  *
- * @param {{ pathToPickup: unknown, pathToDrop: unknown }} assignment
+ * ── STEP 8: every stop is checked, not the first two ────────────────────────
+ * This took a `{ pathToPickup, pathToDrop }` pair and therefore could not see a third
+ * stop at all. It now takes the whole sequence, so a plan with a charging stop inserted
+ * between pickup and drop is validated in full — and a plan whose *third* stop has no
+ * route is refused rather than accepted and silently truncated.
+ *
+ * Each stop carries the `label` the refusal names it by. A two-stop mission keeps the
+ * exact strings the previous implementation produced (`pathToPickup`, `pathToDrop`), so
+ * every existing assertion on `NO_EXECUTABLE_PATH:…` still holds; a longer mission names
+ * the offending stops by sequence and type.
+ *
+ * @param {Array<{ path: unknown, label: string }>} stops
  * @returns {{ executable: boolean, reason: string|null }}
  */
-function assessExecutability(assignment) {
-  const pickupOk = isTraversablePath(assignment.pathToPickup);
-  const dropOk = isTraversablePath(assignment.pathToDrop);
+function assessExecutability(stops) {
+  const sequence = Array.isArray(stops) ? stops : [];
 
-  if (pickupOk && dropOk) return { executable: true, reason: null };
+  // A mission with no stops is not a short mission; it is not a mission. Refused by name
+  // rather than treated as trivially executable — the phase machine would otherwise run
+  // straight to completion and report a delivery that never happened.
+  if (sequence.length === 0) {
+    return { executable: false, reason: "NO_EXECUTABLE_PATH:noStops" };
+  }
 
   const missing = [];
-  if (!pickupOk) missing.push("pathToPickup");
-  if (!dropOk) missing.push("pathToDrop");
+  for (const stop of sequence) {
+    if (!isTraversablePath(stop.path)) missing.push(stop.label);
+  }
+
+  if (missing.length === 0) return { executable: true, reason: null };
   return { executable: false, reason: `NO_EXECUTABLE_PATH:${missing.join(",")}` };
+}
+
+/**
+ * The internal stop sequence for a mission, from whichever form the mission arrived in.
+ *
+ * Two producers, one shape:
+ *
+ *   * An **offer** carries `stopSequence` — the plan's stops, each with its own
+ *     `stopType` and its own `path` from `executionGeometry.attachStopPaths`. Any length.
+ *   * A legacy **`TASK_ASSIGN`** carries `pathToPickup` / `pathToDrop`, which is exactly a
+ *     two-stop PICKUP→DROP mission and is normalised to one here.
+ *
+ * Normalising at the boundary is what lets the phase machine below have a single
+ * implementation. The legacy labels are preserved for the two-stop case so refusal
+ * strings do not move.
+ *
+ * @param {object} input
+ * @returns {Array<{ sequence: number, stopType: string|null, path: object[], label: string,
+ *                   dwellMs: number }>}
+ */
+function buildStopSequence(input) {
+  const source = input || {};
+
+  if (Array.isArray(source.stopSequence) && source.stopSequence.length > 0) {
+    const sequence = source.stopSequence;
+    // ── Why a two-stop plan keeps the legacy labels ───────────────────────────
+    // A two-stop mission *is* the pickup→drop mission the previous implementation
+    // assumed, and `NO_EXECUTABLE_PATH:pathToPickup,pathToDrop` is a string the server
+    // side, the tests and the operator-facing logs all already read. Generalising the
+    // labels for that case would have renamed a refusal without changing its meaning,
+    // which is churn with a compatibility cost and no benefit. Longer plans — the ones
+    // that could not previously be expressed at all — get precise per-stop labels.
+    const legacyShape = sequence.length === 2;
+    return sequence.map((stop, index) => {
+      const stopType = typeof stop?.stopType === "string" ? stop.stopType.toUpperCase() : null;
+      const ordinal = Number.isFinite(stop?.sequence) ? stop.sequence : index;
+      return {
+        sequence: ordinal,
+        stopType,
+        path: Array.isArray(stop?.path) ? stop.path : [],
+        label: legacyShape
+          ? (index === 0 ? "pathToPickup" : "pathToDrop")
+          : `stop${ordinal}:${stopType || "UNTYPED"}`,
+        dwellMs: STOP_DWELL_MS[stopType] ?? DROP_WAIT_MS,
+      };
+    });
+  }
+
+  // The legacy two-path form. Both stops are always produced, even when a path is empty,
+  // so `assessExecutability` can name the missing half exactly as it always did.
+  return [
+    {
+      sequence: 0,
+      stopType: "PICKUP",
+      path: Array.isArray(source.pathToPickup) ? source.pathToPickup : [],
+      label: "pathToPickup",
+      dwellMs: PICKUP_WAIT_MS,
+    },
+    {
+      sequence: 1,
+      stopType: "DROP",
+      path: Array.isArray(source.pathToDrop) ? source.pathToDrop : [],
+      label: "pathToDrop",
+      dwellMs: DROP_WAIT_MS,
+    },
+  ];
 }
 
 class VirtualRobot {
@@ -171,15 +362,182 @@ class VirtualRobot {
     // different keys in one process.
     commandSigningKey,
     autonomousContinuationLimitSeconds,
+    // STEP 1 — the target row's simulation discriminator, carried explicitly.
+    //
+    // Not defaulted to `true` "because this is a simulator". The instance is constructed
+    // *for* a `Robot` row, and whether that row is a simulated unit is a fact about the
+    // row, not about the class. Undefined therefore means "not established", which
+    // `simulationPolicy.isSimulatedRobot` reads as physical and `commission()` refuses.
+    simulated,
+    // STEP 4 — the tunables from `simulationConfig`. Each falls back to the module
+    // constant, so an unconfigured instance behaves exactly as it did before Step 4 and
+    // the constants file remains the statement of the default fixture.
+    telemetryIntervalMs,
+    speedBaseMs,
+    speedJitter,
+    obstacleProbability,
+    initialBattery,
+    randomSeed,
+    // ── STEP 3: the unit's own commissioned specification ─────────────────────
+    //
+    // The single most important argument in this constructor. Before it, every simulated
+    // robot moved at `SPEED_BASE_MS` (5.56 m/s) and drained a pack of `PACK_NOMINAL_WH`
+    // (1000 Wh) regardless of what it had been commissioned as — so a unit specified at
+    // 1.2 m/s with a 3 kg payload limit drove at four and a half times its declared speed,
+    // and the specification the operator entered was decoration.
+    //
+    // Supplied by `SimulationEngine.addRobot` from the persisted rows: `Robot.massKg`,
+    // `MobilityModel.speedModel.nominalSpeedMps`, `MobilityModel.kinematicLimits.maxSpeedMps`,
+    // `EnergyModel.packNominalWh`, `ContainerModel.totalMassLimitKg`. There is deliberately
+    // no simulator-side copy of any of them: this object is read, never written.
+    //
+    // `null`/absent means "not commissioned", and each field then falls back to the module
+    // constant it always used. A fallback never overrides a value that IS present — see
+    // `_resolveSpecification`.
+    specification,
+    // ── STEP 3: the unit's persisted pack state (`BatteryState`) ──────────────
+    // κ and its sample count, and the last state of charge. Read, never invented: κ is 1
+    // with a sample count of 0 for an uncalibrated unit, which is what
+    // `agentEnergyProvisioning` writes and what this reads back.
+    batteryState,
+    // ── STEP 5: the class's §14.2 coefficients (`EnergyModelParams`) ──────────
+    // In `legEnergyWh`'s own naming, as `domain/mappers/decisionInputs` produces them.
+    // Null — or a row whose coefficients are all null, which is what this deployment
+    // actually has — makes the model refuse, which is the correct fail-closed outcome.
+    energyModelParams,
   } = {}) {
     this.robotId = robotId;
     this.lat = lat;
     this.lon = lon;
+    this.simulated = simulated;
+
+    // ── STEP 3: resolve the specification before anything reads a speed ───────
+    // Done first because the movement and energy fields below are derived from it.
+    this._specification = this._resolveSpecification(specification);
+    this._batteryState = batteryState && typeof batteryState === "object" ? batteryState : null;
+    this._energyModelParams =
+      energyModelParams && typeof energyModelParams === "object" ? energyModelParams : null;
+
+    // ── STEP 4: the tick period and the movement/obstacle model, per instance ──
+    // Held on the instance rather than read from the module so that two robots in one
+    // process can be configured differently — which is what makes a mixed-cadence demo
+    // possible — and so a test can drive a robot without a two-second wall-clock wait.
+    this._telemetryIntervalMs =
+      Number.isFinite(telemetryIntervalMs) && telemetryIntervalMs > 0
+        ? telemetryIntervalMs
+        : TELEMETRY_INTERVAL_MS;
+    // ── STEP 3: the speed envelope, commissioned value first ──────────────────
+    //
+    // Precedence is explicit and is the whole fix: an operator-configured tunable, then
+    // the unit's **commissioned** nominal speed, then the fleet constant. The middle term
+    // is new; without it `SPEED_BASE_MS` won unconditionally.
+    //
+    // The clamps matter as much as the base, and this is the part that is easy to miss.
+    // `SPEED_MIN_MS` is 5.0 m/s — a floor that exists so a demo robot is visibly moving —
+    // and applying it to a unit commissioned at 1.2 m/s would drag it back up to 5.0 on
+    // every tick, leaving the base correct and the actual speed wrong. So a commissioned
+    // unit's envelope is derived from its own two declared speeds: the ceiling is its
+    // kinematic limit (`maxSpeedMps`, which commissioning requires), and the floor is its
+    // nominal less the jitter, never below zero.
+    const commissionedSpeed = this._specification.normalSpeedMps;
+    const commissionedMaxSpeed = this._specification.maxSpeedMps;
+
+    this._speedBaseMs = Number.isFinite(speedBaseMs) && speedBaseMs >= 0
+      ? speedBaseMs
+      : commissionedSpeed !== null
+        ? commissionedSpeed
+        : SPEED_BASE_MS;
+
+    // The fleet jitter (±1.5 m/s) is larger than the entire declared speed of every
+    // simulation preset, so a commissioned unit uses a jitter proportional to its own
+    // nominal speed instead. A configured jitter still wins, and an uncommissioned unit
+    // still gets the constant.
+    this._speedJitter = Number.isFinite(speedJitter) && speedJitter >= 0
+      ? speedJitter
+      : commissionedSpeed !== null
+        ? commissionedSpeed * SPEED_JITTER_FRACTION_OF_NOMINAL
+        : SPEED_JITTER;
+
+    if (commissionedSpeed !== null) {
+      this._speedMaxMs = commissionedMaxSpeed !== null
+        ? commissionedMaxSpeed
+        : this._speedBaseMs + this._speedJitter;
+      this._speedMinMs = Math.max(0, this._speedBaseMs - this._speedJitter);
+    } else {
+      this._speedMaxMs = SPEED_MAX_MS;
+      this._speedMinMs = SPEED_MIN_MS;
+    }
+    this._obstacleProbability =
+      Number.isFinite(obstacleProbability) && obstacleProbability >= 0
+        ? obstacleProbability
+        : OBSTACLE_PROBABILITY;
+
+    // ── STEP 4: two independent deterministic streams ─────────────────────────
+    // Seeded from the robot's own identifier unless a seed is supplied, so SIM-A's numbers
+    // are the same whether it runs alone or beside four others. Two streams, not one:
+    // sharing would make the speed trace depend on whether an obstacle was reported.
+    this._randomSeed = Number.isFinite(randomSeed) ? randomSeed >>> 0 : null;
+    const seedBasis = this._randomSeed === null ? String(robotId) : this._randomSeed;
+    this._speedRandom = createRandom(forkSeed(seedBasis, "speed"));
+    this._obstacleRandom = createRandom(forkSeed(seedBasis, "obstacle"));
+
+    // ── STEP 4: this robot's thermal environment ──────────────────────────────
+    // A third independent stream, forked from the same basis, so the ambient sensor
+    // offset does not shift the speed or obstacle traces and vice versa. Ambient stays
+    // inside the owner's declared 25–35 °C band by construction; pack temperature is
+    // integrated per tick from load.
+    this._environment = createSimulatedEnvironment({
+      robotId,
+      seed: this._randomSeed === null ? undefined : this._randomSeed,
+    });
+    this._ambientC = null;
+    this._packC = null;
+
+    // ── STEP 5: the energy accounting this tick's consumption is computed from ──
+    // Each is a quantity the simulator genuinely observes about itself. `_stopStartCycles`
+    // counts stop-and-move transitions, which is §14.2's `n_stop_start_cycles` measured by
+    // the thing doing the stopping. The three second counters are wall-clock over the
+    // instance's own ticks.
+    this._energyBasis = null;
+    this._energyMissing = [];
+    this._lastTickWh = null;
+    this._cumulativeWh = 0;
+    this._stopStartCycles = 0;
+    this._movingSeconds = 0;
+    this._dwellSeconds = 0;
+    this._totalSeconds = 0;
+    this._wasMovingLastTick = false;
+
+    // ── STEP 4: the telemetry frame counter ───────────────────────────────────
+    // Monotonic, per robot, starting at 1 for the first frame of the process. It makes a
+    // dropped or duplicated frame visible to anything reading the stream, and it is the
+    // simulator's own counter — nothing on the server consumes it, and it is not evidence
+    // of anything beyond how many frames this instance has emitted.
+    this._telemetrySequence = 0;
+
+    // ── STEP 4: legacy operator-command idempotency ───────────────────────────
+    // `commandId` → the moment it was applied. The §10.3.1 command surface has its own
+    // durable deduplication; the legacy `COMMAND` path had none, so a redelivery applied
+    // the effect twice. See `_onCommand`.
+    this._appliedCommands = new Map();
 
     // Battery starts at the last persisted level once commission() runs.
     // dbBattery is the DB fallback passed in by SimulationEngine.
+    //
+    // ── STEP 4: where a configured `initialBattery` sits in that order ─────────
+    // **Last**, not first. The restore order is Redis → DB → configured → 100, so a
+    // configured value replaces the hard-coded 100 and nothing else. The alternative —
+    // letting configuration win — would make a restart reset the pack to its starting level
+    // and so break the persistence §6 requires; a robot that recharged itself every time
+    // the process restarted would also be the second time this programme had a simulator
+    // assert a battery level nothing measured. So it is the *fresh robot's* starting
+    // level, which is the case a demo actually needs to pin.
     this.battery = 100;
     this._dbBattery = typeof dbBattery === "number" ? dbBattery : null;
+    this._initialBattery =
+      Number.isFinite(initialBattery) && initialBattery >= 1 && initialBattery <= 100
+        ? initialBattery
+        : null;
 
     this.speed  = 0;
     this.status = "IDLE";
@@ -192,11 +550,20 @@ class VirtualRobot {
 
     // ── Speed model ────────────────────────────────────────────────────────
     // EMA-smoothed speed — starts at rest, ramps up as robot begins moving.
-    this._targetSpeed = SPEED_BASE_MS;
+    this._targetSpeed = this._speedBaseMs;
 
     // ── Task navigation ────────────────────────────────────────────────────
-    this.task        = null;   // { taskId, pathToPickup, pathToDrop }
-    this.phase       = null;   // TO_PICKUP | WAIT_PICKUP | TO_DROP | WAIT_DROP
+    this.task        = null;   // { taskId, stops[], payloadMassKg }
+    // STEP 8 — phase names are derived from the current stop's type, so an ordinary
+    // pickup→drop mission still shows TO_PICKUP | WAIT_PICKUP | TO_DROP | WAIT_DROP, and a
+    // charging stop adds TO_CHARGE | WAIT_CHARGE.
+    this.phase       = null;
+    // Which stop of the mission sequence is being executed.
+    this.stopIndex   = 0;
+    // Whether a pickup has completed and no drop has yet — the custody state the energy
+    // model's payload mass term reads.
+    this._carryingPayload = false;
+    this._chargeStopsVisited = 0;
     this.pathIndex   = 0;
     this.waitUntil   = null;
     this.activePath  = null;
@@ -222,6 +589,17 @@ class VirtualRobot {
     this.sessionToken       = null;
     this.connected          = false;
     this._handlersRegistered = false;
+    // ── STEP 4: *which* socket the handlers are attached to ───────────────────
+    // The boolean above cannot answer the question that matters. socket.io-client reuses
+    // one `Socket` object across reconnections, so "have I registered?" has to mean "have
+    // I registered **on this socket**" — see `_registerHandlers` for the duplicate-delivery
+    // defect that reading it as a bare boolean produced.
+    this._handlerSocket     = null;
+    // How many distinct socket objects this instance has had. A reconnection that reuses the
+    // existing `Socket` does not advance it; `connect()` does. It is what lets a verification
+    // tool distinguish "socket.io reconnected on the same emitter" from "a new emitter was
+    // built", which is the premise the registration fix rests on.
+    this._socketGeneration  = 0;
     this._timer             = null;
 
     // ── PHASE 4: the agent-side protocol state (§10.3.1, §11.5) ───────────
@@ -255,6 +633,41 @@ class VirtualRobot {
     this.protocolRejections = [];
   }
 
+  /**
+   * STEP 3 — normalise the commissioned specification into the five values this agent
+   * actually reads.
+   *
+   * ── Absence is `null`, and `null` never overrides ───────────────────────────
+   * Each field is `null` when the unit has no commissioned value for it, and every reader
+   * treats `null` as "fall back to the module constant". The asymmetry is the point: a
+   * fallback fills a gap, and a *present* commissioned value is never replaced by one. A
+   * simulator that let a constant win over a persisted row would be the same defect this
+   * step exists to remove, one layer down.
+   *
+   * There is no second source of truth here. Nothing in this object is written anywhere,
+   * no simulator-side model persists it, and the accessor is called once in the
+   * constructor — so a specification edit takes effect by rebuilding the agent, which is
+   * what `SimulationEngine.removeRobot`/`addRobot` already does.
+   *
+   * @param {object|null|undefined} specification
+   * @returns {{ massKg: number|null, normalSpeedMps: number|null, maxSpeedMps: number|null,
+   *             packNominalWh: number|null, payloadCapacityKg: number|null }}
+   */
+  _resolveSpecification(specification) {
+    const source = specification && typeof specification === "object" ? specification : {};
+    const number = (value) => (Number.isFinite(value) && value > 0 ? value : null);
+    return {
+      massKg: number(source.massKg),
+      normalSpeedMps: number(source.normalSpeedMps),
+      maxSpeedMps: number(source.maxSpeedMps),
+      packNominalWh: number(source.packNominalWh),
+      payloadCapacityKg:
+        Number.isFinite(source.payloadCapacityKg) && source.payloadCapacityKg >= 0
+          ? source.payloadCapacityKg
+          : null,
+    };
+  }
+
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   /**
@@ -264,8 +677,34 @@ class VirtualRobot {
    *
    * The robot record in PostgreSQL was already created by the Commission API
    * before addRobot() is called — do NOT touch DB here.
+   *
+   * ── STEP 1: this method may only run for an explicitly simulated unit ──────
+   *
+   * What it writes is the reason. `session:{robotId}` is the credential a robot presents
+   * at AUTH; minting a fresh one here **overwrites** whatever the physical unit holds, so
+   * calling this for a physical robot silently substitutes simulator-generated credentials
+   * for the real ones and severs the hardware's ability to authenticate. `robot:{robotId}`
+   * and the `robots:all` set are the live-state surface the dashboard and DTARO read, so
+   * writing them asserts a position, a battery and an `IDLE` status for a unit nobody has
+   * heard from.
+   *
+   * Both are legitimate for a simulated agent — it *is* the robot, so its session and its
+   * telemetry are the real ones — and both are fabrications for a physical one. The guard
+   * is therefore on the target's identity, not on the caller's intent, and it **throws**
+   * rather than returning quietly: a caller that got here with a physical robot has a
+   * defect, and the loudest safe outcome is to refuse before the first `kv.set`.
    */
   async commission(kv) {
+    if (!simulationPolicy.isSimulatedRobot(this)) {
+      const err = new Error(
+        `Refusing to run simulator session setup for ${this.robotId}: the target Robot is not ` +
+          "marked simulated=true. A VirtualRobot mints session:{robotId} and writes the live-state " +
+          "key, which for a physical unit would replace its credentials and fabricate its telemetry.",
+      );
+      err.code = "ROBOT_NOT_SIMULATED";
+      throw err;
+    }
+
     this.kv           = kv;
     this.sessionToken = crypto.randomUUID();
 
@@ -290,6 +729,14 @@ class VirtualRobot {
     if (restoredBattery === null && this._dbBattery !== null) {
       restoredBattery = this._dbBattery;
       source = `DB (${this._dbBattery.toFixed(1)}%)`;
+    }
+
+    // STEP 4 — a configured `initialBattery` is the *last* fallback, replacing the
+    // hard-coded 100 %. It never overrides a persisted level: see the constructor for why
+    // letting it do so would break the restart persistence §6 requires.
+    if (restoredBattery === null && this._initialBattery !== null) {
+      restoredBattery = this._initialBattery;
+      source = `configured initialBattery (${this._initialBattery.toFixed(1)}%)`;
     }
 
     this.battery = restoredBattery !== null ? restoredBattery : 100;
@@ -317,6 +764,13 @@ class VirtualRobot {
   }
 
   connect(serverUrl) {
+    // A fresh `Socket` carries none of the previous one's listeners, so the registration
+    // record is cleared here rather than on disconnect. Clearing it on *disconnect* was the
+    // defect `_registerHandlers` documents.
+    this._handlerSocket = null;
+    this._handlersRegistered = false;
+    this._socketGeneration += 1;
+
     this.socket = ioClient(serverUrl, {
       reconnection:         true,
       reconnectionDelay:    RECONNECT_DELAY_MS,
@@ -336,7 +790,10 @@ class VirtualRobot {
 
     this.socket.on("disconnect", (reason) => {
       this.connected = false;
-      this._handlersRegistered = false;
+      // The registration record is deliberately NOT cleared. The listeners are still
+      // attached to this same `Socket` object and will serve the next session on it; saying
+      // otherwise is what made the agent register a second copy of every handler on
+      // reconnect. See `_registerHandlers`.
       this.log.info(`[VR] ${this.robotId} disconnected (${reason})`);
     });
 
@@ -353,9 +810,11 @@ class VirtualRobot {
       this.persistDedupState().catch(() => {});
     });
 
-    // Backward-compatible alias
+    // Backward-compatible alias. The server emits AUTH_SUCCESS *and* AUTH_OK for the same
+    // handshake, so this guard is what keeps one session from adopting the acknowledgement
+    // twice — and it has to ask about this socket, for the reason above.
     this.socket.on("AUTH_OK", ({ token, dedup } = {}) => {
-      if (token && !this._handlersRegistered) {
+      if (token && this._handlerSocket !== this.socket) {
         this.sessionToken = token;
         this.adoptDedupAcknowledgement(dedup);
         this._registerHandlers();
@@ -378,6 +837,19 @@ class VirtualRobot {
    */
   async _authWithDedupReport() {
     if (!this._dedupLoaded) await this.loadDedupState();
+
+    // ── STEP 4: the socket may be gone by the time the load resolves ───────────
+    // `loadDedupState` awaits non-volatile storage, and an agent can be stopped inside that
+    // await — a shutdown, a decommission, an operator pressing stop. `stop()` nulls the
+    // socket, so the emit below then threw a TypeError that surfaced as
+    // "AUTH failed: Cannot read properties of null (reading 'emit')": an alarming message
+    // for an ordinary, correct shutdown. Nothing was broken by it, but an error log that
+    // cries wolf during normal operation is how a real one gets ignored.
+    if (!this.socket) {
+      this.log.info(`[VR] ${this.robotId} AUTH abandoned — the agent was stopped while loading dedup state`);
+      return;
+    }
+
     this.socket.emit("AUTH", {
       robotId: this.robotId,
       token: this.sessionToken,
@@ -385,8 +857,33 @@ class VirtualRobot {
     });
   }
 
+  /**
+   * Attach the command and task listeners — **once per socket**.
+   *
+   * ── STEP 4: the reconnect duplicate-delivery defect ─────────────────────────
+   * This used to guard on a bare `_handlersRegistered` boolean that the `disconnect`
+   * handler set back to `false`. The reasoning was that a disconnected agent has no
+   * handlers, and it is wrong about how socket.io-client works: `ioClient()` returns one
+   * `Socket` object that *survives* reconnection and re-emits `connect` on the same
+   * emitter. So the sequence
+   *
+   *   connect → AUTH_SUCCESS → register → disconnect → reconnect → AUTH_SUCCESS → register
+   *
+   * left two copies of every listener on one emitter, three after two drops, and so on.
+   * One delivered `COMMAND` was then applied twice and acknowledged twice; one
+   * `TASK_ASSIGN` was processed twice; one query answered twice. The §10.3.1 surface
+   * absorbed most of it — the duplicate loses on `sequence`, so it is *rejected* rather
+   * than applied, which is why this never showed up as a fencing failure — but it inflated
+   * the §23.3 rejection counters with self-inflicted rejections, and the legacy operator
+   * path had no deduplication at all to absorb anything.
+   *
+   * Keying the record to the socket instance states the real invariant: these listeners
+   * belong to that emitter, for as long as it exists. `connect()` clears it because it
+   * creates a new one; `stop()` clears it because it discards one.
+   */
   _registerHandlers() {
-    if (this._handlersRegistered) return;
+    if (this._handlerSocket === this.socket) return;
+    this._handlerSocket = this.socket;
     this._handlersRegistered = true;
 
     // ── PHASE 4: the §10.3.1 command surface ────────────────────────────────
@@ -960,14 +1457,34 @@ class VirtualRobot {
     // answered — §11.2's ACCEPT is "plan received, validated **locally**, and
     // accepted", and this is that local validation.
     const plan = envelope.payload || {};
-    const stops = Array.isArray(plan.stopSequence) ? plan.stopSequence : [];
+    // STEP 8 — the **whole** stop sequence. This used to take `stops[0]` and `stops[1]`
+    // and drop everything after them, so a plan with a charging stop inserted between
+    // pickup and drop was accepted and then executed as pickup→charge: the agent reported
+    // `TASK_COMPLETE` having never visited the drop. The truncation was silent in both
+    // directions — the offer was accepted, and the missing stops left no trace.
+    const stops = buildStopSequence(plan);
     const assignment = {
-      taskId: plan.legId || envelope.commitmentId,
-      pathToPickup: stops[0]?.path || [],
-      pathToDrop: stops[1]?.path || [],
+      // §2.4 — the **Task**, which is the unit of customer-visible work and the identifier
+      // completion is reported against. `dtaro.handler`'s `TASK_COMPLETE` matches on
+      // `Task.taskId`; reporting `legId` matched no Task row, so a mission the agent
+      // finished left its Task open, its robot bound to it, and the dashboard showing an
+      // assignment that had already been driven.
+      //
+      // The fall-backs are retained and ordered by how much they claim. `legId` is what a
+      // server not yet supplying `taskId` sends, and the commitment id is what an offer
+      // with neither carries; both keep the agent executing a mission it was legitimately
+      // offered, and the server-side resolution in `dtaro.handler` closes the loop for the
+      // first of them.
+      taskId: plan.taskId || plan.legId || envelope.commitmentId,
+      // The authoritative mission: every stop, in order.
+      stops,
+      // §15.1's *expectation*, carried so the energy model can charge the mass term over
+      // the legs the payload is actually aboard for. Absent when the offer declares none,
+      // and absent means the model refuses rather than assuming an empty vehicle.
+      payloadMassKg: Number.isFinite(plan.payloadMassKg) ? plan.payloadMassKg : null,
     };
 
-    const executability = assessExecutability(assignment);
+    const executability = assessExecutability(stops);
     if (!executability.executable) {
       // Fail closed. An offer carrying no route is not a mission this agent can
       // perform, and §11.2's disposition for that is REJECT, not silence and not a
@@ -1024,10 +1541,46 @@ class VirtualRobot {
   /**
    * Handle a COMMAND from the operator console and acknowledge it.
    * Types mirror the Prisma CommandType enum: STOP | PAUSE | RETURN | RESUME.
+   *
+   * ── STEP 4: applied at most once per command id ─────────────────────────────
+   * The §10.3.1 command surface has durable, fenced deduplication (§11.5). This legacy path
+   * had none at all, and it is a path that genuinely sees redeliveries: the reliability
+   * scheduler re-sends a `Command` row it has not seen acknowledged after ~15 s, and the
+   * reconnect defect `_registerHandlers` documents delivered every command twice on its own.
+   *
+   * Applying twice is not harmless here. `RETURN` clears the task, so a redelivered `RETURN`
+   * arriving after a *new* assignment had been accepted would abandon that new mission —
+   * the operator's one instruction cancelling a task it was never about. Each duplicate also
+   * wrote a second `Event` row and burned the server's `COMMAND_ACK` rate-limit budget
+   * (20/min), so a few duplicates could silence the acknowledgements that were not
+   * duplicates.
+   *
+   * The duplicate is **re-acknowledged without being re-applied**. Both halves matter: not
+   * re-applying is the point, and still answering is why the redelivery happened — the thing
+   * that went missing was very likely the acknowledgement, and a silent agent would be
+   * re-sent the command until the ladder marked it FAILED.
+   *
+   * Retention matches the §11.5 dedup window (`agent.dedup_retention`, 30 min), which is
+   * validated to exceed offer TTL plus maximum delivery delay: below that, "a redelivered
+   * command outlives the state that would reject it". Entries are pruned on arrival, so the
+   * map is bounded by the commands actually issued inside the window rather than by uptime.
    */
   _onCommand(payload) {
     const commandId = payload?.commandId;
     const type = typeof payload?.type === "string" ? payload.type.toUpperCase() : null;
+
+    if (commandId) {
+      this._pruneAppliedCommands();
+      const previous = this._appliedCommands.get(commandId);
+      if (previous) {
+        this.log.info(
+          `[VR] ${this.robotId} COMMAND ${commandId} (${previous.type}) already applied — ` +
+            "re-acknowledged, not re-applied",
+        );
+        this._emitCommandAck(commandId);
+        return;
+      }
+    }
 
     switch (type) {
       case "STOP":
@@ -1042,13 +1595,45 @@ class VirtualRobot {
         break;
       default:
         this.log.warn(`[VR] ${this.robotId} ignoring unknown COMMAND type ${type}`);
-        return; // unknown type — deliberately not acknowledged
+        // Unknown type — deliberately not acknowledged, and deliberately **not recorded**
+        // as applied: nothing was applied, so a redelivery of it must reach the same
+        // refusal rather than being answered from the dedup table.
+        return;
     }
 
     if (commandId) {
-      try {
-        this.socket.emit("COMMAND_ACK", { commandId, robotId: this.robotId, timestamp: Date.now() });
-      } catch { /* ignore */ }
+      // Recorded *before* the acknowledgement. The ACK is the externally observable
+      // effect that makes the command settled on the server, and §11.5's ordering rule —
+      // "committed before the command's effect becomes externally observable" — is the
+      // right one here too, even though this path's record is in memory rather than in
+      // flash. (It is in memory because the legacy `Command` row is re-driven by the
+      // server's own reliability scheduler, not by an agent-side replay across a power
+      // cycle; the honest scope of this guard is the session, and `getStatus` reports it.)
+      this._appliedCommands.set(commandId, { type, at: Date.now() });
+      this._emitCommandAck(commandId);
+    }
+  }
+
+  /** The legacy operator-command acknowledgement. One emitter, so both paths agree. */
+  _emitCommandAck(commandId) {
+    try {
+      this.socket.emit("COMMAND_ACK", { commandId, robotId: this.robotId, timestamp: Date.now() });
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * Drop applied-command records older than the deduplication window.
+   *
+   * Bounded by the commands issued inside the window, not by uptime. An unbounded map here
+   * would be the same slow leak `dedup.tombstones` still has (recorded as a known
+   * limitation rather than fixed silently in a step that is not about it).
+   */
+  _pruneAppliedCommands() {
+    if (this._appliedCommands.size === 0) return;
+    // @structural seconds to milliseconds
+    const horizon = Date.now() - DEDUP_KEY_TTL * 1000;
+    for (const [id, record] of this._appliedCommands) {
+      if (record.at < horizon) this._appliedCommands.delete(id);
     }
   }
 
@@ -1081,7 +1666,7 @@ class VirtualRobot {
 
   start() {
     if (this._timer) return;
-    this._timer = setInterval(() => this._tick(), TELEMETRY_INTERVAL_MS);
+    this._timer = setInterval(() => this._tick(), this._telemetryIntervalMs);
     if (typeof this._timer.unref === "function") this._timer.unref();
   }
 
@@ -1091,7 +1676,97 @@ class VirtualRobot {
     this.socket             = null;
     this.connected          = false;
     this._handlersRegistered = false;
+    this._handlerSocket     = null;
     this.log.info(`[VR] ${this.robotId} stopped`);
+  }
+
+  /**
+   * Is this instance actually ticking?
+   *
+   * STEP 4. The distinction between "the engine holds an instance for this robot" and "that
+   * instance is running" had no accessor, so `getStatus()` could not report it and the
+   * frontend inferred RUNNING from the engine's own `started` flag. The timer is the honest
+   * witness: no timer, no telemetry, no movement, no battery drain.
+   *
+   * @returns {boolean}
+   */
+  isRunning() {
+    return this._timer !== null;
+  }
+
+  /**
+   * Change the tick period on a robot that is already running (STEP 4, a `LIVE` parameter).
+   *
+   * The interval is replaced rather than the timer left alone, because `setInterval`'s
+   * period is fixed at creation: a configuration change that did not restart the timer
+   * would be accepted and have no effect, which is the failure mode the whole config
+   * change exists to remove.
+   *
+   * @param {number} intervalMs
+   * @returns {boolean} whether the period changed
+   */
+  setTelemetryInterval(intervalMs) {
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) return false;
+    if (intervalMs === this._telemetryIntervalMs) return false;
+    this._telemetryIntervalMs = intervalMs;
+    if (this._timer) {
+      clearInterval(this._timer);
+      this._timer = setInterval(() => this._tick(), this._telemetryIntervalMs);
+      if (typeof this._timer.unref === "function") this._timer.unref();
+    }
+    return true;
+  }
+
+  /**
+   * Transport-level observation, for `tools/verify/step4SimulationBehaviour.js` (STEP 4).
+   *
+   * Counts and identities, never the socket. The listener counts are the property the
+   * reconnect fix is about: one delivered event must reach one handler, and the only way to
+   * see that directly is to count the handlers on the emitter. `socketGeneration` says how
+   * many distinct socket objects this instance has built, so a verifier can establish that a
+   * reconnection reused the existing one rather than assuming it.
+   *
+   * `socket.listeners(event)` is socket.io-client's own accessor; where the socket is a test
+   * double without it, the count is reported as `null` rather than guessed at.
+   *
+   * @returns {{ robotId: string, running: boolean, connected: boolean, socketId: string|null,
+   *             socketGeneration: number, listeners: Record<string, number|null> }}
+   */
+  inspectTransport() {
+    const countFor = (event) => {
+      try {
+        if (typeof this.socket?.listeners === "function") return this.socket.listeners(event).length;
+        if (typeof this.socket?.listenerCount === "function") return this.socket.listenerCount(event);
+      } catch { /* fall through */ }
+      return null;
+    };
+
+    return {
+      robotId: this.robotId,
+      running: this.isRunning(),
+      connected: this.connected === true,
+      socketId: this.socket?.id || null,
+      socketGeneration: this._socketGeneration,
+      listeners: {
+        COMMAND: countFor("COMMAND"),
+        TASK_ASSIGN: countFor("TASK_ASSIGN"),
+        OFFER: countFor("OFFER"),
+        STOP: countFor("STOP"),
+        TELEMETRY: countFor("TELEMETRY"),
+      },
+    };
+  }
+
+  /**
+   * Change the obstacle report rate on a running robot (STEP 4, a `LIVE` parameter).
+   *
+   * @param {number} probability per-tick probability while ACTIVE
+   * @returns {boolean}
+   */
+  setObstacleProbability(probability) {
+    if (!Number.isFinite(probability) || probability < 0 || probability > 1) return false;
+    this._obstacleProbability = probability;
+    return true;
   }
 
   reset() {
@@ -1114,8 +1789,63 @@ class VirtualRobot {
       phase:         this.phase,
       taskId:        this.task?.taskId || null,
       connected:     this.connected,
+      // STEP 4 — `running` is the tick timer, `connected` is the socket, and they are
+      // genuinely different states: a robot whose timer was stopped keeps its socket open
+      // until `stop()` closes it, and one that has been added but never started has
+      // neither. Reporting only `connected` is what let a stopped fleet read as RUNNING.
+      running:       this.isRunning(),
+      heading:       this._heading !== null ? Math.round(this._heading) : null,
       chargingPhase: this._chargingPhase,
       pendingResumeTaskId: this._pendingResume?.taskId || null,
+
+      // ── STEP 8: where in the mission this agent actually is ────────────────
+      // Reported so "it completed" can be checked against "it executed every stop",
+      // which a `phase` alone cannot answer for a plan longer than two stops.
+      stopIndex:      this.task ? this.stopIndex : null,
+      stopCount:      this.task?.stops?.length ?? null,
+      stopTypes:      this.task?.stops?.map((s) => s.stopType || "UNTYPED") ?? null,
+      carryingPayload: this._carryingPayload === true,
+      chargeStopsVisited: this._chargeStopsVisited,
+
+      // ── STEP 3: the specification this agent is actually running on ────────
+      // Exposed so a verifier can establish that the agent read its commissioned row
+      // rather than a fleet constant — the whole claim of Step 3 — instead of inferring
+      // it from observed speed.
+      specification: {
+        massKg:            this._specification.massKg,
+        normalSpeedMps:    this._specification.normalSpeedMps,
+        maxSpeedMps:       this._specification.maxSpeedMps,
+        packNominalWh:     this._specification.packNominalWh,
+        payloadCapacityKg: this._specification.payloadCapacityKg,
+      },
+      speedEnvelope: {
+        baseMs: this._speedBaseMs,
+        minMs:  this._speedMinMs,
+        maxMs:  this._speedMaxMs,
+        jitter: this._speedJitter,
+      },
+
+      // ── STEP 4 / STEP 5: the environment, and how energy was computed ──────
+      //
+      // `energyBasis` is the honesty surface. `MODELLED_WH` means §14.2's model produced
+      // the discharge; `LEGACY_PERCENTAGE` means it refused and a flat development rate
+      // did, and `energyMissing` names exactly which owner declarations are absent. A
+      // reader can therefore never mistake a fallback tick for a modelled one.
+      ambientC: this._ambientC === null ? null : Math.round(this._ambientC * 10) / 10,
+      packC:    this._packC === null ? null : Math.round(this._packC * 10) / 10,
+      energyBasis:   this._energyBasis,
+      energyMissing: this._energyMissing,
+      lastTickWh:    this._lastTickWh,
+      cumulativeWh:  Math.round(this._cumulativeWh * 1000) / 1000,
+      kappa:            this._kappa(),
+      kappaSampleCount: this._batteryState?.kappaSampleCount ?? null,
+      // STEP 4 — the simulation surface, so `GET /api/simulator/status` can show what a
+      // robot is configured to do and how much of it it has done.
+      simulated:     this.simulated === true,
+      telemetryIntervalMs: this._telemetryIntervalMs,
+      telemetrySequence: this._telemetrySequence,
+      randomSeed:    this._randomSeed,
+      appliedCommandCount: this._appliedCommands.size,
       // PHASE 4 — the protocol surface, for the conformance fixture and for §23.3's
       // "every rejection is reported and counted, by scope".
       dedupStateGeneration: String(this.dedup.dedupStateGeneration),
@@ -1129,8 +1859,16 @@ class VirtualRobot {
   // ── Task handlers ──────────────────────────────────────────────────────────
 
   _onTaskAssign(payload) {
-    const { taskId, pathToPickup, pathToDrop } = payload || {};
+    const { taskId } = payload || {};
     if (!taskId) return;
+
+    // STEP 8 — normalise whichever form the mission arrived in into one stop sequence.
+    // An offer supplies `stops` (any length, already built by `_respondToOffer`); a
+    // legacy `TASK_ASSIGN` supplies `pathToPickup`/`pathToDrop`, which is a two-stop
+    // PICKUP→DROP mission. From here down there is one code path for both.
+    const stops = Array.isArray(payload.stops) && payload.stops.length > 0
+      ? payload.stops
+      : buildStopSequence(payload);
 
     // The single seam where a task becomes executable — this is the only assignment to
     // `this.task` in the file — so it is the one place the fail-closed rule has to
@@ -1139,7 +1877,7 @@ class VirtualRobot {
     // Refused *before* the charging branch below, deliberately: stashing an
     // unexecutable assignment in `_pendingResume` would only replay the same refusal
     // once the pack filled, and would hold a slot for a mission that can never run.
-    const executability = assessExecutability({ pathToPickup, pathToDrop });
+    const executability = assessExecutability(stops);
     if (!executability.executable) {
       this.log.error(
         `[VR] ${this.robotId} TASK_ASSIGN ${taskId} refused — ${executability.reason}. ` +
@@ -1157,7 +1895,8 @@ class VirtualRobot {
         // critically low persisted battery) would be silently dropped
         // forever, leaving the DB task stuck at ASSIGNED with no robot
         // ever picking it back up.
-        this._pendingResume = { taskId, pathToPickup, pathToDrop };
+        // The whole mission is deferred, not the first two stops of it.
+        this._pendingResume = { taskId, stops, payloadMassKg: payload.payloadMassKg ?? null };
         this.log.warn(
           `[VR] ${this.robotId} TASK_ASSIGN ${taskId} deferred — battery ${this.battery.toFixed(1)}% too low, will resume once fully charged`
         );
@@ -1172,12 +1911,30 @@ class VirtualRobot {
 
     this.task = {
       taskId,
-      pathToPickup: Array.isArray(pathToPickup) ? pathToPickup : [],
-      pathToDrop:   Array.isArray(pathToDrop)   ? pathToDrop   : [],
+      // STEP 8 — the authoritative mission sequence. Every stop, in order, however many.
+      stops,
+      // §15.1's payload expectation, for the energy model's mass term. Null when the
+      // mission declared none.
+      payloadMassKg: Number.isFinite(payload.payloadMassKg) ? payload.payloadMassKg : null,
+      // Retained so the two legacy readers — `_onRerouteAlert`'s `segment` handling and
+      // anything reading `task.pathToPickup` — keep working unchanged. They are views of
+      // the first PICKUP and first DROP stop, not a second source of truth: the phase
+      // machine walks `stops` and never reads these.
+      get pathToPickup() {
+        return (this.stops.find((s) => s.stopType === "PICKUP") || this.stops[0] || {}).path || [];
+      },
+      get pathToDrop() {
+        return (this.stops.find((s) => s.stopType === "DROP") || this.stops[this.stops.length - 1] || {}).path || [];
+      },
     };
-    this.phase             = "TO_PICKUP";
+
+    // STEP 8 — start at the first stop, whatever type it is, rather than assuming PICKUP.
+    this.stopIndex         = 0;
+    this._carryingPayload  = false;
+    this._chargeStopsVisited = 0;
+    this.phase             = phasesForStopType(stops[0].stopType).moving;
     this.waitUntil         = null;
-    this.activePath        = this.task.pathToPickup;
+    this.activePath        = stops[0].path;
     this.status            = "ACTIVE";
     this.distanceTravelled = 0;
 
@@ -1192,16 +1949,19 @@ class VirtualRobot {
     //      recoverActiveTasks re-computes a fresh route from that position,
     //      so path[0] IS the robot's current road position.
     //      → robot resumes from where it left off (no backtrack to route start).
-    const snapIdx = this._findNearestPathIndex(this.task.pathToPickup, this.lat, this.lon);
+    const firstPath = stops[0].path;
+    const snapIdx = this._findNearestPathIndex(firstPath, this.lat, this.lon);
     this.pathIndex = snapIdx;
-    const snapPt = this.task.pathToPickup[snapIdx];
+    const snapPt = firstPath[snapIdx];
     if (snapPt && typeof snapPt.lat === "number") {
       this.lat = snapPt.lat;
       this.lon = snapPt.lon;
     }
 
     this.log.info(
-      `[VR] ${this.robotId} TASK_ASSIGN ${taskId} — snapped to path[${snapIdx}]/${this.task.pathToPickup.length}`
+      `[VR] ${this.robotId} TASK_ASSIGN ${taskId} — ${stops.length} stop(s) ` +
+        `(${stops.map((s) => s.stopType || "UNTYPED").join(" → ")}), ` +
+        `snapped to path[${snapIdx}]/${firstPath.length}`,
     );
   }
 
@@ -1226,13 +1986,21 @@ class VirtualRobot {
       const segment = payload.segment || "toPickup";
       this.activePath = payload.newPath;
       this.pathIndex  = 0;
-      // Keep task.pathToPickup / pathToDrop consistent for phase transitions
-      if (this.task) {
-        if (segment === "toDrop") {
-          this.task.pathToDrop = payload.newPath;
-        } else {
-          this.task.pathToPickup = payload.newPath;
-        }
+      // STEP 8 — the reroute replaces the path of the stop currently being driven to,
+      // which is the stop the agent is actually on. Writing it back to `pathToPickup` or
+      // `pathToDrop` — as this did — could not name a third stop at all, so a reroute
+      // during a charging leg silently rewrote the pickup's path instead of the leg the
+      // agent was on.
+      //
+      // The `segment` hint is still honoured when it names a stop *type*, because a server
+      // that sends `toDrop` is naming the drop and may be rerouting a leg the agent has
+      // not started yet.
+      if (this.task && Array.isArray(this.task.stops)) {
+        const targetType = segment === "toDrop" ? "DROP" : segment === "toPickup" ? "PICKUP" : null;
+        const target = targetType === null
+          ? this.task.stops[this.stopIndex]
+          : this.task.stops.find((s) => s.stopType === targetType) || this.task.stops[this.stopIndex];
+        if (target) target.path = payload.newPath;
       }
       this.log.info(`[VR] ${this.robotId} REROUTE → full path (${payload.newPath.length} pts, ${segment})`);
       return;
@@ -1260,6 +2028,11 @@ class VirtualRobot {
     this.pathIndex  = 0;
     this.waitUntil  = null;
     this.activePath = null;
+    // STEP 8 — the mission cursor and the custody flag belong to the mission, so they are
+    // cleared with it. A stale `stopIndex` surviving into the next mission would have it
+    // start partway through its own sequence.
+    this.stopIndex  = 0;
+    this._carryingPayload = false;
   }
 
   _clearCharging() {
@@ -1292,10 +2065,28 @@ class VirtualRobot {
 
     if (this._chargingPhase === "CHARGING") {
       const targetPercent = this._targetSocPercent();
-      this.battery = Math.min(targetPercent, this.battery + this._chargeStepPercent());
+
+      // ── STEP 4: charging can never *lower* the battery ────────────────────────
+      // This was `Math.min(targetPercent, battery + step)`, with no floor at the current
+      // level. The target is not a constant — §14.6 assigns it to the Charging Scheduler and
+      // the agent adopts whatever an offer published — so a target below the pack's present
+      // state of charge is a reachable input, and the expression above answered it by
+      // *discharging* to the target in a single tick. A pack that lost ten points while
+      // docked, attributed to charging, is an incoherent telemetry stream in the most
+      // literal sense: the battery moved the opposite way from the process reporting it.
+      //
+      // A charge session tops up or it finishes. The ceiling is what says so: it is the
+      // target, or the present level when that is already higher — never below where the
+      // pack is. And the step is floored at zero, so a curve that returned a negative
+      // increment cannot discharge the pack either.
+      const ceiling = Math.max(targetPercent, this.battery);
+      this.battery = Math.min(ceiling, this.battery + Math.max(0, this._chargeStepPercent()));
 
       if (this.battery >= targetPercent) {
-        this.battery = targetPercent;
+        // Already at or above the target — complete the session at the level actually
+        // reached, not at the target. Snapping down to `targetPercent` is the same
+        // fabrication one line up.
+        this.battery = Math.max(this.battery, targetPercent);
         this.status  = "IDLE";
         this._clearCharging();
 
@@ -1431,6 +2222,23 @@ class VirtualRobot {
    * rather than stalling: a simulator that stopped charging on a configuration gap would
    * fail the run for a reason unrelated to what the run is testing.
    *
+   * ── STEP 3 / STEP 4: whose pack, and at what temperature ────────────────────
+   * `chargeCurve.js` is **untouched** — the CC/CV shape, the temperature derating table
+   * and the integrator are exactly as Phase 7 wrote them. What changed is only which
+   * inputs are handed to it:
+   *
+   *   * `packUsableWh` is the unit's **commissioned** `EnergyModel.packNominalWh`, with
+   *     `PACK_NOMINAL_WH` (1000 Wh) as the fallback for a unit that has none. A robot
+   *     commissioned with a smaller pack previously charged as though it had a 1000 Wh
+   *     one, which is the same class of defect as driving at a fleet-constant speed.
+   *   * `tempC` is the **simulated pack temperature** rather than the fixed
+   *     `CHARGE_PACK_TEMPERATURE_C` (20 °C). The curve has always carried a temperature
+   *     derating table; with a constant input it could never fire, so the derating was
+   *     present in the model and inert in the simulation. It is now a live term.
+   *
+   * Neither is a change to the charging *model*. Charge duration still comes from the
+   * same integral, and no simulator-only charging equation exists.
+   *
    * @returns {number} percentage points
    */
   _chargeStepPercent() {
@@ -1440,20 +2248,26 @@ class VirtualRobot {
     const to = Math.min(1, soc + probe);
     if (to <= soc) return 0;
 
+    // STEP 3 / STEP 4 — same curve, this unit's pack and this unit's temperature.
     const integrated = chargeCurve.timeToChargeSeconds({
       curve: CHARGE_POWER_CURVE,
       fromSoc: soc,
       toSoc: to,
-      tempC: CHARGE_PACK_TEMPERATURE_C,
+      tempC: this._packC === null ? CHARGE_PACK_TEMPERATURE_C : this._packC,
       chargerClass: CHARGE_CHARGER_CLASS,
-      packUsableWh: PACK_NOMINAL_WH,
+      packUsableWh:
+        this._specification.packNominalWh !== null
+          ? this._specification.packNominalWh
+          : PACK_NOMINAL_WH,
       steps: CHARGE_CURVE_INTEGRATION_STEPS,
     });
 
     if (!integrated.ok || !(integrated.seconds > 0)) return CHARGING_RATE_PER_TICK;
 
-    // @structural milliseconds per second
-    const tickSeconds = TELEMETRY_INTERVAL_MS / 1000;
+    // @structural milliseconds per second — the instance's period, for the same reason
+    // `_stepAlongPath` uses it: the charge gained in a tick is the charge gained in that
+    // tick's duration, not in the class default's.
+    const tickSeconds = this._telemetryIntervalMs / 1000;
     const socGain = (to - soc) * (tickSeconds / integrated.seconds);
     // @structural fraction to percentage
     return socGain * 100;
@@ -1465,6 +2279,17 @@ class VirtualRobot {
     if (!this.connected || !this.socket?.connected) return;
 
     const nowMs = Date.now();
+
+    // 0) STEP 4 — advance the thermal environment first, so the two temperatures the
+    //    energy model reads in step 5 describe *this* tick rather than the previous one.
+    //    Ambient comes from the clock; pack temperature integrates this tick's load.
+    const thermal = this._environment.advance({
+      nowMs,
+      speedMps: this.speed,
+      charging: this.status === "CHARGING",
+    });
+    this._ambientC = thermal.ambientC;
+    this._packC = thermal.packC;
 
     // 1) Update EMA speed target — only when actually moving
     this._updateSpeed();
@@ -1499,8 +2324,8 @@ class VirtualRobot {
     // 7) Keep server offline-detector happy
     try { this.socket.emit("HEARTBEAT"); } catch { /* ignore */ }
 
-    // 8) Emit telemetry
-    this._emitTelemetry();
+    // 8) Emit telemetry, stamped with this tick's instant
+    this._emitTelemetry(nowMs);
 
     // 9) Periodic battery persistence to Redis (every 2 minutes)
     this._maybePersistBattery();
@@ -1530,13 +2355,21 @@ class VirtualRobot {
     // ASSIGNED/IN_PROGRESS in the DB the whole time.
     const isNavigating = (this.status === "ACTIVE" || this.status === "ISSUES") && this.phase && this.task;
     if (isNavigating) {
-      // Target speed varies slightly around the base (smooth with EMA)
+      // Target speed varies slightly around the base (smooth with EMA).
+      //
+      // STEP 4 — drawn from this robot's own seeded stream, not the process-wide
+      // `Math.random()`. Same distribution, same visible behaviour; what changes is that
+      // the trace is reproducible and that a second robot's draws no longer shift this
+      // robot's. The base and jitter are the instance's configured values.
       this._targetSpeed =
-        SPEED_BASE_MS + (Math.random() - 0.5) * SPEED_JITTER;
+        this._speedBaseMs + (this._speedRandom() - 0.5) * this._speedJitter;
       this.speed =
         this.speed * (1 - SPEED_EMA_ALPHA) +
         this._targetSpeed * SPEED_EMA_ALPHA;
-      this.speed = Math.max(SPEED_MIN_MS, Math.min(SPEED_MAX_MS, this.speed));
+      // STEP 3 — the instance's own envelope, derived from its commissioned speeds where
+      // it has them. Reading the module constants here was what pinned a 1.2 m/s unit to
+      // the 5.0 m/s fleet floor no matter what the constructor resolved.
+      this.speed = Math.max(this._speedMinMs, Math.min(this._speedMaxMs, this.speed));
     } else if (this.status !== "CHARGING") {
       // Decelerate smoothly to zero
       this.speed = this.speed * 0.5;
@@ -1553,63 +2386,102 @@ class VirtualRobot {
       return;
     }
 
-    switch (this.phase) {
-      case "TO_PICKUP": {
-        this._stepAlongPath();
-        const atEnd = this.pathIndex >= (this.activePath?.length || 0) - 1;
-        if (atEnd) {
-          const last = this.activePath?.[this.activePath.length - 1];
-          if (last) { this.lat = last.lat; this.lon = last.lon; }
-          this.phase     = "WAIT_PICKUP";
-          this.waitUntil = nowMs + PICKUP_WAIT_MS;
-          this.speed     = 0;
-          this.log.info(`[VR] ${this.robotId} reached pickup — waiting ${PICKUP_WAIT_MS / 1000}s`);
-        }
-        break;
-      }
-
-      case "WAIT_PICKUP":
-        this.speed = 0;
-        if (nowMs >= (this.waitUntil || 0)) {
-          this.phase      = "TO_DROP";
-          this.pathIndex  = 0;
-          this.activePath = this.task.pathToDrop;
-          this.waitUntil  = null;
-          this.log.info(`[VR] ${this.robotId} pickup done — heading to drop`);
-        }
-        break;
-
-      case "TO_DROP": {
-        this._stepAlongPath();
-        const atEnd = this.pathIndex >= (this.activePath?.length || 0) - 1;
-        if (atEnd) {
-          const last = this.activePath?.[this.activePath.length - 1];
-          if (last) { this.lat = last.lat; this.lon = last.lon; }
-          this.phase     = "WAIT_DROP";
-          this.waitUntil = nowMs + DROP_WAIT_MS;
-          this.speed     = 0;
-          this.log.info(`[VR] ${this.robotId} reached drop — waiting ${DROP_WAIT_MS / 1000}s`);
-        }
-        break;
-      }
-
-      case "WAIT_DROP":
-        this.speed = 0;
-        if (nowMs >= (this.waitUntil || 0)) {
-          const completedTaskId = this.task.taskId;
-          this._clearTask();
-          this.status = "IDLE";
-          this.speed  = 0;
-          this.log.info(`[VR] ${this.robotId} task ${completedTaskId} COMPLETE`);
-          try {
-            this.socket.emit("TASK_COMPLETE", { taskId: completedTaskId, timestamp: nowMs });
-          } catch { /* ignore */ }
-        }
-        break;
-
-      default:
-        break;
+    // ── STEP 8: one loop over the authoritative mission sequence ──────────────
+    //
+    // What this replaced was a four-case switch hard-wired to PICKUP→DROP. It could not
+    // express a third stop, so a plan with a charging stop inserted by §14.6's scheduler
+    // was executed as its first two stops and then reported `TASK_COMPLETE` — a delivery
+    // claimed for a payload still aboard.
+    //
+    // The model is now literally "for every stop in the sequence, execute the stop": two
+    // phases per stop, driven by `stopIndex`, with the phase *names* derived from the
+    // stop's own type so `TO_PICKUP` / `WAIT_PICKUP` / `TO_DROP` / `WAIT_DROP` still
+    // appear exactly where they always did for an ordinary two-stop mission. Nothing here
+    // knows how many stops there are, so nothing here can truncate.
+    const stop = this.task.stops?.[this.stopIndex];
+    if (!stop) {
+      // The index walked past the end without completion being emitted. That is a defect
+      // rather than an ordinary state, and it is made loud instead of silently completing
+      // a mission whose stops were not all executed.
+      this.log.error(
+        `[VR] ${this.robotId} stop index ${this.stopIndex} is past the end of a ` +
+          `${this.task.stops?.length ?? 0}-stop mission — halting rather than reporting completion`,
+      );
+      this._applyStop("STOP_SEQUENCE_EXHAUSTED");
+      return;
     }
+
+    const phases = phasesForStopType(stop.stopType);
+
+    if (this.phase === phases.moving) {
+      this._stepAlongPath();
+      const atEnd = this.pathIndex >= (this.activePath?.length || 0) - 1;
+      if (atEnd) {
+        const last = this.activePath?.[this.activePath.length - 1];
+        if (last) { this.lat = last.lat; this.lon = last.lon; }
+        this.phase     = phases.waiting;
+        this.waitUntil = nowMs + stop.dwellMs;
+        this.speed     = 0;
+        this.log.info(
+          `[VR] ${this.robotId} reached stop ${this.stopIndex + 1}/${this.task.stops.length} ` +
+            `(${stop.stopType || "UNTYPED"}) — waiting ${stop.dwellMs / 1000}s`,
+        );
+      }
+      return;
+    }
+
+    if (this.phase === phases.waiting) {
+      this.speed = 0;
+      if (nowMs < (this.waitUntil || 0)) return;
+
+      // The stop's work is done. Custody changes here, which is what makes the payload
+      // mass term in the energy model track the mission rather than the whole trip.
+      if (stop.stopType === "PICKUP") this._carryingPayload = true;
+      if (stop.stopType === "DROP") this._carryingPayload = false;
+      if (stop.stopType === "CHARGE") {
+        // Recorded, not simulated. See `STOP_DWELL_MS`: delivering charge here would mean
+        // inventing the Charging Scheduler's published target, and that is a later batch.
+        this._chargeStopsVisited += 1;
+        this.log.info(
+          `[VR] ${this.robotId} visited CHARGE stop ${this.stopIndex + 1} — no charge delivered ` +
+            "(the Charging Scheduler is not part of this batch; the stop was executed, not simulated as a session)",
+        );
+      }
+
+      const nextIndex = this.stopIndex + 1;
+
+      // More stops to go: advance and keep driving. This is the branch whose absence was
+      // the defect.
+      if (nextIndex < this.task.stops.length) {
+        const next = this.task.stops[nextIndex];
+        this.stopIndex  = nextIndex;
+        this.pathIndex  = 0;
+        this.activePath = next.path;
+        this.waitUntil  = null;
+        this.phase      = phasesForStopType(next.stopType).moving;
+        this.log.info(
+          `[VR] ${this.robotId} stop ${nextIndex}/${this.task.stops.length} done — ` +
+            `heading to stop ${nextIndex + 1} (${next.stopType || "UNTYPED"})`,
+        );
+        return;
+      }
+
+      // Every stop has been executed. Only now is the mission complete.
+      const completedTaskId = this.task.taskId;
+      const executed = this.task.stops.length;
+      this._clearTask();
+      this.status = "IDLE";
+      this.speed  = 0;
+      this.log.info(`[VR] ${this.robotId} task ${completedTaskId} COMPLETE — ${executed} stop(s) executed`);
+      try {
+        this.socket.emit("TASK_COMPLETE", { taskId: completedTaskId, timestamp: nowMs });
+      } catch { /* ignore */ }
+      return;
+    }
+
+    // A phase that belongs to no stop in this mission — for instance one left over from a
+    // mission that was replaced. Resynchronise onto the current stop rather than stalling.
+    this.phase = phases.moving;
   }
 
   _stepAlongPath() {
@@ -1618,8 +2490,12 @@ class VirtualRobot {
     // Total distance budget for this tick (metres).
     // speed (m/s) × tick_interval (s) = real displacement, capped at MOVE_STEP_METERS
     // to guard against GPS teleports in edge cases.
+    // STEP 4 — the *instance's* tick period, not the module constant. A configured tick of
+    // 4 s that still budgeted 2 s of travel would make the robot cover half the ground its
+    // own reported speed claims, so speed, position and timestamp would disagree with each
+    // other in the telemetry stream. One period drives the timer and the physics.
     let budgetM = Math.min(
-      this.speed * (TELEMETRY_INTERVAL_MS / 1000),
+      this.speed * (this._telemetryIntervalMs / 1000),
       MOVE_STEP_METERS
     );
 
@@ -1707,19 +2583,152 @@ class VirtualRobot {
 
   // ── Battery drain (real-time rates) ───────────────────────────────────────
 
+  /**
+   * STEP 5 — one tick's discharge, through §14.2's consumption model.
+   *
+   * ── What changed, and why it is not a new equation ──────────────────────────
+   * This method used to *be* the simulator's energy model: a flat `%/tick` that knew
+   * nothing about mass, payload, gradient, duration or temperature, while the assignment
+   * engine predicted the same leg with `energy/consumption.legEnergyWh`. Two models, one
+   * system, guaranteed to disagree.
+   *
+   * It now assembles §14.2's leg profile from this agent's own state and calls **that
+   * same function**, via `simulatedEnergy`. No equation lives here or there.
+   *
+   * ── The model refuses today, and that is the correct outcome ────────────────
+   * `legEnergyWh` requires every β coefficient, both thermal curves and every profile
+   * field. This deployment has declared **no** coefficients — the `EnergyModelParams` row
+   * exists with all of them null precisely so the refusal names them — and has **no**
+   * terrain source, so climb and descent are absent too. The refusal therefore fires, and
+   * consumption falls back to the legacy percentage rate.
+   *
+   * That fallback is **labelled, never silent**: `_energyBasis` is `LEGACY_PERCENTAGE`,
+   * `_energyMissing` carries the exact list of what is undeclared, and `getStatus()`
+   * reports both on every read. A `LEGACY_PERCENTAGE` tick is not calibrated, not
+   * physical, and is not evidence of anything.
+   *
+   * When coefficients and terrain *are* supplied, the basis becomes `MODELLED_WH` and the
+   * discharge is whatever §14.2 says it is — including the payload, mass, gradient and
+   * temperature terms. That path is exercised by test rather than by assumption.
+   */
   _applyBattery() {
     if (this.status === "CHARGING") return; // handled by _handleCharging
 
-    const drain = this.status === "ACTIVE"
+    const ratePerTick = this.status === "ACTIVE"
       ? BATTERY_DRAIN_ACTIVE   // 100%→20% in 1 h of movement
       : BATTERY_DRAIN_IDLE;    // 100%→20% in 5 h at rest
 
-    this.battery = Math.max(BATTERY_MIN, this.battery - drain);
+    // STEP 4 — scaled to this instance's tick period. The two constants above are
+    // documented in `constants.js` as wall-clock durations ("100 % → 20 % in 1 hour"),
+    // which they only are at the default 2-second tick. An instance configured to tick
+    // every 4 seconds and still draining a full tick's worth would deplete at half the
+    // documented rate, so the constants' own stated meaning is what fixes the scaling.
+    // Exactly 1.0 at the default, so no unconfigured robot's drain changes.
+    const legacyPercent = ratePerTick * (this._telemetryIntervalMs / TELEMETRY_INTERVAL_MS);
+
+    const outcome = simulatedEnergy.tickEnergy({
+      model: this._energyModelParams,
+      profile: this._legProfileForTick(),
+      kappa: this._kappa(),
+      // The **commissioned** pack, not the fleet constant. `PACK_NOMINAL_WH` (1000 Wh) is
+      // the fallback for a unit that has no `EnergyModel.packNominalWh`, and it never
+      // overrides one that does.
+      packNominalWh:
+        this._specification.packNominalWh !== null
+          ? this._specification.packNominalWh
+          : PACK_NOMINAL_WH,
+      legacyPercent,
+    });
+
+    this._energyBasis = outcome.basis;
+    this._energyMissing = outcome.missing;
+    this._lastTickWh = outcome.wh;
+    if (Number.isFinite(outcome.wh)) this._cumulativeWh += outcome.wh;
+
+    this.battery = Math.max(BATTERY_MIN, this.battery - outcome.socDeltaPercent);
 
     // Warn when battery drops below threshold while working
     if (this.battery < BATTERY_WARN_THRESHOLD && this.status === "ACTIVE") {
       this.status = "ISSUES";
     }
+  }
+
+  /**
+   * STEP 5 — §14.2's leg profile for the interval just elapsed.
+   *
+   * Every field is measured by this agent about itself, or it is **absent**. Absence is
+   * what makes `legEnergyWh` refuse by name, and refusing is the correct answer to an
+   * input nobody has supplied — so nothing here is defaulted to make the model succeed.
+   *
+   * `climbM` / `descentM` are the clearest case: there is no elevation source anywhere in
+   * this deployment, so no terrain is passed and the model reports both as missing.
+   * Passing `0` would assert a flat campus, which is unknown and, where it is wrong, wrong
+   * in the direction that strands a vehicle.
+   *
+   * @returns {object}
+   */
+  _legProfileForTick() {
+    // @structural milliseconds to seconds
+    const tickSeconds = this._telemetryIntervalMs / 1000;
+    const moving = this.speed > 0;
+
+    this._totalSeconds += tickSeconds;
+    if (moving) this._movingSeconds += tickSeconds;
+    else this._dwellSeconds += tickSeconds;
+
+    // §14.2's `n_stop_start_cycles`, counted at the transition rather than sampled: a
+    // cycle is a move that follows a stop, which is a fact this agent observes directly.
+    if (moving && !this._wasMovingLastTick) this._stopStartCycles += 1;
+    this._wasMovingLastTick = moving;
+
+    return simulatedEnergy.buildLegProfile({
+      distanceM: this.distanceTravelled,
+      movingSeconds: this._movingSeconds,
+      dwellSeconds: this._dwellSeconds,
+      totalSeconds: this._totalSeconds,
+      stopStartCycles: this._stopStartCycles,
+      // The commissioned vehicle mass — `Robot.massKg`, read, never invented. Absent for
+      // an uncommissioned unit, and the model then refuses rather than guessing a mass.
+      vehicleMassKg: this._specification.massKg === null ? undefined : this._specification.massKg,
+      payloadMassKg: this._payloadMassKgNow(),
+      ambientC: this._ambientC === null ? undefined : this._ambientC,
+      packC: this._packC === null ? undefined : this._packC,
+      // No elevation source exists. Deliberately not supplied; see the method comment.
+      terrain: null,
+      compartmentOccupancy: [],
+    });
+  }
+
+  /**
+   * The payload mass this agent is carrying **right now**, in kilograms.
+   *
+   * Zero is returned only when the agent is provably carrying nothing — it has not yet
+   * completed a pickup, or has already made its drop. That zero is a *known* mass, not a
+   * default. When it is carrying and the mission declared no mass, the answer is
+   * `undefined`, which makes the energy model refuse: an unstated payload is unknown, and
+   * §15.1 is explicit that an unknown load is not an absent one.
+   *
+   * @returns {number|undefined}
+   */
+  _payloadMassKgNow() {
+    if (!this.task || !this._carryingPayload) return 0;
+    const declared = this.task.payloadMassKg;
+    return Number.isFinite(declared) ? declared : undefined;
+  }
+
+  /**
+   * κ(a) for this agent, from its persisted `BatteryState`.
+   *
+   * Falls back to the §14.2 identity when there is no row, which is the same value an
+   * uncalibrated row carries. Note what is *not* done here: the sample count is never
+   * consulted to decide whether κ is trustworthy, because κ is an input to the model and
+   * its trustworthiness is `kappaSampleCount`'s job to report, not this agent's to judge.
+   *
+   * @returns {number}
+   */
+  _kappa() {
+    const stored = this._batteryState && this._batteryState.kappa;
+    return Number.isFinite(stored) && stored > 0 ? stored : 1;
   }
 
   // ── Battery persistence (every 2 minutes) ────────────────────────────────
@@ -1742,11 +2751,15 @@ class VirtualRobot {
 
   _maybeReportObstacle() {
     if (this.status !== "ACTIVE") return;
-    if (Math.random() >= OBSTACLE_PROBABILITY) return;
+    // STEP 4 — this robot's own obstacle stream, separate from its speed stream, and the
+    // configured rate. Setting `obstacleProbability` to 0 turns obstacle reports off
+    // entirely, which is what makes a movement demo repeatable without also making the
+    // obstacle path untestable: it is a configured rate, not a removed feature.
+    if (this._obstacleRandom() >= this._obstacleProbability) return;
 
-    const obLat   = this.lat + (Math.random() - 0.5) * 0.0002;
-    const obLon   = this.lon + (Math.random() - 0.5) * 0.0002;
-    const severity = Math.random() < 0.3 ? "HIGH" : "MEDIUM";
+    const obLat   = this.lat + (this._obstacleRandom() - 0.5) * 0.0002;
+    const obLon   = this.lon + (this._obstacleRandom() - 0.5) * 0.0002;
+    const severity = this._obstacleRandom() < 0.3 ? "HIGH" : "MEDIUM";
 
     try {
       this.socket.emit("OBSTACLE_REPORT", { lat: obLat, lon: obLon, severity });
@@ -1760,8 +2773,33 @@ class VirtualRobot {
 
   // ── Telemetry emit ────────────────────────────────────────────────────────
 
-  _emitTelemetry() {
+  /**
+   * Emit one telemetry frame.
+   *
+   * ── STEP 4: the frame carries its own instant and its own ordinal ────────────
+   * `timestamp` is the instant the *rest of the frame describes* — the same `nowMs` that
+   * advanced the route and the charge this tick — and not `Date.now()` read again here.
+   * Read again, it would be a few milliseconds after the position it is stamping, and the
+   * whole point of a timestamp on a frame is that the reader can treat the values as
+   * simultaneous.
+   *
+   * `sequence` is a per-robot monotonic ordinal, starting at 1 for this instance's first
+   * frame. It makes a dropped frame visible as a gap and a duplicated one visible as a
+   * repeat, which is the property §4 asks for and which a timestamp alone does not give —
+   * two frames in the same millisecond are indistinguishable by time. It is consumed by the
+   * *attempt*, so a frame lost in the transport leaves a gap rather than silently
+   * renumbering the stream.
+   *
+   * Neither field is consumed by the server: the telemetry schema is `passthrough()`, so
+   * they travel and are stored in neither the live-state key nor the `Telemetry` table. They
+   * describe this simulator's own output. Nothing here is, or becomes, physical evidence.
+   *
+   * @param {number} nowMs the tick instant the frame's values were computed at
+   */
+  _emitTelemetry(nowMs) {
     if (!this.socket?.connected) return;
+    const at = Number.isFinite(nowMs) ? nowMs : Date.now();
+    this._telemetrySequence += 1;
     try {
       this.socket.emit("TELEMETRY", {
         robotId:           this.robotId,
@@ -1772,6 +2810,8 @@ class VirtualRobot {
         status:            this.status,
         distanceTravelled: Math.round(this.distanceTravelled),
         heading:           this._heading !== null ? Math.round(this._heading) : null,
+        timestamp:         at,
+        sequence:          this._telemetrySequence,
       });
     } catch { /* ignore */ }
   }

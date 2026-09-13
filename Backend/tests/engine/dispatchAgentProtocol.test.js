@@ -80,14 +80,19 @@ function makeAgent(flash, socket, overrides) {
 }
 
 /**
- * A stop sequence in **exactly** the shape the production coordinator emits today.
+ * A stop sequence carrying the fields the plan supplies, and **no** route geometry.
  *
- * The field list is copied from `workers/coordinatorSolvePath.js`'s `sideEffects`
- * offer builder, and the absence of `path` is copied from it too: the engine's routing
- * seam (`engine/routing/cellPairCache.js`) answers with six scalars — distance, travel
- * time and its standard deviation, climb, descent, stop-start cycles — and no
- * geometry, and `routeReference` is deliberately `null` there ("Absent rather than
- * invented"). This fixture is the producer's real output, not a degraded one.
+ * The field list is copied from `workers/coordinatorSolvePath.js`'s plan-to-stop mapping.
+ * The absence of `path` used to be copied from that producer too; it no longer is. The
+ * execution-geometry addition now resolves a drivable route *before* the commit
+ * transaction and attaches it to each stop, so the production offer normally carries one.
+ *
+ * This fixture is therefore the shape of an offer whose geometry **could not be
+ * resolved** — no provider answer, or an agent with no known position — which is exactly
+ * the case the fail-closed path exists for and the one every refusal test below needs. It
+ * is still a real producer output, not an invented degraded one:
+ * `executionGeometry.attachStopPaths` emits precisely this when it cannot route, and
+ * `tests/engine/executionGeometry.test.js` asserts that.
  */
 function productionShapedStopSequence() {
   return [
