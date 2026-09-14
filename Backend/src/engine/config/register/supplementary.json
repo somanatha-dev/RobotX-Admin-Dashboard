@@ -1054,6 +1054,52 @@
       "description": "The acceptable bound on an agent's recent intervention rate for this mission class. F11 declares ADMIT_WITH_PENALTY on indeterminate and stands in the cohort prior, so an agent with no history of its own is not grounded for lacking history it can only accumulate by working."
     },
     {
+      "name": "route.campus_operational_buffer_s_per_100m",
+      "type": "number",
+      "unit": "s per 100 m",
+      "default": 15,
+      "range": {
+        "min": 0,
+        "max": 600
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Ops",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "a measured RNSIT campus travel-time study; until one exists this is a declared operational allowance, not a calibrated figure",
+      "section": "§8.4, §20.3 — owner decision 2026-09-13 (V1 deterministic campus travel model)",
+      "requiredBy": "routing/campusTravelModel.travelTimeFor — the operational buffer term of travelSeconds",
+      "description": "The RNSIT campus operational travel-time allowance the owner declared for V1: 15 seconds per 100 metres of routed distance, added to distanceM / speedMetresPerSecond. It is a conservative campus allowance for pedestrians, minor obstructions, turns, ordinary stop/start behaviour, speed variation, operational hesitation and small routing-model inaccuracy. It is NOT live traffic, NOT any external provider us traffic data, and NOT a statistically measured figure — RNSIT is treated as a low-traffic campus for V1 and no traffic feed is read anywhere. Its provenance is PRODUCTION_DECLARED and it must never be reported as measured."
+    },
+    {
+      "name": "route.declared_travel_sd_buffer_multiple",
+      "type": "number",
+      "unit": "dimensionless",
+      "default": 1,
+      "range": {
+        "min": 0.01,
+        "max": 10
+      },
+      "specScope": "region",
+      "scopes": [
+        "global",
+        "region"
+      ],
+      "changeClass": "TUNED",
+      "owner": "Ops",
+      "blastRadius": "region",
+      "calibrationStatus": "PROVISIONAL",
+      "awaits": "a measured travel-time distribution for the campus; N29 remains open as a calibration item even though the field now resolves",
+      "section": "§8.4 (p_late from the predictive distribution), N29 / §32.4 R7",
+      "requiredBy": "routing/campusTravelModel.travelTimeFor — the multiplier turning the operational buffer into travelSdSeconds",
+      "description": "The V1 declared travel-time uncertainty policy, expressed as a multiple of the operational buffer so that the model introduces no second invented constant: travelSdSeconds = operationalBufferSeconds x this. The seeded 1 means the buffer IS the one-sigma spread, on the reasoning that the buffer is precisely the allowance for the disturbances that make a campus traversal uncertain. No shortlisted routing engine returns a spread, and N29 records that defaulting it to 0 asserts that the ETA is certain, which is the optimistic direction — hence the exclusive-of-zero floor. Declared source name: DECLARED_V1_OPERATIONAL_UNCERTAINTY. This is NOT a measured traffic standard deviation."
+    },
+    {
       "name": "route.cell_pair_cache_ttl",
       "type": "integer",
       "unit": "s",
