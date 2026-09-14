@@ -3,9 +3,29 @@
 /**
  * Cells (§3.6, §6.2).
  *
- * > **Cell** — the **index and cache** unit: a discrete geospatial cell (H3/S2),
- * > fine (~200–500 m) and coarse (~5–10 km). A fine cell lies in exactly one zone
- * > **by assignment**, not by geometry.
+ * > **Cell** — the **index and cache** unit: a discrete geospatial cell (H3/S2).
+ * > The generic fine scale is ~200–500 m and the coarse scale ~5–10 km; a bounded
+ * > deployment whose physical extent makes the generic fine scale unsuitable MAY
+ * > adopt a finer fine-cell resolution through an explicitly declared spatial model
+ * > (§3.6, §6.2). A fine cell lies in exactly one zone **by assignment**, not by
+ * > geometry.
+ *
+ * ── A cell is an index bucket, never a delivery-domain claim (D1, D6) ────────
+ * §3.6 calls a cell "the **index and cache** unit", and RD-2026-09-14-01 makes that
+ * exact and binding: **an H3 cell being present in the published index does not
+ * establish that the ground it covers is inside the RobotX delivery domain.** The
+ * authoritative membership test for an actual destination is the exact coordinate
+ * against the published delivery-domain geometry — `spatial/deliveryDomain.js`,
+ * evaluated once at intake/seal and pinned on `Stop.geofenceResult`.
+ *
+ * Two inferences are therefore forbidden outright, and both are the kind an
+ * implementation makes by accident:
+ *
+ *   · *"the cell is indexed, so the point is in the campus"* — **NO.**
+ *   · *"the cell intersects the campus, so the cell is serviceable"* — **NO.**
+ *
+ * Nothing in this module answers a delivery-domain question, and nothing in it may
+ * be made to.
  *
  * ── What this module deliberately does not do ────────────────────────────────
  * It computes no geometry. Choosing the spatial index primitive — H3 versus S2
@@ -169,18 +189,77 @@ function validateAssignment(assignment) {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
- * The H3 resolution each §3.6 band maps to, chosen against `h3.getHexagonEdgeLengthAvg`:
- * resolution 8 averages ≈531 m/edge (§6.2's "~200–500 m" fine band — H3's discrete
- * resolutions do not land exactly inside every stated band, and 8 is the nearest fit
- * outdoors); resolution 5 averages ≈9.85 km/edge (squarely inside the "~5–10 km"
- * coarse band). A discrete resolution choice is an architectural primitive (B5), not
- * a calibratable behavioural constant, so it is `@structural` rather than a register
- * entry — the same status `RESOLUTION` itself already carries above.
- * @structural B5 — H3 resolution per §3.6 band, not a tunable value
+ * The H3 resolution each §3.6 band maps to. A discrete resolution choice is an
+ * architectural primitive, not a calibratable behavioural constant, so it is
+ * `@structural` rather than a register entry — the same status `RESOLUTION` itself
+ * already carries above.
+ *
+ * ── FINE = 11 — ADR-35, RD-2026-09-14-01 (D2) ────────────────────────────────
+ * Phase 9 set FINE to resolution 8 (≈531 m/edge) as "the nearest fit outdoors" to
+ * §3.6's then-unqualified "~200–500 m" band. That value is **not usable for the
+ * region RobotX actually deploys into**, and the reason is arithmetic rather than
+ * preference.
+ *
+ * `way/1120154292` — the RNSIT boundary `RD-2026-08-30-01` adopts unmodified — is
+ * **0.0995 km²**. Measured against it with centre containment:
+ *
+ *     res  8 → 0 cells          res 10 → 5 cells, 67.8% of campus ground
+ *     res  9 → 0 cells          res 11 → 45 cells, 89.7% of campus ground
+ *
+ * An empty cover fails **V-8**, so at resolution 8 or 9 the region cannot be
+ * published at all. Resolution 10 is the trap rather than the answer: it produces a
+ * cover that looks valid while leaving `rnsit-canara-bank` — an in-campus point —
+ * permanently unindexed. **11 is the only resolution that is non-empty and strands
+ * no in-campus verification point.**
+ *
+ * ── What the D3 amendment settles, and what it does not ──────────────────────
+ * §3.6 and §6.2 now read that the generic fine scale is ~200–500 m **and** that a
+ * bounded deployment may adopt a finer fine-cell resolution through an explicitly
+ * **declared spatial model** naming its indexing primitive, its fine and coarse
+ * resolutions, and its required verification evidence. `SPATIAL_MODEL` below is that
+ * declaration for V1. It does **not** settle the §3.6 cardinality band — 45 cells is
+ * far under 10³ and the sanctioned mechanism remains a declared
+ * `cover.cardinalityException`, which V-9 reads (see `regionBoundary.js`).
+ *
+ * COARSE is unchanged: resolution 5 averages ≈9.85 km/edge, squarely inside the
+ * "~5–10 km" coarse band. No per-region override exists and none is to be added
+ * (RD-2026-09-14-01 D2).
+ *
+ * @structural ADR-35 / RD-2026-09-14-01 — H3 resolution per §3.6 band, not a tunable value
  */
 const H3_RESOLUTION = Object.freeze({
-  FINE: 8, // @structural B5 — H3 resolution per §3.6's fine band
-  COARSE: 5, // @structural B5 — H3 resolution per §3.6's coarse band
+  FINE: 11, // @structural ADR-35 — H3 resolution for §3.6's fine band
+  COARSE: 5, // @structural ADR-35 — H3 resolution for §3.6's coarse band, unchanged
+});
+
+/**
+ * The spatial model's own identity, so a decision record, a published configuration,
+ * a diagnostic or a cutover report can **name** which model a body of persisted state
+ * was written under instead of inferring it.
+ *
+ * This is deliberately **not** a new persisted column. An H3 index encodes its own
+ * resolution, so *"which spatial model does this persisted cell identity belong to?"*
+ * is already answerable from any single token via `resolutionOfH3Cell`, which returns
+ * `null` for a token minted under a different model. A discriminator column would
+ * store a fact the token already carries, and the fail-closed behaviour comes from
+ * the decode, not from a label. Provenance for an artefact that has no token — a
+ * route-cache generation, a rebuilt index — is carried by `mapVersion`/`configVersion`
+ * where those already exist (RD-2026-09-14-01 D4).
+ *
+ * `evidence` is the list §3.6's amended "declared spatial model" clause requires a
+ * model to name. It is a statement of what must be verified, not a claim that it has
+ * been: `PERFORMANCE` and `PRIVACY` are measured elsewhere and one of them —
+ * §20.3's cache hit rate — is **not** currently met. See `docs/spatial/`.
+ * @structural derived from `H3_RESOLUTION`; never written by hand
+ */
+const SPATIAL_MODEL = Object.freeze({
+  id: `H3-F${H3_RESOLUTION.FINE}-C${H3_RESOLUTION.COARSE}`,
+  primitive: "H3",
+  fine: H3_RESOLUTION.FINE,
+  coarse: H3_RESOLUTION.COARSE,
+  adr: "ADR-35",
+  decision: "RD-2026-09-14-01",
+  evidence: Object.freeze(["COVERAGE", "SAFETY", "DETERMINISM", "PERFORMANCE", "PRIVACY"]),
 });
 
 /**
@@ -249,6 +328,22 @@ function centreOfCell(cellId) {
  * neither of the two resolutions this module recognises (e.g. a site-local graph
  * zone token, or an H3 cell at some other resolution).
  *
+ * ── This is the ONE production resolution decoder (RD-2026-09-14-01 D4) ─────
+ * Every fail-closed behaviour the spatial-model cutover relies on is built on this
+ * one function returning `null` — never `FINE` — for a token minted under a
+ * different model. There are exactly four enforcement points and no others:
+ *
+ *   1. **this decode** — `null` for a foreign token;
+ *   2. **`coarseParentOf`** — throws rather than coercing one;
+ *   3. **`hierarchy.indexMap().resolve()`** — `assigned: false`, so a foreign token
+ *      is never assigned and F33 stays INDETERMINATE;
+ *   4. **V-10 / A6 at publish** — a cover holding one is refused before it is pinned.
+ *
+ * **A fifth layer is deliberately absent.** Wrapper predicates over this decode were
+ * written and then removed: they added a name at a call site and no behaviour, and a
+ * guard that restates a check already made is a guard whose absence nobody notices.
+ * Readers that need this question answered call this function directly.
+ *
  * @param {string} cellId
  * @returns {string|null}
  */
@@ -259,6 +354,32 @@ function resolutionOfH3Cell(cellId) {
   if (res === H3_RESOLUTION.FINE) return RESOLUTION.FINE;
   if (res === H3_RESOLUTION.COARSE) return RESOLUTION.COARSE;
   return null;
+}
+
+/**
+ * The maximum straight-line distance between any two points inside one fine cell, in
+ * metres — §20.3's *"within-cell error is bounded by the cell diameter"*.
+ *
+ * For a hexagon of edge `e` the greatest internal distance is vertex-to-opposite-vertex,
+ * `2e` — not the across-flats width `√3·e`, which would under-state the bound.
+ * `getHexagonEdgeLengthAvg` is an average over a resolution's cells, so this is the
+ * bound for a representative cell rather than a per-cell maximum.
+ *
+ * ── This is NOT `route.intra_cell_offset_m`, and must never be wired to it ───
+ * RD-2026-09-14-01 **D5** separates the two deliberately. This function returns a
+ * *geometric* bound on straight-line error (≈57.33 m at resolution 11). The register
+ * parameter is an *operational network* correction: distance actually travelled inside
+ * a cell follows the road network and is never below the straight line, so the
+ * geometric diameter is a provable **lower** bound on the correction required and is
+ * not an adequate operational value. The register default stays at 250 m and stays
+ * `PROVISIONAL` pending measured network-distance/circuity evidence.
+ *
+ * @returns {number} metres
+ */
+function fineCellDiameterMetres() {
+  /** @structural a hexagon's vertex-to-opposite-vertex span is twice its edge — geometry, not a margin */
+  const EDGES_ACROSS_A_HEXAGON = 2;
+  return EDGES_ACROSS_A_HEXAGON * edgeLengthMetres(RESOLUTION.FINE);
 }
 
 /**
@@ -389,12 +510,14 @@ module.exports = {
   canonicalCellOrder,
   cellPairKey,
   validateAssignment,
-  // H3 wrapper (§6.2, §6.3; Phase 9, B5).
+  // H3 wrapper (§6.2, §6.3; Phase 9, B5. Resolution per ADR-35 / RD-2026-09-14-01).
   H3_RESOLUTION,
+  SPATIAL_MODEL,
   h3ResolutionOf,
   cellForPoint,
   centreOfCell,
   resolutionOfH3Cell,
+  fineCellDiameterMetres,
   coarseParentOf,
   fineChildrenOf,
   diskAround,

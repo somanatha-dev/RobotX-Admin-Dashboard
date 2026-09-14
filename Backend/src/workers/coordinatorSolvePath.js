@@ -72,6 +72,12 @@ const executionGeometry = require("../services/executionGeometry.service");
 
 const cells = require("../engine/spatial/cells");
 const hierarchy = require("../engine/spatial/hierarchy");
+// **Read for `pinnedMembership` ONLY.** This module interprets a verdict that intake
+// computed; it does not compute one. `evaluatePoint`, `validateDomainDeclaration` and
+// `isInPolygon` must never be called from the decision path — ADR-28 forbids query-time
+// geometry, and `spatialDeliveryDomain.test.js` asserts the prohibition mechanically
+// rather than trusting this comment.
+const deliveryDomain = require("../engine/spatial/deliveryDomain");
 const expansion = require("../engine/candidates/expansion");
 const omega = require("../engine/candidates/omega");
 const cellPairCache = require("../engine/routing/cellPairCache");
@@ -504,6 +510,16 @@ function legLoaderFor(context) {
         siteId: stop.siteId,
         lat: stop.lat,
         lon: stop.lon,
+        // **The pinned geofence verdict (D1).** This projection is a whitelist, and until
+        // RD-2026-09-14-01 it silently dropped this column — so a verdict written at
+        // intake could never reach the round that needed it, and the layer that produced
+        // it and the layer that consumed it were each individually correct.
+        //
+        // Carried raw, as the string the column holds, and interpreted by
+        // `deliveryDomain.pinnedMembership` at the one place that reads it. Coercing it to
+        // a boolean here would collapse INDETERMINATE and OUTSIDE into one value, and
+        // those are the two answers D1 most needs kept apart.
+        geofenceResult: stop.geofenceResult ?? null,
         // §2.4's per-Stop access constraints, for F32. **Only a stated list is carried.**
         // F32 reads `undefined` as *"nobody established what this site requires"* and
         // `null`/`[]` as *"none required"*, and those are different facts: a `Json?`
@@ -1108,30 +1124,59 @@ async function chargerCandidatesFor(input) {
 }
 
 /**
- * §3.6's containment-by-assignment, applied to a Leg's stops — **the F33 seam.**
+ * Serviceability for a Leg's stops — **the F33 seam**, and since RD-2026-09-14-01 a
+ * **three-part conjunction** rather than a single lookup.
  *
- * ── What was missing, and what this is not ─────────────────────────────────
- * `spatial/hierarchy.indexMap().resolve()` has been written, validated and tested since
- * Phase 2 and **was called by nothing on the decision path**: `"serviceable"` did not
- * occur in this module at all, so `f33.evaluate` read `undefined` for every stop and
- * denied every candidate for every Leg (§M.2). This is that call.
+ *     serviceable = assigned ∧ inDeliveryDomain ∧ routable
  *
- * It is **not** a geofence test. §3.6 forbids deriving containment from geometry at query
- * time — *"floating-point geometry evaluated per round, which is both slow and
- * non-deterministic (T6)"* — so the only question asked here is whether the **published**
- * map assigns the stop's fine cell. The H3 cell itself is pure arithmetic on the stop's
- * own coordinates (§D.3) and needs no published cover; the *assignment* does.
+ * ── Why it is three things and not one ─────────────────────────────────────
+ * Until D1 this function answered `serviceable: true` on `assignment.assigned` alone,
+ * which silently asserted two further facts nobody had established: that the indexed
+ * cell's ground is inside the delivery domain, and that the point can be reached by the
+ * road network. D1 separates the layers:
  *
- * ── The three answers, and why the third is not `false` ────────────────────
- *   · **no `spatial` payload published** → every stop keeps `serviceable` absent, F33 is
- *     INDETERMINATE and denies. A deployment that has declared no region has not thereby
- *     declared the world serviceable.
- *   · **the cell is assigned** → `serviceable: true`.
- *   · **the map is published and this cell is not in it** → `serviceable` stays **absent**,
- *     not `false`. F33 reads `false` as VIOLATED — *"lies outside the serviceable region"* —
- *     which is a definite claim about the request, and an unassigned cell does not support
- *     it. §M.2: *"an unassigned cell is not an out-of-area one"*. Both deny; only one of
- *     them tells the truth about why.
+ *   · **assigned** — `spatial/hierarchy.indexMap().resolve()`, §3.6's
+ *     containment-by-assignment. This is an **index** question. An H3 cell may be in the
+ *     published index and straddle the campus boundary (D6): that makes it an index
+ *     bucket, not a claim about the ground it covers.
+ *   · **inDeliveryDomain** — the **pinned** verdict on `Stop.geofenceResult`, taken at
+ *     intake on the exact coordinate against the published domain geometry.
+ *   · **routable** — whether the point reaches the routing graph. Depends on
+ *     `snapRadiusM`, which is **R13**, an unresolved external input.
+ *
+ * ── This function evaluates NO geometry, and that is load-bearing ──────────
+ * It reads a verdict someone else computed at a lifecycle boundary. It does not call
+ * `deliveryDomain.evaluatePoint`, does not touch a polygon, does not import a geometry
+ * library, and must never begin to: ADR-28's decision text is *"containment by published
+ * assignment, **not by query-time geometry**"* and §3.6 gives the reason — *"floating-point
+ * geometry evaluated per round … is both slow and non-deterministic (T6)"*. Pinning at
+ * intake and consuming the pin here is precisely what makes D1 compatible with the frozen
+ * architecture; evaluating the polygon here would not be, and a test asserts that this
+ * module cannot reach the geometry.
+ *
+ * ── The three answers, and why "absent" is not "false" ─────────────────────
+ * Each conjunct is three-valued, and the conjunction follows §4.1's discipline:
+ *
+ *   · **any conjunct definitely false** → `serviceable: false` → F33 **VIOLATED**, DENY.
+ *     Today only the domain conjunct can be definitely false: an outside coordinate is a
+ *     definite geographic fact about the request.
+ *   · **every conjunct true** → `serviceable: true` → F33 SATISFIED.
+ *   · **any conjunct absent, none false** → `serviceable` stays **absent** → F33
+ *     INDETERMINATE, DENY. *"An unassigned cell is not an out-of-area one"* (§M.2), an
+ *     undeclared domain is not a universal one, and an unmeasured snap radius is not a
+ *     reachable road. All three deny; only the absent answer tells the truth about why.
+ *
+ * **Nothing here defaults an absent conjunct to true.** That is the single mutation this
+ * seam most needs to be unable to survive, and `spatialMutants.js` asserts it.
+ *
+ * ── The standing consequence: F33 cannot be SATISFIED today ────────────────
+ * `routable` has **no producer in `src/`**. `snapRadiusM` exists only in
+ * `tools/routing/adapters/`, in a deployment module that is an external input B1 has not
+ * supplied. So with a perfect index and a perfect delivery-domain declaration, this
+ * function still returns an absent verdict and F33 still denies — **fail-closed, and
+ * correct**. That is a real tightening in the conservative direction relative to the
+ * previous behaviour, it is reported rather than hidden, and it is not to be relieved by
+ * choosing a snap radius that looks reasonable. R13 is an owner input.
  *
  * @param {object|null} snapshot the round's pinned configuration snapshot
  * @returns {(stops: object[]) => object[]}
@@ -1150,13 +1195,29 @@ function serviceabilityFor(snapshot) {
   }
 
   return function withServiceability(stops) {
-    if (index === null) return stops || [];
     return (stops || []).map((stop) => {
       const cellId = stop.cellId || cellIdFor(stop);
-      if (!cellId) return stop;
-      const assignment = index.resolve(cellId);
-      if (!assignment.assigned) return { ...stop, cellId };
-      return { ...stop, cellId, serviceable: true };
+      const projected = cellId ? { ...stop, cellId } : { ...stop };
+
+      // ── Conjunct 1 — assigned (the index) ──────────────────────────────────
+      // `undefined` where no map is published or no cell could be derived: absent, not
+      // false. A deployment that has declared no region has not declared the world
+      // serviceable.
+      const assigned = index === null || !cellId ? undefined : index.resolve(cellId).assigned === true ? true : undefined;
+
+      // ── Conjunct 2 — inDeliveryDomain (the pinned exact-coordinate verdict) ─
+      const inDeliveryDomain = deliveryDomain.pinnedMembership(stop.geofenceResult);
+
+      // ── Conjunct 3 — routable (R13) ────────────────────────────────────────
+      // Read, never assumed. Nothing on the decision path produces it, so it is
+      // `undefined` and the conjunction is absent. Deleting this line, or reading its
+      // absence as `true`, would restore exactly the silent assertion D1 removed.
+      const routable = stop.routable === true ? true : stop.routable === false ? false : undefined;
+
+      const conjuncts = [assigned, inDeliveryDomain, routable];
+      if (conjuncts.some((value) => value === false)) return { ...projected, serviceable: false };
+      if (conjuncts.every((value) => value === true)) return { ...projected, serviceable: true };
+      return projected;
     });
   };
 }

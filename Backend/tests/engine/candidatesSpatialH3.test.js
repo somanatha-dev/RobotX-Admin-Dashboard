@@ -10,17 +10,76 @@
 const cells = require("../../src/engine/spatial/cells");
 
 describe("§3.6/B5 — H3 resolution mapping", () => {
-  test("FINE and COARSE map to distinct H3 resolutions within their named bands", () => {
-    expect(cells.H3_RESOLUTION.FINE).not.toBe(cells.H3_RESOLUTION.COARSE);
+  // The previous form of this test asserted a loose band (100 m < fine edge < 1000 m),
+  // which would have passed at resolutions 8, 9 and 10 alike. It is replaced by an
+  // **exact** assertion on the declared model, written as literals: reading
+  // `H3_RESOLUTION` back and comparing it to itself would agree with any value.
+  test("the declared spatial model is exactly H3 FINE 11 / COARSE 5", () => {
+    expect({ fine: cells.H3_RESOLUTION.FINE, coarse: cells.H3_RESOLUTION.COARSE }).toEqual({ fine: 11, coarse: 5 });
+    expect(cells.SPATIAL_MODEL.id).toBe("H3-F11-C5");
+    expect(cells.SPATIAL_MODEL.primitive).toBe("H3");
+  });
+
+  test("COARSE stays inside §3.6's generic ~5–10 km band, and FINE is strictly finer", () => {
     const fineEdgeM = cells.edgeLengthMetres(cells.RESOLUTION.FINE);
     const coarseEdgeM = cells.edgeLengthMetres(cells.RESOLUTION.COARSE);
+    expect(cells.H3_RESOLUTION.FINE).not.toBe(cells.H3_RESOLUTION.COARSE);
     expect(fineEdgeM).toBeLessThan(coarseEdgeM);
-    // §6.2: "~200-500 m" fine, "~5-10 km" coarse — H3's discrete resolutions land
-    // near, not necessarily inside, each band (documented in the module).
-    expect(fineEdgeM).toBeGreaterThan(100);
-    expect(fineEdgeM).toBeLessThan(1000);
-    expect(coarseEdgeM).toBeGreaterThan(1000);
-    expect(coarseEdgeM).toBeLessThan(20_000);
+    // §3.6's coarse band is untouched by the D3 amendment and is still satisfied
+    // directly, not by exception.
+    expect(coarseEdgeM).toBeGreaterThan(5_000);
+    expect(coarseEdgeM).toBeLessThan(10_000);
+  });
+
+  /**
+   * §3.6 as amended by RD-2026-09-14-01 D3 permits a bounded deployment to adopt a finer
+   * fine cell **through an explicitly declared spatial model**. This pins the thing that
+   * amendment makes true and the thing it does not.
+   *
+   * It is deliberately a *failing* test if anyone quietly moves FINE back inside the
+   * generic band and deletes the declaration: the exemption is only legitimate while a
+   * declared model exists to carry it.
+   */
+  test("FINE is outside §3.6's generic fine band, and the declared model is what permits that", () => {
+    const fineEdgeM = cells.edgeLengthMetres(cells.RESOLUTION.FINE);
+    const GENERIC_FINE_BAND_FLOOR_M = 200;
+    expect(fineEdgeM).toBeLessThan(GENERIC_FINE_BAND_FLOOR_M);
+
+    // A declared model must NAME all four things §3.6's amended clause requires of one.
+    expect(Object.keys(cells.SPATIAL_MODEL)).toEqual(
+      expect.arrayContaining(["primitive", "fine", "coarse", "evidence"]),
+    );
+    expect(cells.SPATIAL_MODEL.evidence).toEqual(["COVERAGE", "SAFETY", "DETERMINISM", "PERFORMANCE", "PRIVACY"]);
+  });
+
+  test("the model identity is deterministic and derived, never hand-written", () => {
+    const again = require("../../src/engine/spatial/cells");
+    expect(again.SPATIAL_MODEL.id).toBe(cells.SPATIAL_MODEL.id);
+    expect(cells.SPATIAL_MODEL.id).toBe(`H3-F${cells.H3_RESOLUTION.FINE}-C${cells.H3_RESOLUTION.COARSE}`);
+    expect(Object.isFrozen(cells.SPATIAL_MODEL)).toBe(true);
+  });
+
+  /**
+   * D5 — the geometric diameter and the operational network correction are two
+   * quantities, and the register default must NOT be wired to the geometry.
+   */
+  test("the fine-cell diameter is 2x the edge, and is NOT the intra-cell offset default", () => {
+    const diameter = cells.fineCellDiameterMetres();
+    expect(diameter).toBeCloseTo(2 * cells.edgeLengthMetres(cells.RESOLUTION.FINE), 9);
+    expect(diameter).toBeGreaterThan(57);
+    expect(diameter).toBeLessThan(58);
+
+    const register = require("../../src/engine/config/register/supplementary.json");
+    const entry = register.parameters.find((row) => row.name === "route.intra_cell_offset_m");
+    // Held at 250 by RD-2026-09-14-01 D5. It must remain at or above the geometric bound
+    // (§20.3) **and** must not have been collapsed onto it.
+    expect(entry.default).toBe(250);
+    expect(entry.default).toBeGreaterThan(diameter);
+    expect(entry.calibrationStatus).toBe("PROVISIONAL");
+    // The old text said it awaited the cell edge length. That decision is made; this
+    // parameter did not thereby become calibrated.
+    expect(entry.awaits).toMatch(/network distance/iu);
+    expect(entry.awaits).not.toMatch(/awaits the cell edge length chosen under blocking decision B5/iu);
   });
 
   test("h3ResolutionOf rejects an unrecognised resolution label", () => {

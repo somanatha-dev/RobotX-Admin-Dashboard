@@ -267,7 +267,36 @@ describe("D2's residual fitness check (N23) — recorded, and still not reopenin
   });
 
   test("the global H3 resolutions are untouched by any of this", () => {
-    expect({ fine: cells.H3_RESOLUTION.FINE, coarse: cells.H3_RESOLUTION.COARSE }).toEqual({ fine: 8, coarse: 5 });
+    // Literals, not a read-back of the constant: comparing `H3_RESOLUTION` to itself would
+    // agree with any value. The pair is ADR-35 / RD-2026-09-14-01 D2's, and D2's residual
+    // check below must not be able to move it.
+    expect({ fine: cells.H3_RESOLUTION.FINE, coarse: cells.H3_RESOLUTION.COARSE }).toEqual({ fine: 11, coarse: 5 });
+  });
+
+  /**
+   * V-9's explanatory sentence used to hard-code *"at H3 resolution 8 the band corresponds
+   * to roughly 737–73 733 km²"*, which became false the instant FINE moved. A validator
+   * that explains itself with a stale number teaches the reader the wrong thing about why
+   * their cover was rejected. This pins that it is derived.
+   */
+  test("V-9's band-area explanation is derived from the resolution in force, never a literal", () => {
+    const fineCell = (lon) => cells.cellForPoint(0, lon, cells.RESOLUTION.FINE);
+    const cover = {
+      fineCells: Array.from({ length: 3 }, (_, index) => ({ cellId: fineCell(index), zoneId: "z1" })),
+    };
+    const problems = problemsOf(regionBoundary.validateCover(cover));
+    expect(problems).toMatch(new RegExp(`at H3 resolution ${cells.H3_RESOLUTION.FINE}`, "u"));
+    expect(problems).not.toMatch(/737–73 733 km²/u);
+    expect(problems).not.toMatch(/at H3 resolution 8\b/u);
+  });
+
+  test("D2's residual names the resolution in force and still refuses to absorb the exception", () => {
+    const residual = regionBoundary.d2ResidualCheck({ kind: "CAMPUS", fineCellCount: 45 });
+    expect(residual.fits).toBe(false);
+    expect(residual.note).toMatch(new RegExp(`H3 resolution ${cells.H3_RESOLUTION.FINE}`, "u"));
+    // The sanctioned mechanism is named, and this check explicitly does not apply it.
+    expect(residual.note).toMatch(/cardinalityException/u);
+    expect(residual.note).toMatch(/no per-region resolution override/iu);
   });
 });
 

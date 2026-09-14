@@ -280,10 +280,26 @@ describe("F9-3/4/5 §6.3/§6.4 — the search, its stop condition, and its repor
 
   test("F9-3: zone cells are visited in increasing order of their own bound, not cell-id order", async () => {
     const ring = cells.ringAt(originFine, 4);
-    const near = cells.ringAt(originFine, 1)[0];
-    // Pick a far cell that sorts BEFORE the near one lexicographically, so cell-id
-    // order and bound order disagree.
-    const far = ring.filter((cellId) => cellId < near).sort()[0];
+    // A near cell and a far cell whose **cell-id order disagrees with their bound
+    // order** — the far one must sort lexicographically *before* the near one, so that
+    // visiting in cell-id order and visiting in bound order give different answers.
+    //
+    // This **searches** for such a pair rather than assuming `ringAt(origin, 1)[0]` is
+    // one. That assumption held at H3 resolution 8 and does not at resolution 11: the
+    // ids are a function of the resolution, and a fixture that happens to work at one
+    // resolution is a hidden dependency on it, not a property. The property asserted
+    // below is unchanged.
+    let near = null;
+    let far = null;
+    for (const candidate of cells.ringAt(originFine, 1)) {
+      const earlier = ring.filter((cellId) => cellId < candidate).sort()[0];
+      if (earlier !== undefined) {
+        near = candidate;
+        far = earlier;
+        break;
+      }
+    }
+    expect(near).not.toBeNull();
     expect(far).toBeDefined();
 
     const visited = [];

@@ -378,9 +378,85 @@ utility left the containment mode undefined rather than defaulted.
    **standing refusal, not an unfilled blank.** A later session that selects `containmentOverlapping`
    because it yields a non-empty cover is overturning a recorded decision, and a mode chosen for
    validator success is the check answering itself.
+
+   > ### ⚠ AMENDED 2026-09-14 by owner decision `RD-2026-09-14-01` **D6** — read in full before acting
+   >
+   > **`containmentOverlapping` is PERMITTED as INDEX MEMBERSHIP. It confers NO
+   > delivery-domain membership.** The refusal above is **not deleted and not overturned —
+   > its scope is narrowed**, explicitly, and the narrowing is recorded rather than inferred.
+   >
+   > | | |
+   > |---|---|
+   > | **What the refusal was against** | **geographic over-assignment** — treating non-campus ground as RobotX *service area* |
+   > | **What D6 permits** | **index buckets** — cells used for lookup, caching and candidate expansion, which make no claim about the ground they cover |
+   > | **What is UNCHANGED** | non-campus ground is still not serviceable. It is now refused **by the exact-coordinate geofence, per destination**, instead of by the shape of the cover |
+   > | **`containmentOverlappingBbox`** | **STILL REFUSED.** D6 extends to boundary-*overlapping* cells only. A bounding-box cover is still geographic over-assignment |
+   >
+   > **The reason the narrowing is safe** is that `RD-2026-09-14-01` D1 added the layer the
+   > original refusal did not have: an authoritative exact-coordinate test, evaluated at
+   > intake and pinned on `Stop.geofenceResult`. The owner's concern is now enforced on the
+   > **actual destination** rather than on a cover that could only approximate it, which is
+   > strictly tighter than the refusal achieved.
+   >
+   > **Measured consequence, RNSIT, resolution 11** (0.7 m raster over the adopted boundary):
+   >
+   > | cover | cells | campus ground covered | campus ground unrepresentable |
+   > |---|---:|---:|---:|
+   > | centre-contained | 45 | 89.660 % | **10 277 m²** |
+   > | **D6 index (overlapping)** | **64** | **100.000 %** | **0 m²** |
+   >
+   > The index also overlays **30 088 m² of non-campus ground**, and **every point in it
+   > geofences `OUTSIDE` and is DENIED.** That is the trade, and the owner is making it
+   > explicitly.
+   >
+   > **This supersedes item 3 below and the X-1 escalation.** "The standard empty result is
+   > not acceptable either" described a choice between an empty cover and geographic
+   > over-assignment. D6 provides a third option that is neither, so the
+   > coverage-semantics escalation of item 4 — recorded as `D — NOT DECIDED / ESCALATE`
+   > with **no defined target** — **is decided.** It did not need the escalation target
+   > §1.8.5 says does not exist; it needed the two questions separated.
+   >
+   > **Three inferences remain forbidden outright:**
+   > - *"cell indexed ⇒ point is in campus"* — **NO.**
+   > - *"cell intersects campus ⇒ cell is serviceable"* — **NO.**
+   > - boundary overlap authorising an outside destination — **NEVER.**
 3. **The standard empty result is not acceptable either** — it fails V-8.
 4. **The coverage-semantics question is `D — NOT DECIDED / ESCALATE`.** E6 is **BLOCKED**; E7 (the
    `cardinalityException` text) is **BLOCKED** because no accepted fine-cell count exists.
+
+   > **RESOLVED 2026-09-14 by `RD-2026-09-14-01` D1/D2/D6 — see the amendment box on item 2.**
+   > The coverage-semantics question is **decided**, and it did not require the escalation
+   > target §1.8.5 records as non-existent: it required separating index membership from
+   > delivery-domain membership. **E7's stated cause is also gone** — an accepted fine-cell
+   > count now exists (**64** under the D6 index cover, 45 centre-contained). Writing the
+   > `cardinalityException` declaration remains an owner act and is not performed here.
+
+5. **S-3 row 29 — the authoritative delivery-domain declaration.** *Added 2026-09-14,
+   `RD-2026-09-14-01` **D7**.* A **distinct external input**, a sibling of the cell
+   assignments and never folded into them.
+
+   | | |
+   |---|---|
+   | **Row 26** | `CellAssignment` — cell → zone/site/region attribution. The **index**. §8.3's `λ_zone` and §3.6's pricing hierarchy have no other source. **Not withdrawn** |
+   | **Row 29** | The **delivery-domain declaration** — signed/published geometry, CRS, version identity, owner declaration. A commitment about **ground** |
+
+   Folding the second into the first would let an index publication silently redefine the
+   delivery domain, which is the conflation D1 exists to end.
+
+   The adopted RNSIT geometry (`RD-2026-08-30-01`, `way/1120154292`, SHA-256
+   `04cb64c420…`) **may be used as the development artefact**. It is **not** the production
+   owner declaration: §1.8.5 above records that a signed declaration is something **no
+   validator can discharge**. The publish-time check `A7` therefore refuses a *malformed*
+   declaration as BLOCKING — a transposed or CRS-less boundary would otherwise deny every
+   request in the region indefinitely while the control plane showed a published domain —
+   and reports an *unattested* one as a WARNING, every time, rather than treating it as
+   discharged.
+
+   **A residual V-5 cannot close, and the mitigation is not code.** RNSIT sits at lon 77.5 /
+   lat 12.9; transposed, the second element is 77.5, which is a possible latitude. V-5 can
+   only refuse what *cannot* be a latitude, so a `[lat, lon]` authoring error in **this**
+   file is undetectable by construction. The mitigation is the D7 attestation — a human
+   reading the declaration.
 
 #### 1.8.5 Escalation target — NOT DEFINED
 

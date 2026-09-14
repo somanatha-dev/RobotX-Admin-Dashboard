@@ -181,6 +181,8 @@ function baseValues(entries, bindingIndex) {
  * @param {Record<string, boolean>} [options.killSwitchState]
  * @param {object[]} [options.regimes]
  * @param {object} [options.spatial]
+ * @param {object} [options.deliveryDomain] S-3 row 29 — the authoritative delivery-domain
+ *   declaration (RD-2026-09-14-01 D7), a distinct input from the cell assignments
  * @param {object[]} [options.shards] PHASE 13 — the §3.5 shard definitions this publish
  *   declares, validated per shard by V4 against that region's measured mission rate
  * @param {Map<string, object>} [options.entries] register override, used by tests
@@ -217,6 +219,20 @@ function buildSnapshot(options) {
     regimes: settings.regimes || [],
     activeRegime: activeRegime ? activeRegime.name : null,
     spatial: settings.spatial || null,
+    // **S-3 row 29 — the authoritative delivery-domain declaration (RD-2026-09-14-01 D7).**
+    //
+    // A sibling of `spatial`, deliberately, and not a member of it. `spatial` is the
+    // CellAssignment input: cell → zone / site / region attribution, which §8.3's `λ_zone`
+    // and the pricing hierarchy read. This is a different fact from a different owner —
+    // the published geometry that says what ground RobotX commits to serve. Folding it
+    // into `spatial` would let an index publication silently redefine the delivery domain,
+    // which is the conflation D1 exists to end.
+    //
+    // It travels with the version for the same reason the spatial maps do: the geofence
+    // verdict is taken against *the declaration in force at intake* and pinned, so a
+    // replay must be able to reconstruct which geometry that was without consulting
+    // another store.
+    deliveryDomain: settings.deliveryDomain || null,
     // PHASE 13 — §3.5's shard definitions travel with the version for the same reason the
     // spatial maps do: the sizing inequality is evaluated per region, so the definitions
     // are an input to publish-time validation rather than a separate control-plane object
@@ -261,6 +277,7 @@ function validateCandidate(options) {
     derivedValues: snapshot.derivedValues,
     derivationEvidence: snapshot.derivationEvidence,
     spatial: snapshot.spatial,
+    deliveryDomain: snapshot.deliveryDomain,
     shards: snapshot.shards,
     enforceLaunchGate: Boolean(options && options.enforceLaunchGate),
   });
@@ -388,6 +405,7 @@ function publishPayload(snapshot) {
     regimes: snapshot.regimes,
     activeRegime: snapshot.activeRegime,
     spatial: snapshot.spatial,
+    deliveryDomain: snapshot.deliveryDomain,
     shards: snapshot.shards,
   };
 }
@@ -403,6 +421,7 @@ function publishPayload(snapshot) {
  * @param {Record<string, boolean>} [request.killSwitchState]
  * @param {object[]} [request.regimes]
  * @param {object} [request.spatial]
+ * @param {object} [request.deliveryDomain] S-3 row 29 — the authoritative delivery-domain declaration
  * @param {object[]} [request.shards] PHASE 13 — §3.5 shard definitions
  * @param {string} [request.note]
  * @param {boolean} [request.automated]
@@ -557,6 +576,7 @@ async function loadPinnedSnapshot(options) {
     killSwitchState: payload.killSwitchState,
     regimes: payload.regimes || [],
     spatial: payload.spatial || null,
+    deliveryDomain: payload.deliveryDomain || null,
     shards: payload.shards || null,
   });
 

@@ -4,9 +4,29 @@
  * The cell-pair travel-time cache (§20.3 item 2) — **Tier 1**, decision path input.
  *
  * > **Cell-pair travel-time cache** for approach and linehaul, keyed `(origin_cell,
- * > destination_cell, mobility_profile, time_bucket)`. Because cells are ~200–500 m, the
- * > cache is small relative to a point-pair cache and its hit rate is high. **Within-cell
- * > error is bounded by the cell diameter and is corrected by an intra-cell offset term.**
+ * > destination_cell, mobility_profile, time_bucket)`. **Within-cell error is bounded by
+ * > the cell diameter and is corrected by an intra-cell offset term.** The cache is small
+ * > relative to a point-pair cache; **its hit rate is a property of the declared spatial
+ * > model and the deployment's traffic, and is measured against the target below rather
+ * > than assumed from the cell size.**
+ *
+ * ── Why that sentence was amended, and what it costs this module (D3) ───────
+ * §20.3 previously read *"Because cells are ~200–500 m, the cache is small … and its hit
+ * rate is high"* — an **argument**, whose premise ADR-35 removed when FINE became H3
+ * resolution 11 (≈49.6 m across). A conclusion left standing on a deleted premise is
+ * worse than no claim, so RD-2026-09-14-01 D3 amended §20.3 rather than only §3.6.
+ *
+ * The consequence is measurable and is **not currently discharged**: at resolution 11 the
+ * RNSIT cell-pair space grows from 9 to 2 025 — roughly **225×** — for the same traffic.
+ * That is a *cost* statement, not a correctness one, and nothing in this module's logic
+ * depends on it. But **§20.3's >95 % target may not be reported as met on the strength of
+ * the old sentence**; it has to be measured. `tools/verify/spatialCacheHitRate.js` is that
+ * measurement and `docs/spatial/` carries its result.
+ *
+ * The key is unchanged, and deliberately so. An H3 index encodes its own resolution, so a
+ * pair keyed under the previous model can never be *hit* by a lookup under this one — the
+ * tokens differ. Stale entries are orphans that expire, never wrong answers, which is why
+ * a spatial cutover invalidates the key space rather than versioning the key.
  *
  * This is the first of §20.3's two routing populations — approach and linehaul queries,
  * anchored on mission origins that cluster heavily around restaurants, depots, and pickup
