@@ -344,8 +344,52 @@ describe("the engine module tree", () => {
     "fairness/agentStarvation.js",
   ];
 
+  // ── ROUTING BATCH 1 — the production routing producer ──────────────────────
+  //
+  // Named file-by-file under `routing/`, for the reason Phase 7's comment gives: a directory
+  // prefix here would stop catching Phase 8's `client.js` if it ever leaked backwards, and
+  // `client.js` remains absent and remains Phase 8's.
+  //
+  // These four are **not** Phase 8's routing client and must not be mistaken for it. That
+  // client owns §5.2's degradation ladder and §18.3 B6's uniform-treatment rule; nothing
+  // here walks a ladder or degrades anything — each module answers one question and refuses
+  // when it cannot.
+  //
+  //   `campusTravelModel.js`  — the owner's declared V1 deterministic campus travel-time
+  //     model (2026-09-13): `distanceM / speedMps + distanceM x 15 / 100`, plus the
+  //     declared uncertainty policy N29 asks for. It issues no query and holds no state; it
+  //     is arithmetic over two registered parameters, stated once so that no caller can
+  //     assemble a travel time some other way.
+  //
+  //   `campusServiceability.js` — whole-region membership by point-in-polygon over a
+  //     **supplied** boundary, validated through `spatial/regionBoundary`'s own V-1…V-6. It
+  //     declares no boundary, holds no coordinate, and deliberately does NOT consult a cell
+  //     cover: the owner's refusal of `containmentOverlapping` and
+  //     `containmentOverlappingBbox` (B1_EXTERNAL_INPUT_HANDOFF.md §1.8.4) is standing, and
+  //     a point test decides no containment semantics at all.
+  //
+  //   `cellProjection.js` — N27's `projectCell(cellId) -> { lat, lon }` seam, which
+  //     `adapters/contract.js` requires and forbids any adapter to invent. It adds no
+  //     coordinate system: the map is `spatial/cells.centreOfCell`, and the one thing it
+  //     adds is a serviceability guard, so a cell whose representative coordinate is
+  //     outside the committed region is refused rather than routed.
+  //
+  //   `productionRouter.js` — the `deps.route(parts)` producer named at
+  //     `workers/coordinatorPipeline.js:289-301`. It composes the three above with a B1
+  //     adapter. It selects no engine (that is B1 Step 5, on recorded evidence), caches
+  //     nothing (`cellPairCache` is the cache and this is what it falls through to), and
+  //     refuses outright while `climbM`/`descentM`/`stopStartCycles` have no declared
+  //     producer — which, on this tree, is always.
+  const ROUTING_BATCH_1_OWNED = [
+    "routing/campusServiceability.js",
+    "routing/campusTravelModel.js",
+    "routing/cellProjection.js",
+    "routing/productionRouter.js",
+  ];
+
   const LANDED_PHASE_OWNED = [
     ...REMEDIAL_T1_04_OWNED,
+    ...ROUTING_BATCH_1_OWNED,
     ...PHASE_1_OWNED,
     ...PHASE_2_OWNED,
     ...PHASE_3_OWNED,
