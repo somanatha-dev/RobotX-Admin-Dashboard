@@ -1,8 +1,36 @@
 "use strict";
 
 /**
- * **Whole-campus serviceability** — is this coordinate inside the operating region RobotX
- * has committed to serve?
+ * **Routing-local campus serviceability** — may the routing layer project and route to this
+ * coordinate, or must it refuse?
+ *
+ * ── What this module is NOT: it is not the delivery-domain authority ────────
+ * Read this before using any verdict below as an answer to "may this order be accepted?".
+ *
+ * The authoritative answer to *"is this destination inside RobotX's delivery domain?"* is the
+ * **intake-pinned `Stop.geofenceResult`**, produced exactly once by `spatial/deliveryDomain.js`
+ * at intake and read by the round through `deliveryDomain.pinnedMembership`. That is D1, and
+ * ADR-28 states the rule it rests on: *containment by published assignment, **not by
+ * query-time geometry***. This module is query-time geometry, so it **must not** be promoted
+ * into that role, and no caller may write a verdict from here onto `Stop.geofenceResult`.
+ *
+ * What it is for: the routing layer holds cell ids, and a cell's representative coordinate is
+ * a coordinate **this repository derived**, not one a customer supplied and intake pinned. Some
+ * instrument has to be able to say "that derived point is off-campus, refuse rather than route
+ * to it" — see `cellProjection.js`. That is a routing-local refusal about a derived point, and
+ * it is a strictly narrower question than domain membership.
+ *
+ * The two vocabularies are deliberately different and are **not** interconvertible: this module
+ * reports five verdicts including `ON_BOUNDARY`, while the pinned D1 vocabulary is three
+ * (`INSIDE` / `OUTSIDE` / `INDETERMINATE`). They also differ by design on a declared boundary
+ * vertex — D1 reads the domain as a **closed** set and answers `INSIDE`, this module answers
+ * `ON_BOUNDARY` and leaves the commercial reading to its caller — and on a malformed
+ * coordinate, where D1 answers `INDETERMINATE` rather than making a geographic claim. Those
+ * divergences are intentional and are pinned by `routingSpatialAuthorityBoundary.test.js` so
+ * they cannot drift silently or be mistaken for a bug to be "harmonised" away.
+ *
+ * ── The underlying question this module does answer ────────────────────────
+ * Is this coordinate inside the operating region RobotX has committed to serve?
  *
  * ── The owner's requirement, stated exactly ────────────────────────────────
  * > The **entire** RNSIT campus is the V1 serviceable delivery domain. A user may place an
@@ -27,13 +55,24 @@
  * This is the single most important sentence in this file, and it is a deliberate
  * avoidance of a decision that is not this module's to make.
  *
- * `B1_EXTERNAL_INPUT_HANDOFF.md` §1.8.3–§1.8.5 records that the approved campus polygons
- * are roughly **one seventh of a single H3 resolution-8 cell**, so the standard
- * `polygonToCells` cover is **empty** and V-8 fires. The two containment modes that would
- * yield a non-empty cover — `containmentOverlapping` and `containmentOverlappingBbox` —
- * are both **refused by the owner** as geographic over-assignment of non-campus area, and
- * §1.8.4 states that refusal is standing rather than an unfilled blank. §1.8.5 records
- * that the escalation has **no defined target**.
+ * `B1_EXTERNAL_INPUT_HANDOFF.md` §1.8.3–§1.8.5 recorded that the approved campus polygons
+ * are roughly **one seventh of a single H3 resolution-8 cell**, so at that resolution the
+ * standard `polygonToCells` cover was **empty** and V-8 fired. The two containment modes that
+ * would have yielded a non-empty cover — `containmentOverlapping` and
+ * `containmentOverlappingBbox` — are both **refused by the owner** as geographic
+ * over-assignment of non-campus area, and §1.8.4 states that refusal is standing rather than
+ * an unfilled blank.
+ *
+ * **That premise has since changed, and the conclusion drawn from it must not be quoted as
+ * current.** ADR-35 adopted `FINE` = **H3 resolution 11**, at which the standard centre-contained
+ * cover of the adopted RNSIT way is **non-empty** and V-8 no longer fires for this campus. The
+ * resolution change, not a containment mode, is what resolved it; the owner's refusal was never
+ * overturned. The authoritative measurements — empty at resolutions 8 and 9, non-empty at 11 —
+ * are asserted against literal resolutions in `spatialRnsitCover.test.js`.
+ *
+ * None of that changes this module's choice of instrument, which is the point of the next
+ * paragraph: a point-in-polygon test was correct under both models precisely because it decides
+ * no containment semantics at all.
  *
  * A point-in-polygon test **decides none of that**. Asking "does this coordinate lie inside
  * this ring?" is a question about a point, and it neither selects a polygon→cell
@@ -81,9 +120,12 @@ const { validateRegionDeclaration, BOUNDARY_STATUS } = require("../spatial/regio
  * @structural the serviceability verdicts
  */
 const SERVICEABILITY = Object.freeze({
-  /** Strictly inside the region. A valid delivery-domain destination. */
+  /**
+   * Strictly inside the region. The routing layer may proceed with this coordinate.
+   * **Not** a delivery-domain admission: that is the intake-pinned `Stop.geofenceResult`.
+   */
   INSIDE: "INSIDE",
-  /** Strictly outside. Refused as outside the operational domain. */
+  /** Strictly outside. Refused by the routing layer as outside the operating region. */
   OUTSIDE: "OUTSIDE",
   /** Exactly on the boundary. Reported, never silently resolved either way. */
   ON_BOUNDARY: "ON_BOUNDARY",
@@ -204,7 +246,11 @@ function createServiceabilityOracle(declaration) {
     validated.status === BOUNDARY_STATUS.NOT_CONFIGURED ? SERVICEABILITY.NOT_CONFIGURED : SERVICEABILITY.INVALID_BOUNDARY;
 
   return Object.freeze({
-    /** `VALID`, `INVALID` or `NOT_CONFIGURED` — the D1 gate's own verdict on this geometry. */
+    /**
+     * `VALID`, `INVALID` or `NOT_CONFIGURED` — `regionBoundary`'s verdict on this **geometry**,
+     * passed straight through. A well-formedness fact about a supplied polygon, and deliberately
+     * not a D1 domain verdict about any coordinate.
+     */
     regionStatus: validated.status,
     regionId: validated.regionId,
     kind: validated.kind,
@@ -285,8 +331,10 @@ function createServiceabilityOracle(declaration) {
 module.exports = {
   SERVICEABILITY,
   createServiceabilityOracle,
-  // Exported for the test that pins this implementation equal to
-  // `spatial/regionBoundary`'s own ray cast, so the two cannot drift apart.
+  // Exported so `routingSpatialAuthorityBoundary.test.js` can pin this ray cast behaviourally
+  // equal to `spatial/regionBoundary.pointInRing`, and can pin the verdict-policy divergences
+  // above as deliberate. That test exists; until 2026-09-19 this comment claimed a test that had
+  // never been written, and the two had already diverged one layer up without anything failing.
   pointInRing,
   pointInPolygon,
 };

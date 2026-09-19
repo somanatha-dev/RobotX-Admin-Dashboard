@@ -135,6 +135,9 @@ function isFiniteNumber(value) {
  *   * `serviceability` — an oracle from `campusServiceability.createServiceabilityOracle`.
  *     **Required.** Without it there is nothing to check a coordinate against, and a
  *     projection that cannot check is a projection that can move an order off the campus.
+ *     This is a **routing-local** check on a coordinate *this repository derived* from a cell
+ *     id. It is not, and must not be used as, the delivery-domain verdict for the order's own
+ *     destination: that is the intake-pinned `Stop.geofenceResult` (D1 / ADR-28).
  *   * `representativePoints` — optional `Map` or plain object of `cellId -> { lat, lon }`,
  *     supplied by the deployment. Never fabricated here.
  * @returns {object} `{ project, projectCell, describe }`
