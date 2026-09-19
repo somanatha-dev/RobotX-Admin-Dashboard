@@ -387,6 +387,11 @@ function create(deps) {
         killSwitchState: inForce.killSwitchState,
         regimes: inForce.regimes,
         spatial: inForce.spatial,
+        // Carried forward unchanged, like every other non-binding payload. A rollback that
+        // dropped the delivery-domain declaration would silently widen nothing and narrow
+        // everything — every subsequent geofence verdict would become INDETERMINATE — but it
+        // would do so invisibly, and a rollback must change exactly the binding it names.
+        deliveryDomain: inForce.deliveryDomain,
         shards: inForce.shards,
         note:
           `AUTOMATIC ROLLBACK — ${action.shardId} (region ${action.regionId}). ${action.reason} ` +

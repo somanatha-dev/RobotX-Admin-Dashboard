@@ -23,17 +23,36 @@
  *      malformed coordinate is a definite fact about the request, not missing data.
  *   2. **Containment** — every endpoint lies in the serviceable region.
  *
- * Intake (§Phase 1's `intake/`) applies the same rule earlier and rejects the Task
- * outright. F33's presence in the gate is deliberate redundancy: a Task that entered
- * before the rule existed, or through a path that bypasses intake, must not become
- * assignable.
+ * Intake applies the same rule earlier — **and since RD-2026-09-14-01 that sentence is
+ * finally true.** `services/task.service.sealIdentities` evaluates the exact coordinate
+ * against the published delivery-domain geometry and pins the verdict on
+ * `Stop.geofenceResult`. For four phases this docstring asserted a hard input-validation
+ * point that did not exist; F33 was the only place the rule was applied at all. F33's
+ * presence in the gate remains deliberate redundancy: a Task that entered before the
+ * producer existed, or through a path that bypasses intake, must not become assignable —
+ * and such Tasks exist, carrying a null verdict, which reads here as absent and denies.
  *
- * ── Containment is by assignment, not geometry ──────────────────────────────
+ * ── What `serviceable` now means — D1's three layers ───────────────────────
  * §3.6: "**Containment is by assignment, not by geometry** — deriving a cell's zone
  * from polygon intersection at query time makes it depend on floating-point geometry
- * evaluated per round, which is both slow and non-deterministic (T6)." This predicate
- * therefore reads the *assigned* serviceability of each endpoint's cell rather than
- * running a point-in-polygon test itself.
+ * evaluated per round, which is both slow and non-deterministic (T6)." That still
+ * governs, and this predicate still runs no point-in-polygon test.
+ *
+ * What changed is what the assignment it reads *is*. `coordinatorSolvePath.serviceabilityFor`
+ * now composes three facts rather than one:
+ *
+ *     serviceable = assigned ∧ inDeliveryDomain ∧ routable
+ *
+ * — the published cell assignment (an **index** fact), the pinned exact-coordinate
+ * geofence verdict (a **domain** fact), and reachability of the routing graph (R13, an
+ * unresolved external input). The distinction matters here because a cell being indexed
+ * has never implied that its ground is inside the delivery domain, and this predicate
+ * used to be handed a value that quietly conflated them.
+ *
+ * The three-valued reading below is unchanged and is what makes the composition safe:
+ * `true` satisfies, `false` is VIOLATED, and **absent is INDETERMINATE** — so a
+ * conjunction with an absent term denies while naming the absence, rather than resolving
+ * it in either direction.
  *
  * Tier 0 (T0-01).
  */

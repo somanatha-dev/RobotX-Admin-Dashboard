@@ -12,10 +12,26 @@
  *
  * ── What they do NOT establish ────────────────────────────────────────────
  * They run against a faked transport, so they say nothing about any engine's performance and
- * are not B1 Step 3 evidence. They do not discharge D1, D3 or D8. They do not assert that
- * RNSIT is routable at the frozen H3 resolution — the opposite: one test pins the measured
- * finding that every RNSIT cell centre falls outside the campus, so that a later change which
- * silently "fixes" it by widening a boundary or picking a refused containment mode fails here.
+ * are not B1 Step 3 evidence. They do not discharge D1, D3 or D8.
+ *
+ * ── This suite is NOT the delivery-domain authority ────────────────────────
+ * `campusServiceability` is used here as a **routing-local** instrument: it answers "may this
+ * routing layer project and route to this cell's representative coordinate?" and it refuses
+ * when it cannot. The authoritative answer to "is this destination inside RobotX's delivery
+ * domain?" is the **intake-pinned `Stop.geofenceResult`** (D1 / ADR-28), read exactly once by
+ * `deliveryDomain.pinnedMembership`. Nothing in this suite may be read as establishing domain
+ * membership, and `routingSpatialAuthorityBoundary.test.js` is the test that holds that line.
+ *
+ * ── The RNSIT cell measurements live in the spatial suite, not here ────────
+ * An earlier revision of this file pinned "every RNSIT cell centre falls outside the campus"
+ * while reading the resolution **symbolically** (`cells.RESOLUTION.FINE`). That measurement
+ * was taken when `FINE` was H3 resolution 8; ADR-35 adopted **resolution 11**, under which it
+ * is false (6 of 16 boundary-touched cells have interior centres) and was never a structural
+ * invariant. A symbolic read of a fixed historical measurement re-measures itself silently, so
+ * those assertions are gone rather than re-pinned. The historical resolution-8/9 result and
+ * the current resolution-11 result are both asserted, against **literal** resolutions, in
+ * `spatialRnsitCover.test.js` (`D2`, `D6`, `V-8/V-9/V-10`) — the authoritative record. This
+ * file keeps only the routing-local half.
  */
 
 const h3 = require("h3-js");
@@ -775,47 +791,61 @@ describe("T19 — the production routing path cannot reach a hosted service", ()
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   The RNSIT finding — pinned so a later "fix" cannot hide it
+   RNSIT — the routing-local half, under the ADOPTED spatial model (ADR-35)
    ═══════════════════════════════════════════════════════════════════════════ */
 
-describe("RNSIT at the frozen H3 resolution — the measured finding, pinned", () => {
+describe("RNSIT under the adopted spatial model — the routing-local half", () => {
   test("the adopted boundary validates as a region declaration once the §1.8.1 fields are supplied", () => {
     const validated = regionBoundary.validateRegionDeclaration(rnsitDeclaration());
     expect(validated.status).toBe(regionBoundary.BOUNDARY_STATUS.VALID);
   });
 
-  test("the standard cover is EMPTY at both resolutions — V-8, not V-9", () => {
-    const ring = rnsitPolygon().coordinates[0].map(([lon, lat]) => [lat, lon]);
-    expect(h3.polygonToCells(ring, 8)).toHaveLength(0);
-    expect(h3.polygonToCells(ring, 5)).toHaveLength(0);
-    // V-8 fires, and `cardinalityException` cannot rescue it because V-9 never runs.
-    const cover = regionBoundary.validateCover({ fineCells: [], cardinalityException: "declared" });
-    expect(cover.status).toBe(regionBoundary.BOUNDARY_STATUS.INVALID);
-    expect(cover.problems.join(" ")).toMatch(/V-8/u);
+  /**
+   * The guard that replaces the deleted symbolic assertions.
+   *
+   * Reverting ADR-35 to resolution 8 would make the old routing measurements pass again, so
+   * the revert has to fail *here* — in the suite that would otherwise benefit from it. This is
+   * the only place this suite is allowed to mention a resolution number, and it mentions the
+   * **adopted** one.
+   */
+  test("FINE is H3 resolution 11 — no routing assertion may be rescued by reverting ADR-35", () => {
+    expect(h3.getResolution(cells.cellForPoint(12.900864, 77.516765, cells.RESOLUTION.FINE))).toBe(11);
   });
 
-  test("EVERY cell the campus touches has its centre OUTSIDE the campus", () => {
-    const oracle = serviceability.createServiceabilityOracle(rnsitDeclaration());
-    const touched = new Set(rnsitPolygon().coordinates[0].map(([lon, lat]) => cells.cellForPoint(lat, lon, cells.RESOLUTION.FINE)));
-    expect(touched.size).toBeGreaterThan(0);
-    for (const cellId of touched) {
-      const centre = cells.centreOfCell(cellId);
-      expect(oracle.assess(centre.lat, centre.lon).status).toBe(SERVICEABILITY.OUTSIDE);
-    }
-  });
-
-  test("so the cell projection refuses every RNSIT cell, rather than routing off-campus", () => {
-    const oracle = serviceability.createServiceabilityOracle(rnsitDeclaration());
-    const projection = cellProjection.createCellProjection({ serviceability: oracle });
-    const touched = [...new Set(rnsitPolygon().coordinates[0].map(([lon, lat]) => cells.cellForPoint(lat, lon, cells.RESOLUTION.FINE)))];
-    for (const cellId of touched) {
-      expect(() => projection.project(cellId)).toThrow(/OUTSIDE relative to the serviceable region/u);
-    }
-  });
-
-  test("interior campus POINTS are nonetheless serviceable — the domain is whole, the cell identity is not", () => {
+  test("interior campus POINTS are serviceable — the domain is whole", () => {
     const oracle = serviceability.createServiceabilityOracle(rnsitDeclaration());
     // The food court, measured 112.3 m inside the perimeter in RD-2026-08-30-01 §4.1.
     expect(oracle.assess(12.900864, 77.516765).status).toBe(SERVICEABILITY.INSIDE);
+  });
+
+  /**
+   * Fail-closed, stated **without** depending on any resolution.
+   *
+   * The deleted assertion proved this property by asserting that *every* RNSIT cell centre was
+   * off-campus, which was an artefact of resolution 8's 531 m cells rather than a property of
+   * the projection. The property that actually matters — a cell whose representative coordinate
+   * is outside the region is refused, never routed to — is resolution-independent, and this is
+   * it. A cell at null island stands in for "anywhere off-campus" at whatever resolution FINE
+   * currently is.
+   */
+  test("a cell whose representative coordinate is OUTSIDE the region is refused, at whatever resolution FINE is", () => {
+    const oracle = serviceability.createServiceabilityOracle(rnsitDeclaration());
+    const projection = cellProjection.createCellProjection({ serviceability: oracle });
+    const offCampus = cells.cellForPoint(0, 0, cells.RESOLUTION.FINE);
+    expect(() => projection.project(offCampus)).toThrow(/OUTSIDE relative to the serviceable region/u);
+  });
+
+  /**
+   * The substantive thing resolution 11 bought, asserted as behaviour rather than as a count.
+   * At resolution 8 the campus had no cell whose centre it contained, so this projection could
+   * not succeed for any in-campus coordinate. The cell counts themselves (45 centre-contained,
+   * 64 index) belong to `spatialRnsitCover.test.js` and are deliberately not duplicated here.
+   */
+  test("an in-campus coordinate's fine cell now projects to an in-campus point", () => {
+    const oracle = serviceability.createServiceabilityOracle(rnsitDeclaration());
+    const projection = cellProjection.createCellProjection({ serviceability: oracle });
+    const inCampus = cells.cellForPoint(12.900864, 77.516765, cells.RESOLUTION.FINE);
+    const projected = projection.project(inCampus);
+    expect(oracle.assess(projected.lat, projected.lon).status).toBe(SERVICEABILITY.INSIDE);
   });
 });

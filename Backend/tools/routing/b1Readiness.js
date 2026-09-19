@@ -261,8 +261,9 @@ function assessD1(config) {
   // D2's residual is **carried, not charged to D1.** The check §36.2 records as unrunnable is
   // run here for the first time — it needed D1 field 2 and a geometry, and both now exist —
   // and its answer is reported on the verdict. It is deliberately not added to D1's problem
-  // list: an out-of-band cover is already V-9's finding against the cover, and whether res 8
-  // stands or §6.2's per-region override is taken up is **Architecture's** call, not the
+  // list: an out-of-band cover is already V-9's finding against the cover, and whether the
+  // current FINE resolution stands (11, ADR-35) or the residual is discharged another way is
+  // **Architecture's** call, not the
   // Operations decision D1's status is about. Conflating the two would send an Architecture
   // question back to the people who supplied a perfectly valid boundary.
   const d2Residual = regionBoundary.d2ResidualCheck({ kind: declaration.kind, fineCellCount: cover.fineCellCount });

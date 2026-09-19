@@ -1608,16 +1608,70 @@ describe("G — F33: containment by assignment, from the published map (§M.2)",
     expect(verdict.outcome).toBe("INDETERMINATE");
   });
 
-  test("with the cells assigned, F33 is SATISFIED — `hierarchy.resolve` is finally called", () => {
+  /**
+   * **RD-2026-09-14-01 D1 changed this test's contract, and the change is a tightening.**
+   *
+   * Assignment alone used to produce `serviceable: true`. It no longer does, because
+   * asserting serviceability from the index alone silently asserted two further facts:
+   * that the indexed cell's ground is inside the delivery domain, and that the point can
+   * be reached by the road network. Serviceability is now
+   * `assigned ∧ inDeliveryDomain ∧ routable`, and the two added conjuncts are supplied
+   * here rather than assumed.
+   */
+  test("with the cells assigned, the domain pinned INSIDE and the point routable, F33 is SATISFIED", () => {
     const { context, store } = completeContext({ kv: kvHandle.kv, spatial: coverFor([PICKUP, DROP]) });
+    const stops = store.leg.stops.map((stop) => ({ ...stop, geofenceResult: "INSIDE", routable: true }));
 
-    const withAssignment = solvePath.serviceabilityFor(context.snapshot)(store.leg.stops);
+    const withAssignment = solvePath.serviceabilityFor(context.snapshot)(stops);
     expect(withAssignment.map((stop) => stop.serviceable)).toEqual([true, true]);
 
     const verdict = require("../../src/engine/feasibility/predicates/f33").evaluate({
       plan: { stops: withAssignment.map((stop, index) => ({ ...stop, sequence: index + 1 })) },
     });
     expect(verdict.outcome).toBe("SATISFIED");
+  });
+
+  /**
+   * The same fixture with each added conjunct withheld in turn. Every one of these was
+   * SATISFIED before D1 — that is precisely the defect D1 removes — and each must now
+   * deny, **absent rather than false**, because an unmeasured fact is not a negative one.
+   */
+  test.each([
+    ["the pinned geofence verdict", { routable: true }],
+    ["routability (R13)", { geofenceResult: "INSIDE" }],
+    ["both", {}],
+  ])("with the cells assigned but %s withheld, F33 is INDETERMINATE — never SATISFIED", (_label, extra) => {
+    const { context, store } = completeContext({ kv: kvHandle.kv, spatial: coverFor([PICKUP, DROP]) });
+    const stops = store.leg.stops.map((stop) => ({ ...stop, ...extra }));
+
+    const withAssignment = solvePath.serviceabilityFor(context.snapshot)(stops);
+    expect(withAssignment.every((stop) => stop.serviceable === undefined)).toBe(true);
+
+    const verdict = require("../../src/engine/feasibility/predicates/f33").evaluate({
+      plan: { stops: withAssignment.map((stop, index) => ({ ...stop, sequence: index + 1 })) },
+    });
+    expect(verdict.outcome).toBe("INDETERMINATE");
+    expect(verdict.outcome).not.toBe("VIOLATED");
+  });
+
+  /**
+   * **D6 in one test.** An indexed cell whose ground straddles the campus boundary is an
+   * index bucket. A point inside that cell but outside the campus is a definite
+   * geographic fact, and it must DENY — with `VIOLATED`, not `INDETERMINATE`, because
+   * something *is* known about it.
+   */
+  test("an assigned cell does NOT rescue a point the pinned verdict says is OUTSIDE — VIOLATED", () => {
+    const { context, store } = completeContext({ kv: kvHandle.kv, spatial: coverFor([PICKUP, DROP]) });
+    const stops = store.leg.stops.map((stop) => ({ ...stop, geofenceResult: "OUTSIDE", routable: true }));
+
+    const withAssignment = solvePath.serviceabilityFor(context.snapshot)(stops);
+    expect(withAssignment.every((stop) => stop.serviceable === false)).toBe(true);
+
+    const verdict = require("../../src/engine/feasibility/predicates/f33").evaluate({
+      plan: { stops: withAssignment.map((stop, index) => ({ ...stop, sequence: index + 1 })) },
+    });
+    expect(verdict.outcome).toBe("VIOLATED");
+    expect(verdict.reason).toMatch(/outside the serviceable region/u);
   });
 
   test("a published map that does not assign the cell leaves it ABSENT, never `false`", () => {
@@ -1644,22 +1698,158 @@ describe("G — F33: containment by assignment, from the published map (§M.2)",
     expect(withAssignment[0].serviceable).toBeUndefined();
   });
 
-  test("the assignment reaches the plan through `planInputFor` — the production caller", () => {
-    const { context, store } = completeContext({ kv: kvHandle.kv, spatial: coverFor([PICKUP, DROP]) });
-    const input = solvePath.planInputFor({
-      agentSnapshot: { agentId: "a", agentClassId: "c", cellId: store.fineCellId, ambientC: 20, packC: 22, soc: 0.9, soh: 0.95, kappa: 1, energyModel: null, energyCoefficients: null, containerModel: null },
-      leg: { legId: "leg-1", stops: store.leg.stops, role: "TERMINAL", targetMs: null, deadlineMs: null, custodyState: "NONE" },
-      hops: [],
-      hopsForSequence: () => null,
-      snapshot: context.snapshot,
-      scope: {},
-      decisionTimeMs: DECISION_TIME_MS,
-      seams: context,
-      slaClass: null,
-      queueAgeSeconds: 60,
+  /**
+   * **The full D1 integration, end to end through the production callers.**
+   *
+   * The audit of 2026-09-14 found that this test had been reduced to asserting only the
+   * *absent* case (`every(s => s.serviceable === undefined)`) — an assertion that also
+   * passes if `planInputFor` stops calling `serviceabilityFor` altogether, because raw
+   * `leg.stops` carry no `serviceable` field either. That is weaker than what it
+   * replaced. This restores positive coverage and adds the integration the old test
+   * never had: the pinned column travelling through `legLoaderFor` as well.
+   *
+   * Nothing here is mocked away. `prismaDouble` stands in for the database rows only;
+   * `legLoaderFor`, `serviceabilityFor`, `planInputFor` and `f33.evaluate` are the
+   * shipped functions, called in the order production calls them.
+   */
+  describe("the D1 conjunction through legLoaderFor → planInputFor — the production callers", () => {
+    const f33 = require("../../src/engine/feasibility/predicates/f33");
+
+    /** The two Stop rows as the database holds them, with whatever intake pinned. */
+    function prismaDoubleWith(pins) {
+      return {
+        leg: {
+          findFirst: async () => ({
+            id: "leg-row-1", legId: "leg-1", missionId: null, purpose: "PRIMARY", state: "QUEUED",
+            custodyState: "NONE", version: 1, cancelRequestedAt: null, obstructionClass: null,
+            slaDeadline: null, startNotBefore: null, createdAt: null, manifests: [], mission: null,
+            stops: [
+              { stopId: "s1", sequence: 1, stopType: "PICKUP", siteId: "a", lat: PICKUP.lat, lon: PICKUP.lon, geofenceResult: pins[0], accessConstraints: null },
+              { stopId: "s2", sequence: 2, stopType: "DROP", siteId: "b", lat: DROP.lat, lon: DROP.lon, geofenceResult: pins[1], accessConstraints: null },
+            ],
+          }),
+        },
+      };
+    }
+
+    /** Load through the real `legLoaderFor`, then build through the real `planInputFor`. */
+    async function throughProductionCallers(pins, { routable } = {}) {
+      const { context, store } = completeContext({ kv: kvHandle.kv, spatial: coverFor([PICKUP, DROP]) });
+      const loaded = await solvePath.legLoaderFor({ prisma: prismaDoubleWith(pins) })("leg-1");
+      // `routable` is R13's conjunct. Nothing in `src/` produces it, so a test that wants
+      // the positive case has to supply it — which is itself the point being recorded.
+      const stops = routable === undefined ? loaded.stops : loaded.stops.map((stop) => ({ ...stop, routable }));
+
+      const input = solvePath.planInputFor({
+        agentSnapshot: { agentId: "a", agentClassId: "c", cellId: store.fineCellId, ambientC: 20, packC: 22, soc: 0.9, soh: 0.95, kappa: 1, energyModel: null, energyCoefficients: null, containerModel: null },
+        leg: { legId: "leg-1", stops, role: "TERMINAL", targetMs: null, deadlineMs: null, custodyState: "NONE" },
+        hops: [],
+        hopsForSequence: () => null,
+        snapshot: context.snapshot,
+        scope: {},
+        decisionTimeMs: DECISION_TIME_MS,
+        seams: context,
+        slaClass: null,
+        queueAgeSeconds: 60,
+      });
+      const planStops = input.newLegs[0].stops;
+      return { loaded, planStops, verdict: f33.evaluate({ plan: { stops: planStops } }) };
+    }
+
+    // (1) and (2) — invocation and consumption, proved behaviourally rather than by spy.
+    // `planInputFor` calls the module-local `serviceabilityFor`, which a spy on the export
+    // cannot intercept; so the proof is that the stops reaching the plan carry fields that
+    // ONLY `serviceabilityFor` adds. Raw `leg.stops` have neither `cellId` nor `serviceable`.
+    test("1/2. planInputFor actually invokes serviceabilityFor, and its result reaches the plan", async () => {
+      const { loaded, planStops } = await throughProductionCallers(["INSIDE", "INSIDE"], { routable: true });
+
+      expect(loaded.stops.every((stop) => stop.cellId === undefined)).toBe(true);
+      expect(loaded.stops.every((stop) => stop.serviceable === undefined)).toBe(true);
+
+      // Both fields are present on the plan's stops, so the seam ran and was consumed.
+      expect(planStops.every((stop) => typeof stop.cellId === "string" && stop.cellId.length > 0)).toBe(true);
+      expect(planStops.map((stop) => stop.serviceable)).toEqual([true, true]);
     });
 
-    expect(input.newLegs[0].stops.map((stop) => stop.serviceable)).toEqual([true, true]);
+    // (3) and (4) — the pin survives both callers, and INSIDE yields the positive input.
+    test("3/4. a pinned INSIDE verdict survives legLoaderFor and planInputFor, and F33 is SATISFIED", async () => {
+      const { loaded, planStops, verdict } = await throughProductionCallers(["INSIDE", "INSIDE"], { routable: true });
+
+      expect(loaded.stops.map((stop) => stop.geofenceResult)).toEqual(["INSIDE", "INSIDE"]);
+      expect(planStops.map((stop) => stop.geofenceResult)).toEqual(["INSIDE", "INSIDE"]);
+      expect(planStops.map((stop) => stop.serviceable)).toEqual([true, true]);
+      expect(verdict.outcome).toBe("SATISFIED");
+    });
+
+    // (5) — a definite OUTSIDE cannot become serviceable even fully assigned and routable.
+    test("5. a pinned OUTSIDE verdict is a definite refusal through the whole path — VIOLATED", async () => {
+      const { loaded, planStops, verdict } = await throughProductionCallers(["INSIDE", "OUTSIDE"], { routable: true });
+
+      expect(loaded.stops.map((stop) => stop.geofenceResult)).toEqual(["INSIDE", "OUTSIDE"]);
+      // The cell IS published and assigned, and the point IS routable. Only the pin differs.
+      expect(planStops.map((stop) => stop.serviceable)).toEqual([true, false]);
+      expect(verdict.outcome).toBe("VIOLATED");
+      expect(verdict.reason).toMatch(/outside the serviceable region/u);
+    });
+
+    // (6) — missing geofence information stays absent, never silently true.
+    test("6. a missing pinned verdict stays INDETERMINATE through the whole path, never true", async () => {
+      const { loaded, planStops, verdict } = await throughProductionCallers([null, null], { routable: true });
+
+      expect(loaded.stops.map((stop) => stop.geofenceResult)).toEqual([null, null]);
+      expect(planStops.every((stop) => stop.serviceable === undefined)).toBe(true);
+      expect(planStops.some((stop) => stop.serviceable === true)).toBe(false);
+      expect(verdict.outcome).toBe("INDETERMINATE");
+      expect(verdict.outcome).not.toBe("VIOLATED");
+    });
+
+    /**
+     * R13's standing consequence, through the production callers.
+     *
+     * Note what F33 does and does not do here. It scans stops in order and **returns on
+     * the first stop it cannot satisfy**, so a plan whose first stop is absent reports
+     * INDETERMINATE even though a later stop is a definite refusal. That is F33's
+     * pre-existing, unchanged behaviour and both answers deny. What matters for D1 is the
+     * *conjunction's* output per stop, which is asserted directly: absent where a conjunct
+     * is unmeasured, `false` where one is definitely false.
+     */
+    test("with R13 unsupplied no stop is serviceable, and a definite OUTSIDE is still false", async () => {
+      const allInside = await throughProductionCallers(["INSIDE", "INSIDE"]);
+      expect(allInside.planStops.every((stop) => stop.serviceable === undefined)).toBe(true);
+      expect(allInside.verdict.outcome).toBe("INDETERMINATE");
+
+      const oneOutside = await throughProductionCallers(["INSIDE", "OUTSIDE"]);
+      // The outside stop is a definite refusal even with routability unmeasured — a false
+      // conjunct short-circuits the conjunction, which is the whole three-valued point.
+      expect(oneOutside.planStops.map((stop) => stop.serviceable)).toEqual([undefined, false]);
+      expect(oneOutside.planStops.some((stop) => stop.serviceable === true)).toBe(false);
+      // And evaluated on its own, that stop is VIOLATED rather than merely undecided.
+      expect(f33.evaluate({ plan: { stops: [oneOutside.planStops[1]] } }).outcome).toBe("VIOLATED");
+    });
+  });
+
+  /**
+   * The seam that produced the verdict and the seam that consumes it were each correct
+   * in isolation and did not meet: `legLoaderFor`'s stop projection is a **whitelist**,
+   * and it did not carry `geofenceResult`. A pin nothing can read is not a pin.
+   */
+  test("`legLoaderFor` carries the pinned geofence verdict out of the database", async () => {
+    const rows = [
+      { stopId: "s1", sequence: 1, stopType: "PICKUP", siteId: "a", lat: PICKUP.lat, lon: PICKUP.lon, geofenceResult: "INSIDE", accessConstraints: null },
+      { stopId: "s2", sequence: 2, stopType: "DROP", siteId: "b", lat: DROP.lat, lon: DROP.lon, geofenceResult: "OUTSIDE", accessConstraints: null },
+    ];
+    const prisma = {
+      leg: {
+        findFirst: async () => ({
+          id: "leg-row-1", legId: "leg-1", missionId: null, purpose: "PRIMARY", state: "QUEUED",
+          custodyState: "NONE", version: 1, cancelRequestedAt: null, obstructionClass: null,
+          slaDeadline: null, startNotBefore: null, createdAt: null, manifests: [], mission: null,
+          stops: rows,
+        }),
+      },
+    };
+    const loaded = await solvePath.legLoaderFor({ prisma })("leg-1");
+    expect(loaded.stops.map((stop) => stop.geofenceResult)).toEqual(["INSIDE", "OUTSIDE"]);
   });
 });
 

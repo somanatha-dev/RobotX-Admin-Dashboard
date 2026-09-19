@@ -61,6 +61,10 @@ const { PURPOSES } = require("../engine/domain/purpose");
 const identityStore = require("../engine/privacy/identityStore");
 const surrogateKeys = require("../engine/privacy/surrogateKeys");
 const cells = require("../engine/spatial/cells");
+// D1 layer 2 (RD-2026-09-14-01) — the one deterministic delivery-domain primitive. Intake
+// is where its verdict is produced and pinned; the round consumes the pin and never calls
+// this module, which is what keeps D1 compatible with ADR-28.
+const deliveryDomain = require("../engine/spatial/deliveryDomain");
 // The §2.3 RequirementSet a submission produces, and the chassis vocabulary it names.
 // Shared with commissioning so a task asking for a rover and a unit commissioned as one
 // are speaking about the same token — two spellings of "rover" would be a filter that
@@ -115,18 +119,40 @@ function engineEnabled(context) {
  * the path reachable at all.
  *
  * ── Which derived quantities are written, and which are honestly not ────────
- * `fineCell` only. It is a pure function of the coordinate (`spatial/cells.js`), which is
- * what §3.4's "no routing provider is consulted on the request path" permits. The other
- * five §23.7 quantities — the zone, the geofence result, the access-window class, the
- * service-time cohort, the routing-graph node — are products of the round, not of the
- * submission: each needs the routing graph, the geofence service or the service-time
- * model, and inventing one here would be a derived quantity nothing derived. They are
- * left null, and `PHASE_14_REMEDIATION_AND_CLOSURE.md` records the boundary and its owner
- * rather than leaving it to be discovered.
+ * `fineCell` and — since RD-2026-09-14-01 — **`geofenceResult`**. Both are pure functions
+ * of the coordinate and a pinned published input, which is what §3.4's "no routing
+ * provider is consulted on the request path" permits. The remaining four §23.7
+ * quantities — the zone, the access-window class, the service-time cohort, the
+ * routing-graph node — really are products of the round: each needs the routing graph or
+ * the service-time model, and inventing one here would be a derived quantity nothing
+ * derived. They stay null.
+ *
+ * ── Why the geofence verdict moved here, and why this is the only place ─────
+ * Phase 14 classified the geofence result as a product of the round because it assumed a
+ * *geofence service*. D1 removes that assumption: membership is a deterministic
+ * point-in-polygon against a **published, pinned** declaration, with no service, no
+ * clock and no network call. That makes intake the correct lifecycle point and — under
+ * ADR-28 — the only admissible one:
+ *
+ *   · **F33's own frozen rationale** already says the rule is applied *"at intake"*,
+ *     and `f33.js`'s docstring has claimed for four phases that *"intake applies the
+ *     same rule earlier"*. Nothing did. This is that producer.
+ *   · **ADR-28 forbids the alternative.** Its decision text is *"containment by
+ *     published assignment, **not by query-time geometry**"*. Evaluating the polygon
+ *     inside a coordinator round would contradict it verbatim and would need the
+ *     architecture unfrozen. Evaluating once here and pinning the answer does not.
+ *   · **It must not be duplicated.** One deterministic primitive
+ *     (`spatial/deliveryDomain.js`), one call site. Two producers of one verdict is two
+ *     verdicts, and the failure mode is a Stop whose pin disagrees with the round.
+ *
+ * The verdict is written even when it is `INDETERMINATE`, and that is deliberate: an
+ * absent column and a recorded "no declaration was published when this was sealed" are
+ * different facts, and only the second is auditable. `pinnedMembership` reads both as
+ * absent, so the round denies either way.
  *
  * @param {object} prisma
- * @param {object} input `{ task, work, privacyKeys }`
- * @returns {Promise<{ stops: number, ends: number }>}
+ * @param {object} input `{ task, work, privacyKeys, deliveryDomain }`
+ * @returns {Promise<{ stops: number, ends: number, geofence: Record<string, number> }>}
  */
 async function sealIdentities(prisma, input) {
   const source = input || {};
@@ -134,6 +160,13 @@ async function sealIdentities(prisma, input) {
   const task = source.task || {};
 
   const keys = source.privacyKeys || privacyKeys.fromEnvironment();
+
+  // Validated **once** for the whole submission, not once per stop: the declaration is a
+  // pinned published artefact and cannot change between two stops of one task. Validating
+  // per stop would also make the geometry checks' cost scale with the stop count for no
+  // added safety.
+  const domain = deliveryDomain.validateDomainDeclaration(source.deliveryDomain || null);
+  const geofence = {};
 
   let stops = 0;
   for (const stop of work.stops || []) {
@@ -153,11 +186,19 @@ async function sealIdentities(prisma, input) {
       },
     );
 
+    // **D1 layer 2 — the authoritative verdict, taken on the exact coordinate.**
+    // Not on `fineCell`: an H3 cell is an index bucket and makes no delivery-domain
+    // claim (D6), so deriving membership from the cell would be exactly the inference
+    // RD-2026-09-14-01 forbids. The coordinate is the input, and it is the only input.
+    const verdict = deliveryDomain.evaluatePoint(domain, stop.lat, stop.lon);
+    geofence[verdict.verdict] = (geofence[verdict.verdict] || 0) + 1;
+
     // eslint-disable-next-line no-await-in-loop
     await prisma.stop.update({
       where: { id: stop.id },
       data: {
         identityKey: stored.identityKey,
+        geofenceResult: verdict.verdict,
         ...(Number.isFinite(stop.lat) && Number.isFinite(stop.lon)
           ? { fineCell: cells.cellForPoint(stop.lat, stop.lon, cells.RESOLUTION.FINE) }
           : {}),
@@ -195,7 +236,7 @@ async function sealIdentities(prisma, input) {
     await prisma.task.update({ where: { id: task.id }, data });
   }
 
-  return { stops, ends: Object.keys(data).length };
+  return { stops, ends: Object.keys(data).length, geofence };
 }
 
 /**
@@ -461,7 +502,15 @@ async function admitToRound(prisma, pending, options = {}) {
   // `Stop.identityKey` was `tools/migrate/backfillIdentities.js`, so every Stop the
   // running system created had no identity record, no surrogate key, and therefore no
   // route by which an erasure request could reach it.
-  await sealIdentities(prisma, { task: pending, work, privacyKeys: options.privacyKeys });
+  await sealIdentities(prisma, {
+    task: pending,
+    work,
+    privacyKeys: options.privacyKeys,
+    // S-3 row 29, from the **pinned** version — so the verdict a Stop carries is
+    // attributable to one published geometry, and a later republication of the domain
+    // does not retroactively change what an already-sealed Stop was judged against.
+    deliveryDomain: options.deliveryDomain ?? null,
+  });
 
   const receivedAtMs = typeof options.receivedAtMs === "number" ? options.receivedAtMs : Date.now();
   const config = options.cadenceConfig || {};
@@ -772,6 +821,9 @@ async function assignTask(prisma, task, { kv, io, ...options } = {}) {
     // The whole snapshot is already here for the cutover gate above; this reads one map
     // off it rather than resolving configuration a second way.
     configValues: options.config && options.config.values ? options.config.values : null,
+    // S-3 row 29 — read off the same pinned snapshot the cutover gate above already
+    // consulted, rather than resolving configuration a second way.
+    deliveryDomain: options.config ? options.config.deliveryDomain ?? null : null,
   });
 
   // The legacy `{ ...task }` shape every existing caller reads is still present, and the
@@ -906,6 +958,12 @@ module.exports = {
   rerouteTask,
   straightLineRoute,
   admitToRound,
+  // Exported for the D1 intake tests. The mutation sweep showed why: a mutant that made
+  // this function pin **no** verdict, and one that derived the verdict from the fine
+  // cell's centre instead of the coordinate, both survived a suite that reached intake
+  // only through `admitToRound`'s database machinery. The producer is testable directly
+  // or it is untested.
+  sealIdentities,
   engineEnabled,
   parsePayloadDeclaration,
 };

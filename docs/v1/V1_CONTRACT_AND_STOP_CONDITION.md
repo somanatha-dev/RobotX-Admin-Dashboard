@@ -1384,6 +1384,57 @@ owner input, and **M-1 is a hard V1 blocker that S-3 does not release.**
 
 ### M.2 F33 — the exact V1 requirement
 
+> ## ⚠ M.2 IS RE-INTERPRETED BY `RD-2026-09-14-01` (D1). READ THIS BOX FIRST.
+>
+> **Everything below about `CellAssignment` still stands. What changed is that
+> `CellAssignment` is no longer the whole of serviceability.**
+>
+> The owner decision of 2026-09-14 separates two questions this section had answered with
+> one mechanism:
+>
+> | | |
+> |---|---|
+> | **Index membership** | which H3 cell a point is in, and what zone/site/region that cell is attributed to. **`CellAssignment`. Unchanged. Still required** — §8.3's `λ_zone` and §3.6's pricing hierarchy have no other source, and **S-3 row 26 is not withdrawn** |
+> | **Delivery-domain membership** | whether the destination is inside the area RobotX has committed to serve. **A new, distinct input: S-3 row 29**, decided on the *exact coordinate* against published geometry |
+>
+> **Serviceability is now a three-valued conjunction:**
+>
+> ```
+> serviceable = assigned ∧ inDeliveryDomain ∧ routable
+> ```
+>
+> - **`assigned`** — `CellAssignment`, exactly as described below.
+> - **`inDeliveryDomain`** — the verdict pinned on `Stop.geofenceResult` at intake/seal
+>   (`task.service.sealIdentities`), read by the round. **The round evaluates no geometry**
+>   — that would contradict **ADR-28** verbatim.
+> - **`routable`** — **has no producer in `src/`.** It depends on `snapRadiusM` (**R13**),
+>   which lives only in the B1 deployment module.
+>
+> ### The consequence for V1, stated plainly
+>
+> **F33 cannot reach `SATISFIED` until R13 is supplied.** With a perfect published index and
+> a perfect delivery-domain declaration, `routable` is absent, the conjunction is absent, and
+> F33 denies as `INDETERMINATE`. This is **stricter** than the behaviour described below,
+> which asserted routability by omission, and it is fail-closed.
+>
+> **"The minimum V1 region contract" below is therefore necessary but no longer
+> sufficient.** It remains exactly right about `CellAssignment`; it is incomplete about
+> serviceability. The complete V1 requirement for F33 is:
+>
+> 1. a published `CellAssignment` row for each fine cell containing the request's origin or
+>    stops — **as described below, unchanged**;
+> 2. a published **delivery-domain declaration** (S-3 row 29) — **new**;
+> 3. **R13 `snapRadiusM`**, via the B1 deployment module — **an external blocker**.
+>
+> Also corrected below: *"The `Stop.geofenceResult` column exists and nothing writes it"* was
+> true when written and is **no longer true** — `task.service.sealIdentities` is the producer
+> as of 2026-09-14. And *"the other five §23.7 quantities … are products of the round, not of
+> the submission"* is now four, not five: the geofence result moved to intake, because D1
+> makes it a deterministic test against a pinned published input rather than a call to a
+> geofence service.
+>
+> See `docs/release-decisions/RD-2026-09-14-01-v1-two-layer-spatial-model.md` and **ADR-36**.
+
 **Predicate.** `f33.js`, class **C**, indeterminate **DENY**, cache tier `NONE`, not volatile.
 Two ordered checks: (1) well-formedness of every `plan.stops[i].{lat,lon}` — a malformation is
 `VIOLATED`, a definite fact; (2) **containment by assignment** — `stop.serviceable === true`.
@@ -1655,8 +1706,9 @@ satisfied: candidate.max_radius_by_sla_class, prisma, kv, runSerializable,
 | 23 | `p_fail` per agent | NO_PRODUCER | Engineering (§8.3.1) |
 | 24 | `route_hazard_cost` | NO_PRODUCER | Engineering + Map service |
 | 25 | §14.4 battery wear inputs | NO_PRODUCER | Engineering + pack characterisation |
-| **26** | **Serviceable-region cell assignments (F33)** | **NEW — owner declaration** | **Owner (D1, minimal form — §M.2)** |
+| **26** | **Serviceable-region cell assignments (F33)** — the **index**: cell → zone/site/region attribution. **Not withdrawn, not replaced** | **NEW — owner declaration** | **Owner (D1, minimal form — §M.2)** |
 | **27** | **One depot-class charger (F35)** | **NEW — owner declaration** | **Owner (§M.3)** |
+| **29** | **Authoritative delivery-domain declaration (F33)** — signed/published geometry, CRS, version identity and owner declaration. **Distinct from row 26 and never folded into it** (`RD-2026-09-14-01` **D7**): row 26 is an index, this is a commitment about ground. Required for D1/F33 to be **decidable**; without it every geofence verdict is `INDETERMINATE` and F33 denies. The adopted RNSIT geometry (`RD-2026-08-30-01`, `way/1120154292`) may be used as the **development artefact**, but an unsigned artefact is not the production declaration and **§1.8.5 records that no validator can discharge that** — a human must read it. Reported as unattested by `A7` at publish, every time | **NEW — owner declaration** | **Owner (D1 / RD-2026-09-14-01 D7)** |
 
 **Rows 1–5 stay five distinct inputs and are not merged.** `route` is the function; `travelSdSeconds`
 and the terrain three are fields **no shortlisted engine returns** (N29, F-6); `timeBucket` is a
@@ -1945,7 +1997,9 @@ supplied.
 ```
 S-1  ✅ E-1 + E-8 + E-11, fixed and mutation-tested
 S-2  ✅ fixed 2026-09-01
-S-3  ⬜ OWNER + calibration owner — **28 inputs** (27 + the return-leg Wh/metre, §N.2)
+S-3  ⬜ OWNER + calibration owner — **29 inputs** (28 + the delivery-domain declaration,
+        row 29, RD-2026-09-14-01 D7). The count rose because D1 SEPARATED an input that
+        had been conflated with row 26, not because a new requirement appeared
 S-4  ⬜ blocked by S-3. The composition is complete and correct; its inputs do not resolve
 S-5  ⬜ owner configuration act. **Mechanism now verified end to end over HTTP** (§N.6 step 4)
 S-6  ⬜ **ATTEMPTED for the first time.** Harness exists, runs, exits 1 at S-5

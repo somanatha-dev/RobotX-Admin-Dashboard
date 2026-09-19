@@ -111,6 +111,10 @@ const publishVersion = asyncHandler(async (req, res) => {
     killSwitchState: body.killSwitchState,
     regimes: Array.isArray(body.regimes) ? body.regimes : [],
     spatial: body.spatial,
+    // S-3 row 29 (RD-2026-09-14-01 D7) — carried as its own field, never merged into
+    // `spatial`. A publish that omits it publishes no delivery domain, and every geofence
+    // verdict taken against that version is INDETERMINATE.
+    deliveryDomain: body.deliveryDomain,
     note: typeof body.note === "string" ? body.note : null,
     // An automated caller must say so. It is then refused any Safety-class change.
     automated: Boolean(body.automated),

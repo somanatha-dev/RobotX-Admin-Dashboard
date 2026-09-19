@@ -952,7 +952,7 @@ this section, absent from the configuration hierarchy that is supposed to resolv
 | **OperatingRegion** | The shard boundary: a metro service area, campus, or depot catchment. Every Agent and every Leg belongs to exactly one at a time | — (top of the spatial hierarchy) | 1 per shard | §3.5 sharding, §19.2, config scope |
 | **Site** | A bounded place with its own access rules and service-time behaviour: a depot, a campus building, a mall, a warehouse. Indoor and multi-level sites use graph zones rather than geodesic cells (§6.2) | Exactly one region | 10¹–10³ per region | §13.2 service times, §22.2 config scope, access constraints |
 | **Zone** | The **pricing and coverage unit**: a contiguous operational area over which supply and demand are aggregated and `λ_zone` is estimated | Exactly one region; a zone MUST NOT straddle a region boundary | 10–200 per region | §8.3 pricing, §17.3 balancing, §7.5 F27 authorisation |
-| **Cell** | The **index and cache** unit: a discrete geospatial cell (H3/S2), fine (~200–500 m) and coarse (~5–10 km) | A fine cell lies in exactly one zone **by assignment**, not by geometry | 10³–10⁵ fine cells per region | §6.2 index, §6.4 pruning, §20.3 caches |
+| **Cell** | The **index and cache** unit: a discrete geospatial cell (H3/S2). The generic fine scale is ~200–500 m and the coarse scale ~5–10 km; a bounded deployment MAY adopt a finer fine cell through a **declared spatial model** (see below) | A fine cell lies in exactly one zone **by assignment**, not by geometry | 10³–10⁵ fine cells per region | §6.2 index, §6.4 pruning, §20.3 caches |
 
 Three rules make this usable rather than merely descriptive:
 
@@ -971,6 +971,40 @@ Three rules make this usable rather than merely descriptive:
   small one sits inside a zone with the streets around it. Site is *where service behaviour is
   learned*; zone is *where supply is priced*. Forcing one to nest inside the other would make one
   of the two the wrong shape for its purpose.
+
+#### The declared spatial model
+
+*Amended 2026-09-14 by owner decision `RD-2026-09-14-01` (D3). The generic scales above are
+unchanged; what is added is the exemption a bounded deployment may take, and the evidence it
+must produce to take it.*
+
+The fine and coarse scales above are the **generic defaults**, and they are sized for a metro
+service area. A deployment whose physical extent makes the generic fine scale unsuitable —
+a campus of a tenth of a square kilometre cannot be covered by cells a quarter of a kilometre
+across — **MAY adopt a finer fine-cell resolution through an explicitly declared spatial
+model.**
+
+A declared spatial model MUST name:
+
+- its **indexing primitive**;
+- its **fine resolution**;
+- its **coarse resolution**;
+- the **spatial verification evidence** it requires.
+
+and MUST be verified for **coverage, safety, determinism, performance and privacy** before
+publication. A model that has not produced that evidence is not published.
+
+Two limits on the exemption:
+
+- **The 10³–10⁵ fine-cell cardinality band is NOT relaxed by it.** A declared model changes
+  the cell *size*, not the cardinality rule. A deployment whose count falls outside the band
+  records an explicit `cover.cardinalityException`, which is a statement someone makes rather
+  than a consequence of choosing a resolution.
+- **A cell remains the index and cache unit and nothing more.** A finer cell does not become
+  a delivery-domain boundary: membership of the serviceable region is decided on the exact
+  coordinate against published geometry, evaluated at intake and pinned, not derived from
+  cell membership. An index cell may overlap the region boundary without conferring
+  serviceability on the ground it covers.
 
 ---
 
@@ -1433,8 +1467,13 @@ Agent State Service and rebuildable from the observation log.
 
 - **Discrete global cells.** Hierarchical geospatial cells (H3 or S2; H3's uniform hexagons
   are preferred because k-ring expansion has uniform metric meaning, which makes distance
-  bounds tight). Two resolutions are maintained: a fine cell (~200–500 m edge) for
-  neighbourhood lookup and a coarse cell (~5–10 km) for regional sweeps.
+  bounds tight). Two resolutions are maintained: a fine cell for neighbourhood lookup and a
+  coarse cell for regional sweeps. The generic scales are ~200–500 m edge and ~5–10 km
+  respectively; a bounded deployment may maintain a finer fine cell under a **declared
+  spatial model** (§3.6), in which case the index is built at that model's resolutions and
+  every resolution-dependent quantity — k-ring budgets, pruning bounds, the intra-cell
+  offset, cache key spaces — is derived from them rather than from the generic scales.
+  *Amended 2026-09-14, `RD-2026-09-14-01` D3.*
 - **Index keys** are `(shard, coarse_cell, fine_cell, availability_class)` where
   availability class partitions agents into `IDLE_READY`, `CHARGING_INTERRUPTIBLE`,
   `FINISHING_SOON` (projected free within `candidate.finishing_soon_horizon`), and
@@ -4401,9 +4440,29 @@ Mitigations, ordered by effectiveness:
    optimality guarantee — it is pruning, not sampling. Note that `LB` deliberately requires no
    routing of either population, which is what makes it affordable to evaluate over whole cells.
 2. **Cell-pair travel-time cache** for approach and linehaul, keyed `(origin_cell,
-   destination_cell, mobility_profile, time_bucket)`. Because cells are ~200–500 m, the cache is
-   small relative to a point-pair cache and its hit rate is high. Within-cell error is bounded
-   by the cell diameter and is corrected by an intra-cell offset term.
+   destination_cell, mobility_profile, time_bucket)`. The cache is small relative to a
+   point-pair cache because it is quantised to cells at all. **Its hit rate is a property of
+   the declared spatial model (§3.6) and the deployment's traffic, and MUST be measured
+   against the target stated at the end of this section rather than inferred from the cell
+   size.** Within-cell error
+   is bounded by the cell diameter and is corrected by an intra-cell offset term.
+
+   *Amended 2026-09-14, `RD-2026-09-14-01` D3.* This item previously read *"Because cells are
+   ~200–500 m, the cache is small relative to a point-pair cache and its hit rate is high"* —
+   an **argument**, whose premise a declared spatial model may remove. The cell-pair space
+   grows as the square of the cell count, so a model four to ten times finer than the generic
+   scale multiplies the key space by two orders of magnitude for the same traffic, and the
+   hit rate falls accordingly. The conclusion does not survive the premise, so the
+   measurement replaces it. **The target is not adjusted to match what a model measures;** a
+   model that misses it misses it, and that is a property of the model to be reported with
+   the model.
+
+   The **intra-cell offset is a separate quantity from the cell diameter** and is not derived
+   from it. The diameter bounds *straight-line* within-cell error; the offset corrects the
+   distance actually travelled, which follows the network and is never below the straight
+   line. The geometric diameter is therefore a lower bound on the offset required, never the
+   offset itself, and a deployment that sets one from the other has under-corrected every
+   reserve computed through it.
 3. **Charger-reachability cache** for the return leg, keyed
    `(destination_cell, mobility_profile, time_bucket, charger_availability_version)` and
    yielding the nearest `k` chargers with travel time and energy, ordered. The key is the
@@ -4430,6 +4489,15 @@ Target cache hit rates in steady state: **> 95 %** for the cell-pair cache and *
 the charger-reachability cache. Both are reported separately and both are alertable, because a
 sustained drop in either translates directly into round-time growth, and a drop confined to one
 of them has a different cause and a different fix.
+
+*Amended 2026-09-14, `RD-2026-09-14-01` D3.* These targets are **measured, not assumed**.
+Where a deployment publishes a declared spatial model (§3.6), its cell-pair hit rate is
+measured against a stated workload — origin clustering, destination spread, routing profiles,
+time buckets, arrival rate and cache TTL, all declared with the result — and reported with
+that workload, because a hit rate quoted without the workload that produced it is not a
+measurement. **A model that misses the target misses it.** The target is not adjusted to the
+model, and a model whose hit rate cannot be measured is reported as unverified rather than as
+compliant.
 
 ### 20.4 Batching and amortisation
 

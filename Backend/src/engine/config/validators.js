@@ -41,6 +41,8 @@
  *   A4  the leadership renewal margin is satisfiable (§19.5) — Phase 13
  *   A6  every published cell id is an H3 index at its declared resolution, or is a declared
  *       §6.2 site-local graph zone (B5) — Phase 15, closing N21
+ *   A7  a published delivery-domain declaration is well formed (S-3 row 29, D1/D7) — else a
+ *       transposed or CRS-less boundary silently denies every request in the region
  *
  * Per-parameter type and range validation runs first (P-series). A cross-parameter
  * check reading an out-of-range value would report a second, derived failure.
@@ -59,6 +61,7 @@ const election = require("../shard/election");
 // restated. §6.2's site-local carve-out is the part most likely to be revisited, and it must
 // mean the same thing at publish time as it does at region acceptance.
 const regionBoundary = require("../spatial/regionBoundary");
+const deliveryDomain = require("../spatial/deliveryDomain");
 const { RESOLUTION } = require("../spatial/cells");
 
 // `SECONDS_PER_HOUR` and `MS_PER_SECOND` were declared here until Phase 13's refactor moved
@@ -638,6 +641,69 @@ function a6SpatialCellIdentity(spatial) {
 }
 
 /**
+ * **A7 — the published delivery-domain declaration is well formed (S-3 row 29).**
+ *
+ * RD-2026-09-14-01 D7 makes the authoritative delivery-domain geometry a distinct
+ * published input, a sibling of the cell assignments rather than a member of them. A6
+ * checks the *index*; this checks the *domain*, and the whole point of D1 is that those
+ * are different questions.
+ *
+ * ── Why a malformed declaration must be blocking and an absent one must not ─
+ * **Absent passes vacuously**, exactly as V8 and A6 do: no delivery domain is declared
+ * for V1, that is the repository's actual state, and every geofence verdict is
+ * INDETERMINATE in consequence — which denies. Publishing nothing is honest.
+ *
+ * A declaration that is *present and malformed* is the dangerous case, and it is
+ * dangerous in a way that is easy to miss: `deliveryDomain.evaluatePoint` treats an
+ * invalid declaration as INDETERMINATE, so a boundary published with its axes
+ * transposed or its CRS omitted does not fail — it silently denies every request in the
+ * region, indefinitely, while the control plane shows a published domain. That is a
+ * failure mode nobody reads as a failure. It is refused at publish instead.
+ *
+ * ── The attestation gap is a WARNING, and deliberately not blocking ─────────
+ * `B1_EXTERNAL_INPUT_HANDOFF.md` §1.8.5: a signed owner declaration is something **no
+ * validator can discharge**, because a validator cannot read a signature it was handed
+ * by the same process that would forge one. So a geometrically valid but unattested
+ * declaration publishes, is usable for development, and is reported — every time — as
+ * not discharging S-3 row 29. Making it blocking would invite someone to satisfy the
+ * gate by writing the attestation block themselves, which is the check answering itself.
+ *
+ * @param {object|null|undefined} domain the published `deliveryDomain` payload
+ * @returns {object[]} findings
+ */
+function a7DeliveryDomainDeclaration(domain) {
+  if (!domain) return [];
+
+  const verdict = deliveryDomain.validateDomainDeclaration(domain);
+  const results = [];
+
+  if (verdict.status !== regionBoundary.BOUNDARY_STATUS.VALID) {
+    for (const problem of verdict.problems) {
+      // The attestation gaps are reported below at their own severity; they are not
+      // geometry faults and must not be counted twice.
+      if (problem.startsWith("S-3 row 29 is NOT discharged")) continue;
+      results.push(finding("A7", SEVERITY.BLOCKING, "§3.5 · §3.6 · RD-2026-09-14-01 D7", problem));
+    }
+  }
+
+  if (!verdict.attested) {
+    results.push(
+      finding(
+        "A7",
+        SEVERITY.WARNING,
+        "§3.5 · RD-2026-09-14-01 D7 · B1 §1.8.5",
+        "the published delivery-domain declaration is not attested, so S-3 row 29 is NOT discharged and this " +
+          "geometry is a development artefact rather than the production owner declaration. Geofence verdicts are " +
+          "still taken against it — the geometry is real — but no release evidence may cite them as the " +
+          "authoritative delivery domain",
+      ),
+    );
+  }
+
+  return results;
+}
+
+/**
  * V9 — the combined nominal and degraded conservatism products do not exceed
  * `energy.max_combined_conservatism` (§14.3), else independently-chosen derating
  * factors compound past anyone's stated intention.
@@ -975,6 +1041,7 @@ function validatePublish(candidate) {
   findings.push(...a4LeadershipRenewalMargin(values));
   findings.push(...a5IdentityRetentionOrdering(values));
   findings.push(...a6SpatialCellIdentity(candidate.spatial));
+  findings.push(...a7DeliveryDomainDeclaration(candidate.deliveryDomain));
 
   const blocking = findings.filter((item) => item.severity === SEVERITY.BLOCKING);
   const launchGate = findings.filter((item) => item.severity === SEVERITY.LAUNCH_GATE);
@@ -1004,5 +1071,6 @@ module.exports = {
   a4LeadershipRenewalMargin,
   a5IdentityRetentionOrdering,
   a6SpatialCellIdentity,
+  a7DeliveryDomainDeclaration,
   validatePublish,
 };

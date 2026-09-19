@@ -287,7 +287,11 @@ async function readDeclaredSeam(input) {
  *
  * @param {object} config
  *   * `adapter` — a B1 adapter exposing `matrix(request)`; **required**.
- *   * `projection` — from `cellProjection.createCellProjection`; **required**.
+ *   * `projection` — from `cellProjection.createCellProjection`; **required**. Its serviceability
+ *     check is routing-local: it refuses a cell whose derived representative coordinate is off
+ *     the operating region. This router neither produces nor recomputes the delivery-domain
+ *     verdict for a destination — that is the intake-pinned `Stop.geofenceResult` (D1 / ADR-28),
+ *     consumed by the round through `deliveryDomain.pinnedMembership`.
  *   * `travelModel` — `{ bufferSecondsPer100m, sdBufferMultiple }`, resolved from the
  *     register by `campusTravelModel.resolveModelParameters`; **required**.
  *   * `speedFor(profileKey)` — metres per second for that routing profile; **required**.

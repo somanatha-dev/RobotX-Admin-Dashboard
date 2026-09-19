@@ -94,6 +94,28 @@ const WGS84_CRS = Object.freeze(["EPSG:4326", "OGC:CRS84", "CRS84", "URN:OGC:DEF
 const FINE_CELL_BAND = Object.freeze({ min: 1000, max: 100000 });
 
 /**
+ * What §3.6's cardinality band means as an *area*, at whatever resolution FINE is
+ * currently set to.
+ *
+ * Derived rather than written down. This sentence used to read "at H3 resolution 8 the
+ * band corresponds to roughly 737–73 733 km²", which was true when FINE was 8 and became
+ * false the moment ADR-35 moved it — a validator that explains itself with a stale
+ * number teaches the reader the wrong thing about why their cover was rejected, and
+ * N23's whole point is that the count and the resolution have to be read together.
+ *
+ * @returns {string}
+ */
+function bandAreaDescription() {
+  const cellKm2 = h3.getHexagonAreaAvg(H3_RESOLUTION.FINE, h3.UNITS.km2);
+  /** @structural presentation only — above this an integer reads better than 3 significant figures */
+  const WHOLE_NUMBER_FROM = 100;
+  /** @structural presentation only — significant figures for a sub-100 km² figure */
+  const SIGNIFICANT_FIGURES = 3;
+  const format = (value) => (value >= WHOLE_NUMBER_FROM ? Math.round(value).toLocaleString("en-GB") : value.toPrecision(SIGNIFICANT_FIGURES));
+  return `${format(FINE_CELL_BAND.min * cellKm2)}–${format(FINE_CELL_BAND.max * cellKm2)} km²`;
+}
+
+/**
  * RFC 7946 requires a closed linear ring, which needs at least four positions.
  * @structural RFC 7946's own minimum, not a tunable value
  */
@@ -349,7 +371,7 @@ function validateRegionDeclaration(declaration) {
     problems.push(
       `field 2: kind must be one of ${REGION_KINDS.join(", ")} (§3.5: "a site, campus, depot catchment, or metro ` +
         `service area"), received ${JSON.stringify(source.kind)}. It is required because §3.6's 10³–10⁵ fine-cell ` +
-        "band is satisfiable for some of those kinds and not others at H3 resolution 8 — see d2ResidualCheck()",
+        `band is satisfiable for some of those kinds and not others at H3 resolution ${H3_RESOLUTION.FINE} — see d2ResidualCheck()`,
     );
   }
 
@@ -557,7 +579,7 @@ function validateCover(cover) {
     if (!isNonEmptyString(source.cardinalityException)) {
       problems.push(
         `V-9: the cover holds ${fineCells.length} fine cells, outside §3.6's stated ${FINE_CELL_BAND.min}–${FINE_CELL_BAND.max} ` +
-          "band. This is N23: at H3 resolution 8 the band corresponds to roughly 737–73 733 km², which a metro " +
+          `band. This is N23: at H3 resolution ${H3_RESOLUTION.FINE} the band corresponds to roughly ${bandAreaDescription()}, which a metro ` +
           "service area satisfies and a site or campus does not. Either the region kind and the resolution " +
           "disagree, or the exception is deliberate — in which case record it in cover.cardinalityException, " +
           "because an unstated exception and a defect look identical",
@@ -581,14 +603,22 @@ function validateCover(cover) {
 }
 
 /**
- * **D2's residual fitness check** (§30.5.4 N23, §36.2) — is H3 resolution 8 a fit for *this*
- * region kind, given the cover it actually produced?
+ * **D2's residual fitness check** (§30.5.4 N23, §36.2) — is the current FINE resolution a fit
+ * for *this* region kind, given the cover it actually produced?
  *
- * D2 is closed globally at FINE 8 / COARSE 5 and this function does not reopen it: it changes
- * no resolution and recommends none. It reports whether §3.6's cardinality band and the
- * declared region kind are consistent, which is the check §36.2 records as unrunnable until
- * D1 field 2 and a geometry exist. It is the whole of D2's residual, and it costs one
- * comparison once the inputs arrive.
+ * D2 is closed globally at the `H3_RESOLUTION` pair — FINE 11 / COARSE 5 since ADR-35 — and
+ * this function does not reopen it: it changes no resolution and recommends none. It reports
+ * whether §3.6's cardinality band and the declared region kind are consistent, which is the
+ * check §36.2 records as unrunnable until D1 field 2 and a geometry exist. It is the whole of
+ * D2's residual, and it costs one comparison once the inputs arrive.
+ *
+ * **It still reports `fits: false` for a small campus, and that is correct.** ADR-35 moved the
+ * resolution to make the cover *non-empty* (V-8), not to bring the count inside §3.6's band —
+ * measured, RNSIT holds 45 fine cells at resolution 11. The sanctioned mechanism for the
+ * residual is `cover.cardinalityException`, a standing owner decision
+ * (`B1_EXTERNAL_INPUT_HANDOFF.md` §1.8.4 item 1) that ADR-35 leaves untouched. This function
+ * must not start accepting that exception itself: V-9 is where a declared exception is read,
+ * and a residual check that silently absorbed one would report a closure nobody declared.
  *
  * @param {{ kind: string|null, fineCellCount: number }} input
  * @returns {{ status: string, fits: boolean|null, note: string }}
@@ -610,11 +640,14 @@ function d2ResidualCheck(input) {
     status: fits ? BOUNDARY_STATUS.VALID : BOUNDARY_STATUS.INVALID,
     fits,
     note: fits
-      ? `${count} fine cells at H3 resolution 8 sits inside §3.6's ${FINE_CELL_BAND.min}–${FINE_CELL_BAND.max} band for a ${kind}; D2's residual closes`
-      : `${count} fine cells at H3 resolution 8 is outside §3.6's ${FINE_CELL_BAND.min}–${FINE_CELL_BAND.max} band for a ${kind}. ` +
-        "D2's residual does NOT close: §6.2 offers a per-region resolution override that spatial/cells.js does not " +
-        "have (one global pair, no override path, and adding one is a schema change). Which way to resolve it is " +
-        "Architecture's, on this evidence — it is not resolved here",
+      ? `${count} fine cells at H3 resolution ${H3_RESOLUTION.FINE} sits inside §3.6's ${FINE_CELL_BAND.min}–${FINE_CELL_BAND.max} band for a ${kind}; D2's residual closes`
+      : `${count} fine cells at H3 resolution ${H3_RESOLUTION.FINE} is outside §3.6's ${FINE_CELL_BAND.min}–${FINE_CELL_BAND.max} band for a ${kind}. ` +
+        "D2's residual does NOT close. ADR-35 moved FINE to resolve V-8 (an empty cover), not this band, and a " +
+        "campus-scale region does not reach 1 000 fine cells at any resolution whose cells are large enough to " +
+        "index. The sanctioned mechanism is a declared cover.cardinalityException (§1.8.4 item 1), which V-9 reads " +
+        "and this check deliberately does not. No per-region resolution override is offered or taken " +
+        "(RD-2026-09-14-01 D2). Which way to resolve the residual is Architecture's, on this evidence — it is " +
+        "not resolved here",
   });
 }
 
@@ -951,6 +984,12 @@ module.exports = {
   // date is, is the shape this programme has now found five times.
   isIsoDate,
   validateRegionDeclaration,
+  // Exported for `spatial/deliveryDomain.js`, which is the authoritative point-in-domain
+  // primitive (D1). It is exported rather than re-implemented there so that **one** ray-cast
+  // exists in the tree: two would be two answers to one question, and the failure mode is a
+  // point that V-11 and the geofence disagree about. `deliveryDomain` supplies the on-edge
+  // test this function's contract requires of its callers.
+  pointInRing,
   boundingBoxOf,
   validateCellIdentity,
   validateCover,

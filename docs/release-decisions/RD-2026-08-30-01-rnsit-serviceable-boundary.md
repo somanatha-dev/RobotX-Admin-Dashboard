@@ -240,8 +240,16 @@ one by being cited here.
 ### 8.3 V-9 / D2-residual will fire on this boundary — GAP-3
 
 The adopted polygon is **0.0998 km²**. `FINE_CELL_BAND` in `regionBoundary.js` is `1000 … 100000`
-fine cells at H3 resolution 8, and `d2ResidualCheck()` returns `INVALID` outside that band. A campus
-of this size cannot reach the lower bound at res 8.
+fine cells — a band on the **count**, independent of which resolution produces it — and
+`d2ResidualCheck()` returns `INVALID` outside that band. A campus of this size cannot reach the
+lower bound at res 8.
+
+> **Still true at the adopted resolution — annotated 2026-09-19.** At `FINE` = H3 resolution 11
+> (ADR-35) the adopted boundary yields **45** centre-contained cells and **64** under the D6 index
+> cover. Both are still below the band's lower bound of 1 000, so **GAP-3's prediction holds and is
+> now the operative one**: V-9 fires and the declared `cardinalityException` is its documented
+> discharge. What the 2026-08-30 note below got wrong was only *which* condition binds — it named
+> V-8 (empty cover), which no longer applies. See the supersession box after that note.
 
 **No H3 computation was performed here** — the owner instructed otherwise, and this row is a
 predicted exposure, not a measurement. When it is measured, `d2ResidualCheck()`'s own note assigns
@@ -251,7 +259,8 @@ routed back to whoever supplied a valid boundary.
 
 > **MEASURED UPDATE, 2026-08-30 — GAP-3's prediction was directionally right and named the wrong
 > check.** The cover was derived for JSSATE (0.1022 km², the same scale as RNSIT's 0.0998 km²) from
-> a pinned snapshot with `h3-js@4.5.0` at the unchanged resolutions. Standard `polygonToCells`
+> a pinned snapshot with `h3-js@4.5.0` at the resolutions then in force (**fine 8 / coarse 5**).
+> Standard `polygonToCells`
 > returns **0 fine cells**, because a res-8 cell averages 0.7373 km² and no cell centre falls inside
 > a polygon roughly one seventh that size. **The binding failure is therefore V-8 (empty cover), not
 > V-9** — and `cover.cardinalityException` **cannot** rescue it, because that exception is read only
@@ -262,6 +271,42 @@ routed back to whoever supplied a valid boundary.
 > Measurements, refusals and consequences:
 > [`B1_EXTERNAL_INPUT_HANDOFF.md`](../phase15/B1_EXTERNAL_INPUT_HANDOFF.md) §1.8.3–§1.8.5. **This
 > note corrects a predicted exposure in §8.3 only; §1's decision is untouched.**
+
+> **⚠ THE NOTE ABOVE IS SUPERSEDED — annotated 2026-09-19. §1's boundary decision is NOT affected.**
+>
+> **What still stands, unchanged:** §1's adoption of `way/1120154292` **verbatim and unmodified**,
+> the parking-lot exclusion by 0.7 m, the prohibition on buffering, enlargement or simplification,
+> and every refusal recorded in this document. **This annotation changes no owner decision.** It
+> corrects an *engineering measurement note* whose premise — H3 fine = resolution 8 — was later
+> changed by a different owner decision.
+>
+> `RD-2026-09-14-01` **D2** (ADR-35) adopted **`FINE` = H3 resolution 11**. Re-measured on the
+> adopted geometry:
+>
+> | | res 8 (the note above) | res 11 (**adopted**) |
+> |---|---|---|
+> | RNSIT `way/1120154292` | 0 fine cells | **45** centre-contained · **64** D6 index |
+> | JSSATE `way/1120154290` | 0 fine cells | **43** centre-contained · **69** D6 index |
+> | Binding condition | **V-8** | **V-9** |
+> | `cardinalityException` | cannot rescue (V-9 never runs) | **applies** — the documented discharge |
+>
+> So *"the binding failure is therefore V-8, not V-9"* is now **inverted**: V-8 does not fire on a
+> non-empty cover, and the applicable condition is **V-9**, which the declared
+> `cardinalityException` is designed to discharge. *"There is no V-8 exception mechanism"* remains
+> true as mechanics, but is no longer the operative constraint.
+>
+> *"The escalation target is NOT DEFINED"* is also no longer load-bearing for this item: the
+> coverage-semantics question was decided by `RD-2026-09-14-01` **D6** — `containmentOverlapping`
+> permitted as **index membership only**, conferring **no** delivery-domain membership, with
+> `containmentOverlappingBbox` **still REFUSED**. **No approval or escalation authority was invented
+> to reach that**; the owner's refusal was narrowed in scope, explicitly and on the record, never
+> overturned. Non-campus ground remains non-serviceable — now refused per destination by the
+> exact-coordinate geofence pinned on `Stop.geofenceResult`, which is strictly tighter than a cover
+> could be.
+>
+> **Still an owner act, and not claimed as done here:** writing the `cardinalityException`
+> declaration. See [`ADR-35`](../adr/ADR-35-v1-fine-cell-resolution.md) and
+> [`RD-2026-09-14-01`](RD-2026-09-14-01-v1-two-layer-spatial-model.md).
 
 ### 8.4 Two-campus region modelling is unresolved — GAP-4
 
