@@ -529,16 +529,39 @@ attestation or a compute run that no commit in this repository can supply.
 
 **For a human / the programme (these unblock Phase 15):**
 
-1. **D1 — partially answered 2026-08-30, still BLOCKED, and no longer waiting on the region
-   declaration.** The owner has declared two independent campus regions (`rnsit-bengaluru`,
+1. **D1 — partially answered 2026-08-30, and the coverage sub-blocker is CLOSED as of
+   2026-09-14.** The owner has declared two independent campus regions (`rnsit-bengaluru`,
    `jssate-bengaluru`) with names, `kind`, CRS, versions and an adopted boundary feature each, and
-   JSSATE's geometry is pinned as an external snapshot. What is now needed is **an escalation
-   authority**: the approved boundaries are smaller than one H3 res-8 cell, standard coverage
-   returns zero cells so **V-8** fires, `cardinalityException` cannot rescue it, and the owner has
-   **refused** both over-assigning containment modes. **No Architecture, Commercial or approval
-   authority exists to resolve it, and none may be invented.** Also still outstanding: the RNSIT
-   snapshot artefact and every governance record. See
-   [`B1_EXTERNAL_INPUT_HANDOFF.md`](B1_EXTERNAL_INPUT_HANDOFF.md) §1.8.
+   JSSATE's geometry is pinned as an external snapshot.
+
+   > **AMENDED 2026-09-19 — the escalation-authority requirement recorded here is DISCHARGED.**
+   > This item previously read: *"What is now needed is an escalation authority: the approved
+   > boundaries are smaller than one H3 res-8 cell, standard coverage returns zero cells so V-8
+   > fires, `cardinalityException` cannot rescue it … No Architecture, Commercial or approval
+   > authority exists to resolve it, and none may be invented."*
+   >
+   > Every clause of that was true **at H3 resolution 8**. `RD-2026-09-14-01` **D2** / ADR-35
+   > adopted **`FINE` = H3 resolution 11**, and the arithmetic changed with it: standard
+   > centre-contained coverage of the adopted RNSIT boundary returns **45 cells** and the D6 index
+   > cover **64**, so **the V-8 (empty-cover) conclusion no longer applies**. The applicable
+   > condition is now **V-9** (cardinality band), whose documented discharge is the declared
+   > `cardinalityException` — which *does* apply, because V-9 runs only on a non-empty cover.
+   > JSSATE demonstrates the same change (`way/1120154290`: 0 cells at res 8; **43**
+   > centre-contained and **69** index at res 11).
+   >
+   > **No approval authority was invented and none is needed.** The resolution question was
+   > decided by an owner decision record, and the owner's refusal of geographic over-assignment
+   > was **narrowed in scope by D6, not overturned**: `containmentOverlapping` is permitted as
+   > **index membership only** and confers no delivery-domain membership;
+   > `containmentOverlappingBbox` remains **REFUSED**. Delivery-domain membership is the
+   > exact-coordinate verdict pinned at intake on `Stop.geofenceResult` (D1 / ADR-28).
+   >
+   > **What remains an owner act:** writing the `cardinalityException` declaration itself. That is
+   > not performed in code and is not claimed here as discharged.
+
+   Also still outstanding: the RNSIT snapshot artefact and every governance record. See
+   [`B1_EXTERNAL_INPUT_HANDOFF.md`](B1_EXTERNAL_INPUT_HANDOFF.md) §1.8 and
+   [`ADR-35`](../adr/ADR-35-v1-fine-cell-resolution.md).
 2. **Product + Fleet Engineering answer D3** — the agent classes operated and, per distinct mobility
    model, §2.2's six elements with a real speed model.
 3. **Operations answer D8** — extract identity, source, vintage (ISO), refresh cadence,

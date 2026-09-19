@@ -286,16 +286,34 @@ D1 additionally releases: the cell cover (Engineering), the charger catalogue (O
 required, not optional), V-11 disjointness, V-12 containment, V-13 margin, D2's residual (N23), and
 `projectCell()` (N27).
 
-**D1's live sub-blocker since 2026-08-30 is architectural, not a missing input.** The approved
-JSSATE boundary is ≈0.1022 km² against a ≈0.7373 km² H3 res-8 cell, so standard `polygonToCells`
-returns **zero** fine cells and **V-8 fires** — and `cover.cardinalityException` cannot rescue it,
-because that exception is read only inside the V-9 branch. The owner has **refused** both
-over-assigning containment modes (`containmentOverlapping`, `containmentOverlappingBbox`) and has
-escalated the coverage-semantics question, but **the escalation target is NOT DEFINED**: RobotX has
-no separate Architecture, Commercial or approval authority, and none may be invented or inferred.
-So D1 is currently blocked on a **governance vacuum**. Measurements, refusals and consequences:
-[`B1_EXTERNAL_INPUT_HANDOFF.md`](B1_EXTERNAL_INPUT_HANDOFF.md) §1.8.3–§1.8.5. **D3 and B-M are not
-behind this escalation.**
+**D1's coverage sub-blocker — RESOLVED 2026-09-14 by `RD-2026-09-14-01` D2/D6 (amended here
+2026-09-19).**
+
+This paragraph previously recorded D1 as *"blocked on a governance vacuum"*, on the grounds that
+the approved JSSATE boundary (≈0.1022 km²) was smaller than a ≈0.7373 km² **H3 res-8** cell, so
+standard `polygonToCells` returned **zero** fine cells, **V-8 fired**, and
+`cover.cardinalityException` could not rescue it because that exception is read only inside the V-9
+branch — with the coverage-semantics escalation target **NOT DEFINED**.
+
+**That was correct at resolution 8 and is historical.** ADR-35 / `RD-2026-09-14-01` **D2** adopted
+**`FINE` = H3 resolution 11**. Under the adopted geometry the covers are non-empty — RNSIT **45**
+centre-contained / **64** D6 index, JSSATE `way/1120154290` **43** / **69** — so **the V-8
+empty-cover conclusion no longer applies to either campus**. The applicable validation condition is
+**V-9**, and because V-9 runs only on a non-empty cover, the declared `cardinalityException` **is**
+the available and documented discharge route.
+
+**No escalation authority was invented, and none is now required for this item.** The resolution
+question was settled by an owner decision record. The owner's refusal of geographic
+over-assignment was **narrowed by D6, not overturned**: `containmentOverlapping` is permitted as
+**index membership only** and confers no delivery-domain membership;
+`containmentOverlappingBbox` remains **REFUSED**. Delivery-domain membership is the
+exact-coordinate verdict pinned at intake on `Stop.geofenceResult`.
+
+**Still an owner act, and not claimed as done:** writing the `cardinalityException` declaration.
+Measurements and the standing refusals:
+[`B1_EXTERNAL_INPUT_HANDOFF.md`](B1_EXTERNAL_INPUT_HANDOFF.md) §1.8.3–§1.8.5 and
+[`ADR-35`](../adr/ADR-35-v1-fine-cell-resolution.md). **D3 and B-M were never behind this
+escalation.**
 
 **Required engineering work after the dependency arrives:**
 1. B1 Steps 1, 3, 4 — deploy, benchmark, record.

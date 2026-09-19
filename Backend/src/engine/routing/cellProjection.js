@@ -14,60 +14,77 @@
  * ── It reuses `spatial/cells.js` and adds no second coordinate system ──────
  * The cell → point map is `spatial/cells.centreOfCell`, which is already the repository's
  * only cell-geometry function and already carries the convention that nothing outside that
- * module calls `h3-js` directly. Nothing is re-derived here; the H3 resolutions are B5's and
- * are not touched, read as tunable, or overridden.
+ * module calls `h3-js` directly. Nothing is re-derived here; the H3 resolutions are the
+ * declared spatial model's (ADR-35, `FINE` = 11 / `COARSE` = 5) and are not touched, read as
+ * tunable, or overridden.
  *
  * ═══════════════════════════════════════════════════════════════════════════
- *  THE RNSIT FINDING — measured on this tree, and reported rather than worked around
+ *  WHY THIS GUARD EXISTS — and what the adopted resolution changed about it
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * The adopted RNSIT serviceable boundary (`way/1120154292`, RD-2026-08-30-01) encloses
- * **0.0998 km²**. An H3 resolution-8 cell averages **0.7373 km²**. Measured on this tree with
- * `h3-js@4.5.0` at the resolutions `cells.js:181-184` fixes as `@structural B5`:
- *
- *   * the campus boundary's vertices fall in **3 distinct res-8 cells**
- *     (`8860145105fffff`, `8860145129fffff`, `886014512bfffff`);
- *   * standard `polygonToCells` at res 8 returns **0 cells**, and at res 5 also **0**;
- *   * **every one of those three cells has its centre OUTSIDE the campus polygon.**
- *     `8860145105fffff`'s centre is at 12.896460, 77.517454 — roughly 270 m south of the
- *     campus, on the far side of the perimeter.
- *
- * The third measurement is this module's problem and it is a hard one. `centreOfCell` is the
- * only deterministic cell → point map that exists, and at RNSIT it yields a coordinate the
- * serviceability oracle correctly calls `OUTSIDE`. A projection that returned it anyway
+ * `centreOfCell` is the only deterministic cell → point map that exists. It can yield a
+ * coordinate the serviceability oracle calls `OUTSIDE`. A projection that returned it anyway
  * would hand the routing engine a start or end point **outside the region RobotX has
  * committed to serve**, and the engine would answer with a perfectly well-formed route
  * between two points that are not on the campus. That is not a missing answer; it is a
  * plausible wrong one, which is the failure class R13 and `assertVersionInKey` exist to
  * prevent, and it is exactly what §16 of the owner's decision forbids: *"do not silently
- * move an order outside the campus."*
+ * move an order outside the campus."* **That is the whole reason for the guard, and it is
+ * independent of any resolution.**
  *
- * So the guard below refuses, and at RNSIT it refuses **every** cell. That is the truthful
- * report: **the cell-keyed routing identity cannot represent intra-campus RNSIT routes at
- * the frozen resolution.** It is the same arithmetic behind the V-8 finding in
- * `B1_EXTERNAL_INPUT_HANDOFF.md` §1.8.3, surfacing one layer further down, and it is
- * **not** fixed here:
+ * ── Historical: the res-8 finding this module was written against (SUPERSEDED) ──
+ * When `FINE` was H3 resolution 8, the adopted RNSIT boundary (`way/1120154292`,
+ * RD-2026-08-30-01) enclosed **0.0998 km²** against a res-8 cell's **0.7373 km²** average.
+ * Measured then: the boundary's vertices fell in **3 distinct res-8 cells**, standard
+ * `polygonToCells` returned **0 cells** at res 8 and at res 5, and **all three** of those
+ * cells had centres outside the polygon. The consequence was that this guard refused *every*
+ * RNSIT cell, and the honest report was that the cell-keyed routing identity could not
+ * represent intra-campus RNSIT routes at that resolution.
  *
- *   * changing the resolution is **B5/D2**, and `cells.js` has one global pair with no
- *     override path (`regionBoundary.d2ResidualCheck` says which way to resolve it is
- *     Architecture's, *"on this evidence — it is not resolved here"*);
- *   * selecting `containmentOverlapping` or `containmentOverlappingBbox` to manufacture a
- *     non-empty cover is a **standing owner refusal** (§1.8.4), and a mode chosen because it
- *     makes a validator pass is the check answering itself;
- *   * the escalation target for the spatial-model question is **NOT DEFINED** (§1.8.5), and
- *     §1.8.5 says outright: do not invent one.
+ * **That is historical evidence, not the current V1 geometry.** It is retained because it is
+ * what motivated the guard, and because `spatialRnsitCover.test.js` pins it against literal
+ * resolutions so it cannot be quietly rewritten.
  *
- * The consequence for this batch is recorded in the final report and nowhere else is it
- * papered over. `routePoints()` on the production router serves the owner's actual
- * delivery-domain requirement — any valid point inside the campus — **without** the cell
- * cache, and says so.
+ * ── Current: the adopted model is resolution 11 (ADR-35 / RD-2026-09-14-01 D2) ──
+ * A res-11 cell averages **≈2 149.6 m²** (≈28.66 m average edge). Measured on this tree with
+ * `h3-js@4.5.0` at the resolutions `cells.js` fixes as `@structural ADR-35`:
+ *
+ *   * the adopted boundary's vertices fall in **16 distinct fine cells**, of which **6 have
+ *     centres INSIDE the campus** and 10 outside;
+ *   * standard centre-contained `polygonToCells` returns **45 cells** (res 5 is still 0 for a
+ *     campus this size, and the coarse band is an index parent, not a cover);
+ *   * an in-campus coordinate's own fine cell projects to an in-campus point — the food court
+ *     at 12.900864, 77.516765 maps to `8b6014512b26fff`, whose centre 12.900889, 77.516755
+ *     the oracle calls `INSIDE`.
+ *
+ * So this guard **no longer refuses every RNSIT cell**, and the cell-keyed routing identity
+ * **can** now represent intra-campus RNSIT routes. What is unchanged is the refusal itself:
+ * a cell whose representative coordinate falls outside the region is still refused, and
+ * `routingProductionSeam.test.js` asserts that resolution-independently.
+ *
+ * ── What that did and did not resolve ──────────────────────────────────────
+ *   * The **resolution** question is decided: ADR-35 / `RD-2026-09-14-01` **D2**. It is no
+ *     longer an open B5/D2 residual, and no approval authority was invented to close it.
+ *   * `containmentOverlapping` is **permitted as INDEX MEMBERSHIP ONLY** by
+ *     `RD-2026-09-14-01` **D6** (index cover: **64 cells**); it confers **no** delivery-domain
+ *     membership. `containmentOverlappingBbox` remains **REFUSED**. The owner's refusal of
+ *     geographic over-assignment was narrowed in scope, never overturned, and a mode chosen
+ *     because it makes a validator pass would still be the check answering itself.
+ *   * The former **V-8** (empty cover) conclusion no longer applies to the adopted geometry.
+ *     The applicable condition is **V-9**, whose documented discharge is the declared
+ *     `cardinalityException` — an owner act, not performed in code. See
+ *     `B1_EXTERNAL_INPUT_HANDOFF.md` §1.8.3.
+ *
+ * `routePoints()` on the production router still serves the owner's actual delivery-domain
+ * requirement — any valid point inside the campus — **without** the cell cache, and says so.
+ * Delivery-domain membership remains the intake-pinned `Stop.geofenceResult`, never a cell.
  *
  * ── The supplied-representative-point seam ────────────────────────────────
  * A caller may supply a cell → representative point map. It is **external input**, in the
  * same class as the charger catalogue: supplied, never fabricated here, and validated
  * against the serviceable boundary exactly as a cell centre is. It exists so that a
  * deployment which has published real representative delivery points can use them; it is
- * **not** a mechanism for giving RNSIT's three cells plausible in-campus coordinates,
+ * **not** a mechanism for giving an off-campus cell a plausible in-campus coordinate,
  * because a point chosen to make a cell pass this guard would be this module deciding where
  * a cell "really is", which is the same over-assignment the owner refused.
  *
@@ -215,12 +232,12 @@ function createCellProjection(input) {
             `${verdict.status} relative to the serviceable region. ${verdict.reason}\n` +
             "This is refused rather than routed. Handing a routing engine an origin or destination outside the " +
             "committed serviceable area yields a well-formed route between two points that are not on the campus " +
-            "— a plausible wrong answer rather than a missing one. At RNSIT this refusal is expected for every " +
-            "cell: the campus is ~0.0998 km² against a 0.7373 km² res-8 cell, so all three cells its boundary " +
-            "touches have centres outside it. That is the spatial-model escalation of " +
-            "B1_EXTERNAL_INPUT_HANDOFF.md §1.8.3-§1.8.5, whose escalation target is NOT DEFINED; it is not " +
-            "resolved by this projection and must not be resolved by widening the boundary or by selecting a " +
-            "containment mode the owner has refused",
+            "— a plausible wrong answer rather than a missing one. Under the adopted spatial model (ADR-35, FINE = " +
+            "H3 resolution 11) a cell that overlaps the campus boundary may still have its centre outside it, so " +
+            "this refusal is expected for boundary cells and is NOT expected for interior ones. It must not be " +
+            "resolved by widening the boundary, by selecting a containment mode the owner has refused, or by " +
+            "supplying a representative point chosen to make this check pass. Delivery-domain membership for the " +
+            "order's own destination is the intake-pinned Stop.geofenceResult, never this cell verdict",
         );
       }
 

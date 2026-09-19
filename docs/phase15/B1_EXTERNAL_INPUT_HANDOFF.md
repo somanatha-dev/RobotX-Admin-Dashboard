@@ -194,7 +194,7 @@ Validated by `validateCover` ([`regionBoundary.js:533-581`](../../Backend/src/en
 
 | Entry field | Rule |
 |---|---|
-| `cellId` | Default (no `indexing` declared) → treated as **H3** and must be a **valid H3 index at the expected resolution**: fine → **H3 resolution 8**, coarse → **H3 resolution 5** (`cells.js:181-184`). A wrong-resolution index *"silently changes the cache key space (§20.3) and the k-ring distance bounds (§6.3)"* |
+| `cellId` | Default (no `indexing` declared) → treated as **H3** and must be a **valid H3 index at the expected resolution**: fine → **H3 resolution 11**, coarse → **H3 resolution 5** (`@structural ADR-35` in `cells.js`; **amended 2026-09-19** — this row read *"fine → H3 resolution 8"* under the superseded model, and a res-8 token now decodes to `null`, never to `FINE`). A wrong-resolution index *"silently changes the cache key space (§20.3) and the k-ring distance bounds (§6.3)"* |
 | `indexing` | Optional. If present must be `H3` or `SITE_LOCAL_GRAPH_ZONE` (`regionBoundary.js:457-464`). Any other value is refused |
 | `siteId` | **Required** when `indexing === "SITE_LOCAL_GRAPH_ZONE"` — §6.2's indoor / multi-level carve-out is *site-local*, and a token claiming it without a site *"cannot be told apart from a fabricated cell id"* (N21) |
 
@@ -332,10 +332,36 @@ snapshot's own SHA-256 is currently the only pin on that geometry.
 **The snapshot does not resolve the spatial-model question in §1.8.3.** It pins a geometry; it
 decides nothing about how that geometry is covered.
 
-#### 1.8.3 The V-8 finding — measured, and it is not §1.4's V-9 problem
+#### 1.8.3 The V-8 finding — HISTORICAL (resolution 8). Under the adopted model it is a V-9 question
 
-Derived from the pinned JSSATE snapshot with `h3-js@4.5.0`, at the resolutions `cells.js:181-184`
-fixes as `@structural B5`. **No resolution was changed.**
+> ### ⚠ SUPERSEDED 2026-09-14 by `RD-2026-09-14-01` **D2** / ADR-35 — annotated 2026-09-19
+>
+> **Everything in §1.8.3 below is a correct measurement at H3 resolution 8, and is retained as
+> historical evidence. It is NOT the current V1 geometry, and its conclusion is inverted under the
+> adopted model.**
+>
+> | | at resolution 8 (below) | at resolution 11 (**adopted**) |
+> |---|---|---|
+> | RNSIT standard `polygonToCells` | 0 cells | **45** centre-contained, **64** D6 index |
+> | JSSATE (`way/1120154290`) | 0 cells | **43** centre-contained, **69** D6 index |
+> | Binding validation condition | **V-8** (empty cover) | **V-9** (cardinality band) |
+> | `cover.cardinalityException` | **cannot** rescue — V-9 never runs on an empty cover | **applies** — V-9 runs, and the declared exception is its documented discharge |
+>
+> So the sentence below that *"treating this as a V-9 problem is the specific misreading to
+> avoid"* was right at resolution 8 and is **exactly inverted now**: under the adopted model it
+> **is** a V-9 question, and V-9 has a discharge mechanism that V-8 never had. The statement
+> *"No resolution was changed"* was true when written; **the resolution has since been changed by
+> owner decision** — `@structural ADR-35` in `cells.js`, not `@structural B5`.
+>
+> **What did not change:** there is still no V-8 exception mechanism (V-8 simply no longer
+> fires); the owner's refusal of `containmentOverlappingBbox` still stands; `containmentOverlapping`
+> is permitted for **index membership only** (D6) and confers no delivery-domain membership; and
+> **writing the `cardinalityException` declaration remains an owner act**, not performed in code.
+> No approval or escalation authority was invented to reach any of this.
+
+Derived from the pinned JSSATE snapshot with `h3-js@4.5.0`, at the resolutions `cells.js` then
+fixed as `@structural B5` — **resolution 8 fine / 5 coarse, the model in force when this was
+measured.** No resolution was changed *by this measurement*; it was changed later, by D2.
 
 | Quantity | Measured |
 |---|---|
@@ -344,14 +370,19 @@ fixes as `@structural B5`. **No resolution was changed.**
 | Standard `polygonToCells`, res 8 | **0 cells** |
 | Standard `polygonToCells`, res 5 | **0 cells** |
 
-The approved region is roughly **one seventh of a single fine cell**, so no res-8 cell centre falls
-inside it. **V-8 fires** (`regionBoundary.js:548-553`), and the cover is `INVALID` → D1 **FAIL**.
+The approved region was roughly **one seventh of a single res-8 fine cell**, so no res-8 cell centre
+fell inside it. **At resolution 8, V-8 fired** (`regionBoundary.js:548-553`), and the cover was
+`INVALID` → D1 **FAIL**. *(At the adopted resolution 11 the cover is non-empty and V-8 does not
+fire — see the supersession box above.)*
 
-**V-8 is not rescued by `cover.cardinalityException`.** The exception is read only inside the V-9
-branch, which is itself guarded by `fineCells.length > 0` (`regionBoundary.js:556-566`). On an
-empty cover V-9 never runs and the exception is never consulted. **There is no V-8 exception
-mechanism.** §1.4's cardinality band is therefore not the binding constraint here, and treating
-this as a V-9 problem is the specific misreading to avoid.
+**At resolution 8, V-8 was not rescued by `cover.cardinalityException`.** The exception is read only
+inside the V-9 branch, which is itself guarded by `fineCells.length > 0`
+(`regionBoundary.js:556-566`). On an **empty** cover V-9 never runs and the exception is never
+consulted. **There is no V-8 exception mechanism** — that mechanics statement remains true. What
+changed is which condition binds: at resolution 8, §1.4's cardinality band was not the binding
+constraint and treating it as a V-9 problem was the misreading to avoid; **at the adopted
+resolution 11 the cover is non-empty, V-9 is precisely the binding condition, and the declared
+exception is its documented discharge.**
 
 **Recorded as measured fact, not as options to pick from:**
 
@@ -852,9 +883,12 @@ module.exports = {
 
   // Derived by Engineering from the APPROVED boundary. Validated here, never computed here.
   cover: {
-    fineCells:   "<<YOUR_FINE_CELL_COVER>>",   // [{ cellId: <H3 res 8>, siteId?, indexing? }]
+    fineCells:   "<<YOUR_FINE_CELL_COVER>>",   // [{ cellId: <H3 res 11 — ADR-35>, siteId?, indexing? }]
     coarseCells: "<<YOUR_COARSE_CELL_COVER>>", // [{ cellId: <H3 res 5>, … }]
     // cardinalityException: "<<REQUIRED ONLY IF fineCells.length IS OUTSIDE 1000..100000>>",
+    // ^ For a campus of RNSIT/JSSATE scale this IS required: the adopted res-11 covers are
+    //   45-69 cells, below the band's lower bound. This is V-9, and the declared exception is
+    //   its documented discharge. (Amended 2026-09-19: this template said `H3 res 8`.)
   },
 
   // Required, not optional. V-12: every cellId must be in the cover above.
