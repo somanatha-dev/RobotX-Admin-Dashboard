@@ -60,6 +60,7 @@ const legEntryDeadline = require("../../engine/cutover/legEntryDeadline");
 // writes no row the engine reasons from. See the module header for the four rules that
 // keep it a projection and the test that asserts them structurally.
 const assignmentProjection = require("../../services/assignmentProjection.service");
+const legProgress = require("../../services/legProgress.service");
 
 /**
  * Resolve the Agent row backing a robot socket.
@@ -86,6 +87,30 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
   // handler's own dispatch settings and is a different object; the shard half of the
   // cutover switch resolves against the published snapshot, which only `appLocals` carries.
   const configOf = () => appLocals?.config ?? null;
+
+  /**
+   * A register value for the response path: the value injected at registration if one was,
+   * otherwise the pinned configuration's, read **at call time** (the P15-R2 accessor rule
+   * `configOf` already follows). `server.js` injects none — `socket.server.js` documents
+   * `engineDispatchConfig` as left undefined until the engine is switched on — so every
+   * OFFER_ACCEPT failed on `lease.duration resolved to undefined` inside the transaction
+   * (measured on the V1 demonstration path, 2026-09-23). Absent from both, it stays
+   * undefined and the lease grant refuses by name, as before.
+   *
+   * @param {string} injected the `settings` field
+   * @param {string} name the register name
+   * @returns {*}
+   */
+  const settingOrPinned = (injected, name) => {
+    if (settings[injected] !== undefined && settings[injected] !== null) return settings[injected];
+    const snapshot = configOf();
+    if (!snapshot || typeof snapshot.resolve !== "function") return undefined;
+    try {
+      return snapshot.resolve(name, {});
+    } catch {
+      return undefined;
+    }
+  };
 
   /**
    * Publish an accepted assignment to the surfaces built against the legacy schema.
@@ -294,13 +319,28 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
     }
   }
 
+  // §4.4 custody — the agent's commitment-scoped report of a pickup or handover, admitted
+  // only at a stop the server has itself verified the agent reached (`legProgress`).
+  socket.on("CUSTODY_EVENT", async (payload) => {
+    try {
+      if (!allow(socket, "CUSTODY_EVENT", RESPONSE_RATE)) return;
+      const snapshot = configOf();
+      if (!agentGate.mayAct({ socket, snapshot, nowMs: Date.now() })) return;
+      const robotId = toStringOrNull(socket.data.robotId);
+      const outcome = await legProgress.onCustodyReport({ prisma, robotId, report: payload || {}, snapshot });
+      log.info("CUSTODY_EVENT handled", { robotId, kind: payload && payload.kind, outcome: outcome && outcome.outcome, reason: (outcome && outcome.reason) || null, to: (outcome && outcome.to) || null });
+    } catch (e) {
+      log.error("CUSTODY_EVENT handler failed", { message: e?.message });
+    }
+  });
+
   socket.on("OFFER_ACCEPT", (payload) =>
     handle("OFFER_ACCEPT", payload, (tx, context) =>
       offers.applyAccept(tx, {
         commitment: context.commitment,
         leg: context.leg,
         storeTime: context.storeTime,
-        leaseDurationSeconds: settings.leaseDurationSeconds,
+        leaseDurationSeconds: settingOrPinned("leaseDurationSeconds", "lease.duration"),
         // §12.2 — renewal takes commitment-scoped positive evidence, which is exactly
         // what the response carries. A generic acknowledgement renews nothing.
         evidence: { commitmentId: context.data.commitmentId, fence: context.data.fence },
@@ -315,7 +355,7 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
         leg: context.leg,
         storeTime: context.storeTime,
         reason: context.data.reason,
-        nackCooloffSeconds: settings.nackCooloffSeconds,
+        nackCooloffSeconds: settingOrPinned("nackCooloffSeconds", "dispatch.nack_cooloff"),
       });
 
       // §11.2 — "reason recorded as a **feasibility observation** and reconciled

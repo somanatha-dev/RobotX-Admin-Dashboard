@@ -178,7 +178,15 @@ function evaluate(context) {
     });
   }
   if (energy === null || typeof energy !== "object") {
-    return tv.indeterminate({ required: REQUIRED, inputSource: "PLAN", reason: "the plan's energy projection is unreadable" });
+    const unresolved = Array.isArray(plan.energyUnresolved) ? plan.energyUnresolved : [];
+    return tv.indeterminate({
+      required: REQUIRED,
+      inputSource: "PLAN",
+      reason:
+        unresolved.length > 0
+          ? `the plan's energy projection could not be built: ${unresolved.join("; ")}`
+          : "the plan's energy projection is unreadable",
+    });
   }
 
   const probabilities = energy.tierProbabilities;

@@ -94,6 +94,7 @@ const schedulerClient = require("../engine/energy/chargingSchedulerClient");
 const { compareStrings } = require("../engine/determinism/ordering");
 const commitment = require("../engine/commitment/commit");
 const offers = require("../engine/dispatch/offers");
+const legEntryDeadline = require("../engine/cutover/legEntryDeadline");
 const planStateModel = require("../engine/shard/planState");
 const legMachine = require("../engine/lifecycle/legMachine");
 const { energyCoefficientsFrom, fleetBestCaseFrom } = require("../engine/domain/mappers/decisionInputs");
@@ -111,6 +112,22 @@ const MS_PER_SECOND = 1000;
  * @structural §11.2's post-commit Leg state, resolved from the state machine
  */
 const COMMITTED_LEG_STATE = legMachine.LEG_STATE.OFFERED;
+
+/**
+ * The states a queue-driven commit may move a Leg *from*: waiting for an agent. G6
+ * (`commitment/guards`) checks the Leg against the state the decision expected, and this
+ * composer used to pass the state it happened to load — so a Leg already OFFERED, ACCEPTED
+ * or AT_PICKUP satisfied G6 and was committed to a second agent (measured on the V1
+ * demonstration path, 2026-09-23). A Leg outside this set is now expected to be in it, and
+ * G6 refuses it by name.
+ * @structural §4.3's pre-assignment states, resolved from the state machine
+ */
+const ASSIGNABLE_LEG_STATES = Object.freeze([
+  legMachine.LEG_STATE.QUEUED,
+  legMachine.LEG_STATE.PLANNED,
+  legMachine.LEG_STATE.DEFERRED,
+  legMachine.LEG_STATE.REASSIGNING,
+]);
 
 /**
  * The Availability Index classes that mean *"free now"* — read from `expansion.js` rather
@@ -131,6 +148,92 @@ const READY_AVAILABILITY_CLASSES = expansion.READY_CLASSES;
  * @structural §7.5 F18's own subsystem label, as `consumeReservations` writes it
  */
 const CHARGING_SUBSYSTEM = "CHARGING";
+
+/**
+ * The §7.5 agent-snapshot fields an injected `agentFactsFor` provider may supply — each one
+ * a field a predicate reads and no column carries. A whitelist, so a provider can never
+ * replace a column-derived field (position, lifecycle, energy, identity).
+ * @structural the predicates' own field names
+ */
+const AGENT_FACT_FIELDS = Object.freeze([
+  "commissioning", // F1
+  "operatorHold", // F3
+  "quarantined", // F3
+  "permittedTenants", // F4
+  "firmwareVersion", // F5
+  "firmwareVersionSource", // F5
+  "calibrations", // F6
+  "emergencyStop", // F7
+  "faults", // F8
+  "healthTier", // F9
+  "localisation", // F10
+  "reliability", // F11
+  "advisories", // F12
+  "session", // F13, F14, F15
+  "autonomousDeadZoneCertified", // F15
+  "safetyRelevantObservations", // F16, C_risk staleness
+  "reservations", // F18
+  "authorisedZoneIds", // F27
+  "maintenance", // F36
+  "provenance",
+]);
+
+/**
+ * §7.5 F19's `latestFeasibleStartMs` for one plan — **derived, not declared**.
+ *
+ * The latest instant this plan can start and still finish by the Leg's deadline is the
+ * deadline less the plan's own duration. A Leg with no deadline has no such bound beyond
+ * the commitment horizon the plan is committed over (§13), so that horizon is the bound.
+ * Nothing is invented: both branches are arithmetic on values the round already pinned.
+ *
+ * @param {object} leg
+ * @param {object} plan
+ * @param {number} decisionTimeMs
+ * @param {*} horizonSeconds `plan.commitment_horizon`
+ * @returns {number|undefined}
+ */
+function latestFeasibleStartFor(leg, plan, decisionTimeMs, horizonSeconds) {
+  const start = plan && plan.projectedStartMs;
+  const end = plan && plan.projectedEndMs;
+  if (isNumber(leg && leg.deadlineMs) && isNumber(start) && isNumber(end)) return leg.deadlineMs - (end - start);
+  if (isNumber(decisionTimeMs) && isNumber(horizonSeconds)) return decisionTimeMs + horizonSeconds * MS_PER_SECOND;
+  return undefined;
+}
+
+/**
+ * §7.5 F20's per-pairing exclusion set, derived from this Leg's durable Commitment history.
+ *
+ * `Commitment` records no release reason, so the NACK cooloff is taken **conservatively**:
+ * any released commitment of *this* agent on *this* Leg is treated as a refusal, and the
+ * pairing is excluded until `dispatch.nack_cooloff` after its release. That can exclude a
+ * pairing a reason column would admit; it can never admit one it would exclude.
+ *
+ * @param {object[]} commitments every Commitment row for the Leg
+ * @param {string} agentRowId
+ * @param {*} nackCooloffSeconds
+ * @returns {object}
+ */
+function legExclusionsFor(commitments, agentRowId, nackCooloffSeconds) {
+  const rows = Array.isArray(commitments) ? commitments : [];
+  const released = rows.filter((row) => row.releasedAt);
+  const live = rows.filter((row) => !row.releasedAt);
+  const mineReleased = released
+    .filter((row) => row.agentId === agentRowId)
+    .map((row) => new Date(row.releasedAt).getTime())
+    .sort((a, b) => b - a);
+  // A prior release with no resolvable cooloff cannot be bounded; `null` is read by F20 as
+  // an unreadable set and denies, rather than as "no cooloff".
+  if (mineReleased.length > 0 && !isNumber(nackCooloffSeconds)) return null;
+  return {
+    isIncumbent: live.some((row) => row.agentId === agentRowId),
+    reassignmentsSoFar: released.length,
+    cooloffUntil: null,
+    nackCooloffUntil:
+      mineReleased.length > 0 && isNumber(nackCooloffSeconds)
+        ? mineReleased[0] + nackCooloffSeconds * MS_PER_SECOND
+        : null,
+  };
+}
 
 /** Why an assembled collaborator refused. @structural the assembly's refusal taxonomy */
 const REFUSAL = Object.freeze({
@@ -167,6 +270,52 @@ const isFunction = (value) => typeof value === "function";
  */
 function pricedKey(legId, agentId) {
   return `${String(legId)}|${String(agentId)}`;
+}
+
+/**
+ * The round's agent-identity register — **the memo's single answer to "which agent".**
+ *
+ * ── The defect this closes ─────────────────────────────────────────────────
+ * Three producers name an agent three ways, and the memo sat in the middle of all of them:
+ *
+ *   · `candidates/availabilityIndex` is keyed on `Agent.id` (the **row** id), because
+ *     `indexMaintainer.assembleRecord` writes `agentId: agent.id`. So the `agentId`
+ *     `expansion.evaluateOne` hands to `evaluateExact`, and the `candidate.agentId`
+ *     `solve/round.plan` later passes to `pricedCandidateFor`, are row ids.
+ *   · `agentSnapshotLoaderFor` returns **both** (`agentId` business, `agentRowId` row),
+ *     and the memo was written under the business one.
+ *   · `commitment/commit.js` locks the `Agent` row and hands `volatileRecheck` that row,
+ *     whose `.agentId` is the **business** id.
+ *
+ * So `pricedCandidateFor(rowId, legId)` looked up a memo written under the business id,
+ * missed, and `round.plan` did `if (!entry) continue` — **silently**. Every surviving,
+ * feasible, priced candidate was dropped before it became a column: zero columns, zero
+ * assignments, no error anywhere. Measured directly: a commit driven with row ids aborts
+ * `ROUND_STATE_MISSING` and one driven with business ids aborts `AGENT_NOT_FOUND`, so the
+ * pairing succeeded under *neither* convention.
+ *
+ * ── Why a register rather than picking one identifier ──────────────────────
+ * Because all three producers are correct about their own layer, and the engine reads the
+ * business identifier by design while `commit.js` locks on the row id by design. Forcing
+ * one of them to change would push the mismatch somewhere else — into the decision record,
+ * or into the offer the agent receives. This records what the round has *already
+ * established*: `loadAgentSnapshot` resolved one identifier to a row carrying both, so the
+ * two names are known to be the same agent, and the memo is keyed on the canonical one.
+ *
+ * Nothing is inferred. An identifier this round has not resolved maps to itself, so an
+ * unknown agent still misses the memo exactly as before.
+ *
+ * @param {Map<string, string>} register
+ * @param {object} agentSnapshot
+ */
+function rememberAgentIdentity(register, agentSnapshot) {
+  if (!agentSnapshot) return;
+  const canonical = agentSnapshot.agentRowId;
+  if (typeof canonical !== "string" || canonical === "") return;
+  register.set(canonical, canonical);
+  if (typeof agentSnapshot.agentId === "string" && agentSnapshot.agentId !== "") {
+    register.set(agentSnapshot.agentId, canonical);
+  }
 }
 
 /**
@@ -315,19 +464,38 @@ function routingSeamFor(context) {
 function agentSnapshotLoaderFor(context) {
   const prisma = context.prisma;
 
-  return async function loadAgentSnapshot(agentId) {
+  /**
+   * @param {string} agentId
+   * @param {{ asOfMs?: number }} [options] the decision time the facts are for. A fact
+   *   observed after it was not known when the decision was taken (T6), and a predicate
+   *   measuring its age would read it as negative — stale — so the provider reads as of it.
+   */
+  return async function loadAgentSnapshot(agentId, options) {
+    const asOfMs = options && isNumber(options.asOfMs) ? options.asOfMs : undefined;
     const position = await prisma.agentCellPosition.findFirst({
-      where: { agentId },
+      // Either identifier, exactly as `legLoaderFor` already accepts either for a Leg.
+      // `AgentCellPosition.agentId` is the FK to `Agent.id`, so the availability index's
+      // row id matches directly; `commit.js` and the column carry the **business**
+      // identifier, and resolving it here is what stops a correct pairing aborting
+      // `AGENT_NOT_FOUND` at §10.3.2 step 1.
+      where: { OR: [{ agentId }, { agent: { agentId } }] },
       include: {
         agent: {
           include: {
+            // The Robot row carries the live session (`isOnline`, `lastSeenAt`), the
+            // legacy status the health tier derives from, and `massKg` — read by the
+            // agent-facts seam below and by §14.2's mass term. Never branched on here.
+            robot: true,
             batteryState: true,
             commitments: { where: { releasedAt: null } },
             agentClass: {
               include: {
                 mobilityModel: true,
                 energyModel: true,
-                containerModel: true,
+                // §15.2's compartments are the container: without them `container.normalise`
+                // reports "declares no compartments" for every agent, however it was
+                // commissioned.
+                containerModel: { include: { compartments: { orderBy: { ordinal: "asc" } } } },
                 capabilityBundle: true,
                 energyModelParams: { orderBy: { modelVersion: "desc" }, take: 1 },
               },
@@ -342,9 +510,28 @@ function agentSnapshotLoaderFor(context) {
     const agentClass = agent.agentClass || null;
     const params = agentClass && agentClass.energyModelParams ? agentClass.energyModelParams[0] : null;
     const battery = agent.batteryState || null;
-    const environment = isFunction(context.environmentFor) ? context.environmentFor(agent.agentId) : null;
+    const environment = isFunction(context.environmentFor) ? context.environmentFor(agent.agentId, agent) : null;
+
+    // The §7.5 agent facts no column carries (commissioning, e-stop, faults, session, …),
+    // from the injected provider or not at all. Absent, each stays `undefined` and its
+    // predicate denies by name — which is exactly what happened before this seam existed.
+    // Only the named fields are taken, so a provider cannot overwrite a column-derived one.
+    const facts = isFunction(context.agentFactsFor)
+      ? await context.agentFactsFor({
+          agent,
+          asOfMs,
+          config: (name) => resolve(coordinatorPipeline.snapshotFrom(context), name, {}),
+        })
+      : null;
+    const supplied = {};
+    if (facts && typeof facts === "object") {
+      for (const field of AGENT_FACT_FIELDS) {
+        if (facts[field] !== undefined) supplied[field] = facts[field];
+      }
+    }
 
     return {
+      ...supplied,
       // Identity. Both, deliberately: `commit.js` locks on `Agent.id` and every engine
       // module reads the business identifier, and conflating them is a defect
       // `diagnoseMissingRow` exists to name.
@@ -356,8 +543,13 @@ function agentSnapshotLoaderFor(context) {
       authorityEpoch: agent.authorityEpoch,
       fenceCounter: agent.fenceCounter,
       capacityOverride: agent.capacityOverride,
-      tenantId: agent.tenantId,
+      // The column wins; a provider's tenant fills only a null column (F4).
+      tenantId: agent.tenantId ?? (facts && facts.tenantId !== undefined ? facts.tenantId : agent.tenantId),
       fleetId: agent.fleetId,
+      // `Robot.massKg` — the commissioning column `robotSpecification` writes and §14.2's
+      // β_mass term needs. E-8b recorded it as "written and never read on the decision
+      // path"; `vehicleMassKgFor` reads it from here.
+      vehicleMassKg: agent.robot && isNumber(agent.robot.massKg) ? agent.robot.massKg : null,
       regionId: agent.regionId,
       homeDepotId: agent.homeDepotId,
 
@@ -1236,7 +1428,56 @@ function serviceabilityFor(snapshot) {
  */
 function planInputFor(input) {
   const { agentSnapshot, leg, hops, hopsForSequence, snapshot, scope, decisionTimeMs, seams } = input;
-  const payload = payloadFor(leg);
+  const itemised = payloadFor(leg);
+  // A Leg whose manifests itemise nothing takes the deployment's declared consignment, if
+  // it composed one (`v1DemonstrationProfile.consignmentFor`); otherwise it stays empty and
+  // §15's packing refuses by name, as before.
+  const declaredConsignment =
+    itemised.items.length === 0 && itemised.unresolved.length === 0 && isFunction(seams.defaultConsignmentFor)
+      ? seams.defaultConsignmentFor(leg)
+      : null;
+  const payload =
+    declaredConsignment && Array.isArray(declaredConsignment.items) && declaredConsignment.items.length > 0
+      ? { items: declaredConsignment.items, massKg: declaredConsignment.massKg, unresolved: [] }
+      : itemised;
+
+  // §14.5's two Safety rows, per agent where the agent's own model declares them.
+  //
+  // `agentEnergyDeclarationsFor` answers only for an agent whose energy model is a
+  // declaration rather than a fit — today, a simulated pack, whose floor is the simulator's
+  // own clamp and whose dispersion is its own speed jitter. For every other agent it
+  // answers nothing and the **register stays the authority**: unresolved there, the plan
+  // refuses by name, exactly as before. `diagnostics.controller` already reads the model's
+  // own `residualCv` ahead of the register; this is the same precedence on the decision path.
+  const declared = isFunction(seams.agentEnergyDeclarationsFor) ? seams.agentEnergyDeclarationsFor(agentSnapshot) : null;
+  const declaredResidualCv = declared && isNumber(declared.residualCv) ? declared.residualCv : undefined;
+  const declaredFloorWh = declared && isNumber(declared.reserveFloorWh) ? declared.reserveFloorWh : undefined;
+
+  // The stops as the gate reads them. `routable` is set only from the traversal this
+  // pairing actually resolved (F33's third conjunct), and a Stop whose access column nobody
+  // populated takes the deployment's declared prerequisites, if it declared any (F32).
+  const defaultAccess = Array.isArray(seams.defaultStopAccessPrerequisites) ? seams.defaultStopAccessPrerequisites : undefined;
+  const stopsForPlan = leg.stops.map((stop) => ({
+    ...stop,
+    routable: input.routable === true ? true : stop.routable,
+    accessPrerequisites: stop.accessPrerequisites !== undefined ? stop.accessPrerequisites : defaultAccess,
+  }));
+  const servicedStops = serviceabilityFor(snapshot)(stopsForPlan);
+
+  // §7.5 F27–F31's route facts and forecast, from the routing producer that planned this
+  // traversal. Absent for an agent no producer describes, and those predicates then deny.
+  const route = isFunction(seams.routeDescriptorFor)
+    ? seams.routeDescriptorFor({
+        agentSnapshot,
+        stops: servicedStops,
+        decisionTimeMs,
+        horizonSeconds: resolve(snapshot, "plan.commitment_horizon", scope),
+      })
+    : undefined;
+  const environmentForecast = isFunction(seams.environmentForecastFor) ? seams.environmentForecastFor(agentSnapshot) : undefined;
+  const thermalStressMultiplier = isFunction(seams.thermalStressMultiplierFor)
+    ? seams.thermalStressMultiplierFor(agentSnapshot)
+    : undefined;
 
   const vehicleMassKg = isFunction(seams.vehicleMassKgFor)
     ? seams.vehicleMassKgFor(agentSnapshot.agentClassId, agentSnapshot)
@@ -1297,9 +1538,12 @@ function planInputFor(input) {
         custodyAlreadyHeld: leg.custodyState === "HELD",
         // §3.6's assignment, resolved from the pinned map. Absent where the map is
         // absent — F33 then denies, which is the whole point of the seam.
-        stops: serviceabilityFor(snapshot)(leg.stops),
+        stops: servicedStops,
       },
     ],
+    ...(route === undefined ? {} : { route }),
+    ...(environmentForecast === undefined ? {} : { environmentForecast }),
+    ...(thermalStressMultiplier === undefined ? {} : { thermalStressMultiplier }),
     hops,
     hopsForSequence,
     serviceTime: {
@@ -1329,7 +1573,7 @@ function planInputFor(input) {
       model: agentSnapshot.energyCoefficients,
       kappa: agentSnapshot.kappa,
       usableWh: usableEnergy.ok ? usableEnergy.wh : undefined,
-      residualCv: resolve(snapshot, "energy.model_residual_cv", scope),
+      residualCv: declaredResidualCv ?? resolve(snapshot, "energy.model_residual_cv", scope),
       // `energy.variance_inflation` — the register's own name (§14.5's three inflation
       // factors, which `consumption.predictiveDistribution` names one by one when they do
       // not resolve). E-10 found this asked for `energy.uncertainty_inflation`, which the
@@ -1340,7 +1584,7 @@ function planInputFor(input) {
       // misspelling, which is why 42 green tests said nothing about it (§M.1, M-1).
       inflations: resolve(snapshot, "energy.variance_inflation", scope),
       severity: input.uncertaintySeverity,
-      floorWh: resolve(snapshot, "energy.reserve_floor_wh", scope),
+      floorWh: declaredFloorWh ?? resolve(snapshot, "energy.reserve_floor_wh", scope),
       operationalWh: resolve(snapshot, "energy.operational_reserve_wh", scope),
       contingencyQuantile: resolve(snapshot, "energy.contingency_quantile", scope),
       availabilityMargin: resolve(snapshot, "energy.charger_availability_margin", scope),
@@ -1444,6 +1688,10 @@ function evaluateExactFor(context, round) {
 
     const { leg, snapshot, scope } = state;
 
+    // The round has now resolved this agent's identifiers to one row — record it before
+    // anything keys the memo on either of them.
+    rememberAgentIdentity(round.agentIdentity, agentSnapshot);
+
     /* ── 1. The traversal, through the cell-pair cache ─────────────────────── */
     if (!agentSnapshot.cellId) return refuse(REFUSAL.MISSING_HOP, ["the agent has no resolved origin cell"]);
 
@@ -1497,6 +1745,9 @@ function evaluateExactFor(context, round) {
         chargerProjection: pinned.projection,
         targetSoc: target.targetSoc,
         targetSocSource: target.targetSocSource,
+        // Every hop of this pairing resolved (`traversal.ok`), so every stop is reachable
+        // by the routing producer that priced it — F33's `routable` conjunct, observed.
+        routable: true,
       }),
     );
     if (!built.ok) {
@@ -1515,9 +1766,15 @@ function evaluateExactFor(context, round) {
     // resolves (§M.4). The two scoping dimensions are the ones §22.2 declares; neither is
     // inferred from the other.
     const gateScope = { ...scope, agent_class: agentSnapshot.agentClassId ?? null };
+    const legExclusions = legExclusionsFor(
+      state.commitments,
+      agentSnapshot.agentRowId,
+      resolve(snapshot, "dispatch.nack_cooloff", gateScope),
+    );
+    const mission = round.missionForPlan(state, built.plan);
     const gated = feasibility.gate(built.plan, {
-      agentSnapshot: gatedAgentSnapshot(agentSnapshot, state.decisionTimeMs),
-      mission: round.missionFor(state),
+      agentSnapshot: { ...gatedAgentSnapshot(agentSnapshot, state.decisionTimeMs), legExclusions: legExclusions ?? null },
+      mission,
       plan: built.plan,
       config: { get: (name) => resolve(snapshot, name, gateScope) },
       decisionTimeMs: state.decisionTimeMs,
@@ -1548,7 +1805,17 @@ function evaluateExactFor(context, round) {
 
     const entry = {
       agentId: agentSnapshot.agentId,
-      legId: leg.legId,
+      // The Leg as the **solver** names it. `solve/round.plan` partitions and solves over
+      // `WorkQueue.legId` — the `Leg.id` row id — and `columnBuilder` builds each column's
+      // `legIds` from this field. Under the business `Leg.legId` the one column covered a
+      // Leg the partition did not contain, the real Leg was left uncovered, and a round
+      // with one Leg and one feasible agent reported LOST_TO_ANOTHER_LEG (measured). The
+      // memo stays keyed on the canonical business id; see `round.canonicalLegId`.
+      legId: leg.legRowId ?? leg.legId,
+      // Carried to §10.3.2 step 3 so the volatile recheck (F20 is volatile) evaluates the
+      // same exclusion set and mission this pairing was admitted on.
+      legExclusions: legExclusions ?? null,
+      mission,
       plan: gated.candidate,
       // `plan₀` for an idle agent is the empty plan, so `column.price` uses `Φ(∅) = 0`
       // exactly rather than evaluating a second plan (§8.1's degenerate case).
@@ -1578,7 +1845,10 @@ function evaluateExactFor(context, round) {
     // on each survivor. Round-scoped: `beginRound` clears it, because a plan pinned to one
     // decision time and configuration version must never be priced into another round
     // (§9.6 requirements 4–5).
-    round.priced.set(pricedKey(entry.legId, entry.agentId), entry);
+    // Keyed on the canonical `Agent.id`, never on whichever name this layer happens to
+    // use — `entry.agentId` stays the business identifier because that is what the column,
+    // the decision record and the offer read.
+    round.priced.set(pricedKey(round.canonicalLegId(entry.legId), round.canonicalAgentId(entry.agentId)), entry);
 
     return Object.freeze({
       feasible: true,
@@ -1660,9 +1930,18 @@ function expandCandidatesFor(context, round) {
       },
     });
 
+    // §7.5 F20's input: this Leg's Commitment history, read once per Leg per round.
+    const commitments = leg.legRowId
+      ? await context.prisma.commitment.findMany({
+          where: { legId: leg.legRowId },
+          select: { agentId: true, releasedAt: true },
+        })
+      : [];
+
     round.rememberLeg({
       leg,
       legForBound,
+      commitments,
       snapshot,
       scope,
       correction,
@@ -1697,7 +1976,8 @@ function expandCandidatesFor(context, round) {
       deadlineMs: budgetMs,
       elapsedMs: () => Date.now() - startedAtMs,
       kv: context.kv,
-      loadAgentSnapshot,
+      // As of the round's pinned decision time, so no fact postdates the decision.
+      loadAgentSnapshot: (agentId) => loadAgentSnapshot(agentId, { asOfMs: input.decisionTimeMs }),
       waitUntilAvailableFor: round.waitUntilAvailableFor,
       energyFor: round.energyFor,
       evaluateExact: round.evaluateExact,
@@ -1735,9 +2015,12 @@ function commitFor(context, round) {
    * defect that commits something nobody priced.
    */
   const buildContext = async (commitContext) => {
-    const key = pricedKey(commitContext.leg.legId, commitContext.agent.agentId);
+    // `commit.js` hands this the **locked `Agent` row**, whose `.agentId` is the business
+    // identifier; the memo is keyed on `Agent.id`. Resolved rather than assumed.
+    const legKey = round.canonicalLegId(commitContext.leg.legId);
+    const key = pricedKey(legKey, round.canonicalAgentId(commitContext.agent.agentId));
     const entry = round.priced.get(key);
-    const state = round.legs.get(String(commitContext.leg.legId));
+    const state = round.legs.get(legKey);
     if (!entry || !state) {
       // The context is returned deliberately incomplete: `recheck` evaluates each volatile
       // predicate against it and every one of them refuses a context with no plan, so the
@@ -1745,10 +2028,12 @@ function commitFor(context, round) {
       // round — §10.3.2's own disposition, reached without this adapter deciding anything.
       return { agentSnapshot: null, mission: null, plan: null, config: null, decisionTimeMs: null };
     }
-    const agentSnapshot = await round.loadAgentSnapshot(commitContext.agent.agentId);
+    const agentSnapshot = await round.loadAgentSnapshot(commitContext.agent.agentId, {
+      asOfMs: commitContext.storeTime instanceof Date ? commitContext.storeTime.getTime() : state.decisionTimeMs,
+    });
     return {
-      agentSnapshot,
-      mission: round.missionFor(state),
+      agentSnapshot: agentSnapshot ? { ...agentSnapshot, legExclusions: entry.legExclusions ?? null } : agentSnapshot,
+      mission: entry.mission || round.missionFor(state),
       plan: entry.plan,
       config: { get: (name) => resolve(snapshot(), name, state.scope) },
       // The **store's** time, read under the row locks and handed in by `commit.js` — not
@@ -1762,8 +2047,11 @@ function commitFor(context, round) {
   const volatileRecheck = volatileSubset.createVolatileRecheck({ buildContext });
 
   return async function commit(assignment, roundResult) {
-    const entry = round.priced.get(pricedKey(assignment.legId, assignment.agentId));
-    const state = round.legs.get(String(assignment.legId));
+    // `assignment.legId` is the solver's — the WorkQueue row's `Leg.id` — so it is resolved
+    // to the business id both memos are keyed on (see `round.legIdentity`).
+    const legKey = round.canonicalLegId(assignment.legId);
+    const entry = round.priced.get(pricedKey(legKey, round.canonicalAgentId(assignment.agentId)));
+    const state = round.legs.get(legKey);
     const current = snapshot();
     const scope = (state && state.scope) || {};
 
@@ -1818,7 +2106,9 @@ function commitFor(context, round) {
     const geometry = await executionGeometry.attachStopPaths({
       from: { lat: agentSnapshot.lat, lon: agentSnapshot.lon },
       stops: plannedStops,
-      directions: context.directions,
+      // Per agent where the composition distinguishes producers: a simulated agent drives
+      // the simulator's own geometry, the one its route was priced on.
+      directions: isFunction(context.directionsFor) ? context.directionsFor(agentSnapshot) : context.directions,
     });
 
     if (geometry.unroutable.length > 0) {
@@ -1849,11 +2139,14 @@ function commitFor(context, round) {
         // §10.3.2 step 5 — the outbox row, inside this transaction. `dispatch/offers.js`
         // owns the §11.2 payload and the §23.3 signature; this composer supplies the
         // transaction, the key, and the plan the offer describes.
-        sideEffects: (tx, effectContext) =>
-          offers.enqueueOffer(tx, {
+        sideEffects: async (tx, effectContext) => {
+          const offerTtlSeconds = resolve(current, "dispatch.offer_ttl", scope);
+          const enqueued = await offers.enqueueOffer(tx, {
             commitment: effectContext.commitment,
+            // §23.3's addressee: the agent's own identity, not its row id.
+            addressee: agentSnapshot.agentId,
             storeTime: effectContext.storeTime,
-            offerTtlSeconds: resolve(current, "dispatch.offer_ttl", scope),
+            offerTtlSeconds,
             signingKey: context.signingKey,
             offer: {
               missionPlan: entry ? entry.plan.planId : null,
@@ -1874,7 +2167,22 @@ function commitFor(context, round) {
               energyReserveParams: entry ? entry.plan.reserves : null,
               targetSoc: entry && entry.plan.charging ? entry.plan.charging.targetSoc : null,
             },
-          }),
+          });
+          // §4.5 — the OFFERED state's deadline, armed in the transaction that enters it.
+          // Without it an OFFER that was delivered and never answered held the Leg and the
+          // agent's capacity for ever: the outbox expires only *undelivered* rows (measured
+          // on the V1 failure run, 2026-09-23 — a silent robot's OFFER was still live ten
+          // minutes later). On expiry the timer worker withdraws it (`WITHDRAW_EXCLUDE_REPLAN`).
+          await legEntryDeadline.superviseEntry(tx, {
+            leg: effectContext.leg,
+            state: COMMITTED_LEG_STATE,
+            storeTime: effectContext.storeTime,
+            deadlineSeconds: offerTtlSeconds,
+            event: "ROUND_COMMIT",
+            shardId: context.shardId ?? null,
+          });
+          return enqueued;
+        },
       },
       {
         agentId: agentSnapshot.agentRowId,
@@ -1891,7 +2199,7 @@ function commitFor(context, round) {
           leadershipFence: roundResult.leadershipFence ?? null,
           authorityEpoch: agentSnapshot.authorityEpoch,
           legVersion: state.leg.version,
-          expectedLegState: state.leg.state,
+          expectedLegState: ASSIGNABLE_LEG_STATES.includes(state.leg.state) ? state.leg.state : ASSIGNABLE_LEG_STATES,
         },
         config: {
           capacity: round.capacityFor(agentSnapshot),
@@ -1967,6 +2275,25 @@ function create(context) {
     priced: new Map(),
     /** `legId` → this round's pinned state for that Leg. */
     legs: new Map(),
+    /**
+     * Every identifier this round has resolved for an agent → its `Agent.id`. Written by
+     * `evaluateExact` as snapshots load; read wherever the memo is keyed. See
+     * `rememberAgentIdentity`.
+     */
+    agentIdentity: new Map(),
+    /**
+     * Every identifier this round has resolved for a Leg → its business `Leg.legId`.
+     *
+     * The same defect `agentIdentity` closes, one entity over — and it was measured, not
+     * reasoned about: the V1 trace ran with every input present and ended
+     * `LOST_TO_ANOTHER_LEG` with **one Leg and one feasible agent**. `WorkQueue.legId` is
+     * the FK to `Leg.id` (the **row** id), so `solve/round.plan` and `commit` name the Leg
+     * by row id, while `rememberLeg` and the priced memo key on the business `Leg.legId`.
+     * `pricedCandidateFor(agent, rowId)` missed, `round.plan` dropped the candidate
+     * silently, and no column ever reached the solve. Resolved here, never guessed: an
+     * identifier this round has not loaded maps to itself.
+     */
+    legIdentity: new Map(),
     snapshot,
     expansionWallClockBudgetMs: enriched.expansionWallClockBudgetMs,
     loadAgentSnapshot,
@@ -1981,13 +2308,43 @@ function create(context) {
 
     /** Pin one Leg's round state. Called once per Leg, by `expandCandidates`. */
     rememberLeg(state) {
-      round.legs.set(String(state.leg.legId), state);
+      const canonical = String(state.leg.legId);
+      round.legs.set(canonical, state);
+      round.legIdentity.set(canonical, canonical);
+      if (state.leg.legRowId !== undefined && state.leg.legRowId !== null) {
+        round.legIdentity.set(String(state.leg.legRowId), canonical);
+      }
     },
 
     /** Discard every Leg's state and every priced plan. Called at the round boundary. */
     clear() {
       round.legs.clear();
       round.priced.clear();
+      round.agentIdentity.clear();
+      round.legIdentity.clear();
+    },
+
+    /**
+     * The business `Leg.legId` this identifier names, as far as this round has loaded it.
+     *
+     * @param {string} legId the row id or the business id
+     * @returns {string}
+     */
+    canonicalLegId(legId) {
+      const key = String(legId);
+      return round.legIdentity.get(key) ?? key;
+    },
+
+    /**
+     * The `Agent.id` this identifier names, as far as this round has established it.
+     * An unresolved identifier maps to itself — never to a guess.
+     *
+     * @param {string} agentId any of the three identifiers named in `rememberAgentIdentity`
+     * @returns {string}
+     */
+    canonicalAgentId(agentId) {
+      const key = String(agentId);
+      return round.agentIdentity.get(key) ?? key;
     },
 
     routing: {
@@ -2052,8 +2409,12 @@ function create(context) {
       },
     },
 
+    // A composition that routes agents at different speeds keys its cache by what the route
+    // depends on (`v1DemonstrationComposition.profileKeyFor`); otherwise the traversal domain.
     profileKeyFor: (agentSnapshot) =>
-      (agentSnapshot.mobilityModel && agentSnapshot.mobilityModel.traversalDomain) || agentSnapshot.agentClassId,
+      (isFunction(enriched.profileKeyFor) ? enriched.profileKeyFor(agentSnapshot) : null) ||
+      (agentSnapshot.mobilityModel && agentSnapshot.mobilityModel.traversalDomain) ||
+      agentSnapshot.agentClassId,
 
     /**
      * §14.2's `κ` and coefficient set for one agent, as `lowerBound` reads them. Absent
@@ -2085,7 +2446,7 @@ function create(context) {
       // rather than empty: `{}` reads through as `undefined` for each attribute, which is
       // what F4, F21 and F25 read as "nobody established this" — never as a permission.
       const tasks = state.leg.tasks || {};
-      return {
+      const mission = {
       legId: state.leg.legId,
       missionId: state.leg.missionId,
       purpose: state.leg.purpose,
@@ -2110,6 +2471,28 @@ function create(context) {
       manifests: state.leg.manifests,
       stops: state.leg.stops,
       };
+      // The deployment's declared mission profile, filling only what no Task stated (see
+      // `services/v1DemonstrationProfile.applyMissionProfile`). Absent, nothing is filled.
+      return isFunction(enriched.missionProfileFor) ? enriched.missionProfileFor(mission) : mission;
+    },
+
+    /**
+     * The mission as the gate reads it for one plan: `missionFor` plus F19's latest
+     * feasible start, derived from this plan's duration (`latestFeasibleStartFor`).
+     *
+     * @param {object} state a `rememberLeg` entry
+     * @param {object} plan the candidate plan
+     */
+    missionForPlan: (state, plan) => {
+      const mission = round.missionFor(state);
+      if (mission.latestFeasibleStartMs !== undefined && mission.latestFeasibleStartMs !== null) return mission;
+      const latest = latestFeasibleStartFor(
+        state.leg,
+        plan,
+        state.decisionTimeMs,
+        resolve(round.snapshotFor(), "plan.commitment_horizon", state.scope),
+      );
+      return latest === undefined ? mission : { ...mission, latestFeasibleStartMs: latest };
     },
 
     capacityFor: (agentSnapshot) => {
@@ -2178,7 +2561,7 @@ function create(context) {
     planState: roundScopedPlanState,
     expandCandidates: expandCandidatesFor(enriched, round),
     pricedCandidateFor: (agentId, legId, candidate) =>
-      round.priced.get(pricedKey(legId, agentId)) || null,
+      round.priced.get(pricedKey(round.canonicalLegId(legId), round.canonicalAgentId(agentId))) || null,
     // The queue row's own fields, synchronously — the Leg and its stops are loaded inside
     // `expandCandidates`, which is async, because `coordinator.worker` calls this one
     // synchronously while building the batch.
@@ -2190,6 +2573,8 @@ function create(context) {
       queueAgeSeconds: row.enqueuedAt ? (Date.now() - new Date(row.enqueuedAt).getTime()) / MS_PER_SECOND : null,
     }),
     commit: commitFor(enriched, round),
+    // Legs the lifecycle returned to QUEUED go back on the work list (coordinator.worker).
+    requeueReturnedLegs: (input) => coordinatorWorker.requeueReturnedLegs({ prisma: enriched.prisma }, input),
     record: enriched.record,
     // `deferPriceFor` is deliberately absent. `cost/cDefer.js` is Tier 2 behind the
     // `deferral` kill switch, and `round.plan` creates no deferral arc without it — which
@@ -2215,6 +2600,7 @@ function cellIdFor(stop) {
 module.exports = {
   REFUSAL,
   COMMITTED_LEG_STATE,
+  ASSIGNABLE_LEG_STATES,
   contextFor,
   delayParametersFrom,
   routingSeamFor,
@@ -2231,6 +2617,9 @@ module.exports = {
   publishedTargetSocFrom,
   targetSocFor,
   gatedAgentSnapshot,
+  latestFeasibleStartFor,
+  legExclusionsFor,
+  AGENT_FACT_FIELDS,
   create,
   // Re-exported so a caller that has an assembly can start the worker it was built for
   // without a second require, and so the composition test can assert the two are the same

@@ -77,7 +77,10 @@ function isNumber(value) {
  */
 function maxSpeedMsOf(agent) {
   const limits = agent && agent.mobilityModel && agent.mobilityModel.kinematicLimits;
-  const value = limits && limits.maxSpeedMs;
+  // `maxSpeedMps` is the key commissioning writes (`services/robotSpecification`); the
+  // older `maxSpeedMs` spelling is still read. Only the old one was read, so every
+  // commissioned agent's bound was unresolved and no agent was ever priced (V1, 2026-09-23).
+  const value = limits && (isNumber(limits.maxSpeedMps) ? limits.maxSpeedMps : limits.maxSpeedMs);
   return isNumber(value) && value > 0 ? value : null;
 }
 

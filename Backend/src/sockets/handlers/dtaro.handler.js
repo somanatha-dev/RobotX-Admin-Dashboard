@@ -23,6 +23,9 @@ const { z } = require("zod");
 const robotStateCache = require("../../cache/robotStateCache");
 // PHASE 5 (§12.5) — graded completion verification.
 const verification = require("../../engine/supervision/verification");
+// §4.9 — a verified completion settles the Leg and releases its commitment.
+const settlement = require("../../engine/lifecycle/settlement");
+const clockModule = require("../../engine/commitment/clock");
 // PHASE 14 remediation (P14-R14) — §23.5 row 3, the completion trust boundary.
 const trustBoundaries = require("../../engine/security/trustBoundaries");
 // PHASE 12 (§18.2) — the agent failure catalogue. A fault report becomes a *classified*
@@ -225,7 +228,26 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
         return;
       }
 
+      let settled = null;
       await prisma.$transaction(async (tx) => {
+        // §4.9 settlement of the engine's Leg, in the same transaction as the Task's
+        // completion. It had no caller: a completed Task left its Leg ACCEPTED and its
+        // commitment live, so at lease expiry the reconciler re-queued the Leg and the
+        // engine re-offered delivered work (measured on the V1 demonstration path,
+        // 2026-09-23). Only on SUFFICIENT verification — `settle` refuses otherwise — and
+        // `settle` itself enforces custody discharge before release (I7).
+        if (verdict && verdict.outcome === verification.OUTCOME.SUFFICIENT && verdict.leg && verdict.commitment) {
+          const leg = await tx.leg.findUnique({ where: { id: verdict.leg.id } });
+          const manifests = leg ? await tx.payloadManifest.findMany({ where: { legId: leg.id } }) : [];
+          settled = await settlement.settle(tx, {
+            leg,
+            commitment: verdict.commitment,
+            verification: verdict,
+            manifests,
+            storeTime: await clockModule.readStoreTime(tx),
+          });
+        }
+
         // Mark task COMPLETED if it belongs to this robot and isn't already done
         if (taskId) {
           await tx.task.updateMany({
@@ -244,6 +266,23 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
           data: { currentTaskId: null, status: "IDLE", speed: 0 },
         });
       });
+
+      // §4.9: "settlement is idempotent and retried until complete". The agent's own
+      // CUSTODY_EVENT can move the Leg (AT_DROP → RELEASED) in the same instant as this
+      // completion, and `settle`'s conditional write then loses on the version — measured,
+      // 28 ms apart, leaving a delivered Leg unsettled with its commitment live. Retried
+      // against a fresh read; each attempt is the same guarded write.
+      for (let attempt = 0; settled && settled.outcome === settlement.OUTCOME.LOST_RACE && attempt < 3; attempt += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        settled = await prisma.$transaction(async (tx) => {
+          const leg = await tx.leg.findUnique({ where: { id: verdict.leg.id } });
+          const commitment = await tx.commitment.findUnique({ where: { commitmentId: verdict.commitment.commitmentId } });
+          const manifests = leg ? await tx.payloadManifest.findMany({ where: { legId: leg.id } }) : [];
+          return settlement.settle(tx, { leg, commitment, verification: verdict, manifests, storeTime: await clockModule.readStoreTime(tx) });
+        });
+      }
+
+      if (settled) log.info("Leg settled on verified completion", { robotId, taskId, outcome: settled.outcome, reason: settled.reason || null });
 
       robotStateCache.set(robotId, { status: "IDLE" });
 
@@ -436,7 +475,14 @@ async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, co
         track,
         legDurationSeconds: (Date.now() - new Date(commitment.grantedAt).getTime()) / 1000,
         minFixRatePerMinute: thresholds.minFixRatePerMinute,
-        corridor: Array.isArray(payload?.plannedCorridor) ? payload.plannedCorridor : [],
+        // The route the server itself commanded — the per-stop geometry signed into this
+        // commitment's OFFER — unless the agent reports one. Taking the corridor only from
+        // the agent's own claim meant an agent that sent none could never verify, and one
+        // that did would be graded against the route it chose to report.
+        corridor:
+          Array.isArray(payload?.plannedCorridor) && payload.plannedCorridor.length > 0
+            ? payload.plannedCorridor
+            : await readCommandedCorridor(prisma, commitment.commitmentId),
         reportedCorridors: Array.isArray(payload?.reportedCorridors) ? payload.reportedCorridors : [],
         corridorHalfWidthM: thresholds.corridorHalfWidthM,
         minCorridorFraction: thresholds.minCorridorFraction,
@@ -508,7 +554,9 @@ async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, co
 
     const security = trustBoundaries.validateCompletion({ verification: result, positionCheck });
 
-    return { ...result, security };
+    // The Leg and commitment the verdict was graded against, so the caller settles exactly
+    // those (§4.9) rather than re-resolving them.
+    return { ...result, security, leg, commitment };
   } catch (e) {
     // A defect in verification must not make a completion unreportable. It must,
     // however, be loud: a silent verification failure is indistinguishable from a pass,
@@ -568,6 +616,31 @@ function configValue(config, name, fallback) {
   const values = config?.values;
   const value = values instanceof Map ? values.get(name) : values?.[name];
   return value === undefined || value === null ? fallback : value;
+}
+
+/**
+ * The corridor the server commanded for a commitment: the path points of every stop in the
+ * OFFER it signed and dispatched (`executionGeometry.attachStopPaths`), in order. Empty when
+ * no OFFER or no geometry was recorded — the corridor test then fails by name, as before.
+ *
+ * @param {object} prisma
+ * @param {string} commitmentId
+ * @returns {Promise<Array<{ lat: number, lon: number }>>}
+ */
+async function readCommandedCorridor(prisma, commitmentId) {
+  const offer = await prisma.outbox.findFirst({
+    where: { commitmentId, command: "OFFER" },
+    orderBy: { createdAt: "desc" },
+    select: { payload: true },
+  });
+  const stops = offer && offer.payload && Array.isArray(offer.payload.stopSequence) ? offer.payload.stopSequence : [];
+  const points = [];
+  for (const stop of stops) {
+    for (const point of Array.isArray(stop && stop.path) ? stop.path : []) {
+      if (point && typeof point.lat === "number" && typeof point.lon === "number") points.push({ lat: point.lat, lon: point.lon });
+    }
+  }
+  return points;
 }
 
 async function readAcceptedTrack(prisma, agentRowId, since) {

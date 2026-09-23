@@ -58,6 +58,7 @@ const budgetModel = require("../engine/solve/budgets");
 const planStateModel = require("../engine/shard/planState");
 const round = require("../engine/solve/round");
 const intake = require("../engine/intake/intake");
+const legMachine = require("../engine/lifecycle/legMachine");
 // PHASE 11 — §21.2's Tier A/Tier B writer. Phase 10 assembled a partial Tier A record
 // inline here and said so; the complete §21.2 shape, the sampler, and the pinned input
 // snapshot now belong to one module, and this worker calls it rather than restating it.
@@ -450,6 +451,21 @@ async function runRound(deps, input) {
     return Object.freeze({ ran: false, reason: "NOT_LEADER", detail: stop.reason, marginMillis: stop.marginMillis, shardId });
   }
 
+  /* ── 1b. Work the lifecycle handed back ─────────────────────────────────── */
+  // A Leg returned to QUEUED after its first assignment (a rejected or expired OFFER, a
+  // reassignment) still had its queue row SOLVED, so no round ever claimed it again.
+  // Injected by the composition (`coordinatorSolvePath.create`); contained — a failure here
+  // costs this round the returned Legs, never the round.
+  if (typeof deps.requeueReturnedLegs === "function") {
+    try {
+      await deps.requeueReturnedLegs({ shardId, storeTime });
+    } catch (error) {
+      if (typeof deps.record === "function") {
+        deps.record("coordinator.requeue_failed", { shardId, message: error && error.message });
+      }
+    }
+  }
+
   /* ── 2. Cadence: the window and the batch cap (§9.2) ────────────────────── */
   const queueState = await readQueueState(deps, shardId, storeTime);
   await publishQueueMirror(deps, shardId, queueState);
@@ -546,17 +562,28 @@ async function runRound(deps, input) {
         config,
         killSwitches: source.killSwitches || {},
         snapshot,
+        // The fence read at step 1, pinned for §10.3.2's G1 — never re-read at commit.
+        leadershipFence: shardLeadership ? shardLeadership.leadershipFence : null,
       },
     );
   } catch (error) {
     // A round that throws must still return its batch to the queue. Otherwise a defect in
     // the decision path becomes the audit's original failure — work claimed by a round
     // that vanished, visible nowhere, owned by nobody.
+    //
+    // Except a Leg this round already committed before it threw: its commitment and OFFER
+    // are durable (§10.3.2 is one transaction per pairing), so returning it to the queue
+    // would have the next round assign it a second time while the first agent executes it.
     for (const row of claimed) {
+      // eslint-disable-next-line no-await-in-loop
+      const held = await deps.prisma.commitment.count({ where: { legId: row.legId, releasedAt: null } });
       // eslint-disable-next-line no-await-in-loop
       await deps.prisma.workQueue.updateMany({
         where: { id: row.id, version: row.version },
-        data: { state: intake.QUEUE_STATE.QUEUED, claimedByRoundId: null, claimedAt: null, version: row.version + 1 },
+        data:
+          held > 0
+            ? { state: intake.QUEUE_STATE.SOLVED, settledAt: storeTime, version: row.version + 1 }
+            : { state: intake.QUEUE_STATE.QUEUED, claimedByRoundId: null, claimedAt: null, version: row.version + 1 },
       });
     }
     throw error;
@@ -603,6 +630,45 @@ async function runRound(deps, input) {
   }
 
   return Object.freeze({ ran: true, shardId, roundId, cadenceVerdict, result, settlement, recorded });
+}
+
+/**
+ * Return to the queue every Leg the lifecycle put back into QUEUED after it had been
+ * assigned — its queue row still says SOLVED, and a SOLVED row is never claimed.
+ *
+ * The Leg's state is the authority (§4.3); the queue row is this coordinator's work list,
+ * so the row follows the Leg. A Leg that still holds a live commitment is left alone: that
+ * is not returned work, whatever its state says.
+ *
+ * Measured on the V1 failure run (2026-09-23): a rejected OFFER and a reassignment after a
+ * robot vanished each left a Leg in QUEUED with a SOLVED row, unserved for the rest of the
+ * run while three robots stood idle.
+ *
+ * @param {object} deps `{ prisma }`
+ * @param {{ shardId: string, storeTime: Date }} input
+ * @returns {Promise<{ requeued: number }>}
+ */
+async function requeueReturnedLegs(deps, input) {
+  const { shardId } = input || {};
+  const returned = await deps.prisma.leg.findMany({
+    where: {
+      state: legMachine.LEG_STATE.QUEUED,
+      workQueueEntry: { is: { shardId, state: intake.QUEUE_STATE.SOLVED } },
+      commitments: { none: { releasedAt: null } },
+    },
+    select: { id: true },
+  });
+
+  let requeued = 0;
+  for (const leg of returned) {
+    // eslint-disable-next-line no-await-in-loop
+    const result = await deps.prisma.workQueue.updateMany({
+      where: { legId: leg.id, shardId, state: intake.QUEUE_STATE.SOLVED },
+      data: { state: intake.QUEUE_STATE.QUEUED, claimedByRoundId: null, claimedAt: null, settledAt: null },
+    });
+    requeued += result.count;
+  }
+  return { requeued };
 }
 
 /**
@@ -657,15 +723,26 @@ async function resumeAfterFailover(deps, shardId) {
 function start(deps, config) {
   const settings = config || {};
   let stopped = false;
+  // One round at a time. `setInterval` does not wait for an async tick, so a round that ran
+  // longer than the window used to overlap the next one — and the two shared this
+  // assembly's per-round state (`planState.beginRound` resets it, `round.legs` is keyed by
+  // Leg). On the V1 demonstration path (2026-09-23) that interleaving threw inside a round
+  // that had already committed a Leg; the throw path returned the whole batch to the queue,
+  // and a later round offered the same Leg to a second robot while the first was carrying
+  // it. §19.3's "exactly one active Coordinator per shard" is about rounds, not processes.
+  let inFlight = false;
 
   const tick = async () => {
-    if (stopped) return;
+    if (stopped || inFlight) return;
+    inFlight = true;
     try {
       await runRound(deps, settings);
     } catch (error) {
       if (typeof deps.record === "function") {
         deps.record("coordinator.round_failed", { shardId: settings.shardId, message: error && error.message });
       }
+    } finally {
+      inFlight = false;
     }
   };
 
@@ -690,6 +767,7 @@ module.exports = {
   claimBatch,
   settleBatch,
   recordRound,
+  requeueReturnedLegs,
   runRound,
   resumeAfterFailover,
   start,

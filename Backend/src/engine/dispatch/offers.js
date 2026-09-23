@@ -209,9 +209,14 @@ async function enqueueOffer(tx, input) {
     commitmentId: commitment.commitmentId,
   });
 
+  // §23.3 — the addressee is the agent's **wire identity** (`Agent.agentId`, the robot code
+  // it AUTHs with and checks every envelope against), supplied by the composition root.
+  // `commitment.agentId` is the `Agent.id` row id: an agent that does not know its own
+  // database row rejected every OFFER as ADDRESSED_TO_ANOTHER_AGENT (measured on the V1
+  // demonstration path, 2026-09-23). The Outbox row keeps the FK below.
   const signed = signMissionCommand(
     {
-      agentId: commitment.agentId,
+      agentId: typeof settings.addressee === "string" && settings.addressee !== "" ? settings.addressee : commitment.agentId,
       command: "OFFER",
       commitmentId: commitment.commitmentId,
       fence: commitment.fence,
@@ -497,7 +502,8 @@ async function withdrawExpiredOffer(tx, input) {
 
   const signed = signMissionCommand(
     {
-      agentId: agent.id,
+      // The wire identity, as for OFFER (see `enqueueOffer`); the row id stays the FK.
+      agentId: agent.agentId || agent.id,
       command: "WITHDRAW",
       commitmentId: commitment.commitmentId,
       fence: withdrawalFence,

@@ -16,6 +16,7 @@ const robotStateCache = require("../../cache/robotStateCache");
 // reads both halves through the one module that owns the question. See agentGate.js for
 // why the shard identity is resolved at AUTH rather than per event.
 const agentGate = require("../../engine/cutover/agentGate");
+const commitmentLeaseRenewal = require("../../services/commitmentLeaseRenewal.service");
 
 // Per-robot throttle for the HEARTBEAT path's Postgres write, mirroring the
 // same gate in telemetry.handler.js. Per-process and in-memory (same pattern
@@ -705,7 +706,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
   // signal first and only falls back to the throttled DB column, so detection
   // stays accurate without a write per beat — see config/liveness.constants.js
   // for the flush-interval/cutoff invariant this relies on.
-  async function handleHeartbeat(eventName) {
+  async function handleHeartbeat(eventName, payload) {
     try {
       if (!allow(socket, eventName, { limit: 10, windowMs: 5_000, minIntervalMs: 100 })) return;
       const robotId = toStringOrNull(socket.data.robotId);
@@ -721,6 +722,22 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       }
 
       // Live signal — every beat, Redis only.
+      // §12.2 — a heartbeat naming the agent's commitment and fence renews that commitment's
+      // lease (engine path only). Not awaited on the liveness path, and its failure is only
+      // logged: a missed renewal is retried by the next beat, well inside the lease.
+      if (payload && typeof payload === "object" && typeof payload.commitmentId === "string") {
+        const snapshot = appLocals && appLocals.config ? appLocals.config : null;
+        if (agentGate.mayAct({ socket, snapshot, nowMs })) {
+          commitmentLeaseRenewal
+            .renewFromHeartbeat({ prisma, robotId, evidence: payload, snapshot })
+            .then((outcome) => {
+              // NOT_DUE is the routine answer for most beats; anything else is worth a line.
+              if (outcome && outcome.reason !== "NOT_DUE") log.info?.("commitment lease renewal", { robotId, ...outcome });
+            })
+            .catch((e) => log.warn?.("commitment lease renewal failed", { robotId, message: e?.message }));
+        }
+      }
+
       try {
         await setRobotState(kv, robotId, { lastHeartbeat: nowMs, connected: true });
       } catch {
@@ -768,9 +785,9 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
     }
   }
 
-  socket.on("HEARTBEAT", () => handleHeartbeat("HEARTBEAT"));
+  socket.on("HEARTBEAT", (payload) => handleHeartbeat("HEARTBEAT", payload));
   // Backward compatible alias.
-  socket.on("heartbeat", () => handleHeartbeat("heartbeat"));
+  socket.on("heartbeat", (payload) => handleHeartbeat("heartbeat", payload));
 
   // ── PHASE 14 — §23.2: `SESSION_REKEY` becomes operational ──────────────────
   //

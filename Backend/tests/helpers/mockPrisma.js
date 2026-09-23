@@ -60,6 +60,33 @@ function createMockPrisma() {
     campus: {
       findFirst: jest.fn(),
     },
+    // §3.6's OperatingRegion. The request path looks a submission's region up by its
+    // business key (`Region.regionId`) to obtain the `Region.id` every foreign key,
+    // the region→shard map and the `cutover.engine_enabled` binding all mean — so a
+    // fake client without this model turns that translation into a TypeError, which is
+    // the "green test asserting nothing" failure the note above describes.
+    region: {
+      findUnique: jest.fn(),
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+      upsert: jest.fn(),
+      create: jest.fn(),
+    },
+    // §3.5's published estate. `intake.resolveShardFor` reads it on the request path to
+    // route a Leg to the shard that owns its region, so a fake client without it turns
+    // intake's routing into the swallowed TypeError the note above describes.
+    //
+    // `findMany` resolves to `[]` rather than `undefined`: an empty `Shard` table is the
+    // single-shard deployment, which is the world every test using this helper assumes,
+    // and `undefined` would be a shape the real client never returns.
+    shard: {
+      findMany: jest.fn(async () => []),
+      findUnique: jest.fn(),
+      findFirst: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+      count: jest.fn(async () => 0),
+    },
     // The §2.4 entities a legacy Task decomposes into, and the model rows a unit's
     // specification is written onto. Present so a unit test exercises the same shape the
     // production path does: a fake client that is missing a model a code path reads turns
@@ -131,10 +158,14 @@ function createMockPrisma() {
     agentClass: {
       findUnique: jest.fn(),
       upsert: jest.fn(),
+      // V1 demonstration: a simulated unit's class declaration writes these after the
+      // upserts (`simulatedClassDeclaration.service`).
+      update: jest.fn(async (args) => ({ id: args?.where?.id, ...(args?.data || {}) })),
     },
-    mobilityModel: { upsert: jest.fn() },
-    energyModel: { upsert: jest.fn() },
-    containerModel: { upsert: jest.fn() },
+    mobilityModel: { upsert: jest.fn(), update: jest.fn(async (args) => ({ id: args?.where?.id })) },
+    energyModel: { upsert: jest.fn(), update: jest.fn(async (args) => ({ id: args?.where?.id })) },
+    containerModel: { upsert: jest.fn(), update: jest.fn(async (args) => ({ id: args?.where?.id })) },
+    compartment: { upsert: jest.fn(async (args) => ({ id: "compartment-row", ...(args?.create || {}) })) },
     capabilityBundle: { upsert: jest.fn() },
     // The commissioning-time energy producer's two tables. Both are upsert-only here for
     // the same reason `applySpecification`'s rows are: the service writes them inside the
@@ -143,10 +174,12 @@ function createMockPrisma() {
     // sees the row it asked for.
     batteryState: {
       upsert: jest.fn(async (args) => ({ id: "battery-state-row", ...(args?.create || {}) })),
+      updateMany: jest.fn(async () => ({ count: 1 })),
       findUnique: jest.fn(),
     },
     energyModelParams: {
       upsert: jest.fn(async (args) => ({ id: "energy-params-row", ...(args?.create || {}) })),
+      updateMany: jest.fn(async () => ({ count: 1 })),
       findFirst: jest.fn(),
       findMany: jest.fn(async () => []),
     },

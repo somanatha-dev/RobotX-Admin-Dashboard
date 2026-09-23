@@ -74,6 +74,7 @@ const fairnessWorker = require("./src/workers/fairness.worker");
 // now exists; `src/workers/registry.js` records what that does and does not claim.
 const indexMaintainer = require("./src/workers/indexMaintainer.worker");
 const chargingStatus = require("./src/services/chargingStatus.service");
+const v1DemonstrationComposition = require("./src/services/v1DemonstrationComposition");
 const cutoverStore = require("./src/engine/cutover/store");
 const cutoverEnabled = require("./src/engine/cutover/enabled");
 // PHASE 15 remediation — the two halves of the cutover switch that had no production
@@ -780,6 +781,12 @@ async function start() {
         record: (event, detail) => logger.info(`engine.${event}`, detail),
         onError: (e, workerId) => logger.error("LEADER_ONLY worker failed to stop", { worker: workerId, message: e?.message }),
         logger,
+        // V1 DEMONSTRATION (2026-09-23) — the coordinator's input seams for a simulated fleet,
+        // composed only when `V1_DEMONSTRATION_COMPOSITION=true` and the simulator is on
+        // (`services/v1DemonstrationComposition`). Absent, this spreads nothing and the
+        // coordinator refuses by name exactly as before. The same composition the proof run
+        // (`tools/demo/runV1Assignment.js`) uses.
+        ...v1DemonstrationComposition.composeIfEnabled({ prisma, kv, snapshot: () => app.locals.config, env: process.env }),
       });
 
       shardCoordinator = shardSupervisor.start(

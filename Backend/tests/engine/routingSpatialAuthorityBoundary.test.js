@@ -122,11 +122,31 @@ describe("the routing layer is not a second delivery-domain authority", () => {
     // `campusServiceability.js` defines the factory, so it is excluded; nothing else may *call*
     // it. A production caller would be a second query-time producer of a domain verdict, which
     // is what ADR-28 forbids. Today the only callers are `tools/verify/` and the test suites.
+    //
+    // V1 DEMONSTRATION (2026-09-23). A composed router now exists in production
+    // (`services/v1DemonstrationComposition.js`, the DEVELOPMENT_SIMULATION router), and
+    // `routing/cellProjection` refuses to be built without an oracle — the routing-local
+    // guard on *derived* cell-centre coordinates this file's header describes. That use,
+    // and only that use, is exempt: every call must be the argument of
+    // `createCellProjection({ serviceability: … })`. A call anywhere else is still an offence.
+    const ROUTING_LOCAL_USE = /createCellProjection\(\s*\{\s*serviceability:\s*campusServiceability\.createServiceabilityOracle\(/gu;
     const offenders = sourceFiles()
       .filter(([file]) => file !== "engine/routing/campusServiceability.js")
-      .filter(([, body]) => /createServiceabilityOracle\s*\(/u.test(body))
+      .filter(([, body]) => {
+        const calls = (body.match(/createServiceabilityOracle\s*\(/gu) || []).length;
+        const routingLocal = (body.match(ROUTING_LOCAL_USE) || []).length;
+        return calls > routingLocal;
+      })
       .map(([file]) => file);
     expect(offenders).toEqual([]);
+  });
+
+  test("the V1 composition's oracle feeds only the cell projection, never a domain verdict", () => {
+    const body = fs.readFileSync(path.resolve(SRC, "services", "v1DemonstrationComposition.js"), "utf8");
+    expect(body).toMatch(/createCellProjection\(\{\s*serviceability:\s*campusServiceability\.createServiceabilityOracle\(/u);
+    // The domain verdict stays the intake-pinned one: this module neither reads nor writes it.
+    expect(body).not.toMatch(/geofenceResult/u);
+    expect(body).not.toMatch(/pinnedMembership|evaluatePoint/u);
   });
 
   test("the composition root imports no routing serviceability and no router of its own", () => {

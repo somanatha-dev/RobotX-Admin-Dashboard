@@ -652,8 +652,15 @@ describe("T7 — the index maintainer fails closed on charging state", () => {
     return {
       rows,
       agent: {
-        findUnique: async () => ({ id: "a1", agentId: "RBT-1", lifecycleState: "ACTIVE", agentClassId: null, capacityOverride: 2 }),
+        // `regionId` and the `shard` table below are what `resolveAgentShardId` reads to
+        // publish the index under the shard that actually owns this agent. They are part
+        // of the store a real deployment has; before the maintainer read them it wrote a
+        // hard-coded `"default"`, and these tests passed against that constant.
+        findUnique: async () => ({ id: "a1", agentId: "RBT-1", lifecycleState: "ACTIVE", agentClassId: null, capacityOverride: 2, regionId: "region-1" }),
         findMany: async () => [{ id: "a1" }],
+      },
+      shard: {
+        findMany: async () => [{ shardId: "shard-1", state: "ACTIVE" }],
       },
       observation: {
         findFirst: async () => ({ value: { lat: BENGALURU.lat, lon: BENGALURU.lon, provenance: "SIMULATED" }, observedAt: new Date(T0) }),
@@ -733,7 +740,7 @@ describe("T7 — the index maintainer fails closed on charging state", () => {
     const store = await provisionedStore();
     addAgent(store, "a1", "RBT-1");
     const prisma = maintainerStore();
-    prisma.agent.findUnique = async () => ({ id: "a1", agentId: "RBT-1", lifecycleState: "ACTIVE", agentClassId: null, capacityOverride: 2 });
+    prisma.agent.findUnique = async () => ({ id: "a1", agentId: "RBT-1", lifecycleState: "ACTIVE", agentClassId: null, capacityOverride: 2, regionId: "region-1" });
 
     const read = chargingStatusService.createChargingStatusReader({ prisma: store.prisma, inScope: async () => true });
 

@@ -298,6 +298,10 @@ function storeWith(options) {
       charger: {
         findMany: async () => chargers.map((row) => ({ ...row })),
       },
+      // §7.5 F20's input — the Leg's Commitment history. None in this world.
+      commitment: {
+        findMany: async () => [],
+      },
       chargerAvailabilityProjection: {
         findFirst: async () => {
           if (projections.length === 0) return null;
@@ -477,6 +481,46 @@ describe("A — the composition constructs the real coordinator solve path", () 
     // Nothing evaluated yet, so nothing is priced. `null` — never a fabricated entry — is
     // what `round.plan` skips with `if (!entry) continue`.
     expect(assembly.deps.pricedCandidateFor("agent-1", "leg-1", {})).toBeNull();
+  });
+
+  test("the memo answers to the identifier `round.plan` actually passes — not only the one it was written under", async () => {
+    // ── The defect this pins ────────────────────────────────────────────────
+    // `availabilityIndex` is keyed on `Agent.id` (`indexMaintainer` writes `agent.id`), so
+    // `expansion` hands `evaluateExact` a **row** id and `solve/round.plan` later calls
+    // `pricedCandidateFor(candidate.agentId, …)` with that same row id. The memo was
+    // written under `agentSnapshot.agentId`, the **business** id. The lookup missed, and
+    // `round.plan`'s `if (!entry) continue` dropped every priced candidate in silence —
+    // zero columns, zero assignments, no error. The test above only ever asserted the
+    // empty case, which is why six passes over this file did not see it.
+    const { context, store } = completeContext({
+      kv: kvHandle.kv,
+      route: declaredRouter(),
+      context: { timeBucket: "test-bucket-identity" },
+    });
+    const assembly = solvePath.create(context);
+    // Seeded under the ROW id, exactly as `indexMaintainer.assembleRecord` publishes it.
+    await kvHandle.kv.sadd(availabilityIndex.fineKey(SHARD_ID, store.fineCellId, "IDLE_READY"), "agent-row-1");
+
+    await assembly.deps.expandCandidates({
+      legId: "leg-1",
+      shardId: SHARD_ID,
+      decisionTimeMs: DECISION_TIME_MS,
+      slaClass: null,
+      queueAgeSeconds: 60,
+    });
+
+    // The round resolved both names to one row while loading the snapshot.
+    expect(assembly.round.canonicalAgentId("agent-row-1")).toBe("agent-row-1");
+    expect(assembly.round.canonicalAgentId("agent-1")).toBe("agent-row-1");
+    // An agent this round never resolved maps to itself — never to somebody else's row.
+    expect(assembly.round.canonicalAgentId("agent-unseen")).toBe("agent-unseen");
+
+    // Whatever this pairing produced, both spellings must give the SAME answer. Before the
+    // fix these two differed the moment an entry existed: the row id missed and the
+    // business id hit.
+    const viaRowId = assembly.deps.pricedCandidateFor("agent-row-1", "leg-1", {});
+    const viaBusinessId = assembly.deps.pricedCandidateFor("agent-1", "leg-1", {});
+    expect(viaRowId).toBe(viaBusinessId);
   });
 
   test("`commit` is built here and reaches §10.3.2's transaction seam", async () => {
@@ -2676,7 +2720,14 @@ describe("H — the offer's drivable route is resolved outside the commit transa
       queueAgeSeconds: 60,
     });
 
-    assembly.round.priced.set(`${store.leg.legId}|${store.agent.agentId}`, { plan: PRICED_PLAN });
+    // Keyed the way the round itself keys it. The expansion above has already resolved this
+    // agent's identifiers onto one `Agent.id`, and hand-spelling the business id here — as
+    // this helper used to — writes a key `commit` does not read, which is precisely the
+    // defect the memo-identity test above pins.
+    assembly.round.priced.set(
+      `${store.leg.legId}|${assembly.round.canonicalAgentId(store.agent.agentId)}`,
+      { plan: PRICED_PLAN },
+    );
     return { assembly, store };
   }
 

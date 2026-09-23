@@ -22,6 +22,7 @@
  * delivered through it.
  */
 
+const { haversineMeters } = require("../../../src/utils/distance");
 const VirtualRobot = require("../../../src/simulation/VirtualRobot");
 const { createVirtualRobotSimulator } = require("../../../src/simulation/SimulationEngine");
 const { rehydrateSimulatedRobots } = require("../../../src/simulation/rehydrate");
@@ -445,7 +446,10 @@ describe("Step 4 D — movement follows the route it was given", () => {
 
     const clock = makeClock();
     const seen = [];
-    for (let tick = 0; tick < 40; tick++) {
+    // Until the leg is genuinely finished (bounded). This used to stop at 40 ticks, which
+    // covers ~360 m of a 520 m route: the leg only "finished" because entering the final
+    // 196 m segment was counted as arrival and the robot was snapped onto the stop.
+    for (let tick = 0; tick < 200 && (seen.length === 0 || seen[seen.length - 1].phase === "TO_PICKUP"); tick++) {
       runTicks(robot, 1, { clock });
       seen.push({ lat: robot.lat, lon: robot.lon, phase: robot.phase });
     }
@@ -465,8 +469,16 @@ describe("Step 4 D — movement follows the route it was given", () => {
     expect(headings.length).toBeGreaterThan(0);
     expect(headings.every((h) => h >= 0 && h < 360)).toBe(true);
 
-    // The leg was actually finished — the phase machine advanced past TO_PICKUP.
-    expect(seen.some((entry) => entry.phase !== "TO_PICKUP")).toBe(true);
+    // The leg was actually finished — the phase machine advanced past TO_PICKUP …
+    const finished = seen.findIndex((entry) => entry.phase !== "TO_PICKUP");
+    expect(finished).toBeGreaterThan(-1);
+    // … at the pickup itself, having driven there: no tick moved further than the step cap.
+    const pickup = routeToPickup()[routeToPickup().length - 1];
+    expect(haversineMeters(seen[finished].lat, seen[finished].lon, pickup.lat, pickup.lon)).toBeLessThan(0.01);
+    for (let index = 1; index <= finished; index++) {
+      const step = haversineMeters(seen[index - 1].lat, seen[index - 1].lon, seen[index].lat, seen[index].lon);
+      expect(step).toBeLessThanOrEqual(40);
+    }
   });
 
   test("a whole mission completes exactly once, and only after travelling", () => {

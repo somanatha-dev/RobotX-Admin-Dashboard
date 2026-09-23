@@ -14,11 +14,15 @@ const trustBoundaries = require("../../engine/security/trustBoundaries");
 // PHASE 15 remediation (D-6) — the cutover switch is a conjunction; this handler now reads
 // both halves through the module that owns the question.
 const agentGate = require("../../engine/cutover/agentGate");
+// §4.4 execution progress — departure and arrival established from this Observation log.
+const legProgress = require("../../services/legProgress.service");
 // STEP 5 — the position Observation writer. This handler is the canonical telemetry
 // ingestion path, and it is where §2.7's position fact enters the record that
 // `indexMaintainer.worker.js` turns into `AgentCellPosition` and the Assignment Engine
 // reads. See the module header for why the agent's own timestamp is mandatory.
 const positionObservation = require("../../services/positionObservation.service");
+// The reported state of charge → `BatteryState.lastObservedSoc`, update-only (see module).
+const batteryObservation = require("../../services/batteryObservation.service");
 
 // §23.5 — "Persistent implausibility triggers quarantine and a security event."
 //
@@ -801,12 +805,16 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
         //      durable record of a fact about the physical world; writing one from a frame
         //      the server has just called implausible would put a known-bad position into
         //      the evidence log and, through the index, into candidate search.
-        //   2. **On the existing throttle, not a new one.** This shares `shouldSnapshot`
-        //      with the `Telemetry` history write beside it — 15 s, or 10 m of movement,
-        //      or a 2 % battery swing. The availability index is advisory (§3.3, I16) and
-        //      feasibility is re-verified at commit, so a few seconds of index lag costs
-        //      candidate-search quality and never correctness. Adding a second cadence
-        //      would be a second thing to tune and a second thing to get wrong.
+        //   2. **Every accepted frame — not the history table's throttle.** This used
+        //      to share `shouldSnapshot` (15 s, or 10 m, or a 2 % battery swing) on the
+        //      grounds that index lag costs search quality, never correctness. That missed
+        //      the readers that judge this row's *age*: F16 holds it to
+        //      `connectivity.max_heartbeat_age` (10 s) and §12.5's completion verification
+        //      requires a fix rate and a maximum gap. At a 15 s cadence every idle agent
+        //      was stale a third of the time and no delivery could ever verify (measured
+        //      on the V1 demonstration path, 2026-09-23: 2 fixes in a 26 s mission). The
+        //      evidence log's cadence is now the agent's own reporting cadence; the
+        //      `Telemetry` history keeps its throttle.
         //   3. **The reported position, never `fullState`.** `fullState.lat/lon` fall back
         //      to the previous tick's or the DB row's values, and pairing one of those
         //      with this frame's agent timestamp would manufacture a measurement that was
@@ -818,15 +826,47 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
         // agent reported is not the engine acting as the decision path. The gate belongs
         // where a decision is taken — `offer.handler.js` and the coordinator — and it is
         // untouched there.
-        if (!trustVerdict.refused) {
-          await writePositionObservation({
-            prisma,
-            log,
+      }
+
+      // STEP 5 — the canonical position Observation (§2.7); see the note above.
+      if (!trustVerdict.refused) {
+        await writePositionObservation({
+          prisma,
+          log,
+          robotId,
+          lat,
+          lon,
+          payload,
+        });
+
+        // §14 — the charge the energy decision plans from is the charge the agent just
+        // reported, not the one it was commissioned with. Update-only, contained: a failed
+        // write costs the engine a fresher SoC, never the telemetry frame.
+        try {
+          await batteryObservation.recordReportedSoc(prisma, {
             robotId,
-            lat,
-            lon,
-            payload,
+            batteryPct: battery,
+            agentTimestampMs: positionObservation.agentTimestampFrom(payload),
           });
+        } catch (e) {
+          log.warn?.("reported state of charge not recorded", { robotId, message: e?.message });
+        }
+
+        // §4.4 — the fix just recorded is the evidence for a departure or an arrival on
+        // the agent's live Leg (engine path only). Contained: progress bookkeeping must not
+        // cost a telemetry frame.
+        if (engineEnabled(socket, configOf())) {
+          try {
+            const agentRow = await prisma.agent.findUnique({ where: { agentId: robotId }, select: { id: true } });
+            if (agentRow) {
+              const advanced = await legProgress.onPositionFix({ prisma, agentRowId: agentRow.id, snapshot: configOf() });
+              if (advanced && advanced.outcome) {
+                log.info?.("leg progress", { robotId, outcome: advanced.outcome, from: advanced.from, to: advanced.to, reason: advanced.reason || null, detail: advanced.detail || null });
+              }
+            }
+          } catch (e) {
+            log.warn?.("leg progress failed", { robotId, message: e?.message });
+          }
         }
       }
 

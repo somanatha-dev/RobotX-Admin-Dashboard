@@ -421,6 +421,28 @@ function projectEnergyPerStop(input) {
 }
 
 /**
+ * The reason a computed `E_return` verdict supplies no return reserve, stated as the
+ * energy balance behind it. Text only: it feeds `energyUnresolved`, which changes no verdict.
+ *
+ * @param {object} verdict `eReturn.evaluate().verdict`
+ * @param {object} energy the plan input's energy block
+ * @param {number} missionWh
+ * @returns {string}
+ */
+function describeUnreachableReturn(verdict, energy, missionWh) {
+  const wh = (value) => (typeof value === "number" && Number.isFinite(value) ? `${Math.round(value * 10) / 10} Wh` : "?");
+  if (!verdict || !verdict.chargerId) {
+    const considered = verdict && Array.isArray(verdict.considered) ? verdict.considered : [];
+    return `E_return: insufficient return energy — no charger admitted from the mission end (${considered.length} considered)`;
+  }
+  return (
+    `E_return: insufficient energy to return to charger ${verdict.chargerId} — usable ${wh(energy && energy.usableWh)} ` +
+    `− mission ${wh(missionWh)} − floor ${wh(energy && energy.floorWh)} − return ${wh(verdict.eReturnWh)} ` +
+    `= ${wh(verdict.surplusWh)}`
+  );
+}
+
+/**
  * Build one plan variant over an already-sequenced stop list.
  *
  * Separated from `build()` so that the charging-insertion search can evaluate several
@@ -537,6 +559,21 @@ function buildVariant(input, stops) {
   const energyFragment = tiersEvaluated.ok
     ? energyTiers.planEnergyFragment(tiersEvaluated, returnLeg.ok ? returnLeg.verdict : null)
     : null;
+  // Why there is no fragment, kept rather than swallowed. It changes no verdict — F34
+  // denies a null fragment either way — but without it the only reason a decision record
+  // could give was "the plan's energy projection is unreadable", which named no input
+  // (measured on the V1 demonstration path, 2026-09-23).
+  const energyUnresolved = energyFragment
+    ? []
+    : [
+        ...(returnLeg.ok ? [] : (returnLeg.problems || returnLeg.missing || []).map((problem) => `E_return: ${problem}`)),
+        // A verdict that was *computed* and came out unreachable is an energy shortfall, not
+        // a missing input — say which, with the balance, so "insufficient battery" reads as
+        // that rather than as an unbuildable projection.
+        ...(returnLeg.ok && !returnLayer.ok ? [describeUnreachableReturn(returnLeg.verdict, source.energy, mission.wh)] : []),
+        ...(composed.ok ? [] : (composed.missing || composed.problems || []).map((problem) => `reserves: ${problem}`)),
+        ...(tiersEvaluated.ok ? [] : (tiersEvaluated.missing || tiersEvaluated.problems || []).map((problem) => `tiers: ${problem}`)),
+      ];
 
   const terminalUsableWh = source.energy.usableWh - mission.wh;
   const reserveFloorWh = composed.ok ? composed.totalWh : null;
@@ -560,6 +597,7 @@ function buildVariant(input, stops) {
       reserves: composed,
       tiers: tiersEvaluated,
       energyFragment,
+      energyUnresolved,
       terminalUsableWh,
       reserveFloorWh,
       terminal: {
@@ -832,6 +870,7 @@ function build(input) {
     loadState: variant.loadState,
     packing: variant.packing,
     energy: variant.energyFragment,
+    energyUnresolved: variant.energyUnresolved || [],
     route: source.route ?? null,
     environmentForecast: source.environmentForecast ?? null,
 
@@ -928,4 +967,5 @@ module.exports = {
   insertChargingStop,
   build,
   startingUsableWh,
+  describeUnreachableReturn,
 };

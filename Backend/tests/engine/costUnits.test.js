@@ -127,7 +127,13 @@ describe("exchange rates", () => {
     const built = rates.ratesFrom(snapshot, { region: "eu-west" });
     expect(built["cost.energy.cu_per_wh"].value).toBe(0.0005);
     expect(built["cost.energy.cu_per_wh"].provenance.level).toBe("region");
-    expect(built["cost.energy.cu_per_wh"].provenance.calibrationStatus).toBe("UNCALIBRATED");
+    // What this asserts is that the provenance carries the register's *own* calibration
+    // status through, not that the status is any particular one. It used to name
+    // `UNCALIBRATED` as a literal, which made an ordinary §22.4 status change — the V1
+    // demonstration moved this entry to `PROVISIONAL` — look like a defect in `ratesFrom`.
+    const registered = service.loadRegister().entries.get("cost.energy.cu_per_wh").calibrationStatus;
+    expect(built["cost.energy.cu_per_wh"].provenance.calibrationStatus).toBe(registered);
+    expect(["DERIVED", "PROVISIONAL", "UNCALIBRATED"]).toContain(registered);
   });
 
   test("an unset rate is simply absent rather than silently zero", () => {

@@ -152,9 +152,27 @@ function bridgeStore() {
     return run(tx);
   };
 
+  // §3.6's OperatingRegion, with its two identifiers kept distinct.
+  //
+  // `assignTask` names a region by `Region.regionId`, the business key a caller can hold,
+  // and translates it to `Region.id` — the uuid `Mission.regionId`, `Shard.regionId` and
+  // the `cutover.engine_enabled` binding all mean. The double returns a different string
+  // for the row id than the key it was asked for, so a test that passed by conflating the
+  // two would fail here instead.
+  prisma.region = {
+    findUnique: async ({ where }) =>
+      REGIONS.has(where.regionId) ? { id: REGIONS.get(where.regionId) } : null,
+  };
+
   prisma.__bridge = { missions, legs, stops, tasks, identities, timers };
   return prisma;
 }
+
+/** The regions this file's submissions may name, business key → `Region.id`. */
+const REGIONS = new Map([
+  ["eu-west", "region-row-eu-west"],
+  ["eu-east", "region-row-eu-east"],
+]);
 
 describe("the legacy Task → domain work bridge (§2.4)", () => {
   test("one legacy Task becomes one Mission, one PRIMARY Leg, and two Stops", async () => {
@@ -460,10 +478,21 @@ describe("the cutover gate — the case the legacy branch used to absorb", () =>
   const service = require("../../src/engine/config/service");
   const cutoverEnabled = require("../../src/engine/cutover/enabled");
 
-  /** A published snapshot with the shard's cutover binding set. */
-  const snapshotWith = (regionId, live) =>
+  /**
+   * A published snapshot with the shard's cutover binding set.
+   *
+   * The binding's key is the **`Region.id`**, not the business key a submission names.
+   * That is not a choice this fixture makes: `cutover/stage.authoriseEnable` publishes
+   * `{ level: "region", key: shard.regionId }` from the `Shard` row, and `Shard.regionId`
+   * is the foreign key to `Region.id` — so, in `server.js`'s words, "the key is
+   * machine-generated at both ends". `assignTask` translates the caller's business key to
+   * the same value before asking the gate.
+   */
+  const snapshotWith = (regionKey, live) =>
     service.buildSnapshot({
-      bindings: live ? [{ level: "region", key: regionId, name: cutoverEnabled.PARAMETER, value: true }] : [],
+      bindings: live
+        ? [{ level: "region", key: REGIONS.get(regionKey), name: cutoverEnabled.PARAMETER, value: true }]
+        : [],
     });
 
   const originalEngineFlag = process.env.ENGINE_ENABLED;
@@ -475,12 +504,14 @@ describe("the cutover gate — the case the legacy branch used to absorb", () =>
   test("the switch is a conjunction: the process flag AND the shard's published binding", () => {
     process.env.ENGINE_ENABLED = "true";
     const live = snapshotWith("eu-west", true);
-    expect(taskService.engineEnabled({ config: live, regionId: "eu-west" })).toBe(true);
+    // `engineEnabled` takes a region that is already resolved — it is asked by callers
+    // holding a `Shard` row — so the row id is what it is handed here.
+    expect(taskService.engineEnabled({ config: live, regionId: REGIONS.get("eu-west") })).toBe(true);
     // Same process, a shard that has not been staged.
-    expect(taskService.engineEnabled({ config: live, regionId: "eu-east" })).toBe(false);
+    expect(taskService.engineEnabled({ config: live, regionId: REGIONS.get("eu-east") })).toBe(false);
 
     process.env.ENGINE_ENABLED = "false";
-    expect(taskService.engineEnabled({ config: live, regionId: "eu-west" })).toBe(false);
+    expect(taskService.engineEnabled({ config: live, regionId: REGIONS.get("eu-west") })).toBe(false);
   });
 
   test("with the shard live, assignTask returns the §3.4 contract and detaches nothing", async () => {

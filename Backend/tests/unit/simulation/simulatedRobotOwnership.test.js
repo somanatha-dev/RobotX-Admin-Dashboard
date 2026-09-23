@@ -220,12 +220,15 @@ function createStorePrisma() {
       updateMany: jest.fn(),
     },
 
-    mobilityModel: { upsert: passthroughUpsert("mob") },
-    energyModel: { upsert: passthroughUpsert("eng") },
-    containerModel: { upsert: passthroughUpsert("ctr") },
+    mobilityModel: { upsert: passthroughUpsert("mob"), update: jest.fn(async ({ where }) => ({ id: where.id })) },
+    energyModel: { upsert: passthroughUpsert("eng"), update: jest.fn(async ({ where }) => ({ id: where.id })) },
+    containerModel: { upsert: passthroughUpsert("ctr"), update: jest.fn(async ({ where }) => ({ id: where.id })) },
+    // V1 demonstration: the simulated class declaration's writes (see
+    // `simulatedClassDeclaration.service`), passthrough spies for the reason given below.
+    compartment: { upsert: jest.fn(async ({ create }) => ({ id: "compartment-1", ...create })) },
     capabilityBundle: { upsert: passthroughUpsert("cap") },
     capability: { deleteMany: jest.fn(async () => ({ count: 0 })), create: jest.fn(async ({ data }) => data) },
-    agentClass: { upsert: passthroughUpsert("class") },
+    agentClass: { upsert: passthroughUpsert("class"), update: jest.fn(async ({ where }) => ({ id: where.id })) },
     agent: { upsert: jest.fn(async ({ create }) => ({ id: "agent-1", ...create })) },
 
     // The two tables `agentEnergyProvisioning.service` writes inside the same creation
@@ -238,9 +241,11 @@ function createStorePrisma() {
     // `tests/unit/robots/agentEnergyProvisioning.test.js`.
     batteryState: {
       upsert: jest.fn(async ({ create }) => ({ id: "battery-1", ...create })),
+      updateMany: jest.fn(async () => ({ count: 1 })),
     },
     energyModelParams: {
       upsert: jest.fn(async ({ create }) => ({ id: "params-1", ...create })),
+      updateMany: jest.fn(async () => ({ count: 1 })),
     },
 
     $transaction: jest.fn(async (fn) => {

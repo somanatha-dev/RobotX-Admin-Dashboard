@@ -36,8 +36,21 @@ function liveSnapshot() {
   return { resolve: (name) => (name === "cutover.engine_enabled" ? true : null), values: new Map() };
 }
 
+/**
+ * The seeded region, as two different strings.
+ *
+ * `Region.regionId` is the business identifier a submission names; `Region.id` is the uuid
+ * every foreign key and the `cutover.engine_enabled` binding mean. They are deliberately
+ * not the same value here, so a fixture cannot pass by conflating them.
+ */
+const REGION_KEY = "RGN-BLR";
+const REGION_ROW_ID = "11111111-2222-3333-4444-555555555555";
+
 function taskPrisma() {
   const prisma = createMockPrisma();
+  prisma.region.findUnique.mockImplementation(async ({ where }) =>
+    where.regionId === REGION_KEY ? { id: REGION_ROW_ID } : null,
+  );
   prisma.task.create.mockImplementation(async ({ data }) => ({ id: "task-row-1", ...data }));
   prisma.task.update.mockImplementation(async ({ data }) => data);
   prisma.payloadSpec.upsert.mockImplementation(async ({ create }) => ({ id: "payload-row-1", ...create }));
@@ -72,7 +85,7 @@ const SUBMISSION = Object.freeze({
   dropLon: 77.5031,
 });
 
-const OPTIONS = { regionId: "RGN-BLR", config: liveSnapshot() };
+const OPTIONS = { regionId: REGION_KEY, config: liveSnapshot() };
 
 /** `assignTask` up to its Task write; the round admission beyond it is not this test's subject. */
 async function submit(prisma, body) {

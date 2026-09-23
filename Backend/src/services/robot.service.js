@@ -6,6 +6,7 @@ const simulationPolicy = require("../simulation/simulationPolicy");
 // The commissioning-time producer for `EnergyModelParams` and `BatteryState`. See that
 // module's header for why every physical coefficient it writes is null.
 const agentEnergyProvisioning = require("./agentEnergyProvisioning.service");
+const simulatedClassDeclaration = require("./simulatedClassDeclaration.service");
 
 function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
@@ -272,15 +273,27 @@ async function createRobotWithProjection(prisma, body, identity) {
     // physical unit it would be a state of charge nobody has read off any hardware.
     // A physical unit is therefore left with no `BatteryState`, exactly as today.
     //
-    // Nothing here fabricates physics: `soh` and every §14.2 coefficient are written
-    // null, so every energy predicate refuses exactly as it did before — the refusal
-    // simply now names the missing coefficients instead of the missing row.
+    // Provisioning writes `soh` and every §14.2 coefficient null. For a *simulated* unit
+    // those are then filled from the simulator's own declarations (V1 demonstration,
+    // 2026-09-23) — the simulator IS the pack, so its drain constants are its physics. A
+    // physical unit gets neither call and keeps refusing until its model is fitted.
     if (simulated && agent && agent.id) {
       await agentEnergyProvisioning.provisionAgentEnergyState(tx, {
         agentRowId: agent.id,
         agentClassRowId: agentClass.id,
         initialBatteryPct: parsed.spec.initialBatteryPct ?? null,
         at: now,
+      });
+      // V1 demonstration: the simulator's own declarations (β from its drain constants,
+      // SoH 1, its floor, surfaces, envelope, firmware) into the columns the engine reads.
+      // DEVELOPMENT_SIMULATION values, never fitted — see simulatedClassDeclaration.service.
+      await simulatedClassDeclaration.applySimulatedClassDeclaration(tx, {
+        agentRowId: agent.id,
+        agentClass,
+        packNominalWh: rows.energy.packNominalWh,
+        chassisPermissionSet: rows.mobility.permissionSet,
+        payloadCapacityKg: rows.container.totalMassLimitKg,
+        vehicleMassKg: rows.robot.massKg,
       });
     }
 

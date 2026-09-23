@@ -257,11 +257,33 @@ const COMPOSERS = Object.freeze({
       };
     }
 
+    // `Outbox.agentId` is the FK to `Agent.id` (a row uuid), and the §11.3 delivery arm
+    // routes to the room an agent joins at AUTH — `robot:<robotId>` — where the robot code
+    // is `Agent.agentId` (`legacyRobot.robotToAgent`). Handing the arm the row id meant
+    // every delivery answered AGENT_NOT_CONNECTED for a connected agent and every OFFER
+    // expired unacknowledged (measured on the V1 demonstration path, 2026-09-23). The
+    // identity is resolved from the row, never guessed; an unknown row passes through
+    // unchanged and the arm refuses it by name.
+    const routingKeys = new Map();
+    const deliver =
+      typeof context.deliver === "function"
+        ? async (agentRowId, envelope) => {
+            let key = routingKeys.get(agentRowId);
+            if (key === undefined) {
+              const row = await prisma.agent.findUnique({ where: { id: String(agentRowId) }, select: { agentId: true } });
+              key = row && row.agentId ? row.agentId : agentRowId;
+              routingKeys.set(agentRowId, key);
+            }
+            // The envelope names the agent by the same wire identity it is signed for.
+            return context.deliver(key, envelope && typeof envelope === "object" ? { ...envelope, agentId: key } : envelope);
+          }
+        : context.deliver;
+
     const deps = {
       prisma,
       // The production transport. Never a socket table of the worker's own: §11.3, and the
       // worker's own `requireDeps` refuses one that reaches for a socket itself.
-      deliver: context.deliver,
+      deliver,
       readStoreTime: outboxWorker.storeTimeReader(prisma),
       record,
       // Advisory only — §3.3. Losing it costs an operator's fast read, never a dispatch.
@@ -279,7 +301,18 @@ const COMPOSERS = Object.freeze({
       // binds, not through this object.
     };
 
-    const intervalMs = finite(values, "dispatch.max_delivery_delay");
+    // The drain cadence. It was `dispatch.max_delivery_delay` (300 s) — the latest a command
+    // may still be sent, not how often to look — while an OFFER expires after
+    // `dispatch.offer_ttl` (20 s). Every OFFER therefore expired before the first drain and
+    // no offer could ever reach an agent (measured on the V1 demonstration path,
+    // 2026-09-23). A retry can only happen on a drain, so the cadence is bounded by half the
+    // retry window and a quarter of the offer TTL, and never exceeds the delivery ceiling.
+    const bounds = [
+      finite(values, "dispatch.max_delivery_delay"),
+      Number.isFinite(finite(values, "dispatch.retry_window")) ? finite(values, "dispatch.retry_window") / 2 : undefined,
+      Number.isFinite(finite(values, "dispatch.offer_ttl")) ? finite(values, "dispatch.offer_ttl") / 4 : undefined,
+    ].filter((value) => Number.isFinite(value) && value > 0);
+    const intervalMs = bounds.length > 0 ? Math.min(...bounds) : undefined;
     return {
       ok: true,
       handle: outboxWorker.start(

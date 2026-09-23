@@ -73,6 +73,8 @@ const robotSpecification = require("./robotSpecification");
 // REMEDIAL PHASE T1-04 — §4.5's deadline for the `QUEUED` state a newly admitted Leg is
 // created in, and §17.4's ladder, which owns the rung timing that deadline is armed at.
 const clock = require("../engine/commitment/clock");
+const legProgress = require("./legProgress.service");
+const { haversineMeters } = require("../utils/distance");
 const ladder = require("../engine/fairness/ladder");
 const legEntryDeadline = require("../engine/cutover/legEntryDeadline");
 const legMachine = require("../engine/lifecycle/legMachine");
@@ -95,6 +97,69 @@ function engineEnabled(context) {
     snapshot: settings.config || null,
     shard: { regionId: settings.regionId || null, shardId: settings.shardId || null },
   });
+}
+
+/**
+ * Translate the region a submission names into the region identity the rest of the
+ * system means by `regionId`.
+ *
+ * ── The contract mismatch this closes ───────────────────────────────────────
+ * `Region` carries two identifiers and they are different strings: `Region.id`, a uuid,
+ * and `Region.regionId`, the operator-facing business key. `server.js` states the split
+ * in its own words — *"`Shard.regionId` is a foreign key to `Region.id` — a uuid — while
+ * `Region.regionId` is the operator-facing identifier"* — and `phase15CurrentTree.js`
+ * asserts the two are distinguishable so the check is not vacuous.
+ *
+ * **Everything downstream of this function means `Region.id`.** Three consumers, all of
+ * them, with no exception on this tree:
+ *
+ *   · `Mission.regionId` is `@relation(fields: [regionId], references: [id])` — the
+ *     foreign key. A business key written there is the `P2003 Mission_regionId_fkey`
+ *     that a live HTTP probe of `POST /api/tasks/assign` returns as a 500.
+ *   · the region→shard map. `intake.resolveShardFor` builds it from `Shard.regionId`,
+ *     which is the same foreign key, so a business key finds no shard and the Leg is
+ *     refused as belonging to a region *"not in the published region→shard map"*.
+ *   · `cutover.engine_enabled`. `stage.authoriseEnable` publishes the binding as
+ *     `{ level: "region", key: shard.regionId }`, and `cutover/store.liveShards` and
+ *     `cutover/agentGate.resolveIdentity` resolve it from the same column — so, as
+ *     `server.js` puts it, *"the key is machine-generated at both ends"*.
+ *
+ * **And the request boundary means `Region.regionId`.** That is what a caller can know:
+ * `tools/verify/v1CorePath.js` posts `regionId: region.regionId`, `tools/migrate/
+ * backfillDomain.js` reads published maps that declare regions by the same key and looks
+ * each one up to get `row.id`, and a uuid is not an identifier a UI or an external client
+ * has any way to hold. So the translation belongs here, at the one point where an
+ * externally supplied region enters the request path, and it is a lookup rather than a
+ * second identity: no Region row is created, no foreign key is bypassed, and an
+ * unrecognised region is refused rather than passed through to fail at the constraint.
+ *
+ * ── Why not accept the uuid too ─────────────────────────────────────────────
+ * Because then a caller's `regionId` would mean whichever of two things happened to
+ * match, and a request that named a region the caller did not intend would be admitted
+ * under a different one. One identifier at the boundary is what makes the refusal below
+ * mean something.
+ *
+ * @param {object} prisma
+ * @param {string|null} regionKey the business identifier the caller named, or null
+ * @returns {Promise<string|null>} `Region.id`, or null when the caller named no region
+ * @throws {Error} status 400, when the caller named a region that does not exist
+ */
+async function resolveRegionRowId(prisma, regionKey) {
+  if (!regionKey) return null;
+
+  const region = await prisma.region.findUnique({ where: { regionId: regionKey }, select: { id: true } });
+  if (!region) {
+    const err = new Error(
+      `regionId "${regionKey}" does not name an OperatingRegion. The request names a region by its ` +
+        "business identifier (Region.regionId); this deployment has no such region, so the submission " +
+        "cannot be attributed to a shard, a delivery domain, or a cutover posture.",
+    );
+    err.status = 400;
+    err.code = "UNKNOWN_REGION";
+    throw err;
+  }
+
+  return region.id;
 }
 
 /**
@@ -412,6 +477,23 @@ async function superviseQueuedEntry(tx, input) {
 }
 
 /**
+ * Did the caller name a region→shard map of its own?
+ *
+ * The distinction `admitToRound` routes on, hoisted so it is one predicate rather than a
+ * truthiness test written inline. An empty object is **not** a map: it carries no
+ * region→shard fact, and treating it as one would reintroduce the exact reading —
+ * "an empty map means no map is published" — that filed every Leg under the default
+ * shard. A caller with no map omits it or passes nothing; a caller with one has at least
+ * one region in it.
+ *
+ * @param {Record<string,string>|null|undefined} shardByRegionId
+ * @returns {boolean}
+ */
+function hasExplicitShardMap(shardByRegionId) {
+  return Boolean(shardByRegionId) && Object.keys(shardByRegionId).length > 0;
+}
+
+/**
  * PHASE 10 — §3.4's request path, for a legacy `Task` row.
  *
  * The bridge is `domain/mappers/legacyTask.taskToWork()` (Phase 2), which maps one legacy
@@ -539,6 +621,42 @@ async function admitToRound(prisma, pending, options = {}) {
       externalRef: pending.taskId,
       receivedAtMs,
       shardResolution: { regionId: options.regionId ?? null, shardByRegionId: options.shardByRegionId },
+      // ── §3.5's routing, against the published `Shard` table ─────────────────
+      //
+      // Phase 13 gave `intake.admit` a store-backed resolver and made it **opt-in**, so
+      // that a round replaying against a pinned snapshot could not acquire a store read
+      // the original decision did not make (§9.6 requirement 5, T6). That reasoning is
+      // correct and is preserved: the flag stays opt-in and every replay caller stays on
+      // the pure path.
+      //
+      // **Nothing ever opted in.** `resolveShardFromStore` had no caller anywhere outside
+      // one unit test, and no production caller has ever supplied `shardByRegionId`
+      // either — so `resolveShard` saw an empty map on every live submission, read that as
+      // "no region→shard map is published", and returned `SINGLE_SHARD_DEPLOYMENT` with
+      // `leadership.DEFAULT_SHARD_ID`. Every Leg this system admitted was filed under
+      // `"default"` however many shards the deployment had published.
+      //
+      // That is not a cosmetic mislabelling. `coordinator.worker.claimBatch` selects
+      // `where: { shardId }` against the coordinator's own `SHARD_ID`, so a row filed
+      // under `"default"` is invisible to the coordinator that owns the region — the work
+      // is durably accepted, correctly queued, and drained by nobody, which is precisely
+      // the unowned in-flight state §12.1 exists to make unrepresentable. Observed on a
+      // live PostgreSQL: `WorkQueue.shardId="default"` while the published shard owning
+      // the region was running as the leader.
+      //
+      // This is the request path, not a replay: it *is* the moment the original decision
+      // is made, so reading the published map here is the store read §3.5 describes
+      // ("every Leg is routed to exactly one shard at intake"), not one a replay would
+      // inherit. The resolved value is then pinned on the `WorkQueue` row, so the replay
+      // still reads a recorded fact rather than re-querying.
+      //
+      // An explicitly supplied map still wins. `resolveShardFor` overwrites whatever map
+      // it is handed with the store's, so asking it to resolve while the caller has named
+      // a map would discard the caller's — and a caller that names one is a caller that
+      // means it (a replay, a simulation, a rebalance rehearsal). So the store is consulted
+      // exactly when no map was supplied, which is every live submission today and none of
+      // the callers the opt-in was written to protect.
+      resolveShardFromStore: !hasExplicitShardMap(options.shardByRegionId),
       admissionInputs: options.admissionInputs || {},
       cadence: {
         windowMs: verdict.windowMs,
@@ -701,6 +819,23 @@ async function assignTask(prisma, task, { kv, io, ...options } = {}) {
     throw err;
   }
 
+  // A delivery whose drop is within the arrival radius of its pickup cannot be executed as
+  // §4.4 describes it: the agent is already "at the drop" when it loads, the departure from
+  // the pickup is never observable, and the Leg stalls in LOADED with custody held (measured
+  // on the V1 run, 2026-09-23: two RNSIT campus points share one coordinate). Refused here,
+  // before anything is written, with the radius the lifecycle itself uses.
+  const arrivalRadius = legProgress.arrivalRadiusM();
+  const separationM = haversineMeters(pickupLat, pickupLon, dropLat, dropLon);
+  if (separationM <= (arrivalRadius ?? 0)) {
+    const err = new Error(
+      `pickup and drop are ${separationM.toFixed(1)} m apart, within the ${arrivalRadius ?? 0} m arrival radius — ` +
+        "not a deliverable task",
+    );
+    err.status = 400;
+    err.code = "PICKUP_EQUALS_DROP";
+    throw err;
+  }
+
   // ── The payload, and the agent class the submitter is asking for ──────────
   //
   // Both are validated here, before the cutover gate and before any row is written, for
@@ -735,6 +870,20 @@ async function assignTask(prisma, task, { kv, io, ...options } = {}) {
     payloadMassKg: payload.spec ? payload.spec.massKg : null,
   });
 
+  // ── The region the submission names, translated once ──────────────────────
+  //
+  // `options.regionId` is the business identifier the caller supplied; `regionRowId` is
+  // the `Region.id` every consumer below this line means by "regionId" — the cutover
+  // gate, the Mission foreign key, and the region→shard map alike. See
+  // `resolveRegionRowId` for why the boundary and the interior name a region
+  // differently, and why translating is not a second region identity.
+  //
+  // Before the cutover gate, because the gate's subject *is* the region: asking whether
+  // a shard is staged without first establishing which region was named would ask the
+  // question of a region that may not exist. Both refusals are pre-write, so neither
+  // leaves a row behind.
+  const regionRowId = await resolveRegionRowId(prisma, options.regionId || null);
+
   // ── The cutover gate, checked before anything is written ──────────────────
   //
   // Before the row, not after it. A refused request that had already created a PENDING
@@ -742,7 +891,7 @@ async function assignTask(prisma, task, { kv, io, ...options } = {}) {
   // that no component owns. The caller gets a 503 and the database is untouched.
   const posture = cutoverEnabled.describe({
     snapshot: options.config || null,
-    shard: { regionId: options.regionId || null, shardId: options.shardId || null },
+    shard: { regionId: regionRowId, shardId: options.shardId || null },
   });
   if (!posture.live) {
     const err = new Error(
@@ -813,7 +962,10 @@ async function assignTask(prisma, task, { kv, io, ...options } = {}) {
     slaBudgetSeconds: options.slaBudgetSeconds,
     tenantId: options.tenantId,
     idempotencyKey: options.idempotencyKey,
-    regionId: options.regionId,
+    // The `Region.id` the foreign key and the region→shard map both mean, never the
+    // business key the caller supplied. `taskToWork` writes this straight into
+    // `Mission.regionId`, which is the FK column.
+    regionId: regionRowId,
     shardByRegionId: options.shardByRegionId,
     shardId: options.shardId,
     // T1-04 — the published `values` map, so the `QUEUED` deadline is armed from

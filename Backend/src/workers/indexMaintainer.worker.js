@@ -97,6 +97,9 @@
 const { getPrisma } = require("../db/prisma");
 const availabilityIndex = require("../engine/candidates/availabilityIndex");
 const { defaultSnapshot } = require("../engine/config/service");
+const cells = require("../engine/spatial/cells");
+const hierarchy = require("../engine/spatial/hierarchy");
+const membership = require("../engine/shard/membership");
 
 /**
  * The sweep interval. The index is advisory (§3.3, I16) and feasibility is
@@ -124,13 +127,98 @@ function isFiniteNumber(value) {
  * @returns {Promise<object|null>} `positionRecord()` input, or null when the agent
  *   has no position observation yet (nothing to index)
  */
+/**
+ * The shard that owns this agent — **read, never assumed.**
+ *
+ * ── The defect this replaces ───────────────────────────────────────────────
+ * `assembleRecord` returned a hard-coded `shardId: "default"`, annotated *"static
+ * single-shard, per Phase 3's ShardLeadership precedent ahead of Phase 13"*. Phase 13
+ * landed. The constant then did two things, both wrong on any deployment whose shard is
+ * not literally named `default`:
+ *
+ *   1. `sweepAgents` wrote the KV availability index under `engine:idx:default:…`, while
+ *      `candidates/expansion.expandCandidates` searches it under **the round's own**
+ *      shard — so no coordinator could discover any agent; and
+ *   2. `applyPosition`'s mirror upsert rewrote `AgentCellPosition.shardId` to `"default"`,
+ *      **overwriting the published shard on the durable row**, which also emptied
+ *      `coordinatorSolvePath.expandCandidatesFor`'s `fleetBestCase` query.
+ *
+ * So one sweep made a correctly-seeded fleet invisible and corrupted the column that said
+ * where it was. The shard was on the row being read the whole time.
+ *
+ * ── The order, and why absence is not `"default"` ──────────────────────────
+ * The durable mirror first: it is what intake resolved and what the published `Shard`
+ * table agreed to, and re-deriving it would let this worker disagree with the row it is
+ * about to write. Failing that, the agent's region through the `Shard` table, under the
+ * same ACTIVE/REBALANCING admission rule `intake.resolveShardFor` applies — stated here
+ * rather than imported, for the reason `intake.js` gives for not importing `shardModel`.
+ *
+ * An agent that resolves to neither is **not indexed**, and that is the fail-closed
+ * direction this module already takes elsewhere: §3.3 I16 makes the index advisory and
+ * feasibility is re-verified at commit, so an agent missing from the index costs candidate
+ * quality and never correctness — while an agent indexed under the *wrong* shard is
+ * invisible to its own coordinator and visible to somebody else's.
+ *
+ * @param {object} prisma
+ * @param {{ id: string, regionId: string|null }} agent
+ * @returns {Promise<string|null>}
+ */
+/**
+ * The region an observed position lies in, **by published assignment** (§3.6) — the fine
+ * cell of the position, resolved in the pinned spatial index. `null` when the map is
+ * absent or the cell is unassigned; never a point-in-polygon test.
+ *
+ * Why it exists: an agent commissioned from the dashboard carries no `Agent.regionId`
+ * (`legacyRobot.robotToAgent` receives none), so `resolveAgentShardId` returned null and
+ * the agent was **never indexed** — a live, reporting robot that no round could discover.
+ * Measured 2026-09-23 on the V1 demonstration path. Its region is not unknown: it is where
+ * the robot is, in the map the rest of the engine already trusts.
+ *
+ * @param {object} snapshot the pinned configuration
+ * @param {{ lat: number, lon: number }} position
+ * @returns {string|null} a `Region.id`
+ */
+function regionForObservedPosition(snapshot, position) {
+  if (!snapshot || !snapshot.spatial || !position) return null;
+  if (!isFiniteNumber(position.lat) || !isFiniteNumber(position.lon)) return null;
+  try {
+    const cellId = cells.cellForPoint(position.lat, position.lon, cells.RESOLUTION.FINE);
+    const resolved = hierarchy.indexMap(snapshot.spatial).resolve(cellId);
+    return resolved.assigned === true && resolved.regionId ? resolved.regionId : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveAgentShardId(prisma, agent, observedRegionId) {
+  const mirror = await prisma.agentCellPosition.findUnique({
+    where: { agentId: agent.id },
+    select: { shardId: true },
+  });
+  if (mirror && typeof mirror.shardId === "string" && mirror.shardId !== "") return mirror.shardId;
+
+  // The declared region wins; an agent nobody placed in a region is placed by where it was
+  // observed, in the published map (see `regionForObservedPosition`).
+  const regionId = agent.regionId || observedRegionId || null;
+  if (!regionId) return null;
+  const shards = await prisma.shard.findMany({
+    where: { regionId },
+    orderBy: { shardId: "asc" },
+    select: { shardId: true, state: true },
+  });
+  const admitting = shards.find((row) => row.state === "ACTIVE" || row.state === "REBALANCING");
+  return admitting ? admitting.shardId : null;
+}
+
 async function assembleRecord(deps, agentId, nowMs) {
   const prisma = deps.prisma;
 
   const [agent, latestPosition, activeCommitmentCount] = await Promise.all([
     prisma.agent.findUnique({
       where: { id: agentId },
-      select: { id: true, agentId: true, lifecycleState: true, agentClassId: true, capacityOverride: true },
+      // `regionId` is read because `resolveAgentShardId` needs it when no mirror row
+      // exists yet — the first sweep after commissioning.
+      select: { id: true, agentId: true, lifecycleState: true, agentClassId: true, capacityOverride: true, regionId: true },
     }),
     prisma.observation.findFirst({
       where: { agentId, kind: "position" },
@@ -209,9 +297,14 @@ async function assembleRecord(deps, agentId, nowMs) {
 
   const finishingSoonHorizonSeconds = snapshot.resolve("candidate.finishing_soon_horizon", {}) ?? null;
 
+  // The owning shard, from the durable row or the published `Shard` table. An agent
+  // whose shard cannot be established is not indexed at all — see `resolveAgentShardId`.
+  const shardId = await resolveAgentShardId(prisma, agent, regionForObservedPosition(snapshot, position));
+  if (shardId === null) return null;
+
   return {
     agentId: agent.id,
-    shardId: "default", // static single-shard, per Phase 3's ShardLeadership precedent ahead of Phase 13
+    shardId,
     lat: position.lat,
     lon: position.lon,
     // Carried alongside the record `positionRecord()` builds rather than inside it:
@@ -328,6 +421,26 @@ async function sweepAgents(deps, agentIds) {
             observedAtMs,
           },
         });
+
+        // §3.5's initial placement, at the moment the agent's shard is first established.
+        // `shard/membership.place` existed and **had no caller**: no agent ever had a
+        // `ShardMembership`, so `agentGate.resolveIdentity` bound no shard at AUTH and every
+        // OFFER_ACCEPT/REJECT/DEFER was dropped as SHARD_IDENTITY_UNRESOLVED — an agent that
+        // accepted its offer was withdrawn for not answering (measured on the V1
+        // demonstration path, 2026-09-23). Idempotent: an agent already a member of this
+        // shard is left as it is, and one that belongs to a *different* shard is refused
+        // (a move is `migrate()`'s, with its epoch advance), never silently re-placed.
+        //
+        // Contained: the index write above has succeeded, and a placement failure must not
+        // un-index an agent that is discoverable. It is reported, and the next sweep retries.
+        try {
+          await membership.place(
+            { prisma },
+            { agentId, shardId: next.record.shardId, at: new Date(nowMs), movedBy: "indexMaintainer:initial-placement" },
+          );
+        } catch (error) {
+          if (typeof deps.onError === "function") deps.onError(error, agentId);
+        }
         indexed += 1;
       } else if (previousRow) {
         // eslint-disable-next-line no-await-in-loop
@@ -387,14 +500,45 @@ async function rebuildIndexFromMirror(deps) {
 }
 
 /**
- * Start the periodic sweep.
+ * Start the periodic sweep, **after** rebuilding the index from the durable mirror.
+ *
+ * ── Why the rebuild has to happen here ─────────────────────────────────────
+ * `availabilityIndex.applyPosition` writes a **delta**: it compares the keys implied by
+ * the previous mirror row against the keys implied by the new one and adds only what
+ * changed. That is correct while the index is warm, and it is silently wrong the moment
+ * the index is cold — an empty Redis, a flushed one, a process with Redis disabled, or a
+ * freshly-seeded deployment. The mirror row already matches what the sweep computes, so
+ * `toAdd` is empty, the sweep reports `indexed: 1`, and **nothing is written**. The index
+ * then stays empty until an agent happens to move, and `expansion.expandCandidates` finds
+ * no candidate in any cell, for any shard, for as long as the fleet sits still.
+ *
+ * `rebuildIndexFromMirror` is the shipped answer to exactly that — the Cold Index rebuild.
+ * It was written, exported, tested, and **called from nowhere in `src/` or `server.js`**:
+ * a producer that exists and no composition root uses, which is the defect family this
+ * programme has now hit at least six times.
+ *
+ * It runs here rather than at the two `server.js` call sites so there is one place to
+ * forget rather than two, and it runs *before* the first periodic sweep so the first round
+ * after a restart searches a populated index.
+ *
+ * A failed rebuild is reported and does not prevent the sweep starting: the index is
+ * advisory (§3.3 I16) and feasibility is re-verified at commit, so a cold index costs
+ * candidate quality and never correctness — refusing to start the maintainer would cost
+ * both.
  *
  * @param {object} deps as `sweepOnce`
- * @param {{ intervalMs?: number }} [options]
+ * @param {{ intervalMs?: number, rebuildOnStart?: boolean }} [options] `rebuildOnStart`
+ *   defaults to true; pass false only where the caller has already rebuilt
  * @returns {{ stop: () => void }}
  */
 function start(deps, options) {
   const intervalMs = (options && options.intervalMs) || SWEEP_INTERVAL_MS;
+
+  if (!options || options.rebuildOnStart !== false) {
+    rebuildIndexFromMirror(deps).catch((error) => {
+      if (deps && typeof deps.onError === "function") deps.onError(error, null);
+    });
+  }
 
   const handle = setInterval(() => {
     sweepOnce(deps).catch((error) => {
@@ -414,6 +558,7 @@ function start(deps, options) {
 module.exports = {
   SWEEP_INTERVAL_MS,
   assembleRecord,
+  regionForObservedPosition,
   agentIsLifecycleEligible,
   sweepAgents,
   sweepOnce,

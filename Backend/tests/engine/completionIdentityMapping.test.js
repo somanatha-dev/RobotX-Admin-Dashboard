@@ -134,12 +134,20 @@ describe("the agent reports the Task it was told about", () => {
     const agent = makeAgent();
     agent._respondToOffer(offerEnvelope({ taskId: "TSK-1" }));
 
-    // Drive the phase machine to the end without waiting out the real dwell timers.
-    agent.pathIndex = agent.task.pathToPickup.length - 1;
+    // Drive the phase machine to the end without waiting out the real dwell timers. Arrival
+    // means being *at* the final waypoint (VirtualRobot, 2026-09-23), so the agent is placed
+    // there, not merely pointed at it.
+    const arriveAt = (path) => {
+      const last = path[path.length - 1];
+      agent.pathIndex = path.length - 1;
+      agent.lat = last.lat;
+      agent.lon = last.lon;
+    };
+    arriveAt(agent.task.pathToPickup);
     agent._advanceTask(Date.now());
     agent.waitUntil = 0;
     agent._advanceTask(Date.now());
-    agent.pathIndex = agent.task.pathToDrop.length - 1;
+    arriveAt(agent.task.pathToDrop);
     agent._advanceTask(Date.now());
     agent.waitUntil = 0;
     agent._advanceTask(Date.now());

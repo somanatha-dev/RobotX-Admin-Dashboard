@@ -88,8 +88,14 @@ function fleetBestCaseFrom(positions) {
   for (const position of positions || []) {
     const agentClass = position && position.agent && position.agent.agentClass;
     const limits = agentClass && agentClass.mobilityModel && agentClass.mobilityModel.kinematicLimits;
-    if (limits && Number.isFinite(limits.maxSpeedMs)) {
-      maxSpeedMs = maxSpeedMs === null ? limits.maxSpeedMs : Math.max(maxSpeedMs, limits.maxSpeedMs);
+    // `maxSpeedMps` is the key commissioning writes (`robotSpecification.modelRowsFor`,
+    // documented at its line 21); `maxSpeedMs` is this reader's older spelling of the same
+    // m/s quantity. Reading only the old one left every commissioned fleet with no best
+    // case, so the unexplored-ring floor never resolved and the expansion evaluated no
+    // agent at all (measured on the V1 demonstration path, 2026-09-23).
+    const limit = limits ? (Number.isFinite(limits.maxSpeedMps) ? limits.maxSpeedMps : limits.maxSpeedMs) : undefined;
+    if (Number.isFinite(limit)) {
+      maxSpeedMs = maxSpeedMs === null ? limit : Math.max(maxSpeedMs, limit);
     }
     const params = agentClass && agentClass.energyModelParams && agentClass.energyModelParams[0];
     const coefficients = energyCoefficientsFrom(params);

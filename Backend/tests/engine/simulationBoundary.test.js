@@ -131,6 +131,22 @@ describe("Test G — the assignment engine cannot see the simulation discriminat
       // without a token this detector matches — would leave a reader of the discriminator
       // that the allow-list does not know about, which is worse than a listed one.
       "services/positionObservation.service.js",
+      // V1 DEMONSTRATION (2026-09-23) — the two *provider* readers. Neither is in the
+      // decision path, and the engine still cannot tell the two kinds of agent apart: both
+      // hand back the same field names, and a missing field is simply missing.
+      //
+      //   · `agentFacts.service.js` is the one place that chooses a fact source per agent:
+      //     the simulator's own state (`simulation/simulatedAgentState`) for a simulated
+      //     unit, and nothing yet for a physical one — whose control-plane facts therefore
+      //     stay absent and §7.5 denies them by name. It reads the flag through
+      //     `simulationPolicy.isSimulatedRobot`.
+      //   · `v1DemonstrationComposition.js` lists the simulated robots the
+      //     DEVELOPMENT_SIMULATION router may serve, because `createSimulationRouter`
+      //     refuses to be built for any agent that is not one.
+      //
+      // Registered here rather than evaded, for the reason given for the entry above.
+      "services/agentFacts.service.js",
+      "services/v1DemonstrationComposition.js",
     ]);
 
     const unexpected = discriminatorReferences(filesUnder(SRC)).filter(

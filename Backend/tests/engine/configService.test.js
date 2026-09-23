@@ -439,6 +439,122 @@ describe("pin and load — cache-read, DB-authoritative (§3.3)", () => {
   });
 });
 
+// ── The defect: a stale mirror beat the authoritative pin ───────────────────────
+//
+// §3.3 makes config DB-authoritative and cache-read, and the flush case above was the
+// only one anyone had checked. The *stale* case is the one that bit: `loadPinnedSnapshot`
+// read `config:active` first and fell through to `ConfigActiveVersion` only on a miss, so
+// a mirror left behind by an earlier run won over the row the database considered active.
+//
+// It is not an exotic state. `pinVersion(prisma, null, …)` — how `tools/verify/v1CorePath.js`,
+// `v10RollbackRunbook.js` and `phase15VersionInForce.js` all pin — moves the database pin
+// and cannot touch the mirror; a shared Redis outlives the database it was filled from; and
+// `pinVersion`'s own cache-fill is best-effort and swallows its error. Observed on a live
+// disposable PostgreSQL: version 1 published, `ConfigActiveVersion` pointing at 1, and the
+// process resolving against a stale `config:active` from a previous database entirely.
+describe("pin and load — a stale mirror never overrides the authoritative pin (§3.3)", () => {
+  /** Publish `count` versions against one store, and pin the first of them. */
+  async function publishSeveralAndPin(count, pinned) {
+    const store = createConfigStore();
+    const kv = createKv();
+    for (let index = 0; index < count; index += 1) {
+      await service.publish(store.client, {
+        publishedBy: "ops-1",
+        // A distinct, resolvable value per version, so "which version answered" is
+        // observable from the snapshot rather than only from its version number.
+        bindings: [...BASELINE, bind("solve.window_min", 500 + index * 50)],
+        approvals: [{ approverId: "safety-1", approvedAt: "t" }],
+      });
+    }
+    await service.pinVersion(store.client, kv, pinned, "ops-1");
+    return { store, kv };
+  }
+
+  test("DB pin A with a stale mirror naming B resolves A", async () => {
+    const { store, kv } = await publishSeveralAndPin(2, 1);
+
+    // The mirror is left pointing at 2 — the shape `pinVersion(prisma, null, 1, …)` leaves
+    // behind after an earlier run had pinned 2.
+    kv.store.set(service.ACTIVE_VERSION_KEY, "2");
+
+    const snapshot = await service.loadPinnedSnapshot({ prisma: store.client, kv });
+    expect(snapshot.version).toBe(1);
+    expect(snapshot.resolve("solve.window_min")).toBe(500);
+    expect(store.client.configActiveVersion.findUnique).toHaveBeenCalled();
+  });
+
+  test("the database pin is re-read on every load, so a repin takes effect at once", async () => {
+    const { store, kv } = await publishSeveralAndPin(2, 1);
+    expect((await service.loadPinnedSnapshot({ prisma: store.client, kv })).version).toBe(1);
+
+    // Repinned with no kv — the mirror still says 1, the database says 2.
+    await service.pinVersion(store.client, null, 2, "ops-2");
+    expect(kv.store.get(service.ACTIVE_VERSION_KEY)).toBe("1");
+
+    const snapshot = await service.loadPinnedSnapshot({ prisma: store.client, kv });
+    expect(snapshot.version).toBe(2);
+    expect(snapshot.resolve("solve.window_min")).toBe(550);
+  });
+
+  test("a matching mirror changes nothing — the same answer, from the same source", async () => {
+    const { store, kv } = await publishSeveralAndPin(2, 2);
+    expect(kv.store.get(service.ACTIVE_VERSION_KEY)).toBe("2");
+
+    const snapshot = await service.loadPinnedSnapshot({ prisma: store.client, kv });
+    expect(snapshot.version).toBe(2);
+    expect(snapshot.resolve("solve.window_min")).toBe(550);
+  });
+
+  test("no mirror at all, DB pin A, resolves A", async () => {
+    const { store, kv } = await publishSeveralAndPin(2, 1);
+    kv.store.clear();
+
+    const snapshot = await service.loadPinnedSnapshot({ prisma: store.client, kv });
+    expect(snapshot.version).toBe(1);
+    expect(snapshot.resolve("solve.window_min")).toBe(500);
+  });
+
+  test("a mirror naming a version that does not exist is not a wrong answer either", async () => {
+    const { store, kv } = await publishSeveralAndPin(1, 1);
+    kv.store.set(service.ACTIVE_VERSION_KEY, "99");
+
+    const snapshot = await service.loadPinnedSnapshot({ prisma: store.client, kv });
+    expect(snapshot.version).toBe(1);
+  });
+
+  test("an unpinned database resolves to null however confident the mirror is", async () => {
+    const { client } = createConfigStore();
+    await service.publish(client, {
+      publishedBy: "ops-1",
+      bindings: BASELINE,
+      approvals: [{ approverId: "safety-1", approvedAt: "t" }],
+    });
+    const kv = createKv();
+    kv.store.set(service.ACTIVE_VERSION_KEY, "1");
+
+    // A published version nobody pinned is not in force. The mirror claiming otherwise is
+    // exactly the class of stale state this reader refuses to act on.
+    expect(await service.loadPinnedSnapshot({ prisma: client, kv })).toBeNull();
+  });
+
+  test("bootstrap adopts the database pin, not the mirror, with the engine enabled", async () => {
+    const { store, kv } = await publishSeveralAndPin(2, 1);
+    kv.store.set(service.ACTIVE_VERSION_KEY, "2");
+
+    const snapshot = await service.bootstrap({ prisma: store.client, kv, engineEnabled: true });
+    expect(snapshot.version).toBe(1);
+    expect(snapshot.resolve("solve.window_min")).toBe(500);
+  });
+
+  test("an explicit version argument still wins — it is the caller's own pin", async () => {
+    const { store, kv } = await publishSeveralAndPin(2, 1);
+    const snapshot = await service.loadPinnedSnapshot({ prisma: store.client, kv, version: 2 });
+    expect(snapshot.version).toBe(2);
+    // Asking for a named version is not asking what is active, so the pin is not consulted.
+    expect(store.client.configActiveVersion.findUnique).not.toHaveBeenCalled();
+  });
+});
+
 describe("bootstrap", () => {
   test("falls back to register defaults while the engine is off", async () => {
     const { client } = createConfigStore();

@@ -89,6 +89,15 @@ const LEG_OUTCOME = Object.freeze({
   COMMIT_ABORTED: "COMMIT_ABORTED",
 });
 
+/**
+ * The share of §9.4's wall-clock budget candidate expansion may spend before the round stops
+ * admitting further Legs, so the solve keeps the rest. @structural a split of one budget,
+ * not a tunable of its own
+ */
+const EXPANSION_SHARE_OF_BUDGET = 0.5;
+
+const isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
+
 /** How the round itself ended. @structural round outcome labels */
 const ROUND_OUTCOME = Object.freeze({
   COMPLETED: "COMPLETED",
@@ -327,6 +336,30 @@ async function plan(deps, input) {
       // the batch, which is recorded rather than silently truncated.
       perLeg.push({ legId: String(leg.legId), outcome: LEG_OUTCOME.BUDGET_TRUNCATED, detail: admitted.verdict });
       continue;
+    }
+
+    // §9.4 — leave the solve its share of the wall clock. Expanding every claimed Leg first
+    // and solving afterwards spent the whole budget on expansion once a batch was large
+    // enough; the solve then returned its empty incumbent, every Leg went back to the queue,
+    // and the next round did the same (measured on the V1 run, 2026-09-23: 20 queued Legs,
+    // 208 BUDGET_TRUNCATED decisions, zero assignments — a livelock). Once a Leg has priced
+    // candidates and half the budget is gone, the rest wait for the next round; each round
+    // then assigns what it expanded. Replay reads the pinned clock (`budgets.wallClock`).
+    if (candidateEntries.length > 0 && isFiniteNumber(config.timeBudgetMs) && typeof budgets.wallClock === "function") {
+      const clock = budgets.wallClock();
+      if (isFiniteNumber(clock.elapsedMs) && clock.elapsedMs >= config.timeBudgetMs * EXPANSION_SHARE_OF_BUDGET) {
+        perLeg.push({
+          legId: String(leg.legId),
+          outcome: LEG_OUTCOME.BUDGET_TRUNCATED,
+          detail: {
+            bound: "EXPANSION_SHARE_OF_TIME_BUDGET",
+            limitMs: config.timeBudgetMs * EXPANSION_SHARE_OF_BUDGET,
+            observedMs: clock.elapsedMs,
+            behaviour: "the Leg returns to the queue for the next round; the Legs already expanded are solved",
+          },
+        });
+        continue;
+      }
     }
 
     // eslint-disable-next-line no-await-in-loop
@@ -704,9 +737,16 @@ async function execute(deps, input) {
   const committed = [];
   const aborted = [];
 
+  // §19.5 — the leadership fence the round was admitted under, pinned by the worker at
+  // round start and carried to G1 unchanged. Without it every commit aborts
+  // LEADERSHIP_RECORD_MISSING (measured on the V1 demonstration path, 2026-09-23): the
+  // worker read the fence to decide it may run and never handed it to the commit.
+  const roundForCommit =
+    input && input.leadershipFence !== undefined ? { ...planned, leadershipFence: input.leadershipFence } : planned;
+
   for (const assignment of planned.assignments) {
     // eslint-disable-next-line no-await-in-loop
-    const outcome = await deps.commit(assignment, planned);
+    const outcome = await deps.commit(assignment, roundForCommit);
     if (outcome && outcome.committed) {
       committed.push({ ...assignment, commitmentId: outcome.commitment && outcome.commitment.commitmentId, outcome: outcome.outcome });
     } else {

@@ -139,14 +139,32 @@ const present = (value) => value !== null && value !== undefined;
  * @returns {object}
  */
 function registerRequirement(name, why, owner) {
+  const perAgent = PER_AGENT_DECLARABLE.has(name);
   return {
     id: name,
     class: REQUIREMENT_CLASS.REGISTER_UNRESOLVED,
     owner,
     why,
-    probe: (context) => present(resolved(snapshotFrom(context), name, { sla_class: context.slaClass ?? null })),
+    probe: (context) =>
+      present(resolved(snapshotFrom(context), name, { sla_class: context.slaClass ?? null })) ||
+      (perAgent && isFunction(context.agentEnergyDeclarationsFor)),
   };
 }
+
+/**
+ * The two §14.5 Safety rows an agent's **own energy model** may declare, read ahead of the
+ * register by `coordinatorSolvePath.planInputFor`.
+ *
+ * V1 demonstration (2026-09-23). A simulated pack's floor is the simulator's own clamp
+ * (`BATTERY_MIN`) and its dispersion is the simulator's own speed jitter, so for a
+ * simulated agent these are facts of the simulated world rather than Safety calibrations.
+ * The probe is satisfied by the *seam* being composed, exactly as `failureProbabilityFor`
+ * and `environmentFor` are; the per-agent check stays where it was — an agent the seam does
+ * not answer for (every physical agent) falls back to the register, and with the register
+ * unresolved its plan refuses by name. **No Safety value is supplied for a physical agent.**
+ * @structural
+ */
+const PER_AGENT_DECLARABLE = new Set(["energy.model_residual_cv", "energy.reserve_floor_wh"]);
 
 /**
  * Every register parameter the **composed** solve path reads, with the function that

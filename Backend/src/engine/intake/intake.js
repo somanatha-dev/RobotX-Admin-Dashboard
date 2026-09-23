@@ -232,11 +232,15 @@ function idempotencyKeyFor(input) {
  *     **refused**. Routing it to a fallback shard would hand it to a coordinator that owns
  *     none of the agents able to serve it, and it would then age on the §17.4 ladder
  *     against a shard that was never able to help — a starvation that looks like a queue.
- *   - **No map is published** (a single-shard deployment). There is exactly one shard,
- *     every agent is in it, and `leadership.DEFAULT_SHARD_ID` is the identity every phase
- *     since 3 has already used for it. Refusing here would decline every Leg in a
- *     deployment where the region is not yet a deployed concept, which is a refusal for
+ *   - **No shard has been published at all** (a single-shard deployment). There is exactly
+ *     one shard, every agent is in it, and `leadership.DEFAULT_SHARD_ID` is the identity
+ *     every phase since 3 has already used for it. Refusing here would decline every Leg in
+ *     a deployment where the region is not yet a deployed concept, which is a refusal for
  *     the absence of configuration rather than for any property of the work.
+ *
+ *     "No shard published" is the condition, not "no shard currently admitting": a
+ *     published estate that is entirely draining is a different fact with a different
+ *     remedy, and it is refused rather than defaulted. See the note in the body.
  *
  * The distinction is recorded in the result (`resolvedBy`) rather than inferred, so a
  * decision record shows whether a Leg's shard was chosen by its region or by there being
@@ -270,7 +274,29 @@ function resolveShard(input) {
   const regionId = source.regionId ?? (source.firstStop && source.firstStop.regionId) ?? null;
   const map = source.shardByRegionId || null;
   const notAdmitting = source.notAdmittingRegions || {};
-  const mapPublished = Boolean(map) && Object.keys(map).length > 0;
+  // ── "A map is published" is about the Shard table, not about who admits work ──
+  //
+  // `shardByRegionId` deliberately omits shards that do not admit new work, so a
+  // deployment whose every published shard is DRAINING or RETIRED hands this function an
+  // **empty** map — which, read alone, is indistinguishable from "no shard has ever been
+  // published" and lands the Leg on `DEFAULT_SHARD_ID` under `SINGLE_SHARD_DEPLOYMENT`.
+  // That is the single-shard fallback silently overriding a published shard, and the
+  // consequence is the one §3.5 names: a queue row filed under a shard whose coordinator
+  // does not exist, drained by nobody.
+  //
+  // `shard/failover.js` hit this exact reading from the other side and records it —
+  // *"with every published shard DRAINING the routing map was empty, which read as 'no
+  // map is published' — the single-shard branch"* — and solved it there by reading a map
+  // of **every** shard whatever its state. The same fact is already present here:
+  // `notAdmittingRegions` is non-empty exactly when a shard exists but is not admitting.
+  // So the two together are the published estate, and the fallback is reserved for the
+  // one condition it is documented to be about — no shard published at all.
+  //
+  // Strictly fail-closed: the case this changes previously returned `ok: true` against a
+  // default shard and now refuses **by name**, either as draining (§19.2) or as unmapped.
+  // No input that resolved to a real shard resolves differently.
+  const mapPublished =
+    (Boolean(map) && Object.keys(map).length > 0) || Object.keys(notAdmitting).length > 0;
 
   if (!mapPublished) {
     return {

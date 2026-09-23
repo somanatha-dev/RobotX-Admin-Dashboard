@@ -99,6 +99,8 @@ function budgetConfig(overrides) {
  */
 function memoryPrisma() {
   const workQueue = [];
+  // PHASE 13 — §3.5's `Shard` table, which the request path reads to route a Leg.
+  const shards = [];
   const rounds = [];
   const decisionRecords = [];
   // PHASE 11 — §21's four tables.
@@ -175,7 +177,16 @@ function memoryPrisma() {
   return {
     __tables: {
       workQueue, rounds, decisionRecords, tierBRecords, snapshots, calibrationObservations, auditEvents,
-      degradedModeEvents, invariantStatuses, externalEscalations, legRows,
+      degradedModeEvents, invariantStatuses, externalEscalations, legRows, shards,
+    },
+    // §3.5's published estate. `intake.resolveShardFor` reads it on the request path, so a
+    // double without it turns intake's own routing into a TypeError a handler swallows.
+    // Empty by default, which is the single-shard deployment every existing test assumes;
+    // a test that wants multi-shard routing pushes rows into `__tables.shards`.
+    shard: {
+      async findMany({ where, orderBy } = {}) {
+        return sortRows(shards.filter((row) => matches(row, where)), orderBy).map((row) => ({ ...row }));
+      },
     },
     workQueue: {
       // Every read returns a COPY, exactly as a real Prisma client does. A double that

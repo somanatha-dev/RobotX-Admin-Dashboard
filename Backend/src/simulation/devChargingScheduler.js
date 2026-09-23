@@ -82,6 +82,9 @@
  */
 
 const chargeCurve = require("../engine/energy/chargeCurve");
+// §20.3 item 3's spatial identity for the declared charger. Used only to derive the H3
+// cell the row's own declared coordinate falls in — see `DEVELOPMENT_CHARGER_CELL_ID`.
+const cells = require("../engine/spatial/cells");
 const {
   CHARGE_POWER_CURVE,
   CHARGE_CHARGER_CLASS,
@@ -143,6 +146,41 @@ const DEVELOPMENT_CHARGER = Object.freeze({
  *
  * @structural the publisher's own identity, not a tunable
  */
+/**
+ * The H3 fine cell the declared charger's own coordinate falls in (§20.3 item 3).
+ *
+ * ── Why this exists ────────────────────────────────────────────────────────
+ * `Charger.cellId` was never written, so the row this module provisions carried a
+ * latitude and a longitude and **no cell**. `workers/coordinatorSolvePath.chargerCandidatesFor`
+ * skips exactly that row — *"charger … states no cell and cannot be routed to (§20.3 item 3)"* —
+ * because the routing seam is keyed on cell pairs and a charger with no cell cannot be
+ * routed to. The consequence was not a missing charging option: with no admissible
+ * charger, `eReturn` resolves no return leg, `reserves.compose` refuses, `plan.energy`
+ * comes out `null`, and **F34 and F35 deny for every agent**. So the development estate
+ * was published, declared, and invisible to the one consumer that needed it.
+ *
+ * ── Why deriving it invents nothing ────────────────────────────────────────
+ * The cell is a **pure function of the coordinate this module already declares**, taken
+ * with `spatial/cells.cellForPoint` — the same function `Stop.fineCell` and
+ * `AgentCellPosition.fineCellId` are derived with, so the charger lands in the same index
+ * the expansion searches rather than in a second notion of "where". No position is
+ * asserted: the coordinate's provenance is unchanged and still says what it is (the
+ * centroid of OSM `way/204638943`, **not** a surveyed charger bay).
+ *
+ * `isDepot` stays `false` and is deliberately untouched. §14.5 makes depots the fixed
+ * infrastructure `eReturn` falls back to, and a development row must not enter that
+ * fallback set; this charger is admissible only while this module's own
+ * `ChargerAvailabilityProjection` is pinned and fresh, which is the honest scope for a
+ * development estate.
+ *
+ * @structural the declared charger's spatial identity, derived from its own coordinate
+ */
+const DEVELOPMENT_CHARGER_CELL_ID = cells.cellForPoint(
+  DEVELOPMENT_CHARGER.latitude,
+  DEVELOPMENT_CHARGER.longitude,
+  cells.RESOLUTION.FINE,
+);
+
 const PUBLISHER = "development-simulation-charging-scheduler";
 
 /**
@@ -367,6 +405,8 @@ async function provision(deps, input) {
       ratedPowerW: DEVELOPMENT_CHARGER.ratedPowerW,
       latitude: DEVELOPMENT_CHARGER.latitude,
       longitude: DEVELOPMENT_CHARGER.longitude,
+      // §20.3 item 3 — derived from the two columns beside it, never asserted separately.
+      cellId: DEVELOPMENT_CHARGER_CELL_ID,
       isDepot: DEVELOPMENT_CHARGER.isDepot,
     },
     update: {
@@ -374,6 +414,7 @@ async function provision(deps, input) {
       ratedPowerW: DEVELOPMENT_CHARGER.ratedPowerW,
       latitude: DEVELOPMENT_CHARGER.latitude,
       longitude: DEVELOPMENT_CHARGER.longitude,
+      cellId: DEVELOPMENT_CHARGER_CELL_ID,
       isDepot: DEVELOPMENT_CHARGER.isDepot,
     },
   });
@@ -887,6 +928,7 @@ async function status(deps) {
 
 module.exports = {
   DEVELOPMENT_CHARGER,
+  DEVELOPMENT_CHARGER_CELL_ID,
   PUBLISHER,
   RESERVATION_STATE,
   LIVE_STATES,

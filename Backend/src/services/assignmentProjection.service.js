@@ -64,6 +64,9 @@ const { toStringOrNull } = require("../utils/parse");
  */
 const PROJECTABLE_FROM = Object.freeze(["PENDING"]);
 
+/** Statuses a reassigned Task is moved to its new robot from. */
+const REPROJECTABLE_FROM = Object.freeze(["ASSIGNED", "IN_PROGRESS"]);
+
 /** The legacy status an accepted assignment projects to. */
 const PROJECTED_STATUS = "ASSIGNED";
 
@@ -151,11 +154,28 @@ async function projectAcceptedAssignment(prisma, input) {
 
   const moved = await prisma.$transaction(async (tx) => {
     const taskUpdate = await tx.task.updateMany({
-      where: { id: task.id, status: { in: PROJECTABLE_FROM } },
+      where: {
+        id: task.id,
+        OR: [
+          { status: { in: PROJECTABLE_FROM } },
+          // A reassigned Leg (§4.7): the engine has just applied this robot's ACCEPT, so the
+          // read model follows it off the previous robot. Without this the Task kept naming a
+          // robot that no longer held the work, and the new robot's TASK_COMPLETE — which
+          // marks the Task complete only for the robot the Task names — left it ASSIGNED for
+          // ever although its Leg settled (measured on the V1 failure run, 2026-09-23).
+          { status: { in: REPROJECTABLE_FROM }, robotId: { not: robot.id } },
+        ],
+      },
       data: { robotId: robot.id, status: PROJECTED_STATUS, startedAt: new Date() },
     });
 
     if (taskUpdate.count !== 1) return { count: 0, reason: "TASK_NOT_PENDING" };
+
+    // The previous robot no longer carries this Task.
+    await tx.robot.updateMany({
+      where: { currentTaskId: task.id, id: { not: robot.id } },
+      data: { currentTaskId: null },
+    });
 
     // `currentTaskId` is a strict 1:1 (`@unique`), so binding a robot that already carries
     // a different task would violate the constraint rather than quietly overwrite. The

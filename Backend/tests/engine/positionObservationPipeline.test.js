@@ -308,9 +308,13 @@ describe("Step 5.4 — stale and out-of-order telemetry cannot overwrite newer p
     // The second half of the ordering guarantee, and the half that holds even if the
     // writer's in-process mark is wrong: the read is `orderBy observedAt desc`.
     const prisma = {
-      agent: { findUnique: jest.fn(async () => ({ id: "a1", agentId: "RBT-1", lifecycleState: "ACTIVE", agentClassId: null, capacityOverride: 1 })) },
+      // `regionId` + the `shard` table are what `resolveAgentShardId` reads to publish the
+      // index under the shard that owns this agent, in place of a hard-coded "default".
+      agent: { findUnique: jest.fn(async () => ({ id: "a1", agentId: "RBT-1", lifecycleState: "ACTIVE", agentClassId: null, capacityOverride: 1, regionId: "region-1" })) },
       observation: { findFirst: jest.fn(async () => ({ value: { lat: 1, lon: 2 }, observedAt: new Date(5_000) })) },
       commitment: { count: jest.fn(async () => 0) },
+      agentCellPosition: { findUnique: jest.fn(async () => null) },
+      shard: { findMany: jest.fn(async () => [{ shardId: "shard-1", state: "ACTIVE" }]) },
     };
     await indexMaintainer.assembleRecord({ prisma }, "a1", 99_000);
     expect(prisma.observation.findFirst).toHaveBeenCalledWith(
@@ -483,10 +487,12 @@ describe("Step 5.7 — indexMaintainer turns position Observations into AgentCel
       rows,
       agent: {
         findUnique: jest.fn(async () => ({
-          id: "a1", agentId: "RBT-1", lifecycleState: "ACTIVE", agentClassId: null, capacityOverride: 2,
+          id: "a1", agentId: "RBT-1", lifecycleState: "ACTIVE", agentClassId: null, capacityOverride: 2, regionId: "region-1",
         })),
         findMany: jest.fn(async () => [{ id: "a1" }]),
       },
+      // See the note on the other maintainer double above.
+      shard: { findMany: jest.fn(async () => [{ shardId: "shard-1", state: "ACTIVE" }]) },
       observation: { findFirst: jest.fn(async () => observationRow) },
       commitment: { count: jest.fn(async () => 0) },
       agentCellPosition: {

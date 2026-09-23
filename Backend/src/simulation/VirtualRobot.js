@@ -80,6 +80,12 @@ const crypto = require("crypto");
 const rootLogger = require("../config/logger");
 const { haversineMeters } = require("../utils/distance");
 
+/**
+ * How close to a path's final waypoint counts as having reached it — the same 0.01 m the
+ * stepper already uses to treat a waypoint as reached. @structural a numerical tolerance
+ */
+const ARRIVAL_EPSILON_M = 0.01;
+
 const {
   SESSION_TTL_SEC,
   TELEMETRY_INTERVAL_MS,
@@ -1387,6 +1393,9 @@ class VirtualRobot {
       case "RECALL":
       case "ABORT_MISSION": {
         this.offers.delete(envelope.commitmentId);
+        if (this._activeCommitment && this._activeCommitment.commitmentId === envelope.commitmentId) {
+          this._activeCommitment = null;
+        }
         // A withdrawn or recalled mission is over: the commitment is tombstoned so a
         // redelivery of any of its commands is recognised as belonging to a retired
         // authority rather than as a new one.
@@ -1540,6 +1549,9 @@ class VirtualRobot {
     }
 
     respond("OFFER_ACCEPT", {});
+    // §12.2 — the mission this agent now holds, carried on every heartbeat so the server
+    // can renew the commitment's lease on commitment-scoped evidence. Cleared with the task.
+    this._activeCommitment = { commitmentId: envelope.commitmentId, fence: envelope.fence };
     this._onTaskAssign(assignment);
   }
 
@@ -2061,6 +2073,7 @@ class VirtualRobot {
   }
 
   _clearTask() {
+    this._activeCommitment = null;
     this.task       = null;
     this.phase      = null;
     this.pathIndex  = 0;
@@ -2500,7 +2513,10 @@ class VirtualRobot {
     this._maybeReportObstacle();
 
     // 7) Keep server offline-detector happy
-    try { this.socket.emit("HEARTBEAT"); } catch { /* ignore */ }
+    // Commitment-scoped while a mission is held (§12.2 lease renewal); a bare ping otherwise.
+    try {
+      this.socket.emit("HEARTBEAT", this._activeCommitment ? { ...this._activeCommitment } : undefined);
+    } catch { /* ignore */ }
 
     // 8) Emit telemetry, stamped with this tick's instant
     this._emitTelemetry(nowMs);
@@ -2593,7 +2609,16 @@ class VirtualRobot {
 
     if (this.phase === phases.moving) {
       this._stepAlongPath();
-      const atEnd = this.pathIndex >= (this.activePath?.length || 0) - 1;
+      // Arrived means *at* the final waypoint, not merely heading for it. `pathIndex` is the
+      // waypoint being steered towards, so it reaches the last index as soon as the final
+      // segment begins; treating that as arrival snapped the agent onto the stop — a few
+      // metres on a dense road-snapped path, and the whole leg in one tick on a two-point
+      // path (48.7 m in 2 s, which §12.5's kinematic check then correctly refused as
+      // impossible; measured on the V1 demonstration path, 2026-09-23).
+      const finalPoint = this.activePath?.[this.activePath.length - 1];
+      const atEnd =
+        this.pathIndex >= (this.activePath?.length || 0) - 1 &&
+        (!finalPoint || haversineMeters(this.lat, this.lon, finalPoint.lat, finalPoint.lon) < ARRIVAL_EPSILON_M);
       if (atEnd) {
         const last = this.activePath?.[this.activePath.length - 1];
         if (last) { this.lat = last.lat; this.lon = last.lon; }
@@ -2616,6 +2641,16 @@ class VirtualRobot {
       // mass term in the energy model track the mission rather than the whole trip.
       if (stop.stopType === "PICKUP") this._carryingPayload = true;
       if (stop.stopType === "DROP") this._carryingPayload = false;
+      // §4.4 custody, reported by the agent at the moment it changes: a commitment-scoped
+      // pickup/handover event. The server admits it only at a stop it verified we reached.
+      if (this._activeCommitment && (stop.stopType === "PICKUP" || stop.stopType === "DROP")) {
+        try {
+          this.socket.emit("CUSTODY_EVENT", {
+            ...this._activeCommitment,
+            kind: stop.stopType === "PICKUP" ? "ACQUIRED" : "RELEASED",
+          });
+        } catch { /* ignore */ }
+      }
       if (stop.stopType === "CHARGE") {
         // Recorded, not simulated. See `STOP_DWELL_MS`: delivering charge here would mean
         // inventing the Charging Scheduler's published target, and that is a later batch.

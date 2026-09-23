@@ -32,6 +32,23 @@
  * sole copy: every read falls back to the database, and a flush of the entire cache
  * tier costs latency and nothing else. That is the mandatory constraint of §3.3 and a
  * Phase 15 release gate.
+ *
+ * ── What "DB-authoritative" costs, and where it was not paid ────────────────
+ * §3.3's constraint is about a *flushed* cache — an empty mirror must cost latency and
+ * nothing else — and `loadPinnedSnapshot()` satisfied that. It did not satisfy the
+ * stronger and more important case: a **stale** mirror. The function read
+ * `config:active` first and consulted `ConfigActiveVersion` only on a cache *miss*, so
+ * a Redis pointer left behind by an earlier deployment — or by any of the several
+ * harnesses that call `pinVersion(prisma, null, …)` and therefore move the database pin
+ * without touching the mirror — silently won over the authoritative row. A process could
+ * boot, and did boot, against a version the database did not consider active.
+ *
+ * "Cache-read" is therefore applied where a cache cannot be wrong and not where it can.
+ * **Which version is active is read from the database, always**; it is one indexed
+ * single-row lookup, on boot and on each propagation tick (§22.1 rule 4's pull, every
+ * `cutover.guardrail_check_interval`), not on any decision path. The mirror is still
+ * written on every pin, because it is what an operator and the cutover tooling read to
+ * see the pointer without a query — but nothing resolves configuration *from* it.
  */
 
 const crypto = require("crypto");
@@ -499,10 +516,12 @@ async function publish(prisma, request) {
 /**
  * Pin a published version as the active one.
  *
- * The pointer is a database row, mirrored into `config:active`. A round loads the
- * pinned version once and observes exactly that version for its whole duration
- * (§22.1 rule 4): configuration change propagation is pull-with-pin, never a push
- * that could land mid-round.
+ * The pointer **is** the database row; `config:active` is a mirror of it and not a second
+ * place the pointer lives. `loadPinnedSnapshot()` reads the row, so a `kv` of `null` here
+ * — which is how every verification harness on the tree calls this — leaves the mirror
+ * stale without leaving the deployment wrong. A round loads the pinned version once and
+ * observes exactly that version for its whole duration (§22.1 rule 4): configuration
+ * change propagation is pull-with-pin, never a push that could land mid-round.
  *
  * @param {object} prisma
  * @param {object|null} kv
@@ -536,33 +555,45 @@ async function pinVersion(prisma, kv, version, pinnedBy) {
 /**
  * Load the pinned configuration version.
  *
- * Cache-read, DB-authoritative. A cache miss, a stale mirror, or a flushed Redis
- * costs one query — never a wrong answer.
+ * DB-authoritative. **Which version is active is decided by `ConfigActiveVersion`, the
+ * row `pinVersion()` writes, and by nothing else.** A cache miss, a stale mirror, or a
+ * flushed Redis costs one query — never a wrong answer.
+ *
+ * ── Why the `config:active` mirror is not read here ─────────────────────────
+ * It used to be, cache-first, and that was the defect. The mirror is a *derived copy of
+ * a pointer*, and a copy of a pointer is the one thing a cache cannot hold safely: it
+ * does not merely go missing, it goes **wrong**, and a wrong answer here is a process
+ * that resolves every parameter against a version nobody put in force. The ways it goes
+ * wrong are ordinary rather than exotic —
+ *
+ *   · `pinVersion(prisma, null, …)` moves the database pin with no kv to update, which
+ *     is what `tools/verify/v1CorePath.js`, `v10RollbackRunbook.js` and
+ *     `phase15VersionInForce.js` all do;
+ *   · a shared or long-lived Redis outlives the database it was filled from;
+ *   · the cache-fill in `pinVersion` is deliberately best-effort and swallows its error.
+ *
+ * — and in each of them the database is right and the mirror is stale. Reading the
+ * authoritative row costs one indexed single-row lookup on a path that runs at boot and
+ * once per propagation tick, never inside a round: §22.1 rule 4 pins the snapshot for the
+ * round's duration precisely so that no decision re-reads this.
+ *
+ * The version-keyed payload (`config:v:{version}`) is a different case — a published
+ * version is immutable (§22.1 rule 3), so that key cannot be stale — but it is not read
+ * here either, because the snapshot also carries `signature` and `publishedAt`, which
+ * live on the `ConfigVersion` row and not in the cached payload. Serving those from a
+ * cache that does not hold them would be the same substitution one field further down.
  *
  * @param {{ prisma: object, kv?: object|null, version?: number }} options
  * @returns {Promise<object|null>} snapshot, or null when nothing is published yet
  */
 async function loadPinnedSnapshot(options) {
-  const { prisma, kv } = options;
+  const { prisma } = options;
   let version = options.version;
 
   if (version === undefined || version === null) {
-    let cached = null;
-    if (kv) {
-      try {
-        cached = await kv.get(ACTIVE_VERSION_KEY);
-      } catch {
-        cached = null;
-      }
-    }
-    const parsed = cached === null || cached === undefined ? Number.NaN : Number(cached);
-    if (Number.isInteger(parsed)) {
-      version = parsed;
-    } else {
-      const pin = await prisma.configActiveVersion.findUnique({ where: { id: SINGLETON_PIN_ID } });
-      if (!pin) return null;
-      version = pin.version;
-    }
+    const pin = await prisma.configActiveVersion.findUnique({ where: { id: SINGLETON_PIN_ID } });
+    if (!pin) return null;
+    version = pin.version;
   }
 
   const row = await prisma.configVersion.findUnique({ where: { version } });

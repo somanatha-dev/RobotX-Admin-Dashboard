@@ -181,6 +181,68 @@ describe("every register entry carries the fields §22.1 rule 2 requires", () =>
     );
   });
 
+  // ── The defect: three entries carried a change class that does not exist ─────
+  //
+  // `feasibility.negative_cache_ttl`, `link.min_quality` and `reliability.max_intervention_rate`
+  // declared `changeClass: "OPERATIONAL"`. `ConfigChangeClass` has seven values and that is
+  // not one of them, and §22.3's own table names five (Hot, Tuned, Policy, Safety,
+  // Structural) of which it is also not one.
+  //
+  // Nothing caught it, because nothing compared the two vocabularies: `checkEntryForm`
+  // requires a change class to be *present*, not to be *valid*, so publish-time validation
+  // passed and `prisma/seed.js` failed instead — `seedRegister()` writes the value into an
+  // enum column, so `node prisma/seed.js` aborted before the spatial hierarchy was seeded
+  // and a demo database could not be built at all.
+  //
+  // The valid set is read out of `schema.prisma` rather than written down here, so the
+  // register and the column cannot drift apart again in either direction.
+  describe("every change class is one the ConfigChangeClass column can store", () => {
+    const schema = fs.readFileSync(path.join(__dirname, "..", "..", "prisma", "schema.prisma"), "utf8");
+    const block = /enum\s+ConfigChangeClass\s*\{([^}]*)\}/.exec(schema);
+    const CHANGE_CLASSES = block[1]
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith("/"));
+
+    test("the enum is readable and carries the seven governed classes", () => {
+      expect(CHANGE_CLASSES).toEqual(["HOT", "TUNED", "POLICY", "SAFETY", "STRUCTURAL", "DERIVED", "CONTRACTUAL"]);
+    });
+
+    test("no register entry declares a class outside it", () => {
+      const invalid = all
+        .filter((entry) => !CHANGE_CLASSES.includes(entry.changeClass))
+        .map((entry) => `${entry.name} = ${String(entry.changeClass)} (${entry.registerFile})`);
+      expect(invalid).toEqual([]);
+    });
+
+    test("OPERATIONAL in particular cannot return", () => {
+      // Named, because it is the one that shipped and the one whose spelling reads
+      // plausibly enough to be re-introduced by hand.
+      expect(all.filter((entry) => entry.changeClass === "OPERATIONAL").map((entry) => entry.name)).toEqual([]);
+    });
+
+    test("the three corrected entries are classified as §22.3 classifies their kind", () => {
+      // A cache TTL: §22.3's Tuned row names "cache TTLs" verbatim, and the register's
+      // three other cache TTLs — config.cache_ttl, payload.packing_cache_ttl,
+      // route.cell_pair_cache_ttl — are all TUNED.
+      expect(entries.get("feasibility.negative_cache_ttl").changeClass).toBe("TUNED");
+      // Two Ops-owned feasibility thresholds: operational policy, which is what §22.3's
+      // Policy row is ("Ops approval, staged rollout, audit"). Neither declares a Safety
+      // owner, and on this register every SAFETY entry's owner is Safety, SRE or Security.
+      expect(entries.get("link.min_quality").changeClass).toBe("POLICY");
+      expect(entries.get("reliability.max_intervention_rate").changeClass).toBe("POLICY");
+    });
+
+    test("the correction did not move any entry into or out of the Safety class", () => {
+      // The Safety class is the one with a process attached (§22.3: two-person approval,
+      // no automated tuner) and a launch gate that blocks on it (§22.4). Fixing a spelling
+      // must not have changed who has to approve a publish.
+      for (const name of ["feasibility.negative_cache_ttl", "link.min_quality", "reliability.max_intervention_rate"]) {
+        expect({ name, safety: entries.get(name).changeClass === "SAFETY" }).toEqual({ name, safety: false });
+      }
+    });
+  });
+
   test("the Safety-class entries are the ones the specification marks Safety", () => {
     const safety = all.filter((entry) => entry.changeClass === "SAFETY").map((entry) => entry.name);
     for (const expected of [
