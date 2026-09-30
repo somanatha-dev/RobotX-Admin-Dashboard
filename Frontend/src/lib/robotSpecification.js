@@ -167,6 +167,44 @@ export const PRESET_UNDECLARED = Object.freeze({
 
 const ALL_FIELDS = [...SPECIFICATION_FIELDS, INITIAL_BATTERY_FIELD];
 
+/** Nothing entered. The one meaning of "empty" shared by the submit gate and validation. */
+function isBlank(raw) {
+  return raw === undefined || raw === null || String(raw).trim() === '';
+}
+
+/**
+ * The placeholder a specification input shows: the example, framed as one.
+ *
+ * A bare "500" in an empty number box is indistinguishable from a typed 500, and an
+ * operator who reads it as entered cannot see why the form will not submit. "e.g. 500"
+ * cannot be a value a number input holds.
+ *
+ * @param {{ placeholder: string }} field
+ * @returns {string}
+ */
+export function examplePlaceholder(field) {
+  return `e.g. ${field.placeholder}`;
+}
+
+/**
+ * What still has to be entered before a commissioning form may submit.
+ *
+ * The submit gate and the explanation shown beside the disabled button are both this list,
+ * so the page cannot say one thing is missing while waiting on another. The seven
+ * specification fields are always required, as `validateSpecification({ required: true })`
+ * requires them; the page names its own other required inputs (zone, identifier) in
+ * `others`. Only form state is read — a placeholder is not a value.
+ *
+ * @param {object} spec raw specification form values
+ * @param {Array<{ key: string, label: string, value: unknown }>} [others] the page's other required inputs, in form order
+ * @returns {Array<{ key: string, label: string }>} the missing inputs, in form order; empty when complete
+ */
+export function missingRequiredInputs(spec, others = []) {
+  return [...others, ...ALL_FIELDS.map((field) => ({ ...field, value: spec?.[field.key] }))]
+    .filter((input) => isBlank(input.value))
+    .map(({ key, label }) => ({ key, label }));
+}
+
 /**
  * Validate what the operator typed.
  *
@@ -181,7 +219,7 @@ export function validateSpecification(values, options = {}) {
 
   for (const field of ALL_FIELDS) {
     const raw = values?.[field.key];
-    if (raw === undefined || raw === null || String(raw).trim() === '') {
+    if (isBlank(raw)) {
       if (required) problems.push(`${field.label} is required.`);
       continue;
     }

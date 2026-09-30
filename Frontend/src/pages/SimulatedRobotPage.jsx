@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/select.jsx';
 
 import { LocationCombobox } from '@/components/system/LocationCombobox.jsx';
+import { RequiredMark } from '@/components/system/RequiredMark.jsx';
 import { useAppActions } from '@/context/appContext.js';
 import {
   CHASSIS_OPTIONS,
@@ -30,6 +31,8 @@ import {
   PRESET_UNDECLARED,
   SIMULATION_PRESETS,
   SPECIFICATION_FIELDS,
+  examplePlaceholder,
+  missingRequiredInputs,
   validateSpecification,
 } from '@/lib/robotSpecification.js';
 import { RUNTIME } from '@/lib/simulationIdentity.js';
@@ -122,12 +125,14 @@ export default function SimulatedRobotPage() {
     ) }));
   };
 
-  const specComplete = [...SPECIFICATION_FIELDS, INITIAL_BATTERY_FIELD].every(
-    (field) => String(spec[field.key] ?? '').trim().length > 0,
-  );
+  // What is still empty. The button's gate and the note beside it are this one list, so a
+  // disabled button always says why — `handleSubmit` cannot, because it never runs.
+  const missing = missingRequiredInputs(spec, [
+    { key: 'zone', label: 'Operating zone', value: form.zone },
+  ]);
+  const missingKeys = new Set(missing.map((input) => input.key));
 
-  const canSubmit =
-    !isSubmitting && String(form.zone || '').trim().length > 0 && specComplete;
+  const canSubmit = !isSubmitting && missing.length === 0;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -260,13 +265,32 @@ export default function SimulatedRobotPage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <Button type="button" variant="outline" onClick={() => navigate(-1)}>
-            Cancel
-          </Button>
-          <Button type="submit" form="create-simulated-robot" disabled={!canSubmit}>
-            <Cpu className="w-4 h-4" /> {isSubmitting ? 'Creating…' : 'Create Simulated Robot'}
-          </Button>
+        <div className="ml-auto flex flex-col items-end gap-2">
+          <div className="flex items-center gap-3">
+            <Button type="button" variant="outline" onClick={() => navigate(-1)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form="create-simulated-robot"
+              disabled={!canSubmit}
+              aria-describedby={missing.length > 0 ? 'sim-still-needed' : undefined}
+            >
+              <Cpu className="w-4 h-4" /> {isSubmitting ? 'Creating…' : 'Create Simulated Robot'}
+            </Button>
+          </div>
+          {/*
+            Guidance, not an error: an untouched form is incomplete, not wrong, so this is
+            muted text rather than the destructive style the server's refusals use.
+          */}
+          {missing.length > 0 ? (
+            <p id="sim-still-needed" aria-live="polite" className="max-w-sm text-right text-xs text-muted-foreground">
+              Complete the required fields (<span aria-hidden>*</span>) to continue. Still empty:{' '}
+              <span className="font-medium text-foreground">
+                {missing.map((input) => input.label).join(', ')}
+              </span>
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -349,7 +373,9 @@ export default function SimulatedRobotPage() {
                   <div>
                     <div className="mb-2 flex items-center gap-2">
                       <MapPin className="w-4 h-4 text-muted-foreground" />
-                      <Label>Operating Zone</Label>
+                      <Label>
+                        Operating Zone <RequiredMark />
+                      </Label>
                     </div>
 
                     <LocationCombobox
@@ -464,7 +490,8 @@ export default function SimulatedRobotPage() {
                     <div key={field.key}>
                       <Label htmlFor={`sim-spec-${field.key}`} className="mb-2 block">
                         {field.label}{' '}
-                        <span className="text-muted-foreground font-normal">({field.unit})</span>
+                        <span className="text-muted-foreground font-normal">({field.unit})</span>{' '}
+                        <RequiredMark />
                       </Label>
                       <Input
                         id={`sim-spec-${field.key}`}
@@ -475,23 +502,15 @@ export default function SimulatedRobotPage() {
                         step={field.step}
                         value={spec[field.key]}
                         onChange={(e) => setSpecField(field.key, e.target.value)}
-                        placeholder={field.placeholder}
+                        placeholder={examplePlaceholder(field)}
                         required
                         autoComplete="off"
                         className="font-mono"
                       />
-                      {/*
-                        Shown only once a preset has been applied, and only for the fields
-                        it deliberately did not fill. Without it an operator who pressed
-                        "Light" and saw four boxes still empty would reasonably conclude
-                        the button was broken. Naming the reason is the difference between
-                        an omission and a stated absence.
-                      */}
-                      {appliedPreset && PRESET_UNDECLARED[field.key] ? (
-                        <div className="mt-2 text-xs text-amber-600 dark:text-amber-500">
-                          Not declared by the preset. {PRESET_UNDECLARED[field.key]}
-                        </div>
-                      ) : null}
+                      <PresetUndeclaredNote
+                        fieldKey={field.key}
+                        show={Boolean(appliedPreset) && missingKeys.has(field.key)}
+                      />
                     </div>
                   ))}
                 </div>
@@ -503,7 +522,8 @@ export default function SimulatedRobotPage() {
                         {INITIAL_BATTERY_FIELD.label}{' '}
                         <span className="text-muted-foreground font-normal">
                           ({INITIAL_BATTERY_FIELD.unit})
-                        </span>
+                        </span>{' '}
+                        <RequiredMark />
                       </Label>
                       <Input
                         id="sim-spec-initialBatteryPct"
@@ -514,10 +534,14 @@ export default function SimulatedRobotPage() {
                         step={INITIAL_BATTERY_FIELD.step}
                         value={spec[INITIAL_BATTERY_FIELD.key]}
                         onChange={(e) => setSpecField(INITIAL_BATTERY_FIELD.key, e.target.value)}
-                        placeholder={INITIAL_BATTERY_FIELD.placeholder}
+                        placeholder={examplePlaceholder(INITIAL_BATTERY_FIELD)}
                         required
                         autoComplete="off"
                         className="font-mono"
+                      />
+                      <PresetUndeclaredNote
+                        fieldKey={INITIAL_BATTERY_FIELD.key}
+                        show={Boolean(appliedPreset) && missingKeys.has(INITIAL_BATTERY_FIELD.key)}
                       />
                     </div>
                     <div className="sm:col-span-2 flex items-end">
@@ -590,6 +614,25 @@ export default function SimulatedRobotPage() {
           </Card>
         </aside>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Why a field the applied preset left alone is still empty.
+ *
+ * Shown only once a preset has been applied, and only while a field it deliberately did
+ * not fill is still empty. Without it an operator who pressed "Light" and saw four boxes
+ * still empty would reasonably conclude the button was broken; naming the reason is the
+ * difference between an omission and a stated absence. Once the operator has entered a
+ * value there is no absence left to explain, and an amber line under a filled box would
+ * read as a problem with it.
+ */
+function PresetUndeclaredNote({ fieldKey, show }) {
+  if (!show || !PRESET_UNDECLARED[fieldKey]) return null;
+  return (
+    <div className="mt-2 text-xs text-amber-600 dark:text-amber-500">
+      Not declared by the preset. {PRESET_UNDECLARED[fieldKey]}
     </div>
   );
 }

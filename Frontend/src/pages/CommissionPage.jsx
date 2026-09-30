@@ -22,11 +22,14 @@ import {
 } from '@/components/ui/select.jsx';
 
 import { LocationCombobox } from '@/components/system/LocationCombobox.jsx';
+import { RequiredMark } from '@/components/system/RequiredMark.jsx';
 import { useAppActions, useAppState } from '@/context/appContext.js';
 import {
   CHASSIS_OPTIONS,
   INITIAL_BATTERY_FIELD,
   SPECIFICATION_FIELDS,
+  examplePlaceholder,
+  missingRequiredInputs,
   validateSpecification,
 } from '@/lib/robotSpecification.js';
 
@@ -66,14 +69,16 @@ export default function CommissionPage() {
     else rrNavigate('/');
   };
 
-  const specComplete = [...SPECIFICATION_FIELDS, INITIAL_BATTERY_FIELD].every(
-    (field) => String(spec[field.key] ?? '').trim().length > 0,
-  );
+  // What is still empty. The button's gate and the note beside it are this one list, so a
+  // disabled button always says why — `handleSubmit` cannot, because it never runs.
+  // Enabling the button authorises nothing: submitting still goes through `commission`,
+  // which asks for the step-up before anything is sent.
+  const missing = missingRequiredInputs(spec, [
+    { key: 'id', label: 'Unit identifier', value: formData.id },
+    { key: 'zone', label: 'Initial assignment zone', value: formData.zone },
+  ]);
 
-  const canSubmit =
-    String(formData.id || '').trim().length > 0 &&
-    String(formData.zone || '').trim().length > 0 &&
-    specComplete;
+  const canSubmit = missing.length === 0;
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -129,13 +134,29 @@ export default function CommissionPage() {
           <p className="text-sm text-muted-foreground mt-1">Register and authorize a new unit</p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <Button type="button" variant="outline" onClick={handleCancel}>
-            Cancel
-          </Button>
-          <Button type="submit" form="commission-new-unit" disabled={!canSubmit}>
-            <ShieldCheck className="w-4 h-4" /> Authorize Commissioning
-          </Button>
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex items-center gap-3">
+            <Button type="button" variant="outline" onClick={handleCancel}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form="commission-new-unit"
+              disabled={!canSubmit}
+              aria-describedby={missing.length > 0 ? 'commission-still-needed' : undefined}
+            >
+              <ShieldCheck className="w-4 h-4" /> Authorize Commissioning
+            </Button>
+          </div>
+          {/* Guidance, not an error: an untouched form is incomplete, not wrong. */}
+          {missing.length > 0 ? (
+            <p id="commission-still-needed" aria-live="polite" className="max-w-sm text-right text-xs text-muted-foreground">
+              Complete the required fields (<span aria-hidden>*</span>) to continue. Still empty:{' '}
+              <span className="font-medium text-foreground">
+                {missing.map((input) => input.label).join(', ')}
+              </span>
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -169,7 +190,7 @@ export default function CommissionPage() {
 
                   <div>
                     <Label htmlFor="unit-id" className="mb-2 block">
-                      Unit Identifier
+                      Unit Identifier <RequiredMark />
                     </Label>
                     <Input
                       id="unit-id"
@@ -218,7 +239,9 @@ export default function CommissionPage() {
                   <div>
                     <div className="mb-2 flex items-center gap-2">
                       <MapPin className="w-4 h-4 text-muted-foreground" />
-                      <Label>Initial Assignment Zone</Label>
+                      <Label>
+                        Initial Assignment Zone <RequiredMark />
+                      </Label>
                     </div>
 
                     <LocationCombobox
@@ -299,7 +322,8 @@ export default function CommissionPage() {
                   {SPECIFICATION_FIELDS.map((field) => (
                     <div key={field.key}>
                       <Label htmlFor={`spec-${field.key}`} className="mb-2 block">
-                        {field.label} <span className="text-muted-foreground font-normal">({field.unit})</span>
+                        {field.label} <span className="text-muted-foreground font-normal">({field.unit})</span>{' '}
+                        <RequiredMark />
                       </Label>
                       <Input
                         id={`spec-${field.key}`}
@@ -310,7 +334,7 @@ export default function CommissionPage() {
                         step={field.step}
                         value={spec[field.key]}
                         onChange={(e) => setSpecField(field.key, e.target.value)}
-                        placeholder={field.placeholder}
+                        placeholder={examplePlaceholder(field)}
                         required
                         autoComplete="off"
                         className="font-mono"
@@ -324,7 +348,8 @@ export default function CommissionPage() {
                     <div>
                       <Label htmlFor="spec-initialBatteryPct" className="mb-2 block">
                         {INITIAL_BATTERY_FIELD.label}{' '}
-                        <span className="text-muted-foreground font-normal">({INITIAL_BATTERY_FIELD.unit})</span>
+                        <span className="text-muted-foreground font-normal">({INITIAL_BATTERY_FIELD.unit})</span>{' '}
+                        <RequiredMark />
                       </Label>
                       <Input
                         id="spec-initialBatteryPct"
@@ -335,7 +360,7 @@ export default function CommissionPage() {
                         step={INITIAL_BATTERY_FIELD.step}
                         value={spec[INITIAL_BATTERY_FIELD.key]}
                         onChange={(e) => setSpecField(INITIAL_BATTERY_FIELD.key, e.target.value)}
-                        placeholder={INITIAL_BATTERY_FIELD.placeholder}
+                        placeholder={examplePlaceholder(INITIAL_BATTERY_FIELD)}
                         required
                         autoComplete="off"
                         className="font-mono"
