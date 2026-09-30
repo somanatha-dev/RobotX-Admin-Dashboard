@@ -218,7 +218,11 @@ async function reassign(tx, input) {
   const allocated = await sequence.allocate(tx, { command: "RECALL", commitmentId: commitment.commitmentId });
   const signed = offers.signMissionCommand(
     {
-      agentId: agent.id,
+      // The wire identity, as for OFFER and WITHDRAW (`dispatch/offers.js`): the delivery arm
+      // addresses the envelope to `Agent.agentId` (`leaderWorkers`), so a RECALL signed for
+      // the row id failed verification at every agent that verifies (P2B-2, measured 0/1).
+      // The row id stays the Outbox FK below.
+      agentId: agent.agentId || agent.id,
       command: "RECALL",
       commitmentId: commitment.commitmentId,
       fence: recallFence,

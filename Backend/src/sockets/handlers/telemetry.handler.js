@@ -837,6 +837,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
           lat,
           lon,
           payload,
+          snapshot: configOf(),
         });
 
         // §14 — the charge the energy decision plans from is the charge the agent just
@@ -847,6 +848,11 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
             robotId,
             batteryPct: battery,
             agentTimestampMs: positionObservation.agentTimestampFrom(payload),
+            // P2B-2 — a physical unit's SoC is written only with a declared measurement
+            // basis (`energy.socMethod`); provenance from the same binding the position
+            // writer uses.
+            provenance: typeof battery === "number" ? await positionObservation.provenanceOf(prisma, robotId) : null,
+            socMethod: payload && payload.energy && typeof payload.energy === "object" ? payload.energy.socMethod : undefined,
           });
         } catch (e) {
           log.warn?.("reported state of charge not recorded", { robotId, message: e?.message });
@@ -1031,7 +1037,7 @@ const lastPositionOutcome = new Map();
  * @returns {Promise<object|null>} the writer's result, or null when it threw
  */
 async function writePositionObservation(input) {
-  const { prisma, log, robotId, lat, lon, payload } = input;
+  const { prisma, log, robotId, lat, lon, payload, snapshot } = input;
   try {
     const result = await positionObservation.recordPositionObservation(prisma, {
       robotId,
@@ -1039,6 +1045,9 @@ async function writePositionObservation(input) {
       lon,
       agentTimestampMs: positionObservation.agentTimestampFrom(payload),
       sequence: positionObservation.sequenceFrom(payload),
+      // P2B-2 — §10.6's bound on the agent's clock, and the contract's optional fix block.
+      maxClockSkewMs: positionObservation.maxClockSkewMsFrom(snapshot || null),
+      fix: payload && payload.position && typeof payload.position === "object" ? payload.position : null,
     });
 
     if (lastPositionOutcome.get(robotId) !== result.outcome) {

@@ -94,6 +94,14 @@ const REGISTERED_CAMPUSES = Object.freeze([
     state: 'Karnataka',
     city: 'Bengaluru',
     aliases: Object.freeze(['RNSIT', 'RNS Institute of Technology', 'RNSIT Bengaluru', 'RNS Institute']),
+    /**
+     * The backend operating region this campus's tasks are submitted to — the
+     * `Region.regionId` business key `POST /api/tasks/assign` resolves (it is NOT
+     * the `Campus.code` above; the two are different identifiers on the server and
+     * the schema links neither to the other). `'rnsit'` is the region the V1
+     * demonstration world publishes (Backend/tools/demo/seedV1Demonstration.js).
+     */
+    regionId: 'rnsit',
     osm: Object.freeze({ file: 'rnsit-campus-osm.geojson', collection: RNSIT_CAMPUS_OSM }),
     supplemental: Object.freeze({
       file: 'rnsit-campus-supplemental.geojson',
@@ -124,6 +132,13 @@ const REGISTERED_CAMPUSES = Object.freeze([
       'JSS Academy',
       'JSS',
     ]),
+    /**
+     * No operating region: nothing on the backend publishes one for this campus yet,
+     * so there is no `Region.regionId` to name. Null is stated rather than guessed —
+     * a task for this campus is refused in the dashboard with that reason instead of
+     * being submitted under a region that does not exist.
+     */
+    regionId: null,
     osm: Object.freeze({
       file: 'jssate-bengaluru-campus-osm.geojson',
       collection: JSSATE_BENGALURU_CAMPUS_OSM,
@@ -518,6 +533,7 @@ export const CAMPUS_REGISTRY = Object.freeze(
       state: entry.state,
       city: entry.city,
       aliases: entry.aliases,
+      regionId: entry.regionId ?? null,
       hasCampusGeometry: CAMPUS_GEOMETRY[entry.id].features.length > 0,
     })
   )
@@ -527,6 +543,15 @@ export const CAMPUS_REGISTRY = Object.freeze(
 export function campusRegistryEntry(code) {
   const key = String(code || '').trim();
   return CAMPUS_REGISTRY.find((e) => e.id === key) || null;
+}
+
+/**
+ * The backend operating region (`Region.regionId`) for a campus code, or null when the
+ * campus is unknown or has no operating region. Read from the registry entry — never
+ * derived from the code (the two are different identifiers) and never defaulted.
+ */
+export function operatingRegionFor(code) {
+  return campusRegistryEntry(code)?.regionId ?? null;
 }
 
 /** The OSM import diagnostics for a campus code, for the data-quality UI and tests. */

@@ -66,7 +66,7 @@ const PHYSICAL_CONTROL_PLANE_FACTS = Object.freeze([
   "localisation confidence + corroboration (F10)",
   "reliability / intervention rate (F11)",
   "advisories (F12)",
-  "session.lastHeartbeatAckAt — an acknowledged server round trip (F14)",
+  "session.lastHeartbeatAckAt — an acknowledged server round trip (F14); the PROBE boundary exists (P2B-2), the agent must answer it",
   "authorisedZoneIds (F27)",
   "maintenance intervals (F36)",
   "ambientC / packC from telemetry (§14.2)",
@@ -123,11 +123,20 @@ function createAgentFactsProvider(settings) {
     // state is held (a restarted process, a store without `kv`).
     // Each candidate is admitted only if it is not after the decision time.
     const candidates = [robot.lastSeenAt || null];
+    // P2B-2 — F14's proof: the server's own receipt time of a PROBE_RESULT
+    // (`agentProbe.service`), admitted only while the socket that answered is still this
+    // robot's socket. A reconnect therefore starts with no proof; nothing is defaulted.
+    let lastHeartbeatAckAt;
     if (kv) {
       try {
         const live = await getRobotState(kv, robot.robotId);
         const beat = live && Number(live.lastHeartbeat);
         if (Number.isFinite(beat)) candidates.push(new Date(beat));
+        const probed = live && Number(live.lastProbeAckAt);
+        if (Number.isFinite(probed) && live.lastProbeSocketId && live.lastProbeSocketId === robot.socketId) {
+          const at = new Date(probed);
+          if (notAfter(at)) lastHeartbeatAckAt = at;
+        }
       } catch {
         // The mirror stands; the store's absence is not evidence of anything.
       }
@@ -147,6 +156,7 @@ function createAgentFactsProvider(settings) {
       session: {
         live: robot.isOnline === true,
         lastHeartbeatAt,
+        ...(lastHeartbeatAckAt ? { lastHeartbeatAckAt } : {}),
       },
       healthTier: HEALTH_TIER_BY_STATUS[robot.status] ?? null,
       safetyRelevantObservations: position

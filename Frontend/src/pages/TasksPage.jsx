@@ -16,6 +16,10 @@ import MetricCard from '@/components/MetricCard.jsx';
 import { useAppActions, useAppState } from '@/context/appContext.js';
 import { Button } from '@/components/ui/button.jsx';
 import { Badge } from '@/components/ui/badge.jsx';
+import { TaskRejectionPanel, useTaskRejection } from '@/features/tasks/taskRejection.js';
+import { taskPhase } from '@/features/tasks/taskLifecycle.js';
+import { plannedRouteMeters } from '@/features/tasks/taskRoute.js';
+import { cancellationFor } from '@/lib/taskCancellation.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -31,33 +35,8 @@ function formatDistance(meters) {
   return `${(meters / 1000).toFixed(2)} km`;
 }
 
-/** Remaining distance = total - travelled. Returns metres or null. */
-function remainingMeters(distanceMeters, distanceTravelled) {
-  const total = typeof distanceMeters === 'number' && Number.isFinite(distanceMeters) ? distanceMeters : null;
-  const done  = typeof distanceTravelled === 'number' && Number.isFinite(distanceTravelled) ? distanceTravelled : 0;
-  if (total === null) return null;
-  return Math.max(0, total - done);
-}
-
-/**
- * ETA in minutes.
- * Uses remaining distance and live robot speed (m/s from telemetry).
- * Falls back to total distance if no progress data.
- */
-function computeEta(task, robot) {
-  const speed = typeof robot?.speed === 'number' && robot.speed > 0.05 ? robot.speed : null;
-  if (!speed) return null;
-
-  const total    = typeof task?.distanceMeters === 'number' ? task.distanceMeters : null;
-  const travelled = typeof robot?.distanceTravelled === 'number' ? robot.distanceTravelled : 0;
-  const rem = total !== null ? Math.max(0, total - travelled) : null;
-  if (rem === null) return null;
-
-  const seconds  = rem / speed;
-  const minutes  = seconds / 60;
-  if (minutes < 0.5) return '<1 min';
-  return `~${Math.ceil(minutes)} min`;
-}
+// Below this the robot is reported as stationary. The same threshold the card has always used.
+const MOVING_SPEED_MS = 0.05;
 
 /**
  * Extract the most meaningful label from a Mapbox place_name.
@@ -83,62 +62,76 @@ function formatPickupDrop(text) {
   return meaningful;
 }
 
-// ── Status badge styling ─────────────────────────────────────────────────────
+// ── Phase badge styling ──────────────────────────────────────────────────────
 
-function statusStyle(status) {
-  const s = normalizeStatus(status);
-  if (s === 'PENDING')     return 'bg-amber-100 text-amber-700 border-amber-200';
-  if (s === 'ASSIGNED')    return 'bg-blue-100 text-blue-700 border-blue-200';
-  if (s === 'IN_PROGRESS') return 'bg-emerald-100 text-emerald-700 border-emerald-200';
-  if (s === 'COMPLETED')   return 'bg-slate-100 text-slate-600 border-slate-200';
-  if (s === 'CANCELLED')   return 'bg-slate-100 text-slate-400 border-slate-200';
-  return 'bg-rose-100 text-rose-700 border-rose-200'; // FAILED
-}
+// Keyed by `taskPhase().tone`. An unknown status is neutral, never styled as a failure.
+const TONE_STYLE = Object.freeze({
+  pending: 'bg-amber-100 text-amber-700 border-amber-200',
+  warning: 'bg-orange-100 text-orange-800 border-orange-200',
+  active: 'bg-blue-100 text-blue-700 border-blue-200',
+  done: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  muted: 'bg-slate-100 text-slate-400 border-slate-200',
+  error: 'bg-rose-100 text-rose-700 border-rose-200',
+  neutral: 'bg-slate-100 text-slate-600 border-slate-200',
+});
 
 // ── TaskCard ─────────────────────────────────────────────────────────────────
 
-function TaskCard({ task, robot, onCancel }) {
+function TaskCard({ task, robot, route, assignmentSignal, onCancel }) {
   const status    = normalizeStatus(task.status);
   const isPending = status === 'PENDING';
-  const isActive  = STATUS_ACTIVE.has(status);
-  const canCancel = !['COMPLETED', 'FAILED', 'CANCELLED'].includes(status);
+  // The engine's latest round for this task, polled only while it is PENDING. One poll,
+  // shared by the header (FE-06) and the "why not assigned" panel.
+  const rejection = useTaskRejection(task.taskId || task.id, { enabled: isPending, refreshKey: assignmentSignal });
+  // What the card may truthfully say about where the task is (FE-05) — see taskLifecycle.js.
+  const phase = taskPhase({ status, rejection, verification: task.verification });
+  const isExecuting = phase.key === 'EXECUTING';
+  // Whether a cancel control is shown, and whether it can succeed. For an engine-managed
+  // task it cannot: the backend answers 409 and changes nothing (see taskCancellation.js).
+  const cancellation = cancellationFor(task);
 
   const taskId = task.taskId || task.id;
   const robotId = task.robot?.robotId || task.robotId || null;
-  const dist = formatDistance(task.distanceMeters);
-  const eta  = computeEta(task, robot);
-  const rem  = remainingMeters(task.distanceMeters, robot?.distanceTravelled);
+  // FE-07: `Task.distanceMeters` when the backend sets it; otherwise the length of the route
+  // the engine actually offered the robot (TASK_ASSIGNED). No ETA is derived — see taskRoute.js.
+  const routeMeters = typeof task.distanceMeters === 'number' ? task.distanceMeters : plannedRouteMeters(route);
+  const dist = formatDistance(routeMeters);
+  const speed = typeof robot?.speed === 'number' && Number.isFinite(robot.speed) ? robot.speed : null;
 
   return (
     <div className={`bg-white border rounded-2xl p-5 shadow-sm hover:shadow-md transition-all flex flex-col gap-4 ${
-      isPending ? 'border-amber-200' : 'border-slate-200'
-    }`}>
+      phase.tone === 'pending' || phase.tone === 'warning' ? 'border-amber-200' : 'border-slate-200'
+    }`} data-task-phase={phase.key}>
       {/* ── Header row ── */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="font-mono font-bold text-slate-900 text-sm tracking-tight">{taskId}</div>
           <div className="flex items-center gap-2 mt-1">
-            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border ${statusStyle(status)}`}>
-              {isPending ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : null}
-              {status}
+            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border ${TONE_STYLE[phase.tone] || TONE_STYLE.neutral}`}>
+              {phase.busy ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : null}
+              {phase.label}
             </span>
           </div>
+          {phase.detail ? (
+            <div className="mt-1 text-[11px] text-muted-foreground" data-task-phase-detail>{phase.detail}</div>
+          ) : null}
         </div>
 
-        {/* Right side: loading spinner (PENDING) or robot ID */}
+        {/* Right side: the robot once one is assigned; a spinner only while assignment is
+            genuinely still being worked on — never beside "no feasible robot". */}
         <div className="shrink-0 flex flex-col items-end gap-1">
-          {isPending ? (
-            <div className="flex items-center gap-1.5 text-amber-600 text-xs font-medium">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Computing…
-            </div>
-          ) : robotId ? (
+          {robotId && !isPending ? (
             <div className="flex items-center gap-1.5">
               <Navigation className="w-3.5 h-3.5 text-slate-400" />
               <span className="font-mono font-bold text-slate-900 text-sm">{robotId}</span>
             </div>
+          ) : phase.busy ? (
+            <div className="flex items-center gap-1.5 text-amber-600 text-xs font-medium">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Computing…
+            </div>
           ) : (
-            <span className="text-xs text-muted-foreground">Unassigned</span>
+            <span className="text-xs text-muted-foreground">No robot assigned</span>
           )}
         </div>
       </div>
@@ -155,6 +148,9 @@ function TaskCard({ task, robot, onCancel }) {
         </div>
       </div>
 
+      {/* ── Why not assigned (PENDING only; explanation, never the task's authority) ── */}
+      <TaskRejectionPanel taskId={taskId} status={status} state={rejection} />
+
       {/* ── Metrics row: Distance + ETA ── */}
       {!isPending && (
         <div className="grid grid-cols-2 gap-2">
@@ -162,33 +158,35 @@ function TaskCard({ task, robot, onCancel }) {
             <Ruler className="w-3.5 h-3.5 text-blue-500 shrink-0" />
             <div>
               <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Distance</div>
-              <div className="text-sm font-bold text-slate-900 font-mono">{dist ?? '—'}</div>
-              {rem !== null && rem < (task.distanceMeters ?? Infinity) && (
-                <div className="text-[10px] text-muted-foreground">
-                  {formatDistance(rem)} left
-                </div>
-              )}
+              <div className={`text-sm font-bold font-mono ${dist ? 'text-slate-900' : 'text-muted-foreground'}`} data-task-distance>
+                {dist ?? (isExecuting ? 'Unavailable' : '—')}
+              </div>
+              {dist && typeof task.distanceMeters !== 'number' ? (
+                <div className="text-[10px] text-muted-foreground">planned route</div>
+              ) : null}
             </div>
           </div>
           <div className="bg-slate-50 rounded-xl px-3 py-2.5 border border-slate-100 flex items-center gap-2">
             <Timer className="w-3.5 h-3.5 text-purple-500 shrink-0" />
             <div>
               <div className="text-[10px] text-muted-foreground uppercase tracking-wide">ETA</div>
-              <div className={`text-sm font-bold font-mono ${eta ? 'text-slate-900' : 'text-muted-foreground'}`}>
-                {eta ?? (robot?.status === 'CHARGING' ? 'Charging…' : robot && isActive ? 'Idle…' : '—')}
+              {/* The engine publishes no ETA, so none is shown — and never "Idle…" for a task
+                  that is executing. The robot's live motion is shown instead, as reported. */}
+              <div className="text-sm font-bold font-mono text-muted-foreground" data-task-eta>
+                {isExecuting ? 'Not provided' : '—'}
               </div>
-              {robot?.speed > 0.05 && (
-                <div className="text-[10px] text-muted-foreground">
-                  {robot.speed.toFixed(1)} m/s
+              {isExecuting && speed !== null ? (
+                <div className="text-[10px] text-muted-foreground" data-robot-motion>
+                  {speed > MOVING_SPEED_MS ? `Robot moving · ${speed.toFixed(1)} m/s` : 'Robot stationary'}
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
         </div>
       )}
 
       {/* ── Action ── */}
-      {canCancel ? (
+      {cancellation.show && cancellation.available ? (
         <Button
           variant="ghost"
           size="sm"
@@ -197,6 +195,20 @@ function TaskCard({ task, robot, onCancel }) {
         >
           Cancel Task
         </Button>
+      ) : cancellation.show ? (
+        <div className="space-y-1" data-cancel-state="unavailable">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled
+            aria-disabled="true"
+            title={cancellation.reason}
+            className="w-full border border-slate-200 text-slate-400 cursor-not-allowed"
+          >
+            Cancel unavailable
+          </Button>
+          <div className="text-[11px] text-muted-foreground">{cancellation.reason}</div>
+        </div>
       ) : (
         <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground py-1">
           {status === 'COMPLETED' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : null}
@@ -212,7 +224,7 @@ function TaskCard({ task, robot, onCancel }) {
 // ── TasksPage ─────────────────────────────────────────────────────────────────
 
 export default function TasksPage() {
-  const { tasks, robots } = useAppState();
+  const { tasks, robots, taskRoutes, assignmentSignal } = useAppState();
   const { setIsCreatingTask, cancelTask } = useAppActions();
 
   const totalTasks     = tasks.length;
@@ -266,6 +278,8 @@ export default function TasksPage() {
                 key={taskId}
                 task={t}
                 robot={robot}
+                route={taskRoutes?.[taskId] || null}
+                assignmentSignal={assignmentSignal}
                 onCancel={cancelTask}
               />
             );

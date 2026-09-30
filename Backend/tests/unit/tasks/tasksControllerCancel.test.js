@@ -27,6 +27,8 @@ describe("tasks.controller — cancelTask (F27: cancel must stop the robot + cle
   beforeEach(async () => {
     prisma = {
       task: { findUnique: jest.fn(), update: jest.fn() },
+      // Legacy tasks: no engine Leg (P1.4 refuses cancel only for engine-managed tasks).
+      leg: { findFirst: jest.fn().mockResolvedValue(null) },
       robot: { findUnique: jest.fn(), update: jest.fn() },
       $transaction: jest.fn(async (fn) => fn(prisma)),
     };

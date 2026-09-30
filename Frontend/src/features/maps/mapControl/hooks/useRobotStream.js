@@ -1387,7 +1387,14 @@ export function useRobotStream({
         const robotId = String(r?.robotId || '').trim();
         if (!robotId) continue;
         nextIds.add(robotId);
-        upsertMarker(r?.live && typeof r.live === 'object' ? { ...r, ...r.live } : r);
+        // The row's own fields win over `live`. `live` is the telemetry snapshot the
+        // REST load carried and nothing refreshes it afterwards, while the row's
+        // lat/lon/battery/status are kept current by every `robot:update`. Letting the
+        // snapshot win re-sent a moving robot's load-time position on every tick, and
+        // once it stopped its marker settled back where it had started (measured:
+        // 49.6 m from the robot, 2.8 m from its starting point). `live` still fills in
+        // anything the row lacks.
+        upsertMarker(r?.live && typeof r.live === 'object' ? { ...r.live, ...r } : r);
       }
 
       // Remove stale visuals for robots not in the current filter. The renderer
@@ -1415,30 +1422,27 @@ export function useRobotStream({
   );
 
   // Sync map markers from the global robots list whenever it changes or the
-  // location filter changes. Robots (and their routes/pickup/drop pins) are
-  // shown as soon as ANY filter level is picked — country, state, city,
-  // area, or campus — not just area/campus; cleared only at world view (no
-  // filter at all). Robots aren't actually filtered by geography here (see
-  // below), so there's no reason to withhold them until the narrowest
-  // filter is chosen — the zoom-scaled marker/route sizing already keeps
-  // the display readable at every one of those zoom levels.
+  // location filter changes.
+  //
+  // ── FE-10: every robot with real coordinates, filter or no filter ─────────
+  // This effect used to clear every marker at world view (no filter picked) and,
+  // once any filter was picked, show every robot anyway — it never filtered by
+  // geography. The gate only hid robots, and on a deployment whose location
+  // hierarchy has no country/campus rows (the V1 demonstration world has none)
+  // no filter could ever be picked, so the map showed no robot at all.
+  //
+  // Robots are not filtered by the location/campus selection here, because the
+  // robot rows do not establish that relationship reliably (a unit's `Location`
+  // is where it was commissioned, not where it is), and claiming a unit belongs
+  // to a campus it may not be on is worse than showing it. The filter drives the
+  // camera; the markers are the fleet, at the coordinates the backend reports.
   useEffect(() => {
     const map = mapRef?.current;
     if (!map) return;
 
-    const hasAnyFilter = Boolean(countryId || stateId || cityId || locationId || campusId);
-    if (!hasAnyFilter) {
-      setRobots([]);
-      syncMarkersToRobots([]);
-      return;
-    }
-
-    // Show all robots that have valid coordinates — regardless of which DB
-    // location they were commissioned under.  This ensures robots commissioned
-    // with a custom Mapbox place (not in the seeded location hierarchy) still
-    // appear on the map.
+    // Only coordinates the backend actually reported — never a default position.
     const list = (Array.isArray(globalRobots) ? globalRobots : []).filter(
-      (r) => typeof r?.lat === 'number' && typeof r?.lon === 'number'
+      (r) => Number.isFinite(r?.lat) && Number.isFinite(r?.lon)
     );
 
     setRobots(list);

@@ -81,17 +81,10 @@ process.env.PRIVACY_SURROGATE_SECRET = process.env.PRIVACY_SURROGATE_SECRET || "
 process.env.PRIVACY_IDENTITY_KEY = process.env.PRIVACY_IDENTITY_KEY || "22".repeat(32);
 process.env.COMMAND_SIGNING_KEY = process.env.COMMAND_SIGNING_KEY || "v1-demonstration-run-signing-key";
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || "warn";
-// §12.5 completion verification thresholds — V1_DEMONSTRATION values (the server reads the
-// same variables; see docs/runbooks/v1-demonstration-assignment.md). Without them
-// verification is skipped and no Leg is ever settled.
-const VERIFY_V1 = {
-  VERIFY_ARRIVAL_RADIUS_M: "25", // one FINE (res-11) cell edge
-  VERIFY_TRACK_MIN_FIX_RATE: "10", // fixes/min; telemetry is 30/min
-  VERIFY_TRACK_MIN_CORRIDOR_FRACTION: "0.8",
-  VERIFY_TRACK_MAX_GAP_SECONDS: "10", // five telemetry intervals
-  VERIFY_CORRIDOR_HALF_WIDTH_M: "30",
-  VERIFY_MAX_SPEED_MS: "8.33", // simulation/constants.SPEED_MAX_MS
-};
+// §12.5 completion verification thresholds — V1_DEMONSTRATION values, defined once in
+// `tools/config/v1DemonstrationConfig.js` (the V1 server launcher sets the same ones).
+// Without them verification is skipped and no Leg is ever settled.
+const VERIFY_V1 = require("../config/v1DemonstrationConfig").VERIFICATION_THRESHOLDS;
 for (const [name, value] of Object.entries(VERIFY_V1)) process.env[name] = process.env[name] || value;
 
 const fs = require("fs");
@@ -107,7 +100,6 @@ const { outboxDeliveryArm } = require("../../src/services/commandDispatcher.serv
 
 const configService = require("../../src/engine/config/service");
 const taskService = require("../../src/services/task.service");
-const robotService = require("../../src/services/robot.service");
 const chargingStatus = require("../../src/services/chargingStatus.service");
 const indexMaintainer = require("../../src/workers/indexMaintainer.worker");
 const leaderWorkers = require("../../src/workers/leaderWorkers");
@@ -120,8 +112,6 @@ const { haversineMeters } = require("../../src/utils/distance");
 
 const seedTool = require("./seedV1Demonstration");
 const report = require("./v1RunReport");
-const publishTool = require("../config/publishV1Demonstration");
-const demonstration = require("../config/v1DemonstrationConfig");
 
 const SEED = Number(flag("--seed", "20260923"));
 const JSON_OUT = flag("--json", null);
@@ -220,18 +210,12 @@ const INTERIOR = Object.freeze([
   "rnsit-cyber-security-department",
 ]);
 
-/** The first proven run's fleet and jobs, kept verbatim for `baseline`. */
-const BASELINE_FLEET = [
-  { code: "V1DEMO-01", point: "rnsit-innovation-center", batteryPct: 90 },
-  { code: "V1DEMO-02", point: "rnsit-pre-university-college", batteryPct: 85 },
-  { code: "V1DEMO-03", point: "rnsit-canara-bank", batteryPct: 80 },
-  { code: "V1DEMO-04", point: "rns-evening-college", batteryPct: 75 },
-  // In a boundary cell whose centre lies outside the adopted RNSIT boundary: the router
-  // refuses to route from it, so this robot is a genuine rejection.
-  { code: "V1DEMO-05", point: "rnsit-main-gate", batteryPct: 85, expect: "NEVER_ASSIGNED" },
-  // Low charge: the energy feasibility check has to do the rejecting.
-  { code: "V1DEMO-06", point: "rnsit-cyber-security-department", batteryPct: 12, expect: "NEVER_ASSIGNED" },
-];
+/**
+ * The first proven run's fleet, kept verbatim for `baseline` — defined once, in the seed
+ * tool, so `seedV1Demonstration.js --fleet baseline` seeds the same six units for a
+ * `server.js` world. The jobs stay here.
+ */
+const BASELINE_FLEET = seedTool.BASELINE_FLEET;
 const BASELINE_JOBS = [
   ["rnsit-food-court", "rnsit-innovation-center"],
   ["rnsit-playground-2", "rnsit-canara-bank"],
@@ -323,32 +307,8 @@ async function waitFor(check, timeoutMs, stepMs = 500) {
   }
 }
 
-/** Every robot through the real commissioning service, at a fixed code. */
-async function commissionFleet(prisma, world, fleet, ownerId) {
-  for (const entry of fleet) {
-    if (entry.code === world.robot.robotId) continue; // seeded by seedWorld
-    const point = world.points[entry.point];
-    // eslint-disable-next-line no-await-in-loop
-    await robotService.createRobotWithProjection(
-      prisma,
-      {
-        name: `V1 demo @ ${entry.point}`,
-        locationId: world.location.id,
-        lat: point.lat,
-        lon: point.lon,
-        chassisType: "ROVER",
-        specification: { ...seedTool.simulatedSpecification(), initialBatteryPct: entry.batteryPct },
-      },
-      { robotCode: entry.code, simulated: true, simulationOwnerId: ownerId },
-    );
-  }
-  // The seeded robot's pack, when the scenario states a different starting charge.
-  const seeded = fleet.find((entry) => entry.code === world.robot.robotId);
-  if (seeded && seeded.batteryPct !== 90) {
-    await prisma.batteryState.updateMany({ where: { agentId: world.agent.id }, data: { lastObservedSoc: seeded.batteryPct / 100 } });
-    await prisma.robot.update({ where: { robotId: seeded.code }, data: { battery: seeded.batteryPct } });
-  }
-}
+/** Every robot through the real commissioning service, at a fixed code (the seed tool's). */
+const commissionFleet = seedTool.commissionFleet;
 
 async function main() {
   const plan = scenarioPlan();
@@ -366,28 +326,13 @@ async function main() {
   say(`\n[world] region ${world.region.regionId}  shard ${SHARD_ID}  cover ${world.indexCover.length} cells  charger ${world.depot.chargerId}`);
 
   /* ── 2. Configuration: the 13 + the execution params, spatial, domain ───── */
-  const base = publishTool.publishRequest({ accommodate: true });
-  const published = await configService.publish(prisma, {
-    ...base,
+  // One definition of what a demonstration publishes: the seed tool's, which the
+  // `server.js` world is seeded with too (the 13 + execution params + spatial + domain +
+  // the region's cutover binding, published and pinned).
+  const { published } = await seedTool.publishConfiguration(prisma, world, {
     publishedBy: "tools/demo/runV1Assignment.js",
-    bindings: [
-      ...base.bindings,
-      ...demonstration.executionBindings(),
-      { level: "region", key: world.region.id, name: "cutover.engine_enabled", value: true },
-    ],
-    spatial: {
-      version: 1,
-      regions: [{ id: world.region.id }],
-      zones: [{ id: world.zone.id, regionId: world.region.id }],
-      sites: [],
-      cells: world.indexCover.map((cellId) => ({ cellId, resolution: "FINE", regionId: world.region.id, zoneId: world.zone.id })),
-    },
-    deliveryDomain: world.declaration,
-    note:
-      `${base.note} | V1 DEMONSTRATION RUN (tools/demo/runV1Assignment.js) on a DISPOSABLE local cluster: ` +
-      "+ execution params (max radius, intervention bound) + cutover bound for the demo region. NOT PRODUCTION.",
+    note: "V1 DEMONSTRATION RUN (tools/demo/runV1Assignment.js).",
   });
-  await configService.pinVersion(prisma, null, published.version, "tools/demo/runV1Assignment.js");
   const pinned = await configService.loadPinnedSnapshot({ prisma });
   say(`[config] version ${published.version} pinned  (S2/V9 accommodation: labelled tool approvers — NOT a Safety approval)`);
 

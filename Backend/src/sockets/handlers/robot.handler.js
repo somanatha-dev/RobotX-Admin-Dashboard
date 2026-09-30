@@ -1,5 +1,6 @@
 const { toStringOrNull } = require("../../utils/parse");
 const { allow } = require("../rateLimit");
+const agentProbe = require("../../services/agentProbe.service");
 const {
   getRobotSocket,
   setRobotSocket,
@@ -40,20 +41,52 @@ async function markRobotOnline(prisma, robotId, socketId) {
     },
   });
   robotStateCache.set(robotId, { isOnline: true });
+
+  // P1.4 (LF-1) — a server-observed reconnect undoes the server's own disconnect write. The
+  // `OFFLINE` below was written by `markRobotOffline`, which kept the status it replaced;
+  // restoring exactly that — and only while the row is still `OFFLINE` — never raises the
+  // health tier (§23.5): an `ERROR` or `PAUSED` robot comes back `ERROR` or `PAUSED`. The
+  // agent's own telemetry still cannot raise it. Before this, a robot that disconnected once
+  // stayed `OFFLINE` for good under enforcement (F9 denied it; `clear-fault` refuses
+  // `OFFLINE`); measured live, a simulator stop/start left the whole fleet unassignable.
+  if (row && row.status === "OFFLINE" && row.statusBeforeOffline) {
+    const restored = await prisma.robot.updateMany({
+      where: { robotId, status: "OFFLINE", statusBeforeOffline: row.statusBeforeOffline },
+      data: { status: row.statusBeforeOffline, statusBeforeOffline: null },
+    });
+    if (restored && restored.count === 1) {
+      robotStateCache.set(robotId, { status: row.statusBeforeOffline });
+      return { ...row, status: row.statusBeforeOffline, statusBeforeOffline: null };
+    }
+  }
   return row;
 }
 
 async function markRobotOffline(prisma, robotId) {
-  const row = await prisma.robot.update({
-    where: { robotId },
-    data: {
-      isOnline: false,
-      status: "OFFLINE",
-      // Clear the socket binding too — leaving a dead socket id on the row
-      // makes it look like a live handle to anything reading the column.
-      socketId: null,
-    },
-  });
+  const data = {
+    isOnline: false,
+    status: "OFFLINE",
+    // Clear the socket binding too — leaving a dead socket id on the row
+    // makes it look like a live handle to anything reading the column.
+    socketId: null,
+  };
+
+  // P1.4 (LF-1) — keep the status this write replaces, for `markRobotOnline` to restore.
+  // Conditional on the status just read, so a concurrent status change is never recorded
+  // as the one replaced; a row already `OFFLINE` keeps what it remembered.
+  const current = await prisma.robot.findUnique({ where: { robotId }, select: { status: true } });
+  if (current && typeof current.status === "string" && current.status !== "OFFLINE") {
+    const written = await prisma.robot.updateMany({
+      where: { robotId, status: current.status },
+      data: { ...data, statusBeforeOffline: current.status },
+    });
+    if (written && written.count === 1) {
+      robotStateCache.set(robotId, { isOnline: false, status: "OFFLINE" });
+      return { ...current, ...data, statusBeforeOffline: current.status };
+    }
+  }
+
+  const row = await prisma.robot.update({ where: { robotId }, data });
   robotStateCache.set(robotId, { isOnline: false, status: "OFFLINE" });
   return row;
 }
@@ -442,6 +475,19 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       const token = toStringOrNull(auth?.token);
       if (!robotId) return socket.disconnect(true);
 
+      // P2B-2 — one socket speaks for one robot. An already-authenticated socket that AUTHs
+      // again as a *different* robot is refused and closed: it would otherwise join the second
+      // robot's room while still sitting in the first's, receiving both robots' commands.
+      // Re-AUTH as the same robot (a client re-sending AUTH) is unaffected.
+      if (socket.data.isAuthed === true && socket.data.robotId && socket.data.robotId !== robotId) {
+        log.warn?.("AUTH refused — this socket is already authenticated as another robot", {
+          boundRobotId: socket.data.robotId,
+          requestedRobotId: robotId,
+          socketId: socket.id,
+        });
+        return socket.disconnect(true);
+      }
+
       // Reject unknown robots (must be commissioned in DB). This is the one
       // DB read AUTH needs — its result seeds robotStateCache so the
       // TELEMETRY hot path never needs its own per-tick read (see
@@ -785,6 +831,20 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
     }
   }
 
+  // P2B-2 — the answer to a server-initiated PROBE (`services/agentProbe.service.js`), the
+  // round trip §7.5 F14 requires. Recorded only for an outstanding probe on this socket.
+  socket.on(agentProbe.RESULT_EVENT, async (payload) => {
+    try {
+      if (!allow(socket, agentProbe.RESULT_EVENT, { limit: 30, windowMs: 60_000, minIntervalMs: 50 })) return;
+      const recorded = await agentProbe.recordProbeResult({ kv, socket, payload, nowMs: Date.now() });
+      if (recorded.outcome !== agentProbe.OUTCOME.RECORDED) {
+        log.debug?.("PROBE_RESULT not recorded", { robotId: recorded.robotId, outcome: recorded.outcome });
+      }
+    } catch (e) {
+      log.warn?.("PROBE_RESULT handler failed", { message: e?.message });
+    }
+  });
+
   socket.on("HEARTBEAT", (payload) => handleHeartbeat("HEARTBEAT", payload));
   // Backward compatible alias.
   socket.on("heartbeat", (payload) => handleHeartbeat("heartbeat", payload));
@@ -957,4 +1017,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
 
 module.exports = {
   registerRobotHandlers,
+  // Exported for the LF-1 tests (P1.4); AUTH and disconnect remain their only callers.
+  markRobotOnline,
+  markRobotOffline,
 };

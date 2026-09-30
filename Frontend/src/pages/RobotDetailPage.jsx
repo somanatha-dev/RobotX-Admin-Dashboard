@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Camera, Pencil, Trash2, X } from 'lucide-react';
 import { useAppActions, useAppState } from '@/context/appContext.js';
 import useRobotCommand from '@/hooks/useRobotCommand.js';
+import { RESUME_UNAVAILABLE_REASON } from '@/lib/robotCommands.js';
 import { RobotIdentityBadge, SimulatorRuntimeBadge } from '@/components/system/RobotIdentity.jsx';
 import {
   identityOf,
@@ -126,11 +127,18 @@ export default function RobotDetailPage() {
         </div>
 
         <div className="flex gap-2 sm:gap-3">
+          {/* Not sent in V1: the backend refuses a unit's own return to service (§23.5),
+              so RESUME is delivered and changes nothing. Shown disabled with the reason
+              rather than removed, so the operator learns why a paused unit stays paused. */}
           <button
-            onClick={() => sendCommand(robot.robotId, 'RESUME')}
-            className="flex-1 sm:flex-none bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-4 py-2.5 rounded-lg text-xs font-bold transition-colors shadow-sm"
+            type="button"
+            disabled
+            aria-disabled="true"
+            title={RESUME_UNAVAILABLE_REASON}
+            data-command-unavailable="RESUME"
+            className="flex-1 sm:flex-none bg-slate-100 border border-slate-200 text-slate-400 px-4 py-2.5 rounded-lg text-xs font-bold shadow-sm cursor-not-allowed"
           >
-            RESUME
+            RESUME (N/A IN V1)
           </button>
           <button
             onClick={() => sendCommand(robot.robotId, 'RETURN')}
@@ -154,6 +162,16 @@ export default function RobotDetailPage() {
           </button>
         </div>
       </div>
+
+      {normalizeStatus(robot.status) === 'PAUSED' && (
+        <div
+          role="note"
+          data-paused-note
+          className="mx-4 lg:mx-6 mt-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs font-medium text-amber-900"
+        >
+          This unit is PAUSED and out of assignment. {RESUME_UNAVAILABLE_REASON}
+        </div>
+      )}
 
       <div className="p-4 lg:p-6 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="space-y-6">

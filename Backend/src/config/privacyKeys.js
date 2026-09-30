@@ -24,6 +24,7 @@
  */
 
 const identityStore = require("../engine/privacy/identityStore");
+const surrogateKeys = require("../engine/privacy/surrogateKeys");
 
 /**
  * The environment variables this reads, named once so a runbook and an error message
@@ -80,4 +81,27 @@ function fromEnvironment(env) {
   return { secret, encryptionKey: identityStore.requireEncryptionKey(Buffer.from(keyHex, "hex")) };
 }
 
-module.exports = { ENV, configured, fromEnvironment };
+/**
+ * Refuse, at boot, a secret the identity path would refuse at the first task.
+ *
+ * `fromEnvironment()` stays lazy on purpose (a process that never touches the identity
+ * path must still start). But a process that runs the engine *will* touch it on every
+ * submission, and `sealIdentities` runs after the Task, Leg and Stops are already
+ * written — so a secret found invalid there leaves a PENDING Task, a QUEUED Leg with no
+ * queue row, and unsealed Stops behind a 500. Checking at boot with the **same**
+ * validators the write path calls (`surrogateKeys.requireSecret`, whose floor is 16
+ * bytes, and `identityStore.requireEncryptionKey`) turns that into a refused start.
+ *
+ * @param {object} [env]
+ * @throws {Error} naming the variable and the contract it fails
+ */
+function assertValid(env) {
+  const keys = fromEnvironment(env);
+  try {
+    surrogateKeys.requireSecret(keys.secret);
+  } catch (error) {
+    throw new Error(`${ENV.SURROGATE_SECRET} is invalid: ${error.message}`);
+  }
+}
+
+module.exports = { ENV, configured, fromEnvironment, assertValid };

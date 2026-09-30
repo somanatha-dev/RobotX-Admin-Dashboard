@@ -221,6 +221,13 @@ model Robot {
   status  RobotStatus @default(IDLE)
   battery Float?
 
+  /// P1.4 (LF-1) — the status the server replaced when **it** wrote `OFFLINE` on a
+  /// disconnect. A server-observed reconnect restores exactly this, and only while the row
+  /// is still `OFFLINE`, so a reconnect never raises the health tier (§23.5): an `ERROR` or
+  /// `PAUSED` robot comes back `ERROR` or `PAUSED`. Null when the server did not write the
+  /// `OFFLINE` (or has already restored it).
+  statusBeforeOffline RobotStatus?
+
   //////////////////////////////////////////////////
   // UNIT SPECIFICATION — the two values with no existing home
   //

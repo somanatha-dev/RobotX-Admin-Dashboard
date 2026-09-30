@@ -12,6 +12,7 @@
  */
 
 const { toStringOrNull } = require("../../utils/parse");
+const { haversineMeters } = require("../../utils/distance");
 const { allow } = require("../rateLimit");
 // PHASE 15 remediation (D-6) — both halves of the cutover switch, from the module that
 // owns the question. Grading a completion claim writes a durable evidence row and can
@@ -179,13 +180,28 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       // > The audit notes the baseline accepts completion purely on the agent's
       // > assertion, with no geometric or evidentiary check.
       //
-      // The legacy path below **is** that assertion, and it stays exactly as it was
-      // until the Phase 15 cutover — a legacy Task completed by a legacy robot must
-      // still complete. What is added is the graded check running alongside it: with
-      // `ENGINE_ENABLED` false it does nothing, and with it true a completion claim is
-      // graded, its evidence archived, and an insufficient one sends the Task to
-      // `VERIFYING` rather than to `COMPLETED`.
+      // A claim is graded, its evidence archived, and only a SUFFICIENT one reaches the
+      // completion block below. An insufficient one sends the Task to `VERIFYING` rather
+      // than to `COMPLETED`, and since P2B-2 so does a claim that could not be graded at
+      // all — the claim-only fallback this block used to run is gone.
       const verdict = await verifyCompletionClaim({ prisma, log, robotId, taskId, payload, config: configOf(), socket });
+
+      // ── P2B-2 — no completion on the claim alone ─────────────────────────────
+      //
+      // A claim the server could not grade is not a graded claim that passed. Before this,
+      // every path on which `verifyCompletionClaim` could not run — engine gate closed for
+      // the shard, no Agent projection, no live commitment, no Leg, the six `VERIFY_*`
+      // thresholds unset, or a verification error — fell through to the legacy block below
+      // and completed the Task on the agent's word, which is the baseline §12.5 exists to
+      // replace. Now the claim is held exactly as an INSUFFICIENT one is: nothing is
+      // written to the Task or the Robot, the dashboard is told why, an Event row records
+      // it for the operator, and the agent is told the claim is being verified. The rule is
+      // the same for every agent; provenance is not consulted.
+      if (!verdict || verdict.unavailable === true) {
+        const reason = verdict && verdict.reason ? verdict.reason : VERIFICATION_UNAVAILABLE.UNKNOWN;
+        await holdUnverifiableCompletion({ prisma, io, socket, log, robotId, taskId, reason });
+        return;
+      }
 
       // ── PHASE 14 remediation (P14-R14) — §23.5 row 3, composed ──────────────
       //
@@ -415,10 +431,21 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
  * §12.5 grades verification *per mission class*, and L1 — "Default for all customer
  * work" — needs a position, a stop, and a telemetry track. A real agent reporting
  * `TASK_COMPLETE` supplies the first; the second comes from the Leg's Stop; the third
- * from the Observation stream. Where the engine has no Leg for this Task — every legacy
- * Task, until Phase 15 — there is nothing to verify **against**, and the honest answer is
- * to verify nothing rather than to grade a claim against a plan that does not exist.
- * That case returns null and the legacy path proceeds unchanged.
+ * from the Observation stream. Where there is nothing to verify **against** — no live
+ * commitment, no Leg, no thresholds, or a shard the engine does not act for — the answer is
+ * `{ unavailable: true, reason }` (P2B-2), and the caller holds the claim rather than
+ * completing on it. It used to return null and let the legacy path complete on the claim.
+ *
+ * ── P2B-2: what "L1" is graded on ────────────────────────────────────────────
+ *   · Arrival is judged on the **last accepted fix** (a measured, non-dead-reckoned
+ *     Observation), and the agent's own `lat`/`lon`, when sent, must also be inside the
+ *     radius. A claimed position is an assertion; the fix is the evidence.
+ *   · That fix must be recent: older than `VERIFY_TRACK_MAX_GAP_SECONDS` at claim time is
+ *     `FINAL_FIX_STALE`. The engine's continuity test measures gaps *between* fixes and
+ *     cannot see the trailing one.
+ *   · The corridor is the one the server commanded in the OFFER. An agent-supplied
+ *     `plannedCorridor` is no longer a substitute: an agent graded against a route it chose
+ *     to report is not graded.
  *
  * ── The evidence row is written whatever the outcome ────────────────────────
  * Both outcomes are archived. A `SUFFICIENT` verification with no record would leave the
@@ -431,21 +458,23 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
 async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, config, socket }) {
   // D-6: the process half alone used to gate this. During a staged rollout that graded
   // claims on every shard, including ones the staging order had not reached.
-  if (!agentGate.mayAct({ socket, snapshot: config, nowMs: Date.now() })) return null;
+  if (!agentGate.mayAct({ socket, snapshot: config, nowMs: Date.now() })) {
+    return unavailable(VERIFICATION_UNAVAILABLE.ENGINE_GATE_CLOSED);
+  }
 
   try {
     const agent = await prisma.agent.findUnique({ where: { agentId: robotId } });
-    if (!agent) return null;
+    if (!agent) return unavailable(VERIFICATION_UNAVAILABLE.NO_AGENT);
 
     // The Leg this claim discharges: the one this agent holds an active commitment for.
     const commitment = await prisma.commitment.findFirst({
       where: { agentId: agent.id, releasedAt: null },
       orderBy: { grantedAt: "desc" },
     });
-    if (!commitment) return null;
+    if (!commitment) return unavailable(VERIFICATION_UNAVAILABLE.NO_LIVE_COMMITMENT);
 
     const leg = await prisma.leg.findUnique({ where: { id: commitment.legId } });
-    if (!leg) return null;
+    if (!leg) return unavailable(VERIFICATION_UNAVAILABLE.NO_LEG);
 
     const stops = await prisma.stop.findMany({ where: { legId: leg.id }, orderBy: { sequence: "desc" }, take: 1 });
     const finalStop = stops[0] || null;
@@ -454,35 +483,32 @@ async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, co
     // absent them the graded check cannot run, and running it against invented numbers
     // would be exactly the reactive tuning §12.5 warns about.
     const thresholds = readVerificationThresholds();
-    if (!thresholds) return null;
+    if (!thresholds) return unavailable(VERIFICATION_UNAVAILABLE.NOT_CONFIGURED);
 
     const track = await readAcceptedTrack(prisma, agent.id, commitment.grantedAt);
+    const lastFix = track.length > 0 ? track[track.length - 1] : null;
+    const claimedByAgent =
+      typeof payload?.lat === "number" && typeof payload?.lon === "number" ? { lat: payload.lat, lon: payload.lon } : null;
+    const stopPosition = finalStop && finalStop.lat !== null ? { lat: finalStop.lat, lon: finalStop.lon } : null;
+    const claimTimeMs = Date.now();
 
-    const result = verification.verify({
+    const graded = verification.verify({
       requiredLevel: verification.requiredLevelFor(leg.purpose, thresholds.levelsByMissionClass),
       completionClaimed: true,
-      claimedPosition:
-        typeof payload?.lat === "number" && typeof payload?.lon === "number"
-          ? { lat: payload.lat, lon: payload.lon }
-          : track.length > 0
-            ? { lat: track[track.length - 1].lat, lon: track[track.length - 1].lon }
-            : null,
-      stopPosition: finalStop && finalStop.lat !== null ? { lat: finalStop.lat, lon: finalStop.lon } : null,
+      // P2B-2 — the measured position, never the asserted one (see the header).
+      claimedPosition: lastFix ? { lat: lastFix.lat, lon: lastFix.lon } : null,
+      stopPosition,
       arrivalRadiusM: thresholds.arrivalRadiusM,
       physicalEvidence: payload?.physicalEvidence || null,
       attestation: payload?.attestation || null,
       track: {
         track,
-        legDurationSeconds: (Date.now() - new Date(commitment.grantedAt).getTime()) / 1000,
+        legDurationSeconds: (claimTimeMs - new Date(commitment.grantedAt).getTime()) / 1000,
         minFixRatePerMinute: thresholds.minFixRatePerMinute,
         // The route the server itself commanded — the per-stop geometry signed into this
-        // commitment's OFFER — unless the agent reports one. Taking the corridor only from
-        // the agent's own claim meant an agent that sent none could never verify, and one
-        // that did would be graded against the route it chose to report.
-        corridor:
-          Array.isArray(payload?.plannedCorridor) && payload.plannedCorridor.length > 0
-            ? payload.plannedCorridor
-            : await readCommandedCorridor(prisma, commitment.commitmentId),
+        // commitment's OFFER. P2B-2: only that one. An agent-reported `plannedCorridor` used
+        // to replace it, which let an agent choose the route it was graded against.
+        corridor: await readCommandedCorridor(prisma, commitment.commitmentId),
         reportedCorridors: Array.isArray(payload?.reportedCorridors) ? payload.reportedCorridors : [],
         corridorHalfWidthM: thresholds.corridorHalfWidthM,
         minCorridorFraction: thresholds.minCorridorFraction,
@@ -491,6 +517,30 @@ async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, co
         mappedDeadZoneWindows: Array.isArray(payload?.deadZoneWindows) ? payload.deadZoneWindows : [],
       },
     });
+
+    // P2B-2 — the two L1 checks the engine's grading does not make, applied as further
+    // failures on the same verdict (never as a relaxation of one it made).
+    const extraFailures = [];
+    if (lastFix && (claimTimeMs - new Date(lastFix.at).getTime()) / 1000 > thresholds.maxGapSeconds) {
+      extraFailures.push(COMPLETION_FAILURE.FINAL_FIX_STALE);
+    }
+    if (
+      claimedByAgent &&
+      (!stopPosition ||
+        haversineMeters(claimedByAgent.lat, claimedByAgent.lon, stopPosition.lat, stopPosition.lon) > thresholds.arrivalRadiusM)
+    ) {
+      extraFailures.push(COMPLETION_FAILURE.CLAIMED_POSITION_OUTSIDE_RADIUS);
+    }
+    const result =
+      extraFailures.length === 0
+        ? graded
+        : {
+            ...graded,
+            outcome: verification.OUTCOME.INSUFFICIENT,
+            // Both are L1 geometric failures, so L1 is not achieved.
+            achievedLevel: verification.LEVEL.L0,
+            failures: [...graded.failures, ...extraFailures],
+          };
 
     await prisma.verificationEvidence.create({
       data: {
@@ -538,9 +588,7 @@ async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, co
     // The ceiling comes from `thresholds.maxSpeedMs`, which this function already reads
     // for the track check, and the tolerance from `security.position_plausibility_tolerance`.
     // No number is invented here.
-    const lastFix = track.length > 0 ? track[track.length - 1] : null;
-    const claimed =
-      typeof payload?.lat === "number" && typeof payload?.lon === "number" ? { lat: payload.lat, lon: payload.lon } : null;
+    const claimed = claimedByAgent;
 
     const positionCheck =
       claimed && lastFix
@@ -562,8 +610,91 @@ async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, co
     // however, be loud: a silent verification failure is indistinguishable from a pass,
     // which is the property §12.5 exists to remove.
     log.error("completion verification failed", { robotId, taskId, message: e?.message });
-    return null;
+    return unavailable(VERIFICATION_UNAVAILABLE.VERIFICATION_ERROR);
   }
+}
+
+/**
+ * P2B-2 — why a completion claim could not be graded. Each is a state the operator can act
+ * on; none is a pass.
+ * @structural reason labels
+ */
+const VERIFICATION_UNAVAILABLE = Object.freeze({
+  ENGINE_GATE_CLOSED: "ENGINE_GATE_CLOSED",
+  NO_AGENT: "NO_AGENT",
+  NO_LIVE_COMMITMENT: "NO_LIVE_COMMITMENT",
+  NO_LEG: "NO_LEG",
+  NOT_CONFIGURED: "VERIFICATION_NOT_CONFIGURED",
+  VERIFICATION_ERROR: "VERIFICATION_ERROR",
+  UNKNOWN: "VERIFICATION_UNAVAILABLE",
+});
+
+/** P2B-2 — the two L1 failures the handler adds to the engine's grading. @structural */
+const COMPLETION_FAILURE = Object.freeze({
+  FINAL_FIX_STALE: "FINAL_FIX_STALE",
+  CLAIMED_POSITION_OUTSIDE_RADIUS: "CLAIMED_POSITION_OUTSIDE_RADIUS",
+});
+
+function unavailable(reason) {
+  return Object.freeze({ unavailable: true, reason });
+}
+
+/**
+ * P2B-2 — hold a completion claim that could not be graded.
+ *
+ * Nothing about the Task, the Robot or the Leg is written: the claim is held exactly as an
+ * INSUFFICIENT one is (the Task stays where it is, the commitment stays live), and it is made
+ * visible — a dashboard `TASK_UPDATED` with `VERIFYING` and the reason, a WARNING Event row
+ * for the operator queue, and `TASK_COMPLETE_ACK { verifying: true, reason }` to the agent.
+ *
+ * One idempotent case: a claim repeated after this robot's Task was already completed on a
+ * graded claim (its commitment is gone, so the repeat cannot be graded). That is
+ * acknowledged as completed and nothing is written.
+ *
+ * @param {object} input
+ */
+async function holdUnverifiableCompletion(input) {
+  const { prisma, io, socket, log, robotId, taskId, reason } = input;
+
+  if (taskId) {
+    const task = await prisma.task
+      .findUnique({ where: { taskId }, select: { status: true, robot: { select: { robotId: true } } } })
+      .catch(() => null);
+    if (task && task.status === "COMPLETED" && task.robot && task.robot.robotId === robotId) {
+      socket.emit("TASK_COMPLETE_ACK", { taskId, alreadyCompleted: true, timestamp: Date.now() });
+      return;
+    }
+  }
+
+  log.warn("TASK_COMPLETE held — the claim could not be graded, so it is not completed on the claim alone", {
+    robotId,
+    taskId,
+    reason,
+  });
+
+  try {
+    const robotRow = await prisma.robot.findUnique({ where: { robotId }, select: { id: true } });
+    if (robotRow) {
+      await prisma.event.create({
+        data: {
+          robotId: robotRow.id,
+          type: "WARNING",
+          message: `TASK_COMPLETE for ${taskId || "(unresolved task)"} held for operator verification: ${reason}`,
+        },
+      });
+    }
+  } catch {
+    // The dashboard event and the log line still carry it.
+  }
+
+  io.to("dashboard").emit("TASK_UPDATED", {
+    robotId,
+    taskId,
+    status: "VERIFYING",
+    verification: { unavailable: true, reason },
+    timestamp: Date.now(),
+  });
+  socket.emit("TASK_COMPLETE_ACK", { taskId, verifying: true, reason, timestamp: Date.now() });
 }
 
 /**
@@ -658,4 +789,10 @@ async function readAcceptedTrack(prisma, agentRowId, since) {
     .filter((fix) => typeof fix.lat === "number" && typeof fix.lon === "number");
 }
 
-module.exports = { registerDtaroHandlers, verifyCompletionClaim, resolveCompletedTaskId };
+module.exports = {
+  registerDtaroHandlers,
+  verifyCompletionClaim,
+  resolveCompletedTaskId,
+  VERIFICATION_UNAVAILABLE,
+  COMPLETION_FAILURE,
+};

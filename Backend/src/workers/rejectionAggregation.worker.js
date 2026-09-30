@@ -111,10 +111,18 @@ async function flushSnapshot(deps, snapshot, context) {
     //
     // `$executeRaw` is parameterised by tag, so every value below is bound, not
     // interpolated.
+    //
+    // ── Times are written in UTC, as every Prisma-typed write is ─────────────
+    // The columns are `timestamp without time zone`. A bound `Date` (or `CURRENT_TIMESTAMP`)
+    // is converted to the *session's* zone on the way in, so on a database whose zone is not
+    // UTC the rows landed hours away from the UTC instants `GET /api/diagnostics/rejections`
+    // filters on (measured on an Asia/Calcutta cluster: every bucket +05:30, outside the
+    // default window). An ISO instant ending in `Z`, taken to UTC explicitly, is the same
+    // wall time on every server; on a UTC database this is exactly what was written before.
     await prisma.$executeRaw`
       INSERT INTO "RejectionAggregate" (
         "id", "shardId", "zoneId", "missionClass", "legPurpose",
-        "predicateId", "tier", "bucketStart", "bucketEnd", "count", "updatedAt"
+        "predicateId", "tier", "bucketStart", "bucketEnd", "count", "createdAt", "updatedAt"
       ) VALUES (
         gen_random_uuid()::text,
         ${row.shardId === undefined ? shardId : row.shardId},
@@ -123,16 +131,17 @@ async function flushSnapshot(deps, snapshot, context) {
         ${row.legPurpose ?? null},
         ${row.predicateId},
         ${row.tier ?? null},
-        ${bucketStart},
-        ${bucketEnd},
+        (${bucketStart.toISOString()}::timestamptz AT TIME ZONE 'UTC'),
+        (${bucketEnd.toISOString()}::timestamptz AT TIME ZONE 'UTC'),
         ${BigInt(row.count)},
-        CURRENT_TIMESTAMP
+        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       )
       ON CONFLICT ("shardId", "zoneId", "missionClass", "legPurpose", "predicateId", "tier", "bucketStart")
       DO UPDATE SET
         "count" = "RejectionAggregate"."count" + EXCLUDED."count",
         "bucketEnd" = EXCLUDED."bucketEnd",
-        "updatedAt" = CURRENT_TIMESTAMP
+        "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
     `;
     aggregatesWritten += 1;
   }

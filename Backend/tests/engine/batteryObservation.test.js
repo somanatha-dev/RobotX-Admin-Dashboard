@@ -22,7 +22,7 @@ function prismaWith({ agent = { id: "agent-row-1" }, count = 1 } = {}) {
 describe("recordReportedSoc", () => {
   test("writes the reported percentage as a fraction, at the agent's own timestamp", async () => {
     const prisma = prismaWith();
-    const out = await batteryObservation.recordReportedSoc(prisma, { robotId: "SIM-1", batteryPct: 42.5, agentTimestampMs: 1_700_000_000_000 });
+    const out = await batteryObservation.recordReportedSoc(prisma, { robotId: "SIM-1", provenance: "SIMULATED", batteryPct: 42.5, agentTimestampMs: 1_700_000_000_000 });
     expect(out).toEqual({ written: true, reason: null });
     const call = prisma.batteryState.updateMany.mock.calls[0][0];
     expect(call.data).toEqual({ lastObservedSoc: 0.425, lastObservedAt: new Date(1_700_000_000_000) });
@@ -31,7 +31,7 @@ describe("recordReportedSoc", () => {
 
   test("never creates a row — only updateMany is ever called", async () => {
     const prisma = prismaWith({ count: 0 });
-    const out = await batteryObservation.recordReportedSoc(prisma, { robotId: "PHYS-1", batteryPct: 80, agentTimestampMs: 1_700_000_000_000 });
+    const out = await batteryObservation.recordReportedSoc(prisma, { robotId: "PHYS-1", provenance: "PHYSICAL", socMethod: "BMS", batteryPct: 80, agentTimestampMs: 1_700_000_000_000 });
     expect(out.written).toBe(false);
     expect(prisma.batteryState.upsert).not.toHaveBeenCalled();
     expect(prisma.batteryState.create).not.toHaveBeenCalled();
@@ -39,7 +39,7 @@ describe("recordReportedSoc", () => {
 
   test("never moves backwards: the write is conditioned on an older stored observation", async () => {
     const prisma = prismaWith();
-    await batteryObservation.recordReportedSoc(prisma, { robotId: "SIM-1", batteryPct: 50, agentTimestampMs: 1_700_000_000_000 });
+    await batteryObservation.recordReportedSoc(prisma, { robotId: "SIM-1", provenance: "SIMULATED", batteryPct: 50, agentTimestampMs: 1_700_000_000_000 });
     const { where } = prisma.batteryState.updateMany.mock.calls[0][0];
     expect(where.OR).toEqual([{ lastObservedAt: null }, { lastObservedAt: { lt: new Date(1_700_000_000_000) } }]);
   });
@@ -51,14 +51,14 @@ describe("recordReportedSoc", () => {
     ["no agent timestamp", { agentTimestampMs: undefined }, "NO_AGENT_TIMESTAMP"],
   ])("%s", async (_name, override, reason) => {
     const prisma = prismaWith();
-    const out = await batteryObservation.recordReportedSoc(prisma, { robotId: "SIM-1", batteryPct: 60, agentTimestampMs: 1_700_000_000_000, ...override });
+    const out = await batteryObservation.recordReportedSoc(prisma, { robotId: "SIM-1", provenance: "SIMULATED", batteryPct: 60, agentTimestampMs: 1_700_000_000_000, ...override });
     expect(out.reason).toBe(reason);
     if (reason) expect(prisma.batteryState.updateMany).not.toHaveBeenCalled();
   });
 
   test("an unknown robot writes nothing", async () => {
     const prisma = prismaWith({ agent: null });
-    const out = await batteryObservation.recordReportedSoc(prisma, { robotId: "NOBODY", batteryPct: 60, agentTimestampMs: 1 });
+    const out = await batteryObservation.recordReportedSoc(prisma, { robotId: "NOBODY", provenance: "SIMULATED", batteryPct: 60, agentTimestampMs: 1 });
     expect(out).toEqual({ written: false, reason: "NO_AGENT" });
     expect(prisma.batteryState.updateMany).not.toHaveBeenCalled();
   });

@@ -114,7 +114,67 @@ const OUTCOME = Object.freeze({
   STALE_OBSERVED_AT: "STALE_OBSERVED_AT",
   /** `createObservation` refused the record. Its problems are carried in `detail`. */
   INVALID_OBSERVATION: "INVALID_OBSERVATION",
+  /**
+   * P2B-2 — stamped further in the future than `time.max_clock_skew` allows. An agent clock
+   * running fast would otherwise make a stale fix look fresh to every freshness reader.
+   */
+  CLOCK_AHEAD: "CLOCK_AHEAD",
+  /** P2B-2 — the frame itself declared `position.fixType: "NO_FIX"`; its lat/lon are not a fix. */
+  NO_FIX_DECLARED: "NO_FIX_DECLARED",
 });
+
+/**
+ * The register parameter that bounds how far ahead of the server's clock an agent-stamped
+ * observation may be (§10.6), and its declared default — read from the register itself so
+ * no number is restated here.
+ * @structural a parameter name
+ */
+const MAX_CLOCK_SKEW_PARAMETER = "time.max_clock_skew";
+let declaredSkewDefault;
+function declaredMaxClockSkewMs() {
+  if (declaredSkewDefault === undefined) {
+    declaredSkewDefault = null;
+    try {
+      const register = require("../engine/config/register/appendixA.json");
+      const walk = (node) => {
+        if (declaredSkewDefault !== null || !node || typeof node !== "object") return;
+        if (Array.isArray(node)) return node.forEach(walk);
+        if (node.name === MAX_CLOCK_SKEW_PARAMETER && Number.isFinite(node.default)) {
+          declaredSkewDefault = node.default;
+          return;
+        }
+        Object.values(node).forEach(walk);
+      };
+      walk(register);
+    } catch {
+      declaredSkewDefault = null;
+    }
+  }
+  return declaredSkewDefault;
+}
+
+/**
+ * The skew bound in force: the pinned configuration's value, else the register's declared
+ * default. Null only if neither exists, in which case no bound can be applied and the frame
+ * is refused rather than admitted unbounded.
+ *
+ * @param {object|null} snapshot the pinned configuration, when the caller has one
+ * @returns {number|null}
+ */
+function maxClockSkewMsFrom(snapshot) {
+  if (snapshot && typeof snapshot.resolve === "function") {
+    try {
+      const value = snapshot.resolve(MAX_CLOCK_SKEW_PARAMETER, {});
+      if (Number.isFinite(value) && value > 0) return value;
+    } catch {
+      // fall through to the declared default
+    }
+  }
+  return declaredMaxClockSkewMs();
+}
+
+/** The fix types the P2A contract's optional `position` block may declare. @structural */
+const FIX_TYPES = Object.freeze(["NO_FIX", "2D", "3D", "RTK_FLOAT", "RTK_FIXED"]);
 
 /**
  * How long a resolved `robotId → { Agent.id, provenance }` binding is trusted.
@@ -328,6 +388,26 @@ async function recordPositionObservation(prisma, input) {
   }
 
   const nowMs = Date.now();
+
+  // P2B-2 — §10.6's skew bound, applied to the agent's clock. A measurement cannot be taken
+  // after it was received; one stamped beyond the bound is refused, never clamped (clamping
+  // would be the server inventing the measurement instant).
+  const skewMs = Number.isFinite(source.maxClockSkewMs) ? source.maxClockSkewMs : maxClockSkewMsFrom(null);
+  if (!Number.isFinite(skewMs)) {
+    return refuse(OUTCOME.CLOCK_AHEAD, "no time.max_clock_skew bound is available; an unbounded agent clock is not admitted");
+  }
+  if (observedAtMs > nowMs + skewMs) {
+    return refuse(OUTCOME.CLOCK_AHEAD, `observedAt ${observedAtMs} is ${observedAtMs - nowMs} ms ahead of the server (bound ${skewMs} ms)`);
+  }
+
+  // P2B-2 — the contract's optional fix-quality block. Absent, nothing changes. A declared
+  // NO_FIX means the lat/lon are not a measurement; a horizontal accuracy becomes the
+  // Observation's uncertainty radius.
+  const fix = source.fix && typeof source.fix === "object" ? source.fix : null;
+  if (fix && fix.fixType === "NO_FIX") return refuse(OUTCOME.NO_FIX_DECLARED);
+  const uncertaintyRadiusM =
+    fix && FIX_TYPES.includes(fix.fixType) && Number.isFinite(fix.hAccM) && fix.hAccM > 0 ? fix.hAccM : null;
+
   const binding = await resolveBinding(prisma, robotId, nowMs);
   if (!binding) return refuse(OUTCOME.AGENT_NOT_PROJECTED);
   if (binding.provenance !== PROVENANCE.PHYSICAL && binding.provenance !== PROVENANCE.SIMULATED) {
@@ -366,6 +446,7 @@ async function recordPositionObservation(prisma, input) {
       // `value.provenance`, not by a sixth source the specification does not define.
       source: observation.OBSERVATION_SOURCE.AGENT_REPORT,
       sequence,
+      uncertaintyRadiusM,
     });
   } catch (error) {
     return refuse(OUTCOME.INVALID_OBSERVATION, error && error.message);
@@ -384,6 +465,7 @@ async function recordPositionObservation(prisma, input) {
       // writing over a non-nullable column.
       sequence: record.sequence,
       deadReckoned: record.deadReckoned,
+      ...(record.uncertaintyRadiusM === null ? {} : { uncertaintyRadiusM: record.uncertaintyRadiusM }),
     },
   });
 
@@ -456,8 +538,29 @@ function resetPositionObservationState() {
   highWaterMarks.clear();
 }
 
+/**
+ * P2B-2 — the provenance of the evidence a robot's reports constitute, for another writer of
+ * that robot's reports (the reported-SoC writer). The same binding this module resolves for
+ * its own writes, so there is still exactly one place outside the allow-listed policy that
+ * asks the question, and it asks `simulationPolicy`.
+ *
+ * @param {object} prisma
+ * @param {string} robotId
+ * @returns {Promise<string|null>} `PHYSICAL`, `SIMULATED`, or null when undeterminable
+ */
+async function provenanceOf(prisma, robotId) {
+  const code = toStringOrNull(robotId);
+  if (!code) return null;
+  const binding = await resolveBinding(prisma, code, Date.now());
+  return binding ? binding.provenance : null;
+}
+
 module.exports = {
   POSITION_KIND,
+  FIX_TYPES,
+  MAX_CLOCK_SKEW_PARAMETER,
+  maxClockSkewMsFrom,
+  provenanceOf,
   PROVENANCE,
   OUTCOME,
   BINDING_TTL_MS,

@@ -2,11 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { Maximize2, Minimize2, StopCircle } from 'lucide-react';
 
 import MapControl from '@/features/maps/MapControl.jsx';
-import { useAppActions, useAppState } from '@/context/appContext.js';
+import { useAppActions } from '@/context/appContext.js';
 import { Button } from '@/components/ui/button.jsx';
+import { STOP_ALL_WARNING } from '@/lib/robotCommands.js';
 
 export default function MapPage() {
-  const { systemOnline } = useAppState();
   const { stopAll } = useAppActions();
 
   const [filtersHostEl, setFiltersHostEl] = useState(null);
@@ -39,9 +39,11 @@ export default function MapPage() {
         <div ref={setFiltersHostEl} className="map-control-toolbar__filters" />
 
         <div className="map-control-toolbar__actions">
-          <Button type="button" variant="destructive" size="sm" onClick={stopAll} disabled={!systemOnline}>
+          {/* One-way in V1 (§23.5): every stopped unit stays PAUSED. Said on the button and
+              again in the authorisation dialog, before anything is sent. */}
+          <Button type="button" variant="destructive" size="sm" onClick={stopAll} title={STOP_ALL_WARNING}>
             <StopCircle size={16} />
-            STOP ALL ROBOTS
+            STOP ALL ROBOTS (ONE-WAY)
           </Button>
         </div>
       </div>

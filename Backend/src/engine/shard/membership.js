@@ -459,7 +459,10 @@ async function migrate(deps, input) {
     };
 
     const envelope = {
-      agentId,
+      // The wire identity the delivery arm addresses the envelope to (`Agent.agentId`, as
+      // `leaderWorkers` resolves it), not the row id — which is what the agent verifies the
+      // signature against (P2B-2). `agentId` stays the row id for the Outbox FK below.
+      agentId: agent.agentId || agentId,
       command: MIGRATE_COMMAND,
       commandClass: fencing.commandClassOf(MIGRATE_COMMAND),
       fenceScope: fencing.fenceScopeOf(MIGRATE_COMMAND),

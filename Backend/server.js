@@ -22,6 +22,7 @@ const { createVirtualRobotSimulator } = require("./src/simulation/SimulationEngi
 const simulationPolicy = require("./src/simulation/simulationPolicy");
 const { rehydrateSimulatedRobots } = require("./src/simulation/rehydrate");
 const { dispatchTaskAssign, outboxDeliveryArm: dispatchOutboxCommand } = require("./src/services/commandDispatcher.service");
+const agentProbe = require("./src/services/agentProbe.service");
 const { safeJsonParse } = require("./src/utils/json");
 const { ensureAdminUser } = require("./src/services/adminBootstrap.service");
 const configService = require("./src/engine/config/service");
@@ -75,8 +76,12 @@ const fairnessWorker = require("./src/workers/fairness.worker");
 const indexMaintainer = require("./src/workers/indexMaintainer.worker");
 const chargingStatus = require("./src/services/chargingStatus.service");
 const v1DemonstrationComposition = require("./src/services/v1DemonstrationComposition");
+// P1 — the fleet provider boundary: one seam set for simulated and physical agents, selected
+// by `FLEET_PROVIDER_DISPATCH=true` (default off: the composition above, exactly as before).
+const fleetProviders = require("./src/services/fleetProviders");
 const cutoverStore = require("./src/engine/cutover/store");
 const cutoverEnabled = require("./src/engine/cutover/enabled");
+const privacyKeys = require("./src/config/privacyKeys");
 // PHASE 15 remediation — the two halves of the cutover switch that had no production
 // producer: the pull that lets a published binding reach a running process (P15-R2), and
 // the publish that makes §22.4 item 4's automatic rollback take effect (P15-R1).
@@ -125,7 +130,10 @@ function startScheduledWorkers(context) {
   const budget = sampling.createBudget({
     perShardBudget: values && values.get ? values.get("observability.tier_b_write_budget") : undefined,
   });
-  const aggregator = rejectionTelemetry.createAggregator();
+  // §7.7's aggregator: the one the coordinator's feasibility gate folds into (passed in by
+  // the engine block, which also hands it to `leaderWorkers.create`), so the flusher below
+  // drains what the rounds recorded. A fresh one here would be drained forever empty.
+  const aggregator = context.rejectionAggregator || rejectionTelemetry.createAggregator();
 
   const onError = (workerId) => (error) =>
     log.error("Engine worker tick failed", { worker: workerId, message: error && error.message });
@@ -199,7 +207,13 @@ function startScheduledWorkers(context) {
 
   started(
     "rejection_aggregation",
-    rejectionAggregationWorker.start({ prisma, aggregator, onError: onError("rejection_aggregation") }, {}),
+    // The shard this process's aggregator belongs to. Without it the near-miss sketch half of
+    // every flush threw (`NearMissSketch` is keyed on shardId, and a null in its compound
+    // unique is refused by the client), so each flush after the first rejection failed.
+    rejectionAggregationWorker.start(
+      { prisma, aggregator, onError: onError("rejection_aggregation") },
+      { shardId: process.env.SHARD_ID || "default" },
+    ),
   );
 
   // ── REMEDIAL PHASE T1-04 — §17.5's agent-starvation detector ───────────────
@@ -376,6 +390,20 @@ function startScheduledWorkers(context) {
 }
 
 async function start() {
+  // §23.7's two secrets, checked before anything connects — when this process runs the
+  // engine. Every engine-path submission seals identities *after* writing its Task, Leg
+  // and Stops, so a secret the sealer refuses would otherwise surface as a 500 that leaves
+  // those rows behind. Same validators the write path uses; no threshold of its own.
+  if (cutoverEnabled.processEnabled()) {
+    try {
+      privacyKeys.assertValid();
+    } catch (error) {
+      // Named here, before the generic boot handler below repeats the cause.
+      logger.error(`Refusing to start the engine: ${error.message}`);
+      throw error;
+    }
+  }
+
   const server = http.createServer(app);
   const io = new Server(server, {
     cors: {
@@ -498,6 +526,15 @@ async function start() {
   // possible.
   initSocketServer(io, { prisma, kv, logger, appLocals: app.locals });
 
+  // P2B-2 — the server-initiated PROBE round trip (§7.5 F14's proof). Off unless
+  // AGENT_PROBE_INTERVAL_MS is set: the physical Pi does not implement PROBE yet, and an
+  // unanswered probe proves nothing and changes nothing (`services/agentProbe.service.js`).
+  const probeIntervalMs = agentProbe.intervalFromEnv(process.env);
+  if (probeIntervalMs !== null) {
+    agentProbe.startProbeEmitter({ io, intervalMs: probeIntervalMs, logger });
+    logger.info(`[probe] agent PROBE emitter active every ${probeIntervalMs} ms`);
+  }
+
   // Ensure the admin user exists (idempotent — safe to run on every start).
   try {
     await ensureAdminUser(prisma, { logger });
@@ -525,7 +562,7 @@ async function start() {
       process.exit(1);
       return;
     }
-    logger.error("Server error", { err });
+    logger.error("Server error", describeError(err));
     process.exit(1);
   });
 
@@ -562,7 +599,17 @@ async function start() {
     snapshot: app.locals.config,
     chargingStatusFor: chargingStatus.createChargingStatusReader({
       prisma,
-      inScope: (subject) => (virtualSimulator ? virtualSimulator.managesAgent(subject) === true : false),
+      // With the fleet provider boundary selected, each provider answers for the agents whose
+      // charging state it owns — the simulator's roster, and nobody yet for a physical agent.
+      // The same answer as the line below, reached through the boundary.
+      inScope: fleetProviders.isDispatchEnabled(process.env)
+        ? fleetProviders.createChargingScope({
+            simulation: {
+              chargingInScope: (subject) => (virtualSimulator ? virtualSimulator.managesAgent(subject) === true : false),
+            },
+            physical: fleetProviders.physicalProvider.createPhysicalProvider({ prisma, kv }),
+          })
+        : (subject) => (virtualSimulator ? virtualSimulator.managesAgent(subject) === true : false),
       onError: (error, agentRowId) =>
         logger.warn("Charging status could not be read", { agentRowId, message: error && error.message }),
     }),
@@ -619,6 +666,10 @@ async function start() {
   // the leadership block closes, so a region resolved inside it was out of scope by the
   // time the fairness worker needed it. Declared here, assigned there, read by both.
   let regionId = null;
+  // §7.7 — one rejection aggregator for this process: folded into by the coordinator's
+  // feasibility gate (LEADER_ONLY), drained to `RejectionAggregate` by the flusher
+  // (SCHEDULED). The two are composed in different places, so it is created once here.
+  const rejectionAggregator = rejectionTelemetry.createAggregator();
   if (engineEnabled) {
     try {
       const store = election.postgresLeadershipStore(prisma, {
@@ -718,6 +769,9 @@ async function start() {
 
       leaderLifecycle = leaderWorkers.create({
         prisma,
+        // §7.7 — the process's rejection aggregator. The coordinator's gate folds into it;
+        // the rejection-aggregation flusher (`startScheduledWorkers`) drains the same one.
+        rejectionAggregator,
         kv,
         io,
         // PHASE 15 remediation (P15-R2) — an accessor, not the boot snapshot's map.
@@ -786,7 +840,14 @@ async function start() {
         // (`services/v1DemonstrationComposition`). Absent, this spreads nothing and the
         // coordinator refuses by name exactly as before. The same composition the proof run
         // (`tools/demo/runV1Assignment.js`) uses.
-        ...v1DemonstrationComposition.composeIfEnabled({ prisma, kv, snapshot: () => app.locals.config, env: process.env }),
+        //
+        // P1 — `FLEET_PROVIDER_DISPATCH=true` spreads the same seams through the fleet provider
+        // boundary (`services/fleetProviders`), under the same gate: simulated agents are
+        // answered by the composition above, physical agents by real sources only. One
+        // coordinator, one round, one commitment path either way.
+        ...(fleetProviders.isDispatchEnabled(process.env)
+          ? fleetProviders.composeIfEnabled({ prisma, kv, snapshot: () => app.locals.config, env: process.env })
+          : v1DemonstrationComposition.composeIfEnabled({ prisma, kv, snapshot: () => app.locals.config, env: process.env })),
       });
 
       shardCoordinator = shardSupervisor.start(
@@ -1042,6 +1103,7 @@ async function start() {
     // nothing for an invariant checker to check or a reservoir to drain.
     engineWorkers = startScheduledWorkers({
       prisma,
+      rejectionAggregator,
       kv,
       config: app.locals.config,
       // PHASE 15 remediation (P15-R2) — the current version, for the readers that must
@@ -1304,6 +1366,23 @@ async function start() {
 }
 
 start().catch((err) => {
-  logger.error("Failed to start server", { err });
+  // P1.4 — the logger renders an Error's own enumerable fields only, so `{ err }` printed
+  // `err={}` and a failed boot said nothing about why. Name the fields explicitly.
+  logger.error("Failed to start server", describeError(err));
   process.exit(1);
 });
+
+/**
+ * An Error as loggable fields — message, code and stack — for the boot and listen
+ * handlers, whose `{ err }` the logger rendered as `{}`.
+ *
+ * @param {unknown} err
+ * @returns {{ message: string|null, code: string|null, stack: string|null }}
+ */
+function describeError(err) {
+  return {
+    message: err && err.message ? String(err.message) : String(err),
+    code: err && err.code ? String(err.code) : null,
+    stack: err && err.stack ? String(err.stack) : null,
+  };
+}

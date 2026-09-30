@@ -38,7 +38,11 @@
  *
  * Usage:
  *   node tools/demo/seedV1Demonstration.js --database-url postgresql://…@127.0.0.1:55432/db
- *                                          [--shard-id v1demo-shard] [--json]
+ *                                          [--shard-id v1demo-shard] [--fleet single|baseline] [--json]
+ *
+ * `--fleet baseline` commissions the six-unit V1 acceptance fleet (`BASELINE_FLEET`); the
+ * default, `single`, is the one unit this tool has always seeded. Then start the server
+ * with `node tools/demo/startV1Server.js --database-url <the same url>`.
  */
 
 const path = require("path");
@@ -97,34 +101,11 @@ function simulatedSpecification() {
   };
 }
 
-/** Hosts a demonstration world may be seeded onto. */
-const LOCAL_HOSTS = Object.freeze(["localhost", "127.0.0.1", "::1"]);
-
 /**
- * Refuse any database that is not a disposable local cluster.
- *
- * @param {string} url
- * @returns {string}
+ * Refuse any database that is not a disposable local cluster — the shared check in
+ * `tools/demo/disposableDatabase.js` (also used by the V1 server launcher).
  */
-function assertDisposableLocal(url) {
-  if (!url) throw new Error("no database URL: pass --database-url or set DATABASE_URL");
-  let target;
-  try {
-    target = new URL(url);
-  } catch {
-    throw new Error("the database URL could not be parsed; refusing to connect");
-  }
-  if (!LOCAL_HOSTS.includes(target.hostname)) {
-    throw new Error(
-      `refusing to seed a demonstration world onto host "${target.hostname}". Only ` +
-        `${LOCAL_HOSTS.join(", ")} are permitted — never Neon, never a remote or shared cluster.`,
-    );
-  }
-  if (target.port === "" || target.port === "5432") {
-    throw new Error(`port "${target.port || "(default)"}" is the developer's own cluster; use a throwaway one`);
-  }
-  return url;
-}
+const { assertDisposableLocal } = require(path.join(BACKEND_ROOT, "tools/demo/disposableDatabase"));
 
 /**
  * The adopted boundary geometry and the campus reference points.
@@ -311,17 +292,31 @@ async function seedWorld(prisma, options) {
 }
 
 /**
- * Publish and pin the demonstration configuration — the thirteen, the labelled V9/S2
- * accommodation, the spatial index, the delivery domain, and the region's cutover binding.
+ * Publish and pin the demonstration configuration — the thirteen, the V1 execution
+ * parameters, the labelled V9/S2 accommodation, the spatial index, the delivery domain,
+ * and the region's cutover binding.
  *
- * The thirteen and the accommodation come from `tools/config/publishV1Demonstration.js`
+ * The thirteen and the accommodation come from `tools/config/publishV1Demonstration.js`,
+ * and the execution parameters from `tools/config/v1DemonstrationConfig.executionBindings()`,
  * rather than being restated, so there is one definition of what a demonstration binds.
+ * `tools/demo/runV1Assignment.js` publishes through this same function, so the proof run
+ * and a seeded `server.js` world run on the same configuration.
+ *
+ * ── Why the execution parameters are not optional ──────────────────────────
+ * Without them `candidate.max_radius_by_sla_class` is unbound (register default null) and
+ * `solve.time_budget` is its 250 ms default, so candidate expansion is bounded only by
+ * that clock and finds no agent: measured on a real `server.js` against this world, every
+ * round recorded `agentCount 0, BUDGET_LIMITED` with six healthy robots within 300 m, and
+ * nothing was logged (engine enablement audit, 2026-09-27).
  *
  * @param {object} prisma
  * @param {object} world
+ * @param {{ publishedBy?: string, note?: string }} [options] who publishes, and the
+ *   caller's own line for the version note
  * @returns {Promise<object>}
  */
-async function publishConfiguration(prisma, world) {
+async function publishConfiguration(prisma, world, options = {}) {
+  const publishedBy = options.publishedBy || "tools/demo/seedV1Demonstration.js";
   // Reuse the existing request builder — bindings, note, approvals, and the
   // `assertNoSafetyParameter` refusal all come from it.
   const base = publishTool.publishRequest({ accommodate: true });
@@ -341,9 +336,12 @@ async function publishConfiguration(prisma, world) {
 
   const published = await configService.publish(prisma, {
     ...base,
-    publishedBy: "tools/demo/seedV1Demonstration.js",
+    publishedBy,
     bindings: [
       ...base.bindings,
+      // The V1 execution parameters (search radius, solve budget, horizons, SLA window,
+      // intervention bound) — see the header for what happens without them.
+      ...demonstration.executionBindings(),
       // §S-5's cutover act, taken here for a DISPOSABLE cluster only, and recorded in the
       // note. This is not a production cutover decision.
       { level: "region", key: world.region.id, name: "cutover.engine_enabled", value: true },
@@ -352,13 +350,14 @@ async function publishConfiguration(prisma, world) {
     deliveryDomain: world.declaration,
     note:
       base.note +
-      " | V1 DEMONSTRATION WORLD (tools/demo/seedV1Demonstration.js): cutover.engine_enabled is bound for " +
-      `region ${world.region.id} on a DISPOSABLE local cluster so the request path can be entered; the ` +
-      "published spatial index is D6's boundary-overlap cover of the adopted RNSIT boundary and the delivery " +
-      "domain is that same adopted declaration. NOT PRODUCTION.",
+      ` | V1 DEMONSTRATION WORLD (${publishedBy}): the V1 execution parameters are bound, and ` +
+      `cutover.engine_enabled is bound for region ${world.region.id} on a DISPOSABLE local cluster so the ` +
+      "request path can be entered; the published spatial index is D6's boundary-overlap cover of the adopted " +
+      "RNSIT boundary and the delivery domain is that same adopted declaration. NOT PRODUCTION." +
+      (options.note ? ` | ${options.note}` : ""),
   });
 
-  await configService.pinVersion(prisma, null, published.version, "tools/demo/seedV1Demonstration.js");
+  await configService.pinVersion(prisma, null, published.version, publishedBy);
   const pinned = await configService.loadPinnedSnapshot({ prisma });
   if (!pinned || pinned.version !== published.version) {
     throw new Error(`published version ${published.version} but loadPinnedSnapshot returned ${pinned && pinned.version}`);
@@ -366,7 +365,80 @@ async function publishConfiguration(prisma, world) {
   return { published, pinned, spatial };
 }
 
-module.exports = { assertDisposableLocal, loadGeometry, simulatedSpecification, seedWorld, publishConfiguration };
+/**
+ * The demonstration fleets, by name. Each entry is a simulated unit's code, the named
+ * RNSIT point it starts at, and its starting charge — fixtures, not policy: which unit is
+ * chosen for a task is the engine's decision, never this list's.
+ *
+ * `baseline` is the first proven run's fleet (`runV1Assignment.js --scenario baseline`,
+ * and the V1 acceptance test): four healthy units and two the engine must refuse by its
+ * own checks. `expect` records that for the runner's expectations; the seed ignores it.
+ */
+const BASELINE_FLEET = Object.freeze([
+  { code: "V1DEMO-01", point: "rnsit-innovation-center", batteryPct: 90 },
+  { code: "V1DEMO-02", point: "rnsit-pre-university-college", batteryPct: 85 },
+  { code: "V1DEMO-03", point: "rnsit-canara-bank", batteryPct: 80 },
+  { code: "V1DEMO-04", point: "rns-evening-college", batteryPct: 75 },
+  // In a boundary cell whose centre lies outside the adopted RNSIT boundary: the router
+  // refuses to route from it, so this robot is a genuine rejection.
+  { code: "V1DEMO-05", point: "rnsit-main-gate", batteryPct: 85, expect: "NEVER_ASSIGNED" },
+  // Low charge: the energy feasibility check has to do the rejecting.
+  { code: "V1DEMO-06", point: "rnsit-cyber-security-department", batteryPct: 12, expect: "NEVER_ASSIGNED" },
+].map((entry) => Object.freeze(entry)));
+
+const FLEETS = Object.freeze({
+  /** The one unit `seedWorld` commissions. */
+  single: Object.freeze([BASELINE_FLEET[0]]),
+  baseline: BASELINE_FLEET,
+});
+
+/**
+ * Commission every unit of `fleet` through the real commissioning service, at fixed codes.
+ * The unit `seedWorld` already commissioned is skipped; if the fleet gives it a different
+ * starting charge, that charge is applied to its battery state and its row.
+ *
+ * @param {object} prisma
+ * @param {object} world `seedWorld`'s result
+ * @param {Array<{ code: string, point: string, batteryPct: number }>} fleet
+ * @param {string} ownerId the simulated units' owner (`User.id`)
+ */
+async function commissionFleet(prisma, world, fleet, ownerId) {
+  for (const entry of fleet) {
+    if (entry.code === world.robot.robotId) continue; // seeded by seedWorld
+    const point = world.points[entry.point];
+    if (!point) throw new Error(`fleet entry ${entry.code} names unknown point "${entry.point}"`);
+    // eslint-disable-next-line no-await-in-loop
+    await robotService.createRobotWithProjection(
+      prisma,
+      {
+        name: `V1 demo @ ${entry.point}`,
+        locationId: world.location.id,
+        lat: point.lat,
+        lon: point.lon,
+        chassisType: "ROVER",
+        specification: { ...simulatedSpecification(), initialBatteryPct: entry.batteryPct },
+      },
+      { robotCode: entry.code, simulated: true, simulationOwnerId: ownerId },
+    );
+  }
+  // The seeded robot's pack, when the fleet states a different starting charge.
+  const seeded = fleet.find((entry) => entry.code === world.robot.robotId);
+  if (seeded && seeded.batteryPct !== 90) {
+    await prisma.batteryState.updateMany({ where: { agentId: world.agent.id }, data: { lastObservedSoc: seeded.batteryPct / 100 } });
+    await prisma.robot.update({ where: { robotId: seeded.code }, data: { battery: seeded.batteryPct } });
+  }
+}
+
+module.exports = {
+  assertDisposableLocal,
+  loadGeometry,
+  simulatedSpecification,
+  seedWorld,
+  publishConfiguration,
+  BASELINE_FLEET,
+  FLEETS,
+  commissionFleet,
+};
 
 if (require.main === module) {
   const argv = process.argv.slice(2);
@@ -380,6 +452,9 @@ if (require.main === module) {
     const url = assertDisposableLocal(flag("--database-url", process.env.DATABASE_URL));
     process.env.DATABASE_URL = url;
     const shardId = flag("--shard-id", process.env.SHARD_ID || "v1demo-shard");
+    const fleetName = flag("--fleet", "single");
+    const fleet = Object.prototype.hasOwnProperty.call(FLEETS, fleetName) ? FLEETS[fleetName] : null;
+    if (!fleet) throw new Error(`unknown --fleet "${fleetName}"; one of: ${Object.keys(FLEETS).join(", ")}`);
 
     const { PrismaClient } = require(path.join(BACKEND_ROOT, "node_modules/@prisma/client"));
     const prisma = new PrismaClient({ datasources: { db: { url } } });
@@ -387,6 +462,13 @@ if (require.main === module) {
     try {
       const world = await seedWorld(prisma, { shardId });
       const configuration = await publishConfiguration(prisma, world);
+      const owner = await prisma.user.findFirst({ where: { email: "v1-demonstration-seed@localhost" } });
+      await commissionFleet(prisma, world, fleet, owner.id);
+      const robots = await prisma.robot.findMany({
+        where: { robotId: { in: fleet.map((entry) => entry.code) } },
+        select: { robotId: true, simulated: true, battery: true },
+        orderBy: { robotId: "asc" },
+      });
 
       const report = {
         regionId: world.region.regionId,
@@ -409,6 +491,8 @@ if (require.main === module) {
           betaDist: world.provisioned.energyModelParams.betaDist,
           residualCv: world.provisioned.energyModelParams.residualCv,
         },
+        fleet: fleetName,
+        robots,
       };
 
       if (asJson) {
@@ -423,7 +507,8 @@ if (require.main === module) {
             `  agent         ${report.agentId}  class ${report.agentClassId}\n` +
             `  cell          ${report.fineCellId}\n` +
             `  depot charger ${report.depotChargerId}\n` +
-            `  config        version ${report.configVersion} (13 PROVISIONAL + labelled V9/S2 + spatial + domain + cutover)\n` +
+            `  config        version ${report.configVersion} (13 PROVISIONAL + execution params + labelled V9/S2 + spatial + domain + cutover)\n` +
+            `  fleet         ${report.fleet}: ${report.robots.map((row) => `${row.robotId}(${row.battery}%)`).join(" ")}\n` +
             `  commissioning kappa=${report.commissioning.kappa} soc=${report.commissioning.soc} ` +
             `soh=${String(report.commissioning.soh)} betaDist=${String(report.commissioning.betaDist)} ` +
             `residualCv=${String(report.commissioning.residualCv)}\n` +

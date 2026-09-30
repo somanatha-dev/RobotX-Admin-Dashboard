@@ -310,3 +310,144 @@ describe("Test G — the simulator remains a protocol facility, not an assignmen
     expect(offenders).toEqual([]);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P1 — the fleet provider boundary: provenance and the provider choice stay below it
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * P1 (`src/services/fleetProviders/`) makes physical-vs-simulated a *data-source* distinction:
+ * each agent's facts come from its provider, labelled with a `provenance`, and the engine
+ * evaluates every agent through the same path. The label and the provider choice are
+ * allowed to exist only below the seams. These tests hold the engine side of that.
+ *
+ * Three detectors, each prose-blind in the same way as `discriminatorReferences`:
+ *
+ *   · `provenanceReads` — a property read of `provenance` (`x.provenance`,
+ *     `x["provenance"]`, or a destructure of it). Writing the key in an object literal is not
+ *     a read and is not matched.
+ *   · `providerReferences` — any identifier of the provider boundary or of the modules that
+ *     decide kind (`fleetProviders`, `simulationPolicy`, `isSimulatedSnapshot`, `ownsRobot`, …).
+ *   · `providerLabelLiterals` — a provenance label as a string literal, which is what a
+ *     comparison against a provider's label would have to contain.
+ */
+function codeLines(files, pattern) {
+  const hits = [];
+  for (const file of files) {
+    const lines = file.source.split(/\r?\n/);
+    lines.forEach((line, index) => {
+      const code = line.replace(/\/\/.*$/, "").replace(/^\s*\*.*$/, "").replace(/^\s*\/\*\*.*$/, "");
+      if (pattern.test(code)) hits.push(`${file.rel}:${index + 1}: ${line.trim()}`);
+    });
+  }
+  return hits;
+}
+
+const PROVENANCE_READ = /\.provenance\b|\[\s*["']provenance["']\s*\]|\{[^}]*\bprovenance\b[^}]*\}\s*=/;
+const PROVIDER_IDENTIFIER =
+  /\b(fleetProviders|simulationProvider|physicalProvider|isSimulatedRobot|isSimulatedSnapshot|simulationPolicy|simulatedAgentState|isPhysicalEvidence|isSimulatedEvidence|ownsSnapshot|ownsRobot|ownsProfileKey|isFleetComposition)\b/;
+const PROVIDER_LABEL = /["'](DEVELOPMENT_SIMULATION|PHYSICAL_DERIVED_ONLY|SIMULATED|PHYSICAL)["']/;
+
+const provenanceReads = (files) => codeLines(files, PROVENANCE_READ);
+const providerReferences = (files) => codeLines(files, PROVIDER_IDENTIFIER);
+const providerLabelLiterals = (files) => codeLines(files, PROVIDER_LABEL);
+
+/** Everything the engine decides with: the engine tree and the workers that drive a round. */
+const decisionFiles = () => [...filesUnder(path.join(SRC, "engine")), ...filesUnder(path.join(SRC, "workers"))];
+
+/**
+ * The only `provenance` reads under `src/engine` and `src/workers`, each a reader that does
+ * not decide anything about an agent. Pinned by exact file and line text, so a new read — or
+ * a change to one of these — fails the test rather than passing under a broad exemption.
+ *
+ *   · `engine/routing/productionRouter.js` is a **route producer**. It reads the provenance
+ *     of its own inputs (terrain, stop-start, the adapter's answer) to refuse a simulated
+ *     value in production mode. That is input validation of a data source — the physical
+ *     routing provider P5 will compose — not a judgement about which agent to choose.
+ *   · `engine/cost/cRisk.js` copies the failure-probability input's provenance label into the
+ *     cost **breakdown** (the explanation), beside the number. It does not enter `milliCU`.
+ */
+const ALLOWED_PROVENANCE_READS = new Set([
+  "engine/cost/cRisk.js: provenance: (source.failure && source.failure.provenance) || null,",
+  "engine/routing/productionRouter.js: const provenance = answer.provenance;",
+  'engine/routing/productionRouter.js: assertAdmissible("climbM / descentM", terrain.provenance);',
+  'engine/routing/productionRouter.js: assertAdmissible("stopStartCycles", stopStart.provenance);',
+  "engine/routing/productionRouter.js: climbM: terrain.provenance,",
+  "engine/routing/productionRouter.js: descentM: terrain.provenance,",
+  "engine/routing/productionRouter.js: stopStartCycles: stopStart.provenance,",
+  "engine/routing/productionRouter.js: climbM: EVIDENCE_AXIS[terrain.provenance],",
+  "engine/routing/productionRouter.js: stopStartCycles: EVIDENCE_AXIS[stopStart.provenance],",
+]);
+
+/** A hit as `file: text`, without its line number, for comparison against the pinned set. */
+const unnumbered = (hit) => hit.replace(/^([^:]+):\d+: /, "$1: ");
+
+describe("P1 — provenance and the provider choice never reach the assignment engine", () => {
+  test("no decision module reads a provenance label, beyond the pinned non-deciding readers", () => {
+    const unexpected = provenanceReads(decisionFiles())
+      .map(unnumbered)
+      .filter((hit) => !ALLOWED_PROVENANCE_READS.has(hit));
+    expect(unexpected).toEqual([]);
+  });
+
+  test("the frozen decision areas read no provenance label at all", () => {
+    for (const area of [
+      "engine/feasibility",
+      "engine/candidates",
+      "engine/solve",
+      "engine/commitment",
+      "engine/plan",
+      "engine/energy",
+      "engine/dispatch",
+      "engine/cutover",
+      "workers",
+    ]) {
+      expect({ area, hits: provenanceReads(filesUnder(path.join(SRC, area))) }).toEqual({ area, hits: [] });
+    }
+  });
+
+  test("no decision module references the provider boundary or a kind-deciding module", () => {
+    expect(providerReferences(decisionFiles())).toEqual([]);
+  });
+
+  test("no decision module compares against a provider label — except the route producer's own vocabulary", () => {
+    const unexpected = providerLabelLiterals(decisionFiles()).filter(
+      (hit) => !hit.startsWith("engine/routing/productionRouter.js:"),
+    );
+    expect(unexpected).toEqual([]);
+  });
+
+  test("the provider choice is made in the provider layer, which is where the detectors do find it", () => {
+    // Non-vacuity, from the other side: the same detectors see the boundary where it lives.
+    const providerFiles = filesUnder(path.join(SRC, "services", "fleetProviders"));
+    expect(providerFiles.map((file) => file.rel).sort()).toEqual([
+      "services/fleetProviders/index.js",
+      "services/fleetProviders/physicalProvider.js",
+      "services/fleetProviders/simulationProvider.js",
+    ]);
+    expect(providerReferences(providerFiles).length).toBeGreaterThan(0);
+    expect(provenanceReads(providerFiles).length).toBeGreaterThan(0);
+  });
+
+  test("the detectors catch every shape a violation would take, and ignore prose", () => {
+    const planted = [
+      { rel: "engine/solve/planted.js", source: "if (agentSnapshot.provenance === x) gamma *= 2n;" },
+      { rel: "engine/cost/planted.js", source: 'const label = agent["provenance"];' },
+      { rel: "engine/feasibility/planted.js", source: "const { provenance } = agentSnapshot;" },
+    ];
+    for (const violation of planted) expect(provenanceReads([violation])).toHaveLength(1);
+
+    expect(providerReferences([{ rel: "workers/planted.js", source: 'const fleetProviders = require("../services/fleetProviders");' }])).toHaveLength(1);
+    expect(providerReferences([{ rel: "engine/solve/planted.js", source: "if (simulationPolicy.isSimulatedRobot(robot)) return;" }])).toHaveLength(1);
+    expect(providerLabelLiterals([{ rel: "engine/cost/planted.js", source: 'if (label === "PHYSICAL_DERIVED_ONLY") penalty += 1;' }])).toHaveLength(1);
+
+    // An object-literal key is a write, not a read; and prose is never matched.
+    expect(
+      provenanceReads([
+        { rel: "engine/cost/literal.js", source: "return { provenance: PROVENANCE, milliCU };" },
+        { rel: "engine/cost/prose.js", source: "// the agent's provenance is not read here" },
+        { rel: "engine/cost/prose2.js", source: " * snapshot.provenance never reaches this module" },
+      ]),
+    ).toEqual([]);
+  });
+});

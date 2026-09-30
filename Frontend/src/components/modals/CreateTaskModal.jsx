@@ -13,8 +13,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select.jsx';
-import { LocationCombobox } from '@/components/system/LocationCombobox.jsx';
+import { campusTaskLocations } from '@/features/tasks/campusLocations.js';
 import { CHASSIS_OPTIONS } from '@/lib/robotSpecification.js';
+import { CAMPUS_REGISTRY } from '@/features/maps/campus/campusRegistry.js';
 
 const EMPTY_LOC = { text: '', lat: null, lon: null };
 
@@ -35,9 +36,32 @@ export default function CreateTaskModal({ onClose, onCreate }) {
   // remove.
   const [requestedChassisType, setRequestedChassisType] = useState(CHASSIS_OPTIONS[0].value);
 
+  // The campus the task is for. Required and not pre-selected: it decides the operating
+  // region the task is submitted to (`lib/taskRequest.js`), and the backend has no
+  // default region — so the operator names it.
+  const [campusId, setCampusId] = useState('');
+
+  // Pickup and drop come from the selected campus's own locations, inside its boundary
+  // (see features/tasks/campusLocations.js) — never from a citywide search.
+  const { locations: campusLocations } = campusId ? campusTaskLocations(campusId) : { locations: [] };
+  const locationById = (id) => campusLocations.find((l) => l.id === id) || null;
+  const chooseLocation = (setter) => (id) => {
+    setError('');
+    const loc = locationById(id);
+    setter(loc ? { id: loc.id, text: loc.name, lat: loc.lat, lon: loc.lon } : EMPTY_LOC);
+  };
+  const chooseCampus = (value) => {
+    setError('');
+    setCampusId(value);
+    // A location belongs to one campus; changing campus clears both ends.
+    setPickup(EMPTY_LOC);
+    setDrop(EMPTY_LOC);
+  };
+
   const [error, setError]   = useState('');
 
   const canCreate =
+    Boolean(campusId) &&
     pickup.text.trim().length > 0 && pickup.lat !== null &&
     drop.text.trim().length > 0   && drop.lat !== null &&
     String(massKg).trim().length > 0 &&
@@ -46,8 +70,14 @@ export default function CreateTaskModal({ onClose, onCreate }) {
 
   const handleCreate = () => {
     setError('');
-    if (!pickup.lat || !pickup.lon) { setError('Select a pickup location from the suggestions.'); return; }
-    if (!drop.lat   || !drop.lon)   { setError('Select a drop location from the suggestions.');   return; }
+    if (!campusId) { setError('Select the campus this task is for.'); return; }
+    if (!pickup.lat || !pickup.lon) { setError('Select a pickup location on the campus.'); return; }
+    if (!drop.lat   || !drop.lon)   { setError('Select a drop location on the campus.');   return; }
+    // Two names can share one point (they do on RNSIT); a delivery needs two places.
+    if (pickup.lat === drop.lat && pickup.lon === drop.lon) {
+      setError('Pickup and drop are the same place. Choose two different locations.');
+      return;
+    }
 
     const mass = Number(massKg);
     const tolerance = Number(massToleranceKg);
@@ -74,6 +104,7 @@ export default function CreateTaskModal({ onClose, onCreate }) {
     }
 
     onCreate({
+      campusId,
       pickup:    pickup.text,
       pickupLat: pickup.lat,
       pickupLon: pickup.lon,
@@ -127,55 +158,69 @@ export default function CreateTaskModal({ onClose, onCreate }) {
             </div>
           ) : null}
 
-          {/* Pickup */}
+          {/* Campus — first, because it decides the operating region the task is submitted
+              to and which locations may be chosen below. */}
           <div className="space-y-1.5">
-            <Label className="flex items-center gap-1.5 text-sm">
-              <MapPin className="w-3.5 h-3.5 text-emerald-600" />
-              Pickup
-            </Label>
-            <div className="relative">
-              <LocationCombobox
-                inputValue={pickup.text}
-                onInputValueChange={(v) => { setError(''); setPickup({ text: v, lat: null, lon: null }); }}
-                onChange={(loc) => { if (!loc) return; setError(''); setPickup({ text: loc.place_name, lat: loc.lat, lon: loc.lon }); }}
-                placeholder="e.g. Gate 1, RNSIT"
-                direction="down"
-                country="IN"
-                debounceMs={300}
-                limit={6}
-              />
-            </div>
-            {pickup.lat !== null && (
-              <div className="text-[10px] text-emerald-600 font-mono pl-1">
-                ✓ {pickup.lat.toFixed(5)}, {pickup.lon.toFixed(5)}
-              </div>
-            )}
+            <Label className="text-sm">Campus</Label>
+            <Select value={campusId} onValueChange={chooseCampus}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select a campus" />
+              </SelectTrigger>
+              <SelectContent>
+                {CAMPUS_REGISTRY.map((campus) => (
+                  <SelectItem key={campus.id} value={campus.id} disabled={!campus.regionId}>
+                    {campus.regionId ? campus.name : `${campus.name} (no operating region)`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
-          {/* Drop — dropdown opens downward; modal is short enough there's room below */}
-          <div className="space-y-1.5">
-            <Label className="flex items-center gap-1.5 text-sm">
-              <MapPin className="w-3.5 h-3.5 text-rose-500" />
-              Drop
-            </Label>
-            <div className="relative">
-              <LocationCombobox
-                inputValue={drop.text}
-                onInputValueChange={(v) => { setError(''); setDrop({ text: v, lat: null, lon: null }); }}
-                onChange={(loc) => { if (!loc) return; setError(''); setDrop({ text: loc.place_name, lat: loc.lat, lon: loc.lon }); }}
-                placeholder="e.g. Block C, RNSIT"
-                direction="down"
-                country="IN"
-                debounceMs={300}
-                limit={6}
-              />
+          {[
+            { key: 'pickup', label: 'Pickup', icon: 'text-emerald-600', value: pickup, set: setPickup },
+            { key: 'drop', label: 'Drop', icon: 'text-rose-500', value: drop, set: setDrop },
+          ].map((end) => (
+            <div key={end.key} className="space-y-1.5" data-location-field={end.key}>
+              <Label className="flex items-center gap-1.5 text-sm">
+                <MapPin className={`w-3.5 h-3.5 ${end.icon}`} />
+                {end.label}
+              </Label>
+              <Select
+                value={end.value.id || ''}
+                onValueChange={chooseLocation(end.set)}
+                disabled={!campusId || campusLocations.length === 0}
+              >
+                <SelectTrigger>
+                  <SelectValue
+                    placeholder={
+                      !campusId
+                        ? 'Select a campus first'
+                        : campusLocations.length === 0
+                          ? 'No campus locations available'
+                          : `Select a ${end.label.toLowerCase()} location`
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {campusLocations.map((loc) => (
+                    <SelectItem key={loc.id} value={loc.id}>
+                      {loc.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {end.value.lat !== null && (
+                <div className={`text-[10px] font-mono pl-1 ${end.icon}`}>
+                  ✓ {end.value.lat.toFixed(5)}, {end.value.lon.toFixed(5)}
+                </div>
+              )}
             </div>
-            {drop.lat !== null && (
-              <div className="text-[10px] text-rose-500 font-mono pl-1">
-                ✓ {drop.lat.toFixed(5)}, {drop.lon.toFixed(5)}
-              </div>
-            )}
-          </div>
+          ))}
+          {campusId && campusLocations.length > 0 ? (
+            <div className="text-[10px] text-muted-foreground pl-1 -mt-2">
+              Locations inside the campus boundary only.
+            </div>
+          ) : null}
 
           {/* Payload — §15.1's declaration: mass with its tolerance */}
           <div className="space-y-1.5">

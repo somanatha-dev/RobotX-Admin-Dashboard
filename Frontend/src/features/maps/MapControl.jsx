@@ -38,6 +38,7 @@ import {
   SEARCH_RESULT_TYPE,
 } from './campus/campusSearch.js';
 import { labelAnchorFor } from './campus/campusLayers.js';
+import { operatingCampusBounds } from './campus/operatingCampusView.js';
 import { nearestNamedFeature } from './campus/semantics/campusOperational.js';
 import { CAMPUS_CAMERA_MODE, campusCameraFor, createCameraSequencer } from './camera/cameraModes.js';
 
@@ -518,8 +519,26 @@ function MapControlInner({ filtersHost }) {
       } catch {
         // ignore
       }
-      const preset = CAMERA_PRESETS.WORLD;
-      const cam = { lon: WORLD_CENTER[0], lat: WORLD_CENTER[1], ...preset };
+      // No filter: open on the campuses RobotX operates on (the registry's operating
+      // campuses, framed from their boundaries by Mapbox itself), not the whole globe.
+      // World view remains the fallback when no campus has an operating region.
+      let cam = null;
+      const bounds = operatingCampusBounds();
+      if (bounds) {
+        try {
+          const fitted = mapRef.current?.cameraForBounds(bounds, { padding: 48 });
+          if (fitted?.center && Number.isFinite(fitted.zoom)) {
+            const center = mapboxgl.LngLat.convert(fitted.center);
+            cam = { lon: center.lng, lat: center.lat, zoom: fitted.zoom, pitch: 0, bearing: 0 };
+          }
+        } catch {
+          // fall back to world view below
+        }
+      }
+      if (!cam) {
+        const preset = CAMERA_PRESETS.WORLD;
+        cam = { lon: WORLD_CENTER[0], lat: WORLD_CENTER[1], ...preset };
+      }
       latestCameraRef.current = cam;
       if (!skipAnimation) focusCamera(cam, 0);
       return;

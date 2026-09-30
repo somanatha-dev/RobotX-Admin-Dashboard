@@ -318,6 +318,16 @@ function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig, appLoc
             if (typeof log.socketIn === "function") {
                 log.socketIn("assign_task", { robotId: task?.robotId });
             }
+            // P1.4 (LAN-4) — the authentication `POST /api/tasks/assign` requires. Only a
+            // dashboard socket that presented a valid session carries `socket.data.userId`
+            // (set above). Every other socket — a robot's, or any client that did not
+            // identify as a dashboard — was reaching intake unauthenticated: measured live
+            // with the engine on, a bare socket.io client created a queued Task.
+            if (!socket.data || !socket.data.userId) {
+                log.warn("assign_task refused — the socket carries no authenticated user", { socketId: socket.id });
+                socket.emit("task_error", { code: "UNAUTHORIZED", error: "Authentication required" });
+                return;
+            }
             try {
                 const created = await taskService.assignTask(prisma, task, {
                     kv,

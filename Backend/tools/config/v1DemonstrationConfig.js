@@ -304,6 +304,22 @@ function executionBindings() {
   return EXECUTION_PARAMETERS.map((row) => ({ level: row.level, key: "", name: row.name, value: row.value }));
 }
 
+/**
+ * §12.5 completion verification thresholds — V1_DEMONSTRATION values, as the environment
+ * variables `dtaro.handler` and `legProgress.service` read. Without them verification is
+ * skipped and no Leg is ever settled. Used by `tools/demo/runV1Assignment.js` and
+ * `tools/demo/startV1Server.js`, so the proof run and the server verify identically.
+ * @structural V1 demonstration declarations, not measurements
+ */
+const VERIFICATION_THRESHOLDS = Object.freeze({
+  VERIFY_ARRIVAL_RADIUS_M: "25", // one FINE (res-11) cell edge
+  VERIFY_TRACK_MIN_FIX_RATE: "10", // fixes/min; telemetry is 30/min
+  VERIFY_TRACK_MIN_CORRIDOR_FRACTION: "0.8",
+  VERIFY_TRACK_MAX_GAP_SECONDS: "10", // five telemetry intervals
+  VERIFY_CORRIDOR_HALF_WIDTH_M: "30",
+  VERIFY_MAX_SPEED_MS: "8.33", // simulation/constants.SPEED_MAX_MS
+});
+
 /** The thirteen names, sorted, for assertions and reports. */
 const PARAMETER_NAMES = Object.freeze(PARAMETERS.map((row) => row.name).slice().sort());
 
@@ -350,6 +366,7 @@ module.exports = {
   PARAMETERS,
   PARAMETER_NAMES,
   EXECUTION_PARAMETERS,
+  VERIFICATION_THRESHOLDS,
   executionBindings,
   bindings,
   assertNoSafetyParameter,

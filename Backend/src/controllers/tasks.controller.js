@@ -238,6 +238,25 @@ const cancelTask = asyncHandler(async (req, res) => {
     return;
   }
 
+  // P1.4 — a task the assignment engine manages (it has a Leg) is not cancelled by writing
+  // `Task.status`. The engine never reads that column: measured live, two tasks cancelled
+  // here were still committed, delivered, verified SUFFICIENT and SETTLED while the
+  // dashboard showed them CANCELLED. §4.6's cancellation (`lifecycle/cancellation.js`) is
+  // the only lawful path and has no resolution for any Leg state yet, so this refuses and
+  // writes nothing rather than report a cancellation that did not happen.
+  const engineLeg = await prisma.leg.findFirst({
+    where: { mission: { tasks: { some: { id: task.id } } } },
+    select: { state: true },
+  });
+  if (engineLeg) {
+    const message =
+      `Task ${taskId} is managed by the assignment engine (Leg ${engineLeg.state}); cancelling it is not ` +
+      "available in V1, and nothing was changed.";
+    // `message` is what the dashboard's request client shows the operator.
+    res.status(409).json({ ok: false, code: "ENGINE_CANCELLATION_UNAVAILABLE", error: message, message });
+    return;
+  }
+
   // Populated only if this task's robot was actually released (i.e. the robot's
   // currentTaskId still pointed at this task at cancel time) — everything below
   // that stops/cleans up the robot is gated on this, mirroring the same

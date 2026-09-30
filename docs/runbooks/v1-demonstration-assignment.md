@@ -121,17 +121,45 @@ always rejects, one that disappears mid-mission, one that goes offline) — no e
 | I6 | no live commitment left on a settled/queued/terminal Leg |
 | I7 | the Leg was settled by the robot the Task names |
 
-In the server, the same composition is enabled with `ENGINE_ENABLED=true`,
-`ENABLE_VIRTUAL_SIMULATOR=true`, `V1_DEMONSTRATION_COMPOSITION=true`, the six `VERIFY_*`
-thresholds below (without them no Leg settles), and a published configuration carrying
-`tools/config/v1DemonstrationConfig.js`'s bindings, `executionBindings()`,
-`cutover.engine_enabled` for the region, the spatial index and the delivery domain (see
-`tools/demo/seedV1Demonstration.js`).
+**The real `server.js` (what the dashboard and robots connect to)** is started in V1 mode
+by a launcher, never by editing `Backend/.env` (whose `DATABASE_URL` is the shared Neon
+instance and whose `ENGINE_ENABLED` stays `false`):
+
+```bash
+cd Backend
+node tools/demo/seedV1Demonstration.js --database-url postgresql://<user>@127.0.0.1:<port>/<db> --fleet baseline
+node tools/demo/startV1Server.js       --database-url postgresql://<user>@127.0.0.1:<port>/<db> [--port 3000] [--host 127.0.0.1]
+```
+
+The seed publishes and pins the configuration: `tools/config/v1DemonstrationConfig.js`'s
+bindings **and `executionBindings()`** (700 m search radius, 2000 ms solve budget — without
+them every round finds no candidate), `cutover.engine_enabled` for the region, the spatial
+index and the delivery domain. `--fleet baseline` commissions the six acceptance units.
+`runV1Assignment.js` publishes through the same function.
+
+The launcher refuses any database that is not loopback on a non-default port (it never
+falls back to `DATABASE_URL`), then sets `ENGINE_ENABLED=true`,
+`ENABLE_VIRTUAL_SIMULATOR=true`, `V1_DEMONSTRATION_COMPOSITION=true`,
+`SHARD_CONSENSUS_REPLICATION=SINGLE_PRIMARY_NO_AUTOMATIC_FAILOVER`, `SHARD_ID=v1demo-shard`,
+a per-process `COMMAND_SIGNING_KEY` (unless one is set), `REDIS_ENABLED=false`, and the six
+`VERIFY_*` thresholds from `v1DemonstrationConfig.VERIFICATION_THRESHOLDS` (without them no
+Leg settles). It checks read-only that the database is a seeded V1 world before starting
+`server.js`. An engine process with an invalid §23.7 privacy secret refuses to start.
 
 ```
 VERIFY_ARRIVAL_RADIUS_M=25  VERIFY_TRACK_MIN_FIX_RATE=10  VERIFY_TRACK_MIN_CORRIDOR_FRACTION=0.8
 VERIFY_TRACK_MAX_GAP_SECONDS=10  VERIFY_CORRIDOR_HALF_WIDTH_M=30  VERIFY_MAX_SPEED_MS=8.33
 ```
+
+A dashboard task names its campus; the frontend submits that campus's `regionId` from the
+campus registry (`RNSIT` → `rnsit`). The backend never defaults a region.
+
+Every task the dashboard's form creates states a chassis type and a payload mass, which F21
+matches against the robot's capability bundle. Until 2026-09-27 the coordinator's agent
+snapshot loaded the bundle without its `capabilities` rows, so every such task found no
+candidate (F21 INDETERMINATE); it now loads them (`workers/coordinatorSolvePath.js`,
+`tests/engine/v1CapabilityBundleSnapshot.test.js`). A DRONE task or a payload above the
+fleet's rated 5 kg is refused by F21 as VIOLATED.
 
 The first publish of any configuration trips S2 and V9; the demo uses the labelled
 accommodation on a disposable database only. **That is not a Safety approval.**
@@ -229,8 +257,10 @@ reassigned task uncompleted (D30).
   loses it (the Leg still settles on verified completion).
 - **`gate:composition` stays RED.** It asserts the *production* coordinator, which still has no
   production router (B1). It is correct that it is red; V1 does not weaken it.
-- The demo harness composes its own socket server; the `server.js` V1 mode uses the same
-  modules and has not been run end to end by this harness.
+- The demo harness composes its own socket server. The `server.js` V1 mode (via
+  `tools/demo/startV1Server.js`) was run end to end separately on 2026-09-27: 5 tasks
+  submitted through the frontend's request code, 5/5 completed, verified SUFFICIENT and
+  settled. That run is not part of this harness's regression gate.
 - The congestion time bucket is computed once when the composition is built (harmless: the
   simulation router ignores congestion).
 

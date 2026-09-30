@@ -107,9 +107,13 @@ function harness({ withGeometry = true, taskStatus = "PENDING" } = {}) {
   prisma.task.updateMany.mockResolvedValue({ count: taskStatus === "PENDING" ? 1 : 0 });
   prisma.robot.updateMany.mockResolvedValue({ count: 1 });
 
+  // Every real OFFER row carries the instant the agent was told it expires; P2B-2's
+  // response guard reads it, so the fixture states one in the future.
+  const notValidAfter = new Date(Date.now() + 60_000);
   prisma.outbox.findFirst.mockResolvedValue(
     withGeometry
       ? {
+          notValidAfter,
           payload: {
             stopSequence: [
               { sequence: 0, stopType: "PICKUP", path: PATH_TO_PICKUP },
@@ -117,7 +121,7 @@ function harness({ withGeometry = true, taskStatus = "PENDING" } = {}) {
             ],
           },
         }
-      : { payload: { stopSequence: [{ sequence: 0 }, { sequence: 1 }] } },
+      : { notValidAfter, payload: { stopSequence: [{ sequence: 0 }, { sequence: 1 }] } },
   );
 
   return prisma;

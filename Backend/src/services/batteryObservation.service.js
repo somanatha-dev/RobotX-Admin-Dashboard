@@ -24,22 +24,54 @@
  * It is the same for every agent: a simulated unit's report is the simulator's pack, a
  * physical unit's is its own — the provenance is the agent's, not this module's. Today no
  * physical agent has a `BatteryState` row, so for them this is a no-op.
+ *
+ * ── P2B-2: a report is written only when its measurement basis is established ─
+ * A percentage is not a measurement until something says how it was measured. For a
+ * **simulated** unit the simulator *is* the pack, so the basis is the simulator's own state
+ * (unchanged since D21). For a **physical** unit the frame must declare
+ * `energy.socMethod` from `SOC_METHODS` — a BMS, coulomb counting, or a calibrated voltage
+ * curve. A bare `battery` from a physical unit (a display estimate, a guess, a firmware
+ * default) is never written into the SoC the energy decision plans from; it still reaches
+ * the dashboard as a reported value. An undetermined provenance writes nothing.
  */
 
 const PERCENT = 100;
+
+/** P2B-2 — the measurement bases a physical unit may declare for its SoC. @structural */
+const SOC_METHODS = Object.freeze(["BMS", "COULOMB_COUNTING", "VOLTAGE_CURVE_CALIBRATED"]);
+
+/** Provenance labels, as `positionObservation.PROVENANCE` states them. @structural */
+const PHYSICAL = "PHYSICAL";
+const SIMULATED = "SIMULATED";
+
+/**
+ * Is the reported SoC's measurement basis established?
+ *
+ * @param {string|null|undefined} provenance
+ * @param {unknown} socMethod
+ * @returns {boolean}
+ */
+function measurementBasisEstablished(provenance, socMethod) {
+  if (provenance === SIMULATED) return true;
+  if (provenance === PHYSICAL) return typeof socMethod === "string" && SOC_METHODS.includes(socMethod);
+  return false;
+}
 
 const isNumber = (value) => typeof value === "number" && Number.isFinite(value);
 
 /**
  * @param {object} prisma
- * @param {{ robotId: string, batteryPct: unknown, agentTimestampMs: unknown }} input
+ * @param {{ robotId: string, batteryPct: unknown, agentTimestampMs: unknown,
+ *   provenance?: string|null, socMethod?: unknown }} input
  * @returns {Promise<{ written: boolean, reason: string|null }>}
  */
 async function recordReportedSoc(prisma, input) {
-  const { robotId, batteryPct, agentTimestampMs } = input || {};
+  const { robotId, batteryPct, agentTimestampMs, provenance, socMethod } = input || {};
   if (!prisma || typeof robotId !== "string" || robotId === "") return { written: false, reason: "NO_AGENT" };
   if (!isNumber(batteryPct) || batteryPct < 0 || batteryPct > PERCENT) return { written: false, reason: "NO_REPORTED_SOC" };
   if (!isNumber(agentTimestampMs) || agentTimestampMs <= 0) return { written: false, reason: "NO_AGENT_TIMESTAMP" };
+  if (provenance !== PHYSICAL && provenance !== SIMULATED) return { written: false, reason: "PROVENANCE_UNDETERMINED" };
+  if (!measurementBasisEstablished(provenance, socMethod)) return { written: false, reason: "NO_MEASUREMENT_BASIS" };
 
   const agent = await prisma.agent.findUnique({ where: { agentId: robotId }, select: { id: true } });
   if (!agent) return { written: false, reason: "NO_AGENT" };
@@ -55,4 +87,4 @@ async function recordReportedSoc(prisma, input) {
   return result && result.count > 0 ? { written: true, reason: null } : { written: false, reason: "NO_ROW_OR_NOT_NEWER" };
 }
 
-module.exports = { recordReportedSoc };
+module.exports = { SOC_METHODS, measurementBasisEstablished, recordReportedSoc };

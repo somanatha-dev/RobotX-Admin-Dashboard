@@ -364,6 +364,40 @@ function createVirtualRobotSimulator({
   // ── Dynamic robot management ────────────────────────────────────────────────
 
   /**
+   * The highest telemetry `sequence` the server has accepted from this robot, from its
+   * durable position log (`Observation`, kind `position`) — the log
+   * `positionObservation.service` seeds its STALE_SEQUENCE high-water mark from. The
+   * maximum rather than the latest row, so the floor is never below any accepted frame.
+   *
+   * A robot with no agent row or no position history resumes from 0 (its first frame is 1).
+   * A failed read also resumes from 0 — the pre-P1.3 behaviour, which the server still
+   * refuses safely as STALE_SEQUENCE until the counter passes its mark — and says so.
+   *
+   * @param {object|null} row the Robot row read above
+   * @returns {Promise<number>}
+   */
+  async function lastAcceptedSequence(row) {
+    const agentRowId = row && row.agent && row.agent.id;
+    if (!prisma || !agentRowId || !prisma.observation || typeof prisma.observation.aggregate !== "function") return 0;
+    try {
+      const found = await prisma.observation.aggregate({
+        where: { agentId: agentRowId, kind: "position" },
+        _max: { sequence: true },
+      });
+      const max = found && found._max ? found._max.sequence : null;
+      if (max === null || max === undefined) return 0;
+      const value = Number(max);
+      return Number.isSafeInteger(value) && value > 0 ? value : 0;
+    } catch (e) {
+      log.warn("[VR] Could not read the last accepted telemetry sequence; resuming from 0", {
+        agentRowId,
+        message: e?.message,
+      });
+      return 0;
+    }
+  }
+
+  /**
    * Attach a simulation instance to a `Robot` row that is a simulated unit.
    *
    * The row must already exist in the DB; `commission()` only seeds the simulated agent's
@@ -477,6 +511,13 @@ function createVirtualRobotSimulator({
     const dbBattery =
       typeof row?.battery === "number" && Number.isFinite(row.battery) ? row.battery : null;
 
+    // P1.3 — where this robot's telemetry sequence resumes. The server accepts a position
+    // frame only if its sequence exceeds every one it has accepted for this robot, and it
+    // seeds that mark from the durable log (`positionObservation.service`), so the log is
+    // the authority and the simulated agent reads it the way a physical one must persist its
+    // own counter (LAN-10). Read before the robot exists, so no frame can be sent first.
+    const telemetrySequenceFloor = await lastAcceptedSequence(row);
+
     const vr = new VirtualRobot({
       robotId,
       lat: spawnLat,
@@ -501,6 +542,7 @@ function createVirtualRobotSimulator({
         Number.isFinite(config.randomSeed)
           ? (config.randomSeed ^ hashSeed(robotId)) >>> 0
           : undefined,
+      telemetrySequenceFloor,
       // ── STEP 3: the commissioned specification, and the persisted pack state ──
       // Read from the row above. Every field is `null` when the unit has no commissioned
       // value, and `VirtualRobot` then falls back to the module constant — a fallback

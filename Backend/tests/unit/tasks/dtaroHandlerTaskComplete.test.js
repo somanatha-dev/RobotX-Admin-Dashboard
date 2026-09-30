@@ -35,7 +35,12 @@ describe("dtaro.handler — TASK_COMPLETE (task lifecycle: completion)", () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  test("marks the task COMPLETED, frees the robot to IDLE, and clears Redis task state", async () => {
+  // P2B-2 — these two tests used to assert that a claim with no engine, no commitment and no
+  // thresholds completed the Task and freed the robot: completion on the agent's word alone.
+  // That path is closed. The same claim is now held for operator verification, and nothing
+  // about the Task, the robot or its Redis task state is touched. The graded paths are
+  // covered by `taskCompleteVerification.test.js`.
+  test("an ungradable claim does NOT mark the task COMPLETED, free the robot, or clear its task state", async () => {
     await kv.set("robotTaskState:R1", JSON.stringify({ taskId: "TSK-1" }), { ex: 86400 });
     await kv.set("robotTask:R1", "TSK-1", { ex: 86400 });
     await setRobotState(kv, "R1", { assignedTaskId: "TSK-1" });
@@ -45,29 +50,23 @@ describe("dtaro.handler — TASK_COMPLETE (task lifecycle: completion)", () => {
 
     socket.trigger("TASK_COMPLETE", { taskId: "TSK-1" });
 
-    await waitFor(() => prisma.$transaction.mock.calls.length > 0);
-    expect(prisma.task.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ taskId: "TSK-1", robot: { robotId: "R1" }, status: { in: ["ASSIGNED", "IN_PROGRESS"] } }),
-        data: { status: "COMPLETED", completedAt: expect.any(Date) },
-      })
-    );
-    expect(prisma.robot.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { robotId: "R1" }, data: { currentTaskId: null, status: "IDLE", speed: 0 } })
-    );
+    await waitFor(() => socket.sent.some((s) => s.event === "TASK_COMPLETE_ACK"));
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.task.updateMany).not.toHaveBeenCalled();
+    expect(prisma.robot.update).not.toHaveBeenCalled();
 
-    await waitFor(async () => (await kv.get("robotTaskState:R1")) === null);
-    expect(await kv.get("robotTask:R1")).toBeNull();
+    expect(await kv.get("robotTaskState:R1")).not.toBeNull();
+    expect(await kv.get("robotTask:R1")).toBe("TSK-1");
     const registry = await getRobotState(kv, "R1");
-    expect(registry.assignedTaskId).toBeNull();
+    expect(registry.assignedTaskId).toBe("TSK-1");
 
     expect(io.to).toHaveBeenCalledWith("dashboard");
   });
 
-  test("acknowledges completion back to the reporting robot", async () => {
-    prisma.task.updateMany.mockResolvedValue({ count: 1 });
-    prisma.robot.update.mockResolvedValue({});
+  test("acknowledges the claim back to the robot as being verified, with the reason", async () => {
     socket.trigger("TASK_COMPLETE", { taskId: "TSK-1" });
     await waitFor(() => socket.sent.some((s) => s.event === "TASK_COMPLETE_ACK"));
+    const ack = socket.sent.find((s) => s.event === "TASK_COMPLETE_ACK").payload;
+    expect(ack).toMatchObject({ taskId: "TSK-1", verifying: true, reason: "ENGINE_GATE_CLOSED" });
   });
 });

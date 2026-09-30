@@ -76,9 +76,52 @@ async function settlementFor(prisma, decisionId) {
  * Query parameters: `query` (one of §21.3's eight), `agentId` (required by
  * `why_not_agent`).
  */
-const explainDecision = asyncHandler(async (req, res) => {
+const explainDecision = asyncHandler(async (req, res) => explainByDecisionId(req, res, String(req.params.decisionId)));
+
+/**
+ * GET /api/explain/task/:taskId — P1.3.
+ *
+ * The same answer as `GET /api/explain/:decisionId`, for the task's **latest** production
+ * decision. A decision id is `<shard>:<decisionTime>:<Leg.id>` — minted by whichever round
+ * ran last — so a dashboard that holds a task cannot name one; this resolves it
+ * (Task → Mission → Legs → newest `DecisionRecordA`) and hands over to the one explanation
+ * path. It reads nothing new and explains nothing differently.
+ *
+ * 404 with `reason: "NO_DECISION_YET"` when no round has considered the task yet.
+ */
+const explainTask = asyncHandler(async (req, res) => {
   const prisma = getPrisma();
-  const decisionId = String(req.params.decisionId);
+  const taskId = String(req.params.taskId);
+
+  const task = await prisma.task.findUnique({
+    where: { taskId },
+    select: { missions: { select: { legs: { select: { id: true } } } } },
+  });
+  if (!task) return res.status(HTTP_NOT_FOUND).json({ error: `no task "${taskId}"`, taskId, reason: "NO_SUCH_TASK" });
+
+  const legIds = task.missions.flatMap((mission) => mission.legs.map((leg) => leg.id));
+  const latest = legIds.length
+    ? await prisma.decisionRecordA.findFirst({
+        where: { legId: { in: legIds }, ...decisionRecord.PRODUCTION_ONLY },
+        orderBy: { decisionTime: "desc" },
+        select: { decisionId: true },
+      })
+    : null;
+  if (!latest) {
+    return res.status(HTTP_NOT_FOUND).json({ error: `no decision has been recorded for task "${taskId}" yet`, taskId, reason: "NO_DECISION_YET" });
+  }
+  return explainByDecisionId(req, res, latest.decisionId);
+});
+
+/**
+ * The explanation of one decision, by id — the body both routes share.
+ *
+ * @param {object} req
+ * @param {object} res
+ * @param {string} decisionId
+ */
+async function explainByDecisionId(req, res, decisionId) {
+  const prisma = getPrisma();
 
   const query = req.query.query ? String(req.query.query) : null;
   if (query !== null && !explanation.QUERIES.includes(query)) {
@@ -148,7 +191,7 @@ const explainDecision = asyncHandler(async (req, res) => {
     sources: bySource,
     answers: result.answers,
   });
-});
+}
 
 /**
  * The eight queries, self-describing, so a consumer can discover the surface rather than
@@ -168,6 +211,7 @@ const listQueries = asyncHandler(async (req, res) =>
 
 module.exports = {
   explainDecision,
+  explainTask,
   listQueries,
   settlementFor,
 };

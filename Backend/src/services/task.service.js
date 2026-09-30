@@ -82,6 +82,43 @@ const timers = require("../engine/supervision/timers");
 const privacyKeys = require("../config/privacyKeys");
 
 /**
+ * Intake is one transaction (SD-4): the PayloadSpec, the Task, its Mission and Task link,
+ * the Leg with its §4.5 QUEUED deadline, the Stops, their §23.7 identity records and the
+ * WorkQueue row commit together or not at all. Before this each step committed on its own,
+ * so a sealing failure, an admission refusal, or a retried Idempotency-Key left a PENDING
+ * Task and a QUEUED Leg that no queue row would ever surface (measured on a live
+ * PostgreSQL, 2026-09-27). Bounds sized for a remote database's round trips.
+ * @structural transaction bounds, not behavioural thresholds
+ */
+const INTAKE_TRANSACTION = Object.freeze({ maxWait: 5_000, timeout: 15_000 });
+
+/**
+ * Thrown inside the intake transaction to roll it back when admission did not accept the
+ * work (refused, or already accepted under the same idempotency key). Carries the §3.4
+ * answer so the caller still receives it; it is never an error to the caller.
+ */
+class IntakeNotCommitted extends Error {
+  constructor(pending, admitted) {
+    super(`intake not committed: ${admitted && admitted.outcome}`);
+    this.pending = pending;
+    this.admitted = admitted;
+  }
+}
+
+/**
+ * Run `fn` in a transaction on a root client, or inline on a transaction client — the one
+ * Prisma hands a `$transaction` callback, which has no `$transaction` of its own (the same
+ * test `engine/supervision/timers.requireTransaction` makes).
+ *
+ * @param {object} client
+ * @param {(tx: object) => Promise<*>} fn
+ * @returns {Promise<*>}
+ */
+function inTransaction(client, fn) {
+  return typeof client.$transaction === "function" ? client.$transaction(fn, INTAKE_TRANSACTION) : fn(client);
+}
+
+/**
  * Is the engine the decision path for the shard this request resolves to?
  *
  * Both halves, from one place (`engine/cutover/enabled.js`). Callers pass the published
@@ -512,6 +549,20 @@ function hasExplicitShardMap(shardByRegionId) {
  * @returns {Promise<object>} the §3.4 response
  */
 async function admitToRound(prisma, pending, options = {}) {
+  // One transaction for every write below (SD-4): its own when called with a root client,
+  // the caller's when called inside one (`assignTask` opens it before the Task write).
+  return inTransaction(prisma, (tx) => admitToRoundIn(tx, pending, options));
+}
+
+/**
+ * `admitToRound`'s body, on the transaction client it is given.
+ *
+ * @param {object} prisma a transaction client
+ * @param {object} pending
+ * @param {object} options
+ * @returns {Promise<object>}
+ */
+async function admitToRoundIn(prisma, pending, options = {}) {
   const work = taskToWork(pending, { regionId: options.regionId ?? null });
 
   // Materialised idempotently: the ids are a pure function of `Task.taskId`, so a retry
@@ -565,14 +616,13 @@ async function admitToRound(prisma, pending, options = {}) {
   //
   // §4.5's sentence is "in the transaction that enters the state", so the write and the
   // deadline commit together: a crash between them is what leaves a queued Leg nobody
-  // supervises, which is the state this is here to make unrepresentable.
-  await prisma.$transaction(async (tx) => {
-    await tx.leg.upsert({ where: { id: work.leg.id }, create: work.leg, update: {} });
-    await superviseQueuedEntry(tx, {
-      legId: work.leg.id,
-      shardId: options.shardId ?? null,
-      values: options.configValues,
-    });
+  // supervises, which is the state this is here to make unrepresentable. They now share the
+  // intake's one transaction (SD-4), which contains that one.
+  await prisma.leg.upsert({ where: { id: work.leg.id }, create: work.leg, update: {} });
+  await superviseQueuedEntry(prisma, {
+    legId: work.leg.id,
+    shardId: options.shardId ?? null,
+    values: options.configValues,
   });
 
   for (const stop of work.stops) {
@@ -907,52 +957,15 @@ async function assignTask(prisma, task, { kv, io, ...options } = {}) {
   // reference it. `specId` is a pure function of the task id, so a retried submission
   // converges on the same row rather than minting a second specification for one parcel —
   // the same idempotence `taskToWork` gives the Mission, Leg and Stops.
-  let payloadSpecId = null;
-  if (payload.spec) {
-    const stored = await prisma.payloadSpec.upsert({
-      where: { specId: `PLD-${taskId}` },
-      create: { specId: `PLD-${taskId}`, ...payload.spec },
-      update: payload.spec,
-    });
-    payloadSpecId = stored.id;
-  }
-
-  // Create the PENDING task. Fast and synchronous: no routing provider is consulted on
-  // the request path (§3.4), because the plan that will be routed is built inside the
-  // round, before the choice, from the same artefact the cost model scores (§13.1).
-  const pending = await prisma.task.create({
-    data: {
-      taskId,
-      pickup,
-      pickupLat,
-      pickupLon,
-      drop,
-      dropLat,
-      dropLon,
-      status: "PENDING",
-      // §2.4's own columns, populated by the submission that states them. `requirements`
-      // is left **null** when the submitter stated none: `[]` would assert "this task has
-      // no requirements", and null is "nobody stated any" — F21 reads the two differently
-      // and only one of them is true here.
-      ...(requirements.length > 0 ? { requirements } : {}),
-      ...(payloadSpecId ? { payloadSpecId } : {}),
-    },
-    include: { robot: { select: { robotId: true } }, payloadSpec: true },
-  });
-
-  // Notify dashboard so the UI shows the PENDING card with spinner right away.
-  try {
-    io?.to("dashboard")?.emit("TASK_CREATED", { ...pending, robot: null });
-  } catch { /* ignore */ }
-
-  // ── §3.4's request path ───────────────────────────────────────────────────
   //
-  // The request path's last act is a durable `WorkQueue` row, and the round path's
-  // first act is to read it. Between the two there is no closure, no timer, and no
-  // process-local state, which is what makes the work survivable across a restart —
-  // and what makes "stuck at PENDING with no record of the failure" unrepresentable:
-  // a waiting Leg is a queue row with a position, an age, and a state.
-  const admitted = await admitToRound(prisma, pending, {
+  // ── One transaction from here to the queue row (SD-4) ─────────────────────
+  // Everything above is validation and writes nothing. Everything below — the payload
+  // specification, the Task, and all of `admitToRound` (Mission, Leg and its deadline,
+  // Stops, identity sealing, the WorkQueue row) — commits together or rolls back together.
+  // An admission that does not accept the work rolls it back too: a refused or duplicate
+  // submission must leave nothing behind, and before this each left a PENDING Task and a
+  // QUEUED Leg with no queue row.
+  const intakeOptions = {
     receivedAtMs: options.receivedAtMs,
     cadenceConfig: options.cadenceConfig,
     admissionInputs: options.admissionInputs,
@@ -976,7 +989,7 @@ async function assignTask(prisma, task, { kv, io, ...options } = {}) {
     // S-3 row 29 — read off the same pinned snapshot the cutover gate above already
     // consulted, rather than resolving configuration a second way.
     deliveryDomain: options.config ? options.config.deliveryDomain ?? null : null,
-  });
+  };
 
   // The legacy `{ ...task }` shape every existing caller reads is still present, and the
   // §3.4 contract arrives beside it under `intake`. The plan supersedes the old response
@@ -1000,7 +1013,127 @@ async function assignTask(prisma, task, { kv, io, ...options } = {}) {
       ]
     : [];
 
-  return Object.assign({}, pending, { intake: admitted, ignoredFields });
+  let committed;
+  try {
+    committed = await prisma.$transaction(async (tx) => {
+      const pending = await createPendingTask(tx, {
+        taskId, pickup, pickupLat, pickupLon, drop, dropLat, dropLon, requirements, payload,
+      });
+
+      // ── §3.4's request path ───────────────────────────────────────────────
+      //
+      // The request path's last act is a durable `WorkQueue` row, and the round path's
+      // first act is to read it. Between the two there is no closure, no timer, and no
+      // process-local state, which is what makes the work survivable across a restart —
+      // and what makes "stuck at PENDING with no record of the failure" unrepresentable:
+      // a waiting Leg is a queue row with a position, an age, and a state.
+      const admitted = await admitToRound(tx, pending, intakeOptions);
+
+      // Not accepted, or already accepted under this idempotency key by an earlier
+      // submission (whose Task this new one would only duplicate): roll back.
+      if (admitted.accepted !== true || admitted.outcome === intake.OUTCOME.DUPLICATE) {
+        throw new IntakeNotCommitted(pending, admitted);
+      }
+      return { pending, admitted };
+    }, INTAKE_TRANSACTION);
+  } catch (error) {
+    if (error instanceof IntakeNotCommitted) {
+      if (error.admitted.outcome === intake.OUTCOME.DUPLICATE) {
+        return originalAcceptance(prisma, error.admitted, ignoredFields);
+      }
+      // Refused: nothing was written. The answer still says why, and names no row.
+      return Object.assign({ taskId, persisted: false }, { intake: error.admitted, ignoredFields });
+    }
+    // Two submissions under one Idempotency-Key raced and this one lost at the queue row's
+    // unique key: the winner's acceptance is the answer, exactly as for a later retry.
+    if (options.idempotencyKey && !options.retriedAfterRace) {
+      const key = intake.idempotencyKeyFor({ idempotencyKey: options.idempotencyKey }).key;
+      const winner = await prisma.workQueue.findUnique({ where: { idempotencyKey: key } }).catch(() => null);
+      if (winner) return assignTask(prisma, task, { kv, io, ...options, retriedAfterRace: true });
+    }
+    throw error;
+  }
+
+  // Notify dashboard so the UI shows the PENDING card with spinner right away — only now,
+  // after the commit, so it never announces a task that was rolled back.
+  try {
+    io?.to("dashboard")?.emit("TASK_CREATED", { ...committed.pending, robot: null });
+  } catch { /* ignore */ }
+
+  return Object.assign({}, committed.pending, { intake: committed.admitted, ignoredFields });
+}
+
+/**
+ * §15.1's payload specification and the PENDING Task, on the intake transaction.
+ *
+ * @param {object} tx
+ * @param {object} input
+ * @returns {Promise<object>} the Task row
+ */
+async function createPendingTask(tx, input) {
+  const { taskId, pickup, pickupLat, pickupLon, drop, dropLat, dropLon, requirements, payload } = input;
+
+  // §15.1's task-side payload specification, materialised before the Task so the Task can
+  // reference it. `specId` is a pure function of the task id, so a retried submission
+  // converges on the same row rather than minting a second specification for one parcel —
+  // the same idempotence `taskToWork` gives the Mission, Leg and Stops.
+  let payloadSpecId = null;
+  if (payload.spec) {
+    const stored = await tx.payloadSpec.upsert({
+      where: { specId: `PLD-${taskId}` },
+      create: { specId: `PLD-${taskId}`, ...payload.spec },
+      update: payload.spec,
+    });
+    payloadSpecId = stored.id;
+  }
+
+  // Create the PENDING task. Fast and synchronous: no routing provider is consulted on
+  // the request path (§3.4), because the plan that will be routed is built inside the
+  // round, before the choice, from the same artefact the cost model scores (§13.1).
+  return tx.task.create({
+    data: {
+      taskId,
+      pickup,
+      pickupLat,
+      pickupLon,
+      drop,
+      dropLat,
+      dropLon,
+      status: "PENDING",
+      // §2.4's own columns, populated by the submission that states them. `requirements`
+      // is left **null** when the submitter stated none: `[]` would assert "this task has
+      // no requirements", and null is "nobody stated any" — F21 reads the two differently
+      // and only one of them is true here.
+      ...(requirements.length > 0 ? { requirements } : {}),
+      ...(payloadSpecId ? { payloadSpecId } : {}),
+    },
+    include: { robot: { select: { robotId: true } }, payloadSpec: true },
+  });
+}
+
+/**
+ * The answer to a submission already accepted under the same idempotency key: the original
+ * acceptance, unchanged, with the Task it created (§3.4). This submission's own rows were
+ * rolled back; before SD-4 they were committed as a second Task and Leg with no queue row.
+ *
+ * @param {object} prisma
+ * @param {object} admitted `intake.admit`'s DUPLICATE answer
+ * @param {object[]} ignoredFields
+ * @returns {Promise<object>}
+ */
+async function originalAcceptance(prisma, admitted, ignoredFields) {
+  const row = await prisma.workQueue.findUnique({ where: { idempotencyKey: admitted.idempotencyKey } });
+  const leg = row
+    ? await prisma.leg.findUnique({
+        where: { id: row.legId },
+        include: { mission: { include: { tasks: { include: { robot: { select: { robotId: true } }, payloadSpec: true } } } } },
+      })
+    : null;
+  const original = leg && leg.mission && leg.mission.tasks.length > 0 ? leg.mission.tasks[0] : null;
+  const answer = { ...admitted, legId: row ? row.legId : admitted.legId, taskId: original ? original.taskId : admitted.taskId };
+  if (!original) return Object.assign({ taskId: answer.taskId, persisted: false }, { intake: answer, ignoredFields });
+  const { mission, ...task } = original;
+  return Object.assign({}, task, { intake: answer, ignoredFields });
 }
 
 /**

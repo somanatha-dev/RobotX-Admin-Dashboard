@@ -128,12 +128,23 @@ describe("commissionRobot — the specification persists (P0-2)", () => {
 });
 
 describe("commissionRobot — the initial battery is configured, not randomised (P0-12)", () => {
-  test("the Robot row carries exactly the state of charge the operator entered", async () => {
+  // P2B-2 — a physical unit's declared initial battery is not a reading of any pack, so it
+  // is no longer written to `Robot.battery` (where the dashboard presented it as current).
+  test("a PHYSICAL unit's Robot row carries no battery value — the declaration is not a reading", async () => {
     const prisma = commissioningPrisma();
     await robotService.commissionRobot(prisma, BODY);
 
     expect(prisma.robot.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ battery: 82 }) }),
+      expect.objectContaining({ data: expect.objectContaining({ battery: null, simulated: false }) }),
+    );
+  });
+
+  test("a SIMULATED unit's Robot row carries exactly the state of charge the operator entered", async () => {
+    const prisma = commissioningPrisma();
+    await robotService.createRobotWithProjection(prisma, BODY, { robotCode: "SIM-A", simulated: true, simulationOwnerId: "user-1" });
+
+    expect(prisma.robot.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ battery: 82, simulated: true }) }),
     );
   });
 
@@ -141,8 +152,8 @@ describe("commissionRobot — the initial battery is configured, not randomised 
     const first = commissioningPrisma();
     const second = commissioningPrisma();
 
-    await robotService.commissionRobot(first, { ...BODY, robotId: "RBT-A" });
-    await robotService.commissionRobot(second, { ...BODY, robotId: "RBT-B" });
+    await robotService.createRobotWithProjection(first, BODY, { robotCode: "SIM-A", simulated: true, simulationOwnerId: "user-1" });
+    await robotService.createRobotWithProjection(second, BODY, { robotCode: "SIM-B", simulated: true, simulationOwnerId: "user-1" });
 
     const batteryOf = (prisma) => prisma.robot.create.mock.calls[0][0].data.battery;
     expect(batteryOf(first)).toBe(82);

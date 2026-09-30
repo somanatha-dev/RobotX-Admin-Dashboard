@@ -371,6 +371,9 @@ class VirtualRobot {
     // different keys in one process.
     commandSigningKey,
     autonomousContinuationLimitSeconds,
+    // P1.3 — the last telemetry `sequence` the server accepted from this robot (its durable
+    // position log), supplied by `SimulationEngine.addRobot`. The counter resumes above it.
+    telemetrySequenceFloor,
     // ── BATCH 2: the Charging Scheduler's agent-side client ───────────────────
     //
     // The development Charging Scheduler (§14.7), bound to THIS agent's row. Supplied by
@@ -531,11 +534,20 @@ class VirtualRobot {
     this._wasMovingLastTick = false;
 
     // ── STEP 4: the telemetry frame counter ───────────────────────────────────
-    // Monotonic, per robot, starting at 1 for the first frame of the process. It makes a
-    // dropped or duplicated frame visible to anything reading the stream, and it is the
-    // simulator's own counter — nothing on the server consumes it, and it is not evidence
-    // of anything beyond how many frames this instance has emitted.
-    this._telemetrySequence = 0;
+    // Monotonic, per robot. It makes a dropped or duplicated frame visible to anything
+    // reading the stream.
+    //
+    // P1.3 — and the server consumes it (Step 5): `positionObservation.service` refuses, as
+    // STALE_SEQUENCE, any position frame whose sequence does not exceed the highest it has
+    // accepted for this robot, and it seeds that high-water mark from the durable log. §2.7's
+    // monotonicity is therefore across restarts, not per process — the physical agent must
+    // persist its counter for the same reason (LAN-10). This counter used to restart at 1
+    // with every instance, so after a server restart every simulated robot was refused as a
+    // replay until it had re-counted past its old mark (measured: ~2 s per frame it had ever
+    // sent), and the fleet was unassignable (F16) for that long. It now resumes from the
+    // floor the engine read from that same log; the first frame is floor + 1.
+    this._telemetrySequence =
+      Number.isSafeInteger(telemetrySequenceFloor) && telemetrySequenceFloor > 0 ? telemetrySequenceFloor : 0;
 
     // ── STEP 4: legacy operator-command idempotency ───────────────────────────
     // `commandId` → the moment it was applied. The §10.3.1 command surface has its own
@@ -1393,14 +1405,27 @@ class VirtualRobot {
       case "RECALL":
       case "ABORT_MISSION": {
         this.offers.delete(envelope.commitmentId);
-        if (this._activeCommitment && this._activeCommitment.commitmentId === envelope.commitmentId) {
-          this._activeCommitment = null;
-        }
+        const wasActive = Boolean(
+          this._activeCommitment && this._activeCommitment.commitmentId === envelope.commitmentId,
+        );
+        if (wasActive) this._activeCommitment = null;
         // A withdrawn or recalled mission is over: the commitment is tombstoned so a
         // redelivery of any of its commands is recognised as belonging to a retired
         // authority rather than as a new one.
         this.dedup.tombstones.set(envelope.commitmentId, Date.now());
-        this._applyStop(command);
+        if (command === "ABORT_MISSION") {
+          this._applyStop(command);
+        } else if (wasActive) {
+          // P1.4 — WITHDRAW / RECALL retire the commitment, and the engine has already
+          // released it (§4.7's custody-NONE protocol). The mission is abandoned and the unit
+          // stays available. It used to go PAUSED "so RESUME can pick it back up", but
+          // nothing resumes a retired commitment, and under §23.5 enforcement a PAUSED unit
+          // can never report itself back: measured live, the robot withdrawn after the
+          // boot-time OFFER race was held out by F3 for good. A WITHDRAW or RECALL for a
+          // commitment this unit is not executing has no physical effect — it no longer halts
+          // an unrelated mission in progress.
+          this._applyReturnToBase(command);
+        }
         break;
       }
       case "REROUTE":
@@ -2996,16 +3021,18 @@ class VirtualRobot {
    * whole point of a timestamp on a frame is that the reader can treat the values as
    * simultaneous.
    *
-   * `sequence` is a per-robot monotonic ordinal, starting at 1 for this instance's first
-   * frame. It makes a dropped frame visible as a gap and a duplicated one visible as a
-   * repeat, which is the property §4 asks for and which a timestamp alone does not give —
-   * two frames in the same millisecond are indistinguishable by time. It is consumed by the
-   * *attempt*, so a frame lost in the transport leaves a gap rather than silently
-   * renumbering the stream.
+   * `sequence` is a per-robot monotonic ordinal: the first frame is one above the last
+   * sequence the server accepted from this robot (see the constructor), or 1 for a robot
+   * that has never reported. It makes a dropped frame visible as a gap and a duplicated one
+   * visible as a repeat, which is the property §4 asks for and which a timestamp alone does
+   * not give — two frames in the same millisecond are indistinguishable by time. It is
+   * consumed by the *attempt*, so a frame lost in the transport leaves a gap rather than
+   * silently renumbering the stream.
    *
-   * Neither field is consumed by the server: the telemetry schema is `passthrough()`, so
-   * they travel and are stored in neither the live-state key nor the `Telemetry` table. They
-   * describe this simulator's own output. Nothing here is, or becomes, physical evidence.
+   * Both fields are consumed by the server (Step 5): `positionObservation.service` records
+   * each accepted frame as a §2.7 position Observation, ordered by `sequence` and stamped
+   * with `timestamp`. They describe this simulator's own output; the Observation carries
+   * `provenance: "SIMULATED"`, and nothing here is, or becomes, physical evidence.
    *
    * @param {number} nowMs the tick instant the frame's values were computed at
    */

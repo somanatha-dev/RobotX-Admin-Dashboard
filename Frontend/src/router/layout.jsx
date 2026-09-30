@@ -1,5 +1,6 @@
 import React, { useCallback, useRef } from 'react';
 import { Outlet } from 'react-router-dom';
+import { X } from 'lucide-react';
 
 import AuthChallengeModal from '@/components/modals/AuthChallengeModal.jsx';
 import CreateTaskModal from '@/components/modals/CreateTaskModal.jsx';
@@ -16,6 +17,7 @@ export default function Layout() {
     authRequest,
     isCreatingTask,
     decisionRequest,
+    notice,
   } = useAppState();
 
   const {
@@ -25,6 +27,7 @@ export default function Layout() {
     requestAuth,
     setDecisionRequest,
     addEvent,
+    dismissNotice,
   } = useAppActions();
 
   // Ref to track the WAIT timer so it can be cleared if a new decision arrives
@@ -82,6 +85,30 @@ export default function Layout() {
       >
         <AppTopBar />
         <div className="flex-1 min-h-0 px-6 py-5">
+          {notice && (
+            <div
+              role="status"
+              data-operator-notice={notice.kind || 'info'}
+              className={`mt-2 flex items-start justify-between gap-3 rounded-xl border px-4 py-3 ${
+                notice.kind === 'warning'
+                  ? 'border-amber-300 bg-amber-50 text-amber-900'
+                  : 'border-slate-200 bg-white text-slate-800'
+              }`}
+            >
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">{notice.title}</div>
+                {notice.message ? <div className="mt-0.5 text-xs">{notice.message}</div> : null}
+              </div>
+              <button
+                type="button"
+                onClick={dismissNotice}
+                aria-label="Dismiss notice"
+                className="shrink-0 rounded-md p-1 text-current opacity-70 hover:opacity-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
           <div className="mt-6 h-full min-h-0">
             <Outlet />
           </div>

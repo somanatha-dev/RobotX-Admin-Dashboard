@@ -105,6 +105,17 @@ export default function AuthChallengeModal({ request, onClose }) {
               {request.intent}
             </Badge>
           </div>
+          {/* What the act does that the intent label does not say — shown before the
+              operator authorises it, not after. */}
+          {request.warning && (
+            <div
+              role="alert"
+              data-auth-warning
+              className="mt-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-left text-xs font-medium text-amber-900"
+            >
+              {request.warning}
+            </div>
+          )}
         </div>
 
         <div className="p-6">

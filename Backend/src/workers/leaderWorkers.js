@@ -372,6 +372,8 @@ const COMPOSERS = Object.freeze({
           runInTransaction: context.runInTransaction,
           readStoreTime: () => clock.readStoreTime(prisma),
           record,
+          // §12.4 row 5 — the action behind the lease-expiry repair (P1.4).
+          recover: leaseExpiryRecovery(context, values),
         },
         {
           intervalMs,
@@ -539,24 +541,7 @@ const COMPOSERS = Object.freeze({
       };
     }
 
-    // T1-04 — §17.4's ladder, bound to this shard's region and to the same budget the
-    // `QUEUED` deadline is armed for.
-    const escalationLadder = ladder.create({
-      prisma,
-      values,
-      budgetSeconds: deadlineSecondsFrom(values, timers.ENTITY_TYPE.LEG, legMachine.LEG_STATE.QUEUED),
-      regionId: context.regionId,
-      escalationCapacity: finite(values, "ops.escalation_capacity"),
-      saturationPeriodSeconds: finite(values, "ops.escalation_saturation_period"),
-      // `classPRelaxationOrder` is deliberately not passed. §17.4 names the head of rung
-      // 3's sequence — "zone affinity first, dedicated-fleet preference next" — and then
-      // writes "and so on"; the tail is a deployment's to publish and no register entry
-      // carries it. Omitting it makes the ladder relax exactly the two the specification
-      // names, which is the only sequence the specification actually states.
-      record,
-    });
-
-    const map = expiryActions.handlers({ ladder: escalationLadder });
+    const map = productionExpiryHandlers(context, values);
     const completeness = expiryActions.assertComplete(map);
     if (!completeness.ok) {
       return {
@@ -587,25 +572,7 @@ const COMPOSERS = Object.freeze({
         },
         {
           maxTimerLagSeconds: intervalSeconds,
-          // Every deadline a handler may need to *enter*, resolved from the published
-          // register through the state's own parameter — never a default invented here,
-          // which would be a behavioural constant outside the register (§22.1).
-          deadlineSecondsFor: (entityType, state) => deadlineSecondsFrom(values, entityType, state),
-          maxReassignmentsPerLeg: finite(values, "recover.max_reassignments_per_leg"),
-          incumbentCooloffSeconds: finite(values, "recover.incumbent_cooloff"),
-          reassignBudgetSeconds: finite(values, "recover.reassign_budget"),
-          maxDeliveryDelaySeconds: finite(values, "dispatch.max_delivery_delay"),
-          nackCooloffSeconds: finite(values, "dispatch.nack_cooloff"),
-          etaTolerance: finite(values, "execute.eta_tolerance"),
-          escalationContacts: parameter(values, "ops.external_escalation_contacts"),
-          contactReviewPeriodSeconds: finite(values, "ops.escalation_contact_review_period"),
-          emergencyServicesThreshold: parameter(values, "ops.emergency_services_hazard_threshold"),
-          regionId: context.regionId,
-          // §23.3 — the key a `WITHDRAW` or `RECALL` this worker issues is signed with.
-          // Its absence makes those two handlers refuse rather than emit an unsigned
-          // command the agent is obliged to reject.
-          signingKey: context.signingKey,
-          shardId: context.shardId,
+          ...expiryHandlerConfig(context, values),
           // A pass no slower than the lag bound it is measured against: a sweep that runs
           // less often than `supervise.max_timer_lag` guarantees the SLI it reports.
           intervalMs: Number.isFinite(intervalSeconds)
@@ -616,6 +583,139 @@ const COMPOSERS = Object.freeze({
     };
   },
 });
+
+/**
+ * The production §4.3 / §12.2 expiry-handler map, with §17.4's ladder injected (T1-04).
+ * Built here once so every composer that runs an expiry handler — the timer worker, and
+ * the reconciler's lease-expiry repair (P1.4) — uses the same complete map; an empty
+ * collaborator map was the ladder's refusal path.
+ *
+ * @param {object} context the composer's context
+ * @param {object} values the published configuration's `values` map
+ * @returns {Record<string, Function>}
+ */
+function productionExpiryHandlers(context, values) {
+  const { prisma, record } = context;
+  // T1-04 — §17.4's ladder, bound to this shard's region and to the same budget the
+  // `QUEUED` deadline is armed for.
+  const escalationLadder = ladder.create({
+    prisma,
+    values,
+    budgetSeconds: deadlineSecondsFrom(values, timers.ENTITY_TYPE.LEG, legMachine.LEG_STATE.QUEUED),
+    regionId: context.regionId,
+    escalationCapacity: finite(values, "ops.escalation_capacity"),
+    saturationPeriodSeconds: finite(values, "ops.escalation_saturation_period"),
+    // `classPRelaxationOrder` is deliberately not passed. §17.4 names the head of rung
+    // 3's sequence — "zone affinity first, dedicated-fleet preference next" — and then
+    // writes "and so on"; the tail is a deployment's to publish and no register entry
+    // carries it. Omitting it makes the ladder relax exactly the two the specification
+    // names, which is the only sequence the specification actually states.
+    record,
+  });
+
+  return expiryActions.handlers({ ladder: escalationLadder });
+}
+
+/**
+ * The configuration every §4.3 / §12.2 expiry handler reads (`supervision/expiryActions`),
+ * resolved once from the published register. Shared by the timer worker, which runs the
+ * handlers when a deadline falls due, and by the reconciler's row-5 repair, which runs the
+ * lease-expiry handler when a lease lapsed with no timer to fire it — so the two paths can
+ * never act on different recovery parameters.
+ *
+ * @param {object} context the composer's context
+ * @param {object} values the published configuration's `values` map
+ * @returns {object}
+ */
+function expiryHandlerConfig(context, values) {
+  return {
+    // Every deadline a handler may need to *enter*, resolved from the published
+    // register through the state's own parameter — never a default invented here,
+    // which would be a behavioural constant outside the register (§22.1).
+    deadlineSecondsFor: (entityType, state) => deadlineSecondsFrom(values, entityType, state),
+    maxReassignmentsPerLeg: finite(values, "recover.max_reassignments_per_leg"),
+    incumbentCooloffSeconds: finite(values, "recover.incumbent_cooloff"),
+    reassignBudgetSeconds: finite(values, "recover.reassign_budget"),
+    maxDeliveryDelaySeconds: finite(values, "dispatch.max_delivery_delay"),
+    nackCooloffSeconds: finite(values, "dispatch.nack_cooloff"),
+    etaTolerance: finite(values, "execute.eta_tolerance"),
+    escalationContacts: parameter(values, "ops.external_escalation_contacts"),
+    contactReviewPeriodSeconds: finite(values, "ops.escalation_contact_review_period"),
+    emergencyServicesThreshold: parameter(values, "ops.emergency_services_hazard_threshold"),
+    regionId: context.regionId,
+    // §23.3 — the key a `WITHDRAW` or `RECALL` this worker issues is signed with.
+    // Its absence makes those two handlers refuse rather than emit an unsigned
+    // command the agent is obliged to reject.
+    signingKey: context.signingKey,
+    shardId: context.shardId,
+  };
+}
+
+/**
+ * P1.4 — §12.4 row 5's repair, *"Run the §4.7 recovery path"*, for a commitment whose lease
+ * lapsed unprocessed.
+ *
+ * `reconciler.scanExpiredLeases` finds such a commitment and leaves the action to its caller
+ * (`deps.recover`), because the recovery advances a fence and must be written in a
+ * transaction with the command it authorises. Nothing supplied it, and nothing arms a
+ * COMMITMENT lease timer either, so an expired lease was recorded as a repair every sweep
+ * and never recovered: measured live, a server restart mid-execution left the Leg at
+ * `AT_PICKUP` / `LOADED` with a live commitment for good, and the robot never assignable
+ * again. This runs the **same** registered `LEASE_EXPIRY_RECOVERY` handler the timer path
+ * would run — `leases.assessRecovery` decides (custody `NONE` → reassign; goods aboard →
+ * §4.7's stranding) — so no recovery semantics are added here.
+ *
+ * Re-read inside the transaction: a heartbeat may have renewed the lease, or another path
+ * released the commitment, since the scan read it. Either makes this a no-op.
+ *
+ * @param {object} context the composer's context
+ * @param {object} values the published configuration's `values` map
+ * @returns {Function} `deps.recover`
+ */
+function leaseExpiryRecovery(context, values) {
+  const { prisma, record } = context;
+  const recover = productionExpiryHandlers(context, values).LEASE_EXPIRY_RECOVERY;
+  const config = expiryHandlerConfig(context, values);
+  return async ({ commitment }) => {
+    try {
+      const result = await context.runInTransaction(async (tx) => {
+        const storeTime = await clock.readStoreTime(tx);
+        const held = await tx.commitment.findUnique({ where: { id: commitment.id } });
+        if (!held || held.releasedAt !== null) return { outcome: "COMMITMENT_ALREADY_RELEASED" };
+        if (!(new Date(held.leaseExpiry).getTime() <= storeTime.getTime())) return { outcome: "LEASE_RENEWED" };
+        return recover({
+          tx,
+          prisma,
+          entity: held,
+          storeTime,
+          config,
+          record,
+          timer: {
+            entityType: timers.ENTITY_TYPE.COMMITMENT,
+            entityId: held.commitmentId,
+            state: String(held.fence),
+            attempts: 0,
+            dueAt: held.leaseExpiry,
+            createdAt: held.leaseExpiry,
+            shardId: context.shardId === undefined ? null : context.shardId,
+          },
+        });
+      });
+      record("reconciler.lease_expiry_recovered", {
+        commitmentId: commitment.commitmentId,
+        disposition: result && result.disposition,
+        outcome: result && result.outcome,
+      });
+      return result;
+    } catch (error) {
+      record("reconciler.lease_expiry_recovery_failed", {
+        commitmentId: commitment.commitmentId,
+        message: error && error.message,
+      });
+      return null;
+    }
+  };
+}
 
 /**
  * Resolve a state's exit deadline, in seconds, from the published register.

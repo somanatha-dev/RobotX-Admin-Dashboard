@@ -16,8 +16,19 @@ import * as authApi from '@/lib/api/auth.js';
 import * as robotsApi from '@/lib/api/robots.js';
 import * as simulatorApi from '@/lib/api/simulator.js';
 import * as tasksApi from '@/lib/api/tasks.js';
+import { buildAssignTaskRequest } from '@/lib/taskRequest.js';
 import * as locationsApi from '@/lib/api/locations.js';
-import { socket, DASHBOARD_EVENTS, ENGINE_NOT_LIVE } from '@/lib/socket.js';
+import {
+  socket,
+  DASHBOARD_EVENTS,
+  ENGINE_NOT_LIVE,
+  SOCKET_UNAUTHORIZED,
+  connectDashboardSocket,
+  disconnectDashboardSocket,
+} from '@/lib/socket.js';
+import { ENGINE_CANCELLATION_REASON, isEngineCancellationRefusal } from '@/lib/taskCancellation.js';
+import { STOP_ALL_WARNING, summariseStopAll } from '@/lib/robotCommands.js';
+import { reopensAssignment } from '@/features/tasks/taskLifecycle.js';
 
 export default function AppProvider({ children }) {
   const rrNavigate = useNavigate();
@@ -61,15 +72,38 @@ export default function AppProvider({ children }) {
   // Persistent cache of task route paths — survives re-renders and page navigation.
   // Populated from TASK_ASSIGNED socket events. Read by the map's useRobotStream.
   const taskPathCacheRef = useRef(new Map());
+  // The same routes as render state, for components that display them (the Tasks page's
+  // planned-route distance). A ref cannot drive a render; this can. The map keeps reading
+  // the ref, unchanged.
+  const [taskRoutes, setTaskRoutes] = useState({});
+  // Bumped when a robot refuses or defers an offer (see `reopensAssignment`): PENDING task
+  // cards re-read their explanation at once instead of on the next 10 s poll.
+  const [assignmentSignal, setAssignmentSignal] = useState(0);
   const [events, setEvents] = useState([
     { id: 1, msg: 'System initialized successfully', time: 'Just now', type: 'info' },
   ]);
 
-  const [systemOnline, setSystemOnline] = useState(true);
   const [decisionRequest, setDecisionRequest] = useState(null);
 
-  const [authRequest, setAuthRequest] = useState(null); // { intent, action, isDestructive }
+  const [authRequest, setAuthRequest] = useState(null); // { intent, action, isDestructive, warning }
   const [isCreatingTask, setIsCreatingTask] = useState(false);
+
+  // An outcome the operator must see even with the audit log switched off — for example
+  // the backend refusing a cancel, or how many units a fleet-wide STOP actually reached.
+  // `{ kind: 'warning' | 'info', title, message }`, rendered by the layout until dismissed.
+  const [notice, setNotice] = useState(null);
+  const showNotice = useCallback((next) => setNotice(next || null), []);
+  const dismissNotice = useCallback(() => setNotice(null), []);
+
+  // Read by socket handlers, which are registered once and must see the current session.
+  const sessionRef = useRef(session);
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  // Set below to `expireSession`, which is defined after `refreshDbState` but is what
+  // `refreshDbState` calls when the backend answers 401.
+  const sessionExpiredRef = useRef(null);
 
   const addEvent = useCallback((msg, type) => {
     if (!preferencesRef.current.auditLogEnabled) return;
@@ -100,22 +134,39 @@ export default function AppProvider({ children }) {
   // Guard: prevents concurrent refreshDbState() calls from racing each other.
   // Multiple actions (login, commission, cancel) can fire near-simultaneously;
   // without this, two parallel Promise.all fetches could set stale state.
+  //
+  // A call that arrives while one is in flight is not dropped: it queues exactly one more
+  // pass. The socket's `connect` handler relies on that — its refresh is what recovers the
+  // events missed while disconnected, and a refresh that had started *before* the socket
+  // connected cannot have seen them.
   const refreshingRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
   const refreshDbState = useCallback(async () => {
-    if (refreshingRef.current) return;
+    if (refreshingRef.current) {
+      refreshQueuedRef.current = true;
+      return;
+    }
     refreshingRef.current = true;
     try {
-      const [robotsNext, tasksNext, simulatorNext] = await Promise.all([
-        robotsApi.getRobotsState(),
-        tasksApi.listTasks(),
-        // Already failure-tolerant: it resolves to `null` rather than rejecting, so a
-        // simulator that is unreachable cannot take the robot and task lists down with
-        // it — and `null` is rendered honestly as "status unknown".
-        simulatorApi.getSimulatorStatus(),
-      ]);
-      setRobots(Array.isArray(robotsNext) ? robotsNext : []);
-      setTasks(Array.isArray(tasksNext) ? tasksNext : []);
-      setSimulatorStatus(simulatorNext || null);
+      do {
+        refreshQueuedRef.current = false;
+        const [robotsNext, tasksNext, simulatorNext] = await Promise.all([
+          robotsApi.getRobotsState(),
+          tasksApi.listTasks(),
+          // Already failure-tolerant: it resolves to `null` rather than rejecting, so a
+          // simulator that is unreachable cannot take the robot and task lists down with
+          // it — and `null` is rendered honestly as "status unknown".
+          simulatorApi.getSimulatorStatus(),
+        ]);
+        setRobots(Array.isArray(robotsNext) ? robotsNext : []);
+        setTasks(Array.isArray(tasksNext) ? tasksNext : []);
+        setSimulatorStatus(simulatorNext || null);
+      } while (refreshQueuedRef.current);
+    } catch (err) {
+      // The session ended under us (expired or revoked cookie). Sign out locally, so the
+      // page stops showing a fleet it is no longer allowed to read.
+      if (err?.status === 401) sessionExpiredRef.current?.();
+      throw err;
     } finally {
       refreshingRef.current = false;
     }
@@ -190,20 +241,54 @@ export default function AppProvider({ children }) {
     [applyLoggedInSession]
   );
 
+  // Everything this page holds about the fleet and the session, dropped at once. Shared by
+  // an explicit logout and by a session the backend no longer accepts, so the two cannot
+  // leave different things behind.
+  const clearSessionState = useCallback(() => {
+    // First, so not one more fleet frame reaches a page that is no longer signed in. The
+    // backend's socket session outlives the cookie; only the client closing it ends it.
+    disconnectDashboardSocket();
+
+    setSession({ isAuthenticated: false, identity: '', user: null });
+    setPreferences({ ...DEFAULT_PREFERENCES });
+    setRobots([]);
+    setTasks([]);
+    setSimulatorStatus(null);
+    setEvents([]);
+    taskPathCacheRef.current.clear();
+    setTaskRoutes({});
+    setDecisionRequest(null);
+    setAuthRequest(null);
+    setIsCreatingTask(false);
+    setNotice(null);
+    setIsSidebarOpen(false);
+    setIsNotificationsOpen(false);
+  }, []);
+
   const logout = useCallback(async () => {
+    // Close the socket before the request, not after it: the logout call can be slow or
+    // fail, and neither is a reason to keep receiving telemetry.
+    disconnectDashboardSocket();
     try {
       await authApi.logout();
     } catch {
-      // ignore
+      // ignore — the local session is ended either way
     }
 
-    const next = { isAuthenticated: false, identity: '', user: null };
-    setSession(next);
-    setPreferences({ ...DEFAULT_PREFERENCES });
-    setIsSidebarOpen(false);
-    setIsNotificationsOpen(false);
+    clearSessionState();
     navigate('/login');
-  }, [navigate]);
+  }, [clearSessionState, navigate]);
+
+  // The backend answered 401 to a signed-in page: the cookie expired or was revoked.
+  const expireSession = useCallback(() => {
+    if (!sessionRef.current?.isAuthenticated) return;
+    clearSessionState();
+    navigate('/login');
+  }, [clearSessionState, navigate]);
+
+  useEffect(() => {
+    sessionExpiredRef.current = expireSession;
+  }, [expireSession]);
 
   useEffect(() => {
     let active = true;
@@ -229,6 +314,8 @@ export default function AppProvider({ children }) {
       } catch {
         if (!active) return;
 
+        // No session: the socket stays closed (it never opens while logged out).
+        disconnectDashboardSocket();
         const next = { isAuthenticated: false, identity: '', user: null };
         setSession(next);
         setPreferences({ ...DEFAULT_PREFERENCES });
@@ -242,28 +329,49 @@ export default function AppProvider({ children }) {
     };
   }, [navigate, refreshDbState]);
 
-  const requestAuth = useCallback((intent, action, isDestructive = false) => {
-    setAuthRequest({ intent, action, isDestructive });
+  // `options.warning` is shown in the authorisation dialog above the confirmation, for acts
+  // whose consequence the intent label alone does not state (one-way commands).
+  const requestAuth = useCallback((intent, action, isDestructive = false, options = {}) => {
+    setAuthRequest({ intent, action, isDestructive, warning: options?.warning || null });
   }, []);
 
   const stopAll = useCallback(() => {
     requestAuth(
       'EXECUTE GLOBAL EMERGENCY STOP',
       async () => {
-        setSystemOnline(false);
-        addEvent('EMERGENCY STOP EXECUTED BY COMMANDER', 'critical');
-
-        // Send STOP command to every online robot via the backend.
+        // Send STOP to every online robot via the backend, and report only what the
+        // backend answered. No robot's status is written here: PAUSED arrives from the
+        // backend (telemetry and the refetch below), for exactly the units it applies to.
         const targets = robotsRef.current.filter((r) => r.isOnline);
-        await Promise.allSettled(
-          targets.map((r) => robotsApi.sendCommand(r.robotId, 'STOP').catch(() => {}))
+        const results = await Promise.allSettled(
+          targets.map((r) => robotsApi.sendCommand(r.robotId, 'STOP'))
         );
+        const summary = summariseStopAll(results);
 
-        setRobots((prev) => prev.map((r) => ({ ...r, status: 'PAUSED', speed: 0 })));
+        addEvent(
+          `EMERGENCY STOP sent to ${summary.accepted}/${summary.total} online unit(s)` +
+            (summary.failed ? ` — ${summary.failed} refused` : ''),
+          'critical'
+        );
+        showNotice({
+          kind: summary.failed ? 'warning' : 'info',
+          title: 'Emergency stop sent',
+          message:
+            `STOP accepted for ${summary.accepted} of ${summary.total} online unit(s)` +
+            `${summary.failed ? `; ${summary.failed} request(s) failed` : ''}. ` +
+            'Stopped units are PAUSED and cannot be resumed from the dashboard in V1.',
+        });
+
+        try {
+          await refreshDbState();
+        } catch {
+          // The stop was sent; a failed refetch is not a failed stop. Telemetry still updates the list.
+        }
       },
-      true
+      true,
+      { warning: STOP_ALL_WARNING }
     );
-  }, [addEvent, requestAuth]);
+  }, [addEvent, refreshDbState, requestAuth, showNotice]);
 
   const commission = useCallback(
     (robotData) => {
@@ -431,29 +539,12 @@ export default function AppProvider({ children }) {
     (taskDraft) => {
       setIsCreatingTask(false);
       const robotId = String(taskDraft?.robotId || '').trim();
-      const pickup = String(taskDraft?.pickup || '').trim();
-      const drop = String(taskDraft?.drop || '').trim();
 
       requestAuth(`CREATE TASK: ${robotId || 'UNASSIGNED'}`, async () => {
-        const created = await tasksApi.assignTask({
-          robotId,
-          pickup,
-          pickupLat: taskDraft?.pickupLat,
-          pickupLon: taskDraft?.pickupLon,
-          drop,
-          dropLat: taskDraft?.dropLat,
-          dropLon: taskDraft?.dropLon,
-          // §15.1's payload specification, as declared. Mass **and** its tolerance:
-          // feasibility uses the upper bound of the tolerance, so a mass without one is a
-          // payload the gate cannot reason about, and the server refuses it rather than
-          // inventing a precision nobody stated.
-          payload: taskDraft?.payload ?? null,
-          // The agent class this task is asking for. It becomes a §2.3 requirement on the
-          // Task's RequirementSet and is matched by predicate F21 against the unit's
-          // attested capability bundle — the existing eligibility path, not a filter of
-          // its own and nothing hard-coded about which unit goes.
-          requestedChassisType: taskDraft?.requestedChassisType ?? null,
-        });
+        // The request body, including the campus's operating region (`regionId`), which
+        // the backend requires. Built by one plain function so the architecture tests
+        // exercise exactly what is sent; it throws for a campus with no region.
+        const created = await tasksApi.assignTask(buildAssignTaskRequest(taskDraft));
 
         await refreshDbState();
         addEvent(`Task ${created?.taskId || ''} created`, 'info');
@@ -468,19 +559,106 @@ export default function AppProvider({ children }) {
       requestAuth(
         `CANCEL TASK ${id}`,
         async () => {
-          await tasksApi.cancelTask(id);
+          try {
+            await tasksApi.cancelTask(id);
+          } catch (err) {
+            // The backend's answer for an engine-managed task (P1.4): 409, nothing changed.
+            // It is not an authorisation failure — the PIN was accepted — so the dialog
+            // closes (this action resolves) and the refusal is shown as what it is. No
+            // "cancelled" event, no local status change.
+            if (isEngineCancellationRefusal(err)) {
+              showNotice({
+                kind: 'warning',
+                title: `Task ${id} was not cancelled`,
+                message: err.message || ENGINE_CANCELLATION_REASON,
+              });
+              try {
+                await refreshDbState();
+              } catch {
+                // the notice already says nothing changed
+              }
+              return;
+            }
+            throw err;
+          }
           await refreshDbState();
           addEvent(`Task ${id} cancelled`, 'warning');
         },
         true
       );
     },
-    [addEvent, refreshDbState, requestAuth]
+    [addEvent, refreshDbState, requestAuth, showNotice]
   );
 
   const effectiveRoute = session.isAuthenticated ? '/' : '/login';
 
   useDecisionCountdown({ decisionRequest, setDecisionRequest, addEvent });
+
+  // ── The dashboard socket's lifetime is the session's ──────────────────────
+  //
+  // Connected after a successful login or session restore (both set
+  // `session.isAuthenticated`, and the auth cookie already exists by then), closed when the
+  // session ends. It is never open while logged out, so the backend's refusal of an
+  // unauthenticated dashboard socket is never provoked by this page, and a refused socket
+  // is never left to sit dead behind a signed-in dashboard.
+  useEffect(() => {
+    if (session.isAuthenticated) connectDashboardSocket();
+    else disconnectDashboardSocket();
+  }, [session.isAuthenticated]);
+
+  // Set once `UNAUTHORIZED` has been answered with a reconnect; cleared by the next
+  // successful connection. It is what makes a second refusal final instead of a loop.
+  const unauthorizedRetriedRef = useRef(false);
+  const reconnectAfterServerDisconnectRef = useRef(false);
+
+  useEffect(() => {
+    // Every (re)connection — first connect after login, or socket.io recovering a dropped
+    // transport — reloads robots, tasks and simulator state, so nothing that happened
+    // while the socket was down stays missing from the page.
+    const onConnect = () => {
+      unauthorizedRetriedRef.current = false;
+      refreshDbState().catch(() => {
+        // a 401 here already signed the page out (see refreshDbState)
+      });
+    };
+
+    // The backend refused this socket's session and is about to disconnect it itself.
+    // socket.io does not retry a server-side disconnect, so this cannot loop by itself;
+    // the only reconnect is the single one below, and only while the REST session is valid.
+    const onUnauthorized = async () => {
+      if (!sessionRef.current?.isAuthenticated) return;
+      try {
+        await authApi.me();
+      } catch (err) {
+        if (err?.status === 401) sessionExpiredRef.current?.();
+        return;
+      }
+      if (!sessionRef.current?.isAuthenticated) return;
+      if (unauthorizedRetriedRef.current) {
+        addEvent('Live updates stopped: the server refused the live connection. Reload the page.', 'warning');
+        return;
+      }
+      unauthorizedRetriedRef.current = true;
+      // Still marked active until the server's disconnect arrives; reconnect after it.
+      if (socket.active) reconnectAfterServerDisconnectRef.current = true;
+      else connectDashboardSocket();
+    };
+
+    const onDisconnect = (reason) => {
+      if (reason !== 'io server disconnect' || !reconnectAfterServerDisconnectRef.current) return;
+      reconnectAfterServerDisconnectRef.current = false;
+      if (sessionRef.current?.isAuthenticated) connectDashboardSocket();
+    };
+
+    socket.on('connect', onConnect);
+    socket.on(SOCKET_UNAUTHORIZED, onUnauthorized);
+    socket.on('disconnect', onDisconnect);
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off(SOCKET_UNAUTHORIZED, onUnauthorized);
+      socket.off('disconnect', onDisconnect);
+    };
+  }, [addEvent, refreshDbState]);
 
   // ── Live socket subscriptions ─────────────────────────────────────────────
   // Keep global robots/tasks state in sync with backend events so every page
@@ -578,6 +756,9 @@ export default function AppProvider({ children }) {
             ...(data.robot ? { robot: data.robot } : {}),
             ...(typeof data.distanceMeters === 'number' ? { distanceMeters: data.distanceMeters } : {}),
             ...(data.robotId ? { robotId: data.robotId } : {}),
+            // Carried by a VERIFYING update (insufficient or unavailable completion
+            // evidence); the card shows it as the reason the task is held.
+            ...(data.verification && typeof data.verification === 'object' ? { verification: data.verification } : {}),
           };
         })
       );
@@ -646,6 +827,7 @@ export default function AppProvider({ children }) {
         pathToPickup,
         pathToDrop,
       });
+      setTaskRoutes((prev) => ({ ...prev, [taskId]: { pathToPickup, pathToDrop } }));
     };
 
     // Reroute notification — route overlays handled by useRobotStream.
@@ -715,6 +897,7 @@ export default function AppProvider({ children }) {
       const robotId = String(data?.agentId || data?.robotId || '').trim();
       const response = String(data?.response || '').trim();
       if (!response) return;
+      if (reopensAssignment(data)) setAssignmentSignal((n) => n + 1);
       if (response === 'OFFER_REJECT') {
         addEvent(`Robot ${robotId || 'unknown'} rejected an offer — re-planning`, 'warning');
       } else if (response === 'OFFER_DEFER') {
@@ -774,11 +957,13 @@ export default function AppProvider({ children }) {
       simulatorStatus,
       tasks,
       events,
-      systemOnline,
+      notice,
       decisionRequest,
       authRequest,
       isCreatingTask,
       taskPathCacheRef,
+      taskRoutes,
+      assignmentSignal,
     }),
     [
       effectiveRoute,
@@ -791,10 +976,12 @@ export default function AppProvider({ children }) {
       simulatorStatus,
       tasks,
       events,
-      systemOnline,
+      notice,
       decisionRequest,
       authRequest,
       isCreatingTask,
+      taskRoutes,
+      assignmentSignal,
       // taskPathCacheRef is a ref — excluded from deps intentionally
       // (its identity is stable; contents change without re-render)
     ]
@@ -816,6 +1003,9 @@ export default function AppProvider({ children }) {
       retire,
       createTask,
       cancelTask,
+      refreshDbState,
+      showNotice,
+      dismissNotice,
       setIsSidebarOpen,
       setIsNotificationsOpen,
       setAuthRequest,
@@ -837,6 +1027,9 @@ export default function AppProvider({ children }) {
       retire,
       createTask,
       cancelTask,
+      refreshDbState,
+      showNotice,
+      dismissNotice,
     ]
   );
 

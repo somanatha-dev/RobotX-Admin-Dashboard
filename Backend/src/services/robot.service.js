@@ -199,7 +199,16 @@ async function createRobotWithProjection(prisma, body, identity) {
   // What replaces it is the operator's own declaration. `initialBatteryPct` is
   // **configured initial state**, not measured fleet history, and every surface that
   // shows it says so.
-  const battery = clamp(parsed.spec.initialBatteryPct, 0, 100);
+  //
+  // P2B-2 — and it is a state only for a unit whose pack the declaration *is*. For a
+  // simulated unit the simulator seeds its pack from it, so the Robot row's `battery` is the
+  // pack's real starting level. For a physical unit nobody has read a pack: the declared
+  // number is not a measurement, and writing it to `Robot.battery` made the dashboard (and
+  // the live-state fallback in `telemetry.handler`) present it as the robot's current charge
+  // until a measured report replaced it. A physical unit therefore starts with no battery
+  // value at all. The declaration is still validated and still required by the
+  // commissioning contract; it is simply not recorded as a reading.
+  const battery = simulated ? clamp(parsed.spec.initialBatteryPct, 0, 100) : null;
 
   // Phase 2 (§2.1): a commissioned Robot and its domain Agent are created together.
   //

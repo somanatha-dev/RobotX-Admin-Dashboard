@@ -61,6 +61,59 @@ const legEntryDeadline = require("../../engine/cutover/legEntryDeadline");
 // keep it a projection and the test that asserts them structurally.
 const assignmentProjection = require("../../services/assignmentProjection.service");
 const legProgress = require("../../services/legProgress.service");
+// §4.4's transition table — read, never extended. It is what says which Leg state an offer
+// response answers (`OFFERED --AGENT_ACK--> ACCEPTED`) and what an ACK must prove
+// (`FENCE_MATCHES_OFFER_UNEXPIRED`).
+const transitions = require("../../engine/lifecycle/transitions");
+
+/**
+ * P2B-2 — is this Leg still awaiting the agent's answer to the offer this commitment made?
+ *
+ * `offers.applyAccept / applyReject / applyDefer` write the Leg conditionally on its
+ * **version** only, which makes a concurrent write lose, but does not make a *late* one
+ * lose: a second `OFFER_ACCEPT` arriving after departure read the Leg at its current version
+ * and wrote it back to `ACCEPTED`, and a late `OFFER_REJECT` re-queued a Leg the agent was
+ * driving. The state that an offer response answers is the one §4.4 gives an `AGENT_ACK`
+ * row out of; anything else has already been answered, withdrawn or moved on, and the
+ * response is a duplicate or a straggler to be ignored — never applied.
+ *
+ * Expiry is part of the same question. §4.4 hands an expired offer to `OFFER_TTL_EXPIRY`
+ * (withdraw at an advanced fence), so a response that lands after `notValidAfter` but
+ * before the expiry timer has run is not a response to a live offer either. The expiry is
+ * the offer's own `Outbox.notValidAfter` — the instant the agent was told — compared on the
+ * store clock. An offer with no OFFER row on record answers nothing: fail closed.
+ *
+ * The ACCEPT path additionally evaluates §4.4's own guard on the ACK row, so the fence and
+ * expiry rule is the table's, not a restatement of it.
+ *
+ * @param {object} tx
+ * @param {{ event: string, leg: object, commitment: object, fence: *, storeTime: Date }} input
+ * @returns {Promise<{ ok: boolean, reason: string|null }>}
+ */
+async function awaitingResponse(tx, input) {
+  const { event, leg, commitment, fence, storeTime } = input;
+
+  const ackRow = transitions.find(leg.state, transitions.EVENT.AGENT_ACK);
+  if (!ackRow) return { ok: false, reason: `NOT_AWAITING_RESPONSE:${leg.state}` };
+
+  const offer = await tx.outbox.findFirst({
+    where: { commitmentId: commitment.commitmentId, command: "OFFER" },
+    orderBy: { createdAt: "desc" },
+    select: { notValidAfter: true },
+  });
+  const expiresAtMs = offer && offer.notValidAfter ? new Date(offer.notValidAfter).getTime() : NaN;
+  if (!Number.isFinite(expiresAtMs)) return { ok: false, reason: "NO_OFFER_ON_RECORD" };
+  const offerUnexpired = storeTime.getTime() < expiresAtMs;
+
+  if (event === "OFFER_ACCEPT") {
+    const guards = transitions.evaluateGuards(ackRow, { commitment, fence, offerUnexpired });
+    if (!guards.ok) return { ok: false, reason: guards.failures.map((failure) => failure.reason).join(",") };
+    return { ok: true, reason: null };
+  }
+
+  if (!offerUnexpired) return { ok: false, reason: "OFFER_EXPIRED" };
+  return { ok: true, reason: null };
+}
 
 /**
  * Resolve the Agent row backing a robot socket.
@@ -240,6 +293,17 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
         const leg = await tx.leg.findUnique({ where: { id: matched.commitment.legId } });
         if (!leg) return { outcome: offers.OUTCOME.IGNORED, reason: "LEG_NOT_FOUND" };
 
+        // P2B-2 — only a response to an offer that is still open is applied. Read in this
+        // transaction, on the row the disposition writes conditionally on its version.
+        const awaiting = await awaitingResponse(tx, {
+          event,
+          leg,
+          commitment: matched.commitment,
+          fence: parsed.data.fence,
+          storeTime,
+        });
+        if (!awaiting.ok) return { outcome: offers.OUTCOME.IGNORED, reason: awaiting.reason };
+
         const applied = await apply(tx, {
           agent,
           commitment: matched.commitment,
@@ -402,4 +466,5 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
 module.exports = {
   registerOfferHandlers,
   resolveAgent,
+  awaitingResponse,
 };

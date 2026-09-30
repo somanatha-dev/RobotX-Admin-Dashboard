@@ -117,6 +117,21 @@ function registerCommandHandlers(io, socket, { prisma, kv, logger, appLocals }) 
       });
       if (!existing) return;
 
+      // P2B-2 — only the robot a command was issued to may acknowledge it. `Command.robotId`
+      // is the `Robot.id` row key; the socket speaks for `socket.data.robotId` (the code it
+      // authenticated as). Before this, any authenticated robot could mark another robot's
+      // STOP as acknowledged and silence the retry that would have re-delivered it.
+      const ackingRobotCode = toStringOrNull(socket.data?.robotId);
+      if (!ackingRobotCode) return;
+      const ackingRobot = await prisma.robot.findUnique({ where: { robotId: ackingRobotCode }, select: { id: true } });
+      if (!ackingRobot || ackingRobot.id !== existing.robotId) {
+        log.warn?.("COMMAND_ACK ignored — the command was not issued to this robot", {
+          robotId: ackingRobotCode,
+          commandId,
+        });
+        return;
+      }
+
       await prisma.command.update({
         where: { id: commandId },
         data: {

@@ -1,23 +1,63 @@
 import { io } from "socket.io-client";
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:3000";
-const GLOBAL_KEY = import.meta.env.VITE_SOCKET_GLOBAL_KEY || "__robotx_socket__";
+// `import.meta.env` is Vite's and is undefined under plain Node, which is how
+// `src/__architecture__/` loads this module. Same guard as `api/httpClient.js`.
+const VITE_ENV = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {};
+const SOCKET_URL = VITE_ENV.VITE_SOCKET_URL || "http://localhost:3000";
+const GLOBAL_KEY = VITE_ENV.VITE_SOCKET_GLOBAL_KEY || "__robotx_socket__";
 
-// Reuse the same socket across Vite Fast Refresh/HMR to avoid
-// Connected → Disconnected → Connected spam during development.
+// Reuse the same socket across Vite Fast Refresh/HMR, so there is only ever one.
 const existing = globalThis[GLOBAL_KEY];
 
 // withCredentials so the HttpOnly `token` auth cookie (already sent with
 // REST calls via credentials: 'include') is also sent on the socket
-// handshake — the backend now requires it to join the dashboard room.
-export const socket = existing || io(SOCKET_URL, { withCredentials: true });
+// handshake — the backend requires it to join the dashboard room.
+//
+// ── autoConnect: false — the socket's lifetime is the session's ────────────
+// The backend answers a dashboard socket without a valid cookie with `UNAUTHORIZED` and
+// a server-side disconnect, and socket.io never retries a server-side disconnect. A
+// socket opened at import time — before anyone has logged in — was therefore rejected
+// once and stayed dead for the rest of the page's life: the operator logged in, the
+// engine assigned and settled tasks, and the dashboard showed none of it until a reload.
+// So nothing connects here. `AppProvider` connects after a successful login or session
+// restore, and disconnects on logout, through the two functions below.
+export const socket = existing || io(SOCKET_URL, { withCredentials: true, autoConnect: false });
 
 if (!existing) {
 	globalThis[GLOBAL_KEY] = socket;
-} else if (!socket.connected) {
-	// If HMR restored a disconnected socket, reconnect it.
-	socket.connect();
 }
+
+/**
+ * Open the shared dashboard socket, if it is not already open or opening.
+ *
+ * Call only once the REST session is known to be valid: the handshake carries the auth
+ * cookie as it is at this moment. `socket.active` is true while connected *and* while
+ * socket.io is retrying a dropped transport, so a second call never opens a second
+ * connection. It is false after a server-side disconnect, which is the one case that
+ * needs a new call.
+ *
+ * @returns {boolean} whether a connection attempt was started
+ */
+export function connectDashboardSocket() {
+	if (socket.active) return false;
+	socket.connect();
+	return true;
+}
+
+/**
+ * Close the shared dashboard socket. It leaves the `dashboard` room with it, so no fleet
+ * data reaches this page until the next `connectDashboardSocket()`.
+ *
+ * @returns {boolean} whether there was anything to close
+ */
+export function disconnectDashboardSocket() {
+	if (!socket.active && !socket.connected) return false;
+	socket.disconnect();
+	return true;
+}
+
+/** The backend's refusal of a dashboard socket with no valid session (`socket.server.js`). */
+export const SOCKET_UNAUTHORIZED = "UNAUTHORIZED";
 
 /* ═══════════════════════════════════════════════════════════════════════════
    PHASE 15 — the dashboard's socket contract, in one place

@@ -94,6 +94,7 @@ const schedulerClient = require("../engine/energy/chargingSchedulerClient");
 const { compareStrings } = require("../engine/determinism/ordering");
 const commitment = require("../engine/commitment/commit");
 const offers = require("../engine/dispatch/offers");
+const storablePrecision = require("../services/storablePrecision.service");
 const legEntryDeadline = require("../engine/cutover/legEntryDeadline");
 const planStateModel = require("../engine/shard/planState");
 const legMachine = require("../engine/lifecycle/legMachine");
@@ -496,7 +497,11 @@ function agentSnapshotLoaderFor(context) {
                 // reports "declares no compartments" for every agent, however it was
                 // commissioned.
                 containerModel: { include: { compartments: { orderBy: { ordinal: "asc" } } } },
-                capabilityBundle: true,
+                // The bundle's `capabilities` rows, not just the bundle row: F21 matches the
+                // mission's requirements against them (`domain/capability.indexBundle` reads
+                // `bundle.capabilities`). `capabilityBundle: true` loaded the row alone, so
+                // every stated requirement was INDETERMINATE and denied.
+                capabilityBundle: { include: { capabilities: true } },
                 energyModelParams: { orderBy: { modelVersion: "desc" }, take: 1 },
               },
             },
@@ -1675,7 +1680,7 @@ function gatedAgentSnapshot(agentSnapshot, decisionTimeMs) {
 function evaluateExactFor(context, round) {
   const routing = round.routing;
 
-  return async function evaluateExact(agentId, legForBound, agentSnapshot) {
+  const evaluatePairing = async function evaluatePairing(agentId, legForBound, agentSnapshot) {
     const refuse = (refusal, problems) =>
       Object.freeze({ feasible: false, gammaMilliCU: null, refusal, problems: Object.freeze([...problems]) });
 
@@ -1779,8 +1784,19 @@ function evaluateExactFor(context, round) {
       config: { get: (name) => resolve(snapshot, name, gateScope) },
       decisionTimeMs: state.decisionTimeMs,
       snapshotId: state.snapshotId,
+    }, {
+      // §7.7's fold at decision time, into the process's aggregator — the one the
+      // rejection-aggregation flusher drains to `RejectionAggregate`. Telemetry only:
+      // `evaluateCandidate` reads neither field, so the verdict is the same without them.
+      aggregator: context.rejectionAggregator || undefined,
+      dimensions: {
+        shardId: context.shardId ?? null,
+        missionClass: mission && mission.missionClass !== undefined ? mission.missionClass : null,
+        legPurpose: leg.purpose ?? null,
+      },
     });
     if (!gated.feasible) {
+      noteRejectionTuples(round, legForBound, gated.tuples);
       return Object.freeze({
         feasible: false,
         gammaMilliCU: null,
@@ -1858,6 +1874,104 @@ function evaluateExactFor(context, round) {
       healthTier: agentSnapshot.healthTier ?? null,
     });
   };
+
+  // The evaluation above, unchanged, with its outcome noted for the round's decision record.
+  // The result is returned as is; the note is observation only.
+  return async function evaluateExact(agentId, legForBound, agentSnapshot) {
+    const out = await evaluatePairing(agentId, legForBound, agentSnapshot);
+    noteCandidateOutcome(round, legForBound, agentId, agentSnapshot, out);
+    return out;
+  };
+}
+
+/**
+ * The round's per-Leg outcome entry, created on first use.
+ *
+ * @param {object} round
+ * @param {object} legForBound
+ * @returns {object}
+ */
+function outcomeEntryFor(round, legForBound) {
+  const key = String(legForBound.legId);
+  let entry = round.outcomes.get(key);
+  if (!entry) {
+    const state = round.legs.get(key);
+    entry = {
+      legId: key,
+      legRowId: state && state.leg && state.leg.legRowId !== undefined ? String(state.leg.legRowId) : null,
+      candidates: new Map(),
+      counts: new Map(),
+    };
+    round.outcomes.set(key, entry);
+  }
+  return entry;
+}
+
+/**
+ * Note one candidate's outcome for §21.2's compact top-N: a priced candidate with its γ,
+ * a rejected one with **its binding predicate only** — the first gate denial, or, when the
+ * pairing never reached the gate, the refusal `evaluateExact` returned (`MISSING_HOP`,
+ * `PLAN_REFUSED`, `UNPRICEABLE`, `LEG_UNRESOLVED`). The 38-row evaluation stays in Tier B.
+ *
+ * @param {object} round
+ * @param {object} legForBound
+ * @param {string} agentId
+ * @param {object} agentSnapshot
+ * @param {object} out `evaluateExact`'s result
+ */
+function noteCandidateOutcome(round, legForBound, agentId, agentSnapshot, out) {
+  if (!legForBound || legForBound.legId === undefined || legForBound.legId === null || !out) return;
+  const entry = outcomeEntryFor(round, legForBound);
+  const id = String((agentSnapshot && agentSnapshot.agentId) || agentId);
+  if (out.feasible === true) {
+    entry.candidates.set(id, { agentId: id, rejected: false, gammaMilliCU: out.gammaMilliCU ?? null });
+    return;
+  }
+  const binding =
+    out.refusal === REFUSAL.INFEASIBLE && Array.isArray(out.denials) && out.denials.length > 0 ? out.denials[0] : out.refusal;
+  entry.candidates.set(id, { agentId: id, rejected: true, bindingPredicateId: binding ?? null, gammaMilliCU: null });
+}
+
+/**
+ * Fold one gate denial's §7.7 tuples into the Leg's per-predicate counts (Tier A's
+ * `rejectionSummary`), keyed exactly as the shard aggregate keys them: predicate and tier.
+ *
+ * @param {object} round
+ * @param {object} legForBound
+ * @param {object[]} tuples `feasibility.gate`'s tuples
+ */
+function noteRejectionTuples(round, legForBound, tuples) {
+  if (!legForBound || !Array.isArray(tuples)) return;
+  const entry = outcomeEntryFor(round, legForBound);
+  for (const tuple of tuples) {
+    const tier = tuple.tier ?? null;
+    const key = `${tuple.predicateId}|${tier === null ? "-" : tier}`;
+    const row = entry.counts.get(key) || { predicateId: tuple.predicateId, tier, count: 0 };
+    row.count += 1;
+    entry.counts.set(key, row);
+  }
+}
+
+/**
+ * The round's `perLeg` context for `decisionRecord.writeRound`: per Leg, the candidate
+ * summaries (`candidates`) and the per-predicate rejection counts (`rejectionSummary`).
+ * Keyed by both of the Leg's identifiers, because the round's decisions name a Leg by
+ * `Leg.id` (the `WorkQueue.legId` row id) while this round state keys the business id.
+ *
+ * @param {object} round
+ * @returns {Record<string, { candidates: object[], rejectionSummary: object[] }>}
+ */
+function perLegFor(round) {
+  const perLeg = {};
+  for (const entry of round.outcomes.values()) {
+    const context = {
+      candidates: [...entry.candidates.values()],
+      rejectionSummary: [...entry.counts.values()].map((row) => ({ ...row })),
+    };
+    perLeg[entry.legId] = context;
+    if (entry.legRowId !== null) perLeg[entry.legRowId] = context;
+  }
+  return perLeg;
 }
 
 /**
@@ -2148,7 +2262,11 @@ function commitFor(context, round) {
             storeTime: effectContext.storeTime,
             offerTtlSeconds,
             signingKey: context.signingKey,
-            offer: {
+            // P2B-2 — quantised so the numbers signed are the numbers stored and delivered;
+            // the Json column shortens doubles and the agent verifies what it receives
+            // (`services/storablePrecision.service.js`). Message content only — no decision
+            // is re-read from it.
+            offer: storablePrecision.toStorablePrecision({
               missionPlan: entry ? entry.plan.planId : null,
               // The plan's stops, each carrying the drivable geometry resolved above.
               // Built outside this closure: `sideEffects` runs inside the SERIALIZABLE
@@ -2166,7 +2284,7 @@ function commitFor(context, round) {
               // §14.6 — the Charging Scheduler's, consumed and never computed here.
               energyReserveParams: entry ? entry.plan.reserves : null,
               targetSoc: entry && entry.plan.charging ? entry.plan.charging.targetSoc : null,
-            },
+            }),
           });
           // §4.5 — the OFFERED state's deadline, armed in the transaction that enters it.
           // Without it an OFFER that was delivered and never answered held the Leg and the
@@ -2294,6 +2412,14 @@ function create(context) {
      * identifier this round has not loaded maps to itself.
      */
     legIdentity: new Map(),
+    /**
+     * Business `Leg.legId` → what this round's evaluation of that Leg's candidates found:
+     * one row per agent (its binding predicate or refusal when rejected, its γ when priced)
+     * and the §7.7 per-predicate counts. `perLegFor` hands it to the round's decision record
+     * (`coordinator.worker.recordRound` → `decisionRecord.writeRound`'s `perLeg`). Written
+     * by `evaluateExact`; observation only — nothing on the decision path reads it.
+     */
+    outcomes: new Map(),
     snapshot,
     expansionWallClockBudgetMs: enriched.expansionWallClockBudgetMs,
     loadAgentSnapshot,
@@ -2322,6 +2448,7 @@ function create(context) {
       round.priced.clear();
       round.agentIdentity.clear();
       round.legIdentity.clear();
+      round.outcomes.clear();
     },
 
     /**
@@ -2573,6 +2700,9 @@ function create(context) {
       queueAgeSeconds: row.enqueuedAt ? (Date.now() - new Date(row.enqueuedAt).getTime()) / MS_PER_SECOND : null,
     }),
     commit: commitFor(enriched, round),
+    // §21.2 — this round's per-Leg candidate outcomes and rejection counts, for the
+    // decision record `coordinator.worker.recordRound` writes after the round.
+    perLegFor: () => perLegFor(round),
     // Legs the lifecycle returned to QUEUED go back on the work list (coordinator.worker).
     requeueReturnedLegs: (input) => coordinatorWorker.requeueReturnedLegs({ prisma: enriched.prisma }, input),
     record: enriched.record,
@@ -2601,6 +2731,9 @@ module.exports = {
   REFUSAL,
   COMMITTED_LEG_STATE,
   ASSIGNABLE_LEG_STATES,
+  noteCandidateOutcome,
+  noteRejectionTuples,
+  perLegFor,
   contextFor,
   delayParametersFrom,
   routingSeamFor,

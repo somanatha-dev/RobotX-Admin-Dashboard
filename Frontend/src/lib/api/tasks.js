@@ -15,6 +15,15 @@ export async function cancelTask(taskId) {
   return data?.task || null;
 }
 
+/**
+ * The engine's explanation of a task's latest assignment decision (§21.3) — the existing
+ * `/api/explain` surface, resolved by task. Explanatory only: the task's own status is the
+ * authority, and a failure here must never be treated as a task failure.
+ */
+export async function explainTask(taskId) {
+  return requestJson(`/api/explain/task/${encodeURIComponent(taskId)}`);
+}
+
 export async function rerouteTask(taskId) {
   const data = await requestJson(`/api/tasks/${encodeURIComponent(taskId)}/reroute`, { method: 'POST' });
   return data || null;

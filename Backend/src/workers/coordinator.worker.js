@@ -612,7 +612,9 @@ async function runRound(deps, input) {
       observability: source.observability,
       versions: source.versions,
       trigger: source.trigger,
-      perLeg: source.perLeg,
+      // The composition's per-Leg context for this round (candidate outcomes, §7.7
+      // rejection counts), read after the round ran; a caller-supplied map otherwise.
+      perLeg: typeof deps.perLegFor === "function" ? deps.perLegFor() : source.perLeg,
     },
   );
 

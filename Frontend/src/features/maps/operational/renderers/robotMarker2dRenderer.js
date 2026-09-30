@@ -115,6 +115,7 @@ export function createRobotMarker2dRenderer(context = {}) {
         root,
         scaleWrap,
         currentLngLat: lngLat,
+        targetLngLat: lngLat,
         rafId: null,
         worldYaw: visual.anchor.rotation.yaw,
         hasHeading: visual.anchor.hasHeading,
@@ -189,20 +190,36 @@ export function createRobotMarker2dRenderer(context = {}) {
       updateMarkerInfo(handle.root, { battery: visual.battery, status: visual.status });
       setMarkerSelected(handle.root, visual.selected);
 
-      const from = handle.currentLngLat;
-      if (!from) {
+      if (!handle.currentLngLat) {
         try {
           handle.marker?.setLngLat?.(to);
         } catch {
           // ignore
         }
         handle.currentLngLat = to;
+        handle.targetLngLat = to;
         return;
       }
 
-      if (from[0] === to[0] && from[1] === to[1]) return;
+      // Compare against where the marker is HEADING, not where the last tween ended.
+      // Comparing against the last completed position let a repeat of that position
+      // return early without cancelling a tween already running elsewhere, so of two
+      // alternating targets the stale one could win (FE-10, measured on the live map).
+      const target = handle.targetLngLat || handle.currentLngLat;
+      if (target[0] === to[0] && target[1] === to[1]) return;
 
       cancelTween(handle);
+
+      // Start from where the marker is drawn now, so a retarget mid-tween continues
+      // from the screen rather than jumping back to the previous tween's origin.
+      let from = handle.currentLngLat;
+      try {
+        const shown = handle.marker?.getLngLat?.();
+        if (shown && Number.isFinite(shown.lng) && Number.isFinite(shown.lat)) from = [shown.lng, shown.lat];
+      } catch {
+        // keep the last completed position
+      }
+      handle.targetLngLat = to;
 
       const start = performance.now();
       const step = (now) => {

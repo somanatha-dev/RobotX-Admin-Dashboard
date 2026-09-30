@@ -17,6 +17,10 @@ const explainLimiter = createRateLimiter({ windowMs: 60_000, limit: 120, keyPref
 // hard-coding them against the specification.
 router.get("/queries", explainLimiter, explainController.listQueries);
 
+// P1.3 — the task's latest decision, for a dashboard that holds a task, not a decision id.
+// Declared before `/:decisionId`, which would otherwise capture "task".
+router.get("/task/:taskId", explainLimiter, explainController.explainTask);
+
 router.get("/:decisionId", explainLimiter, explainController.explainDecision);
 
 module.exports = router;
