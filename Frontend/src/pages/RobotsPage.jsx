@@ -15,6 +15,7 @@ import {
 
 import { useAppActions, useAppState } from '@/context/appContext.js';
 import useRobotCommand from '@/hooks/useRobotCommand.js';
+import { returnAvailability } from '@/lib/robotCommands.js';
 import { RobotIdentityBadge, SimulatorRuntimeBadge } from '@/components/system/RobotIdentity.jsx';
 import { normalizeStatus, isActive, isIdle, isIssues, isCharging } from '@/lib/robotStatus.js';
 import {
@@ -37,13 +38,19 @@ function batteryColors(pct) {
 }
 
 export default function RobotsPage() {
-  const { robots, simulatorStatus } = useAppState();
+  const { robots, tasks, simulatorStatus } = useAppState();
   const { retire } = useAppActions();
   const navigate = useNavigate();
   const [filter, setFilter] = useState('All');
   const [selectedRobot, setSelectedRobot] = useState(null);
   const [search, setSearch] = useState('');
   const sendCommand = useRobotCommand();
+  // FS-05 — judged on the live row (the panel holds the row as it was when clicked) and the
+  // live task list.
+  const selectedReturn = returnAvailability(
+    selectedRobot ? robots.find((r) => r.robotId === selectedRobot.robotId) || selectedRobot : null,
+    tasks,
+  );
 
   const filteredRobots = robots.filter((r) => {
     const q = String(search || '').trim().toLowerCase();
@@ -309,13 +316,28 @@ export default function RobotsPage() {
                   >
                     <Pause className="w-5 h-5" /> PAUSE
                   </button>
+                  {/* FS-05: not offered while the unit holds a task (see robotCommands.js). */}
                   <button
+                    type="button"
                     onClick={() => sendCommand(selectedRobot.robotId, 'RETURN')}
-                    className="bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-100 p-3 rounded-xl flex flex-col items-center gap-1.5 text-xs font-bold transition-colors"
+                    disabled={!selectedReturn.available}
+                    aria-disabled={!selectedReturn.available}
+                    title={selectedReturn.reason || undefined}
+                    data-command-unavailable={selectedReturn.available ? undefined : 'RETURN'}
+                    className={`p-3 rounded-xl flex flex-col items-center gap-1.5 text-xs font-bold transition-colors border ${
+                      selectedReturn.available
+                        ? 'bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-100'
+                        : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                    }`}
                   >
                     <RefreshCw className="w-5 h-5" /> RETURN
                   </button>
                 </div>
+                {selectedReturn.reason ? (
+                  <div className="text-[11px] text-muted-foreground" data-return-unavailable-reason>
+                    {selectedReturn.reason}
+                  </div>
+                ) : null}
 
                 <button
                   onClick={() => {

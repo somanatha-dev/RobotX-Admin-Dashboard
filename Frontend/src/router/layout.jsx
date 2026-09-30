@@ -1,11 +1,11 @@
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback } from 'react';
 import { Outlet } from 'react-router-dom';
-import { X } from 'lucide-react';
+import { WifiOff, X } from 'lucide-react';
 
 import AuthChallengeModal from '@/components/modals/AuthChallengeModal.jsx';
 import CreateTaskModal from '@/components/modals/CreateTaskModal.jsx';
 import DecisionRequiredModal from '@/components/modals/DecisionRequiredModal.jsx';
-import * as tasksApi from '@/lib/api/tasks.js';
+import { connectionBanner } from '@/lib/connectionState.js';
 
 import AppSidebar from '@/components/layout/AppSidebar.jsx';
 import AppTopBar from '@/components/layout/AppTopBar.jsx';
@@ -18,56 +18,25 @@ export default function Layout() {
     isCreatingTask,
     decisionRequest,
     notice,
+    connection,
   } = useAppState();
 
   const {
     setAuthRequest,
     setIsCreatingTask,
     createTask,
-    requestAuth,
     setDecisionRequest,
-    addEvent,
     dismissNotice,
   } = useAppActions();
 
-  // Ref to track the WAIT timer so it can be cleared if a new decision arrives
-  const waitTimerRef = useRef(null);
+  // FS-06 — the obstacle alert is information: closing it is all the operator can do, and
+  // it sends nothing. (There used to be WAIT, a REROUTE that called the legacy
+  // `/tasks/:id/reroute` outside the engine, and a CANCEL that logged "continues current
+  // route" — a claim about the robot this page cannot make.)
+  const handleDismissAlert = useCallback(() => setDecisionRequest(null), [setDecisionRequest]);
 
-  // WAIT: dismiss the modal now, re-open the same popup in 2 minutes
-  const handleWait = useCallback(() => {
-    const saved = decisionRequest;
-    setDecisionRequest(null);
-    if (waitTimerRef.current) clearTimeout(waitTimerRef.current);
-    waitTimerRef.current = setTimeout(() => {
-      waitTimerRef.current = null;
-      setDecisionRequest((prev) => prev ?? { ...saved, countdown: 60 });
-    }, 120_000);
-    addEvent(`Waiting 2 min before re-prompting for ${saved?.robotId}`, 'info');
-  }, [decisionRequest, setDecisionRequest, addEvent]);
-
-  // REROUTE: ask backend to compute a fresh Mapbox route from robot's current position,
-  // then dismiss the modal. Wrapped in requestAuth so operator must confirm.
-  const handleReroute = useCallback(() => {
-    const req = decisionRequest;
-    requestAuth('SWARM OVERRIDE: REROUTE', async () => {
-      setDecisionRequest(null);
-      const taskId = req?.taskId;
-      if (taskId) {
-        try {
-          await tasksApi.rerouteTask(taskId);
-          addEvent(`Reroute computed for task ${taskId}`, 'info');
-        } catch {
-          addEvent(`Reroute failed for task ${taskId}`, 'warning');
-        }
-      }
-    });
-  }, [decisionRequest, requestAuth, setDecisionRequest, addEvent]);
-
-  // CANCEL: dismiss the modal only — robot continues on its current route unchanged
-  const handleCancel = useCallback(() => {
-    setDecisionRequest(null);
-    addEvent(`Decision dismissed — ${decisionRequest?.robotId} continues current route`, 'info');
-  }, [decisionRequest, setDecisionRequest, addEvent]);
+  // FS-02 — the page's live data stops being live with the socket; say so on every page.
+  const liveBanner = connectionBanner(connection?.state, connection?.lastLiveAtMs);
 
   return (
     <div className="flex h-screen bg-muted/40 text-foreground overflow-hidden">
@@ -85,6 +54,24 @@ export default function Layout() {
       >
         <AppTopBar />
         <div className="flex-1 min-h-0 px-6 py-5">
+          {liveBanner && (
+            <div
+              role="status"
+              aria-live="polite"
+              data-connection-state={connection.state}
+              className={`mt-2 flex items-start gap-3 rounded-xl border px-4 py-3 ${
+                liveBanner.kind === 'warning'
+                  ? 'border-rose-300 bg-rose-50 text-rose-900'
+                  : 'border-slate-200 bg-white text-slate-700'
+              }`}
+            >
+              <WifiOff className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">{liveBanner.title}</div>
+                <div className="mt-0.5 text-xs">{liveBanner.message}</div>
+              </div>
+            </div>
+          )}
           {notice && (
             <div
               role="status"
@@ -122,12 +109,7 @@ export default function Layout() {
       )}
 
       {decisionRequest && !authRequest && (
-        <DecisionRequiredModal
-          decisionRequest={decisionRequest}
-          onWait={handleWait}
-          onReroute={handleReroute}
-          onCancel={handleCancel}
-        />
+        <DecisionRequiredModal decisionRequest={decisionRequest} onDismiss={handleDismissAlert} />
       )}
     </div>
   );

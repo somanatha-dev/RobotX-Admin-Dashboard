@@ -11,6 +11,8 @@
  * The command endpoint and its payload are unchanged; only what the UI offers and says is.
  */
 
+import { taskRobotCode } from './liveState.js';
+
 /** Commands that take a unit out of service with no dashboard way back in V1. */
 export const ONE_WAY_COMMANDS = Object.freeze(['STOP', 'PAUSE']);
 
@@ -32,6 +34,63 @@ export function isOneWayCommand(type) {
   return ONE_WAY_COMMANDS.includes(String(type || '').toUpperCase());
 }
 
+/*
+ * ── RETURN (FS-05; the backend half is BG-09, not changed here) ─────────────
+ * RETURN goes from the command endpoint straight to the unit; the assignment engine takes
+ * no part. The unit drops what it is doing and reports IDLE (VirtualRobot
+ * `_applyReturnToBase`). Measured on a unit executing a delivery: the Task stayed ASSIGNED
+ * and its Leg active with a live commitment for about 1.5 min, then went REASSIGNING, and
+ * another robot was sent at about 2.4 min (2.8 min in a second run). RETURN is therefore not a completion and not a
+ * cancellation, and while a unit holds a task it is not offered at all.
+ */
+export const RETURN_WARNING =
+  'RETURN is sent directly to the unit; the assignment engine takes no part. The unit ' +
+  'abandons whatever it is doing and reports IDLE. It does not complete or cancel any task.';
+
+/** @param {string} taskId */
+export function returnBusyReason(taskId) {
+  return (
+    `RETURN is not available while this unit holds task ${taskId}. RETURN bypasses the ` +
+    'assignment engine: the unit would abandon the delivery while the engine still holds ' +
+    'it assigned, and the delivery would only be reassigned after the engine\'s own ' +
+    'recovery (measured: about 2.5–3 min). It would neither complete nor cancel the task.'
+  );
+}
+
+const TASK_HOLDING_STATUSES = new Set(['ASSIGNED', 'IN_PROGRESS', 'VERIFYING']);
+
+/**
+ * The task the backend says this unit holds, or null. Read from the robot row's
+ * `currentTask` (`Robot.currentTaskId`, which the engine's assignment projection binds and
+ * unbinds) and, between refetches, from any non-terminal task naming this unit's code.
+ * Either source is enough: offering RETURN on a unit that holds a delivery is the unsafe
+ * direction.
+ *
+ * @param {object} robot a row of the provider's robot list
+ * @param {object[]} tasks the provider's task list
+ */
+export function heldTaskId(robot, tasks) {
+  const own = robot?.currentTask?.taskId || null;
+  if (own) return String(own);
+  const code = String(robot?.robotId || '').trim();
+  if (!code || !Array.isArray(tasks)) return robot?.currentTaskId ? String(robot.currentTaskId) : null;
+  const bound = tasks.find(
+    (t) => TASK_HOLDING_STATUSES.has(String(t?.status || '').toUpperCase()) && taskRobotCode(t) === code,
+  );
+  if (bound) return String(bound.taskId || bound.id);
+  return robot?.currentTaskId ? String(robot.currentTaskId) : null;
+}
+
+/**
+ * Whether RETURN may be offered for this unit, and what to say either way.
+ *
+ * @returns {{ available: boolean, reason: string|null }}
+ */
+export function returnAvailability(robot, tasks) {
+  const taskId = heldTaskId(robot, tasks);
+  return taskId ? { available: false, reason: returnBusyReason(taskId) } : { available: true, reason: null };
+}
+
 /**
  * The warning the authorisation dialog shows before sending `type`, or null.
  *
@@ -39,7 +98,9 @@ export function isOneWayCommand(type) {
  * @returns {string|null}
  */
 export function commandWarning(type) {
-  return isOneWayCommand(type) ? ONE_WAY_WARNING : null;
+  if (isOneWayCommand(type)) return ONE_WAY_WARNING;
+  if (String(type || '').toUpperCase() === 'RETURN') return RETURN_WARNING;
+  return null;
 }
 
 /**

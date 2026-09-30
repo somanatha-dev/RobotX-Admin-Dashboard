@@ -157,7 +157,10 @@ test('FE-04 STOP and PAUSE warn that they are one-way; other commands do not', a
   const m = await import(pathToFileURL(path.join(SRC, 'lib/robotCommands.js')).href);
   assert.match(m.commandWarning('STOP'), /One-way in V1/);
   assert.match(m.commandWarning('pause'), /One-way in V1/);
-  assert.equal(m.commandWarning('RETURN'), null);
+  // RETURN warns too since FS-05, but not as one-way — it is its own warning (see
+  // syncTruth.test.mjs). RESUME is never sent, so it has none.
+  assert.doesNotMatch(m.commandWarning('RETURN'), /One-way in V1/);
+  assert.equal(m.commandWarning('RESUME'), null);
   assert.match(m.STOP_ALL_WARNING, /One-way in V1/);
   assert.deepEqual(
     m.summariseStopAll([

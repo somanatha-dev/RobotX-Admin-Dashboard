@@ -20,6 +20,7 @@ import { TaskRejectionPanel, useTaskRejection } from '@/features/tasks/taskRejec
 import { taskPhase } from '@/features/tasks/taskLifecycle.js';
 import { plannedRouteMeters } from '@/features/tasks/taskRoute.js';
 import { cancellationFor } from '@/lib/taskCancellation.js';
+import { taskRobotCode } from '@/lib/liveState.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -91,7 +92,9 @@ function TaskCard({ task, robot, route, assignmentSignal, onCancel }) {
   const cancellation = cancellationFor(task);
 
   const taskId = task.taskId || task.id;
-  const robotId = task.robot?.robotId || task.robotId || null;
+  // FS-04: the robot's code, read from one place (lib/liveState.js). Never `task.robotId`,
+  // which is a UUID in REST and used to outrank a newer socket assignment.
+  const robotId = taskRobotCode(task);
   // FE-07: `Task.distanceMeters` when the backend sets it; otherwise the length of the route
   // the engine actually offered the robot (TASK_ASSIGNED). No ETA is derived — see taskRoute.js.
   const routeMeters = typeof task.distanceMeters === 'number' ? task.distanceMeters : plannedRouteMeters(route);
@@ -271,7 +274,7 @@ export default function TasksPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {tasks.map((t) => {
             const taskId  = t.taskId || t.id;
-            const robotId = t.robot?.robotId || t.robotId || null;
+            const robotId = taskRobotCode(t);
             const robot   = robotId ? robotMap.get(robotId) : null;
             return (
               <TaskCard

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import {
   DEFAULT_PREFERENCES,
@@ -9,7 +9,6 @@ import {
 
 import { AppActionsContext, AppStateContext } from './appContext.js';
 
-import useDecisionCountdown from '@/hooks/useDecisionCountdown.js';
 import useNotificationsDismiss from '@/hooks/useNotificationsDismiss.js';
 
 import * as authApi from '@/lib/api/auth.js';
@@ -29,10 +28,24 @@ import {
 import { ENGINE_CANCELLATION_REASON, isEngineCancellationRefusal } from '@/lib/taskCancellation.js';
 import { STOP_ALL_WARNING, summariseStopAll } from '@/lib/robotCommands.js';
 import { reopensAssignment } from '@/features/tasks/taskLifecycle.js';
+import { CONNECTION, connectionStateOf } from '@/lib/connectionState.js';
+import { SESSION_CHECK, sessionCheckOutcome, sessionRetryDelayMs } from '@/lib/sessionCheck.js';
+import { applyRobotOffline, applyRobotOnline, applyTaskUpdate, evictOnTerminalUpdate, evictTerminalRoutes } from '@/lib/liveState.js';
+import { obstacleAlertFrom, rerouteAlertLogLine } from '@/lib/obstacleAlert.js';
+import { DUPLICATE_OUTCOME, newIdempotencyKey } from '@/lib/idempotency.js';
 
 export default function AppProvider({ children }) {
   const rrNavigate = useNavigate();
+  const { pathname } = useLocation();
   const [isAuthResolved, setIsAuthResolved] = useState(false);
+  // FS-03 — the first session check could not reach the backend (network error or 5xx), so
+  // whether this browser has a session is not yet known. Not "logged out": the check is
+  // repeated until the backend answers.
+  const [isAuthUnreachable, setIsAuthUnreachable] = useState(false);
+
+  // FS-02 — the dashboard socket's transport state, and when it was last live. Describes
+  // the connection, never a robot: see lib/connectionState.js.
+  const [connection, setConnection] = useState(() => ({ state: CONNECTION.IDLE, lastLiveAtMs: null }));
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
@@ -160,6 +173,9 @@ export default function AppProvider({ children }) {
         ]);
         setRobots(Array.isArray(robotsNext) ? robotsNext : []);
         setTasks(Array.isArray(tasksNext) ? tasksNext : []);
+        // A task the backend lists as finished has no active route to replay on the map,
+        // even if its terminal event never reached this page (lib/liveState.js).
+        evictTerminalRoutes(taskPathCacheRef.current, tasksNext);
         setSimulatorStatus(simulatorNext || null);
       } while (refreshQueuedRef.current);
     } catch (err) {
@@ -181,6 +197,10 @@ export default function AppProvider({ children }) {
 
       const next = { isAuthenticated: true, identity, user };
       setSession(next);
+      // A sign-in answers the session question even if the restore is still retrying an
+      // unreachable backend (FS-03).
+      setIsAuthUnreachable(false);
+      setIsAuthResolved(true);
 
       setPreferences(loadUserPreferences({ userId: user?.id, email: user?.email || identity }));
       addEvent(`Signed in as ${identity}`, 'info');
@@ -290,10 +310,30 @@ export default function AppProvider({ children }) {
     sessionExpiredRef.current = expireSession;
   }, [expireSession]);
 
+  // Read by the session restore below, which must not re-run when `navigate` changes.
+  const navigateRef = useRef(navigate);
+  useEffect(() => {
+    navigateRef.current = navigate;
+  }, [navigate]);
+
+  // ── Session restore: once per mount (FS-03) ───────────────────────────────
+  //
+  // It used to depend on `navigate`, whose identity changes with every location change, so
+  // every page navigation re-ran `/api/auth/me` plus a full refetch — and its catch-all read
+  // any failure as "no session". One sidebar click while the backend was restarting sent a
+  // signed-in operator to the login page. Now it runs once; only the backend saying there
+  // is no session (401/404) signs out. An unreachable backend (network error, 5xx) leaves
+  // the question open and asks again. Fresh data after a reconnect comes from the socket's
+  // `connect` refresh, and between reconnects from the live events — not from navigating.
   useEffect(() => {
     let active = true;
+    let timer = null;
+    let attempt = 0;
 
-    (async () => {
+    const check = async () => {
+      timer = null;
+      // A login that succeeded while this was retrying already resolved the session.
+      if (attempt > 0 && sessionRef.current?.isAuthenticated) return;
       try {
         const data = await authApi.me();
         if (!active) return;
@@ -304,6 +344,7 @@ export default function AppProvider({ children }) {
         setSession(next);
 
         setPreferences(loadUserPreferences({ userId: user?.id, email: user?.email || identity }));
+        setIsAuthUnreachable(false);
         setIsAuthResolved(true);
 
         try {
@@ -311,23 +352,56 @@ export default function AppProvider({ children }) {
         } catch {
           // If robots/tasks APIs are unavailable, keep empty state.
         }
-      } catch {
+      } catch (err) {
         if (!active) return;
+
+        if (sessionCheckOutcome(err) === SESSION_CHECK.UNREACHABLE) {
+          // Not an answer about the session: keep asking, and say why the page is waiting.
+          setIsAuthUnreachable(true);
+          timer = setTimeout(check, sessionRetryDelayMs(attempt));
+          attempt += 1;
+          return;
+        }
+        if (sessionRef.current?.isAuthenticated) return;
 
         // No session: the socket stays closed (it never opens while logged out).
         disconnectDashboardSocket();
         const next = { isAuthenticated: false, identity: '', user: null };
         setSession(next);
         setPreferences({ ...DEFAULT_PREFERENCES });
+        setIsAuthUnreachable(false);
         setIsAuthResolved(true);
-        navigate('/login');
+        navigateRef.current('/login');
       }
-    })();
+    };
+    check();
 
     return () => {
       active = false;
+      if (timer) clearTimeout(timer);
     };
-  }, [navigate, refreshDbState]);
+  }, [refreshDbState]);
+
+  // ── Session check on page change (FS-03) ──────────────────────────────────
+  //
+  // Deliberate and narrow, unlike the accidental re-run it replaces: `/api/auth/me` only,
+  // never the robot/task refetch, and it can only end a session the backend says is gone
+  // (401/404). An unreachable backend changes nothing here — the connection banner already
+  // says the data is stale. This is what still notices an expired cookie on the next page
+  // change, as before; the restore itself no longer re-runs.
+  const checkedPathRef = useRef(null);
+  useEffect(() => {
+    if (checkedPathRef.current === null) {
+      checkedPathRef.current = pathname;
+      return;
+    }
+    if (checkedPathRef.current === pathname) return;
+    checkedPathRef.current = pathname;
+    if (!sessionRef.current?.isAuthenticated) return;
+    authApi.me().catch((err) => {
+      if (sessionCheckOutcome(err) === SESSION_CHECK.NO_SESSION) sessionExpiredRef.current?.();
+    });
+  }, [pathname]);
 
   // `options.warning` is shown in the authorisation dialog above the confirmation, for acts
   // whose consequence the intent label alone does not state (one-way commands).
@@ -539,19 +613,43 @@ export default function AppProvider({ children }) {
     (taskDraft) => {
       setIsCreatingTask(false);
       const robotId = String(taskDraft?.robotId || '').trim();
+      // FS-08 — this draft's Idempotency-Key, made once when the form opened (see
+      // lib/idempotency.js). Captured here, so every retry of this submission from the
+      // authorisation dialog re-sends the same key and the backend answers a retry with the
+      // original task rather than creating a second one.
+      const idempotencyKey = String(taskDraft?.idempotencyKey || '').trim() || newIdempotencyKey();
 
       requestAuth(`CREATE TASK: ${robotId || 'UNASSIGNED'}`, async () => {
         // The request body, including the campus's operating region (`regionId`), which
         // the backend requires. Built by one plain function so the architecture tests
         // exercise exactly what is sent; it throws for a campus with no region.
-        const created = await tasksApi.assignTask(buildAssignTaskRequest(taskDraft));
+        const { task: created, intake } = await tasksApi.assignTask(buildAssignTaskRequest(taskDraft), { idempotencyKey });
+        const createdId = created?.taskId || intake?.taskId || '';
 
-        await refreshDbState();
-        addEvent(`Task ${created?.taskId || ''} created`, 'info');
+        addEvent(
+          intake?.outcome === DUPLICATE_OUTCOME
+            ? `Task ${createdId} was already created by an earlier attempt — no duplicate was made`
+            : `Task ${createdId} created`,
+          'info'
+        );
+
+        // Intake answered 200: the task exists. A failed refresh after that is not a failed
+        // creation, and reporting it as one invited a retry — a second POST.
+        try {
+          await refreshDbState();
+        } catch {
+          showNotice({
+            kind: 'warning',
+            title: `Task ${createdId} was created`,
+            message:
+              'The backend accepted the task, but the task list could not be refreshed. It will ' +
+              'appear when the list next refreshes. Do not create it again.',
+          });
+        }
         navigate('/tasks');
       });
     },
-    [addEvent, navigate, refreshDbState, requestAuth]
+    [addEvent, navigate, refreshDbState, requestAuth, showNotice]
   );
 
   const cancelTask = useCallback(
@@ -592,8 +690,6 @@ export default function AppProvider({ children }) {
 
   const effectiveRoute = session.isAuthenticated ? '/' : '/login';
 
-  useDecisionCountdown({ decisionRequest, setDecisionRequest, addEvent });
-
   // ── The dashboard socket's lifetime is the session's ──────────────────────
   //
   // Connected after a successful login or session restore (both set
@@ -630,7 +726,8 @@ export default function AppProvider({ children }) {
       try {
         await authApi.me();
       } catch (err) {
-        if (err?.status === 401) sessionExpiredRef.current?.();
+        // Only the backend saying "no session" ends it; an unreachable one does not (FS-03).
+        if (sessionCheckOutcome(err) === SESSION_CHECK.NO_SESSION) sessionExpiredRef.current?.();
         return;
       }
       if (!sessionRef.current?.isAuthenticated) return;
@@ -659,6 +756,58 @@ export default function AppProvider({ children }) {
       socket.off('disconnect', onDisconnect);
     };
   }, [addEvent, refreshDbState]);
+
+  // ── Live-connection truth (FS-02) ─────────────────────────────────────────
+  //
+  // Read off the socket's own flags on every transport event, so the layout can say when
+  // the data on the page stopped being live. A disconnect changes no robot: whether a
+  // robot is online is the backend's to say (`robot_offline`, or the refetch on reconnect).
+  const everConnectedRef = useRef(false);
+  const lastLiveAtRef = useRef(null);
+  const readConnection = useCallback(() => {
+    const state = connectionStateOf(
+      { connected: socket.connected, active: socket.active },
+      { authenticated: Boolean(sessionRef.current?.isAuthenticated), everConnected: everConnectedRef.current },
+    );
+    const lastLiveAtMs = lastLiveAtRef.current;
+    setConnection((prev) => (prev.state === state && prev.lastLiveAtMs === lastLiveAtMs ? prev : { state, lastLiveAtMs }));
+  }, []);
+
+  useEffect(() => {
+    const onConnect = () => {
+      everConnectedRef.current = true;
+      lastLiveAtRef.current = Date.now();
+      readConnection();
+    };
+    // Deferred one task: another `disconnect` listener (the single post-UNAUTHORIZED retry
+    // above) may reconnect at once, and the state should be read after it has.
+    const onDisconnect = () => {
+      if (everConnectedRef.current) lastLiveAtRef.current = Date.now();
+      setTimeout(readConnection, 0);
+    };
+    const onConnectError = () => readConnection();
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('connect_error', onConnectError);
+    socket.io.on('reconnect_attempt', onConnectError);
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('connect_error', onConnectError);
+      socket.io.off('reconnect_attempt', onConnectError);
+    };
+  }, [readConnection]);
+
+  // After the session effect above has opened or closed the socket for this session. A new
+  // session starts with no live history, so its first connection is "connecting", not
+  // "reconnecting".
+  useEffect(() => {
+    if (!session.isAuthenticated) {
+      everConnectedRef.current = false;
+      lastLiveAtRef.current = null;
+    }
+    readConnection();
+  }, [session.isAuthenticated, readConnection]);
 
   // ── Live socket subscriptions ─────────────────────────────────────────────
   // Keep global robots/tasks state in sync with backend events so every page
@@ -724,6 +873,38 @@ export default function AppProvider({ children }) {
       );
     };
 
+    // FS-01 — a robot's session ended. The two fields the backend wrote before emitting
+    // this are applied as written (lib/liveState.js). No refetch: `/api/robots/state` would
+    // overlay the robot's last self-reported status for up to its 15 s TTL (BG-01), which
+    // is exactly the stale "still PAUSED and online" this replaces. Its `isOnline` would
+    // agree either way — that one is read from the Robot row.
+    const onRobotOffline = (data) => {
+      const robotId = String(data?.robotId || '').trim();
+      if (!robotId) return;
+      setRobots((prev) => applyRobotOffline(prev, data));
+      addEvent(`Robot ${robotId} went offline`, 'warning');
+      // A refetch already in flight may have read the row before the offline write, and
+      // would land after this and show the robot online again. Queue one more pass so no
+      // snapshot older than this event is the last word (its `isOnline` is the DB's).
+      if (refreshingRef.current) {
+        refreshDbState().catch(() => {
+          // a 401 here already signed the page out (see refreshDbState)
+        });
+      }
+    };
+
+    // FS-01 — a robot authenticated again. The backend has restored the status its
+    // disconnect replaced; the event does not say which, so the row is refetched for it.
+    const onRobotOnline = (data) => {
+      const robotId = String(data?.robotId || '').trim();
+      if (!robotId) return;
+      setRobots((prev) => applyRobotOnline(prev, data));
+      addEvent(`Robot ${robotId} is back online`, 'info');
+      refreshDbState().catch(() => {
+        // a 401 here already signed the page out (see refreshDbState)
+      });
+    };
+
     // New PENDING task created — add to list immediately so spinner shows.
     const onTaskCreated = (data) => {
       const taskId = String(data?.taskId || '').trim();
@@ -746,22 +927,22 @@ export default function AppProvider({ children }) {
       } else if (data?.status === 'FAILED') {
         addEvent(`Task ${taskId} failed`, 'critical');
       }
+      // FS-04 — the socket's robot code goes where the card reads it (`robot.robotId`), so a
+      // reassigned task names its new robot at once. See lib/liveState.js.
       setTasks((prev) =>
-        prev.map((t) => {
-          if (String(t.taskId || '').trim() !== taskId) return t;
-          return {
-            ...t,
-            ...(typeof data.status === 'string' ? { status: data.status } : {}),
-            // Enrich with robot info when DTARO assignment completes (ASSIGNED event).
-            ...(data.robot ? { robot: data.robot } : {}),
-            ...(typeof data.distanceMeters === 'number' ? { distanceMeters: data.distanceMeters } : {}),
-            ...(data.robotId ? { robotId: data.robotId } : {}),
-            // Carried by a VERIFYING update (insufficient or unavailable completion
-            // evidence); the card shows it as the reason the task is held.
-            ...(data.verification && typeof data.verification === 'object' ? { verification: data.verification } : {}),
-          };
-        })
+        prev.map((t) => (String(t.taskId || '').trim() === taskId ? applyTaskUpdate(t, data) : t))
       );
+      // A finished task leaves the map's route cache, which is replayed on every telemetry
+      // tick; left in it, the route came back within one tick of being removed. `taskRoutes`
+      // is kept: it is the Tasks card's planned-route distance, and the map never reads it.
+      evictOnTerminalUpdate(taskPathCacheRef.current, data);
+      // The backend re-bound `Robot.currentTaskId` (and unbound the previous robot on a
+      // reassignment) before emitting this, and nothing on the socket carries that. It used
+      // to be picked up only by the refetch every page navigation triggered (FS-03); now the
+      // event that announces the change fetches it. Concurrent calls coalesce into one pass.
+      refreshDbState().catch(() => {
+        // a 401 here already signed the page out (see refreshDbState)
+      });
       // Release robot from task on any terminal status so the UI never shows stale task.
       if (TERMINAL_STATUSES.has(data?.status) && data?.robotId) {
         const rid = String(data.robotId).trim();
@@ -774,35 +955,19 @@ export default function AppProvider({ children }) {
       }
     };
 
-    // Obstacle detected — open the decision modal.
+    // Obstacle reported — show it (FS-06). Information only: no countdown, no claimed
+    // reroute, no action offered that runs outside the engine (lib/obstacleAlert.js).
     const onAlertCreated = (data) => {
-      const reporterId = String(data?.reportingRobotId || '').trim();
-      const severity = String(data?.severity || 'MEDIUM');
-      const zone = String(data?.zoneName || data?.zoneId || '');
-      const lat = typeof data?.lat === 'number' ? data.lat.toFixed(4) : '?';
-      const lon = typeof data?.lon === 'number' ? data.lon.toFixed(4) : '?';
-
-      // Look up the robot's active task ID from the current robots snapshot.
-      const reporter = reporterId
-        ? robotsRef.current.find((r) => String(r.robotId || '').trim() === reporterId)
-        : null;
-      const activeTaskId = reporter?.currentTask?.taskId || '';
+      const alert = obstacleAlertFrom(data, robotsRef.current);
 
       addEvent(
-        `Obstacle detected${reporterId ? ` by ${reporterId}` : ''} — ${severity}${zone ? ` in ${zone}` : ''}`,
+        `Obstacle reported${alert.robotId ? ` by ${alert.robotId}` : ''} — ${alert.severity || 'severity not stated'}` +
+          `${alert.zone ? ` in ${alert.zone}` : ''}`,
         'critical'
       );
 
-      setDecisionRequest((prev) => {
-        // Don't overwrite an active decision already being shown.
-        if (prev) return prev;
-        return {
-          robotId: reporterId || 'UNKNOWN',
-          taskId: activeTaskId || String(data?.obstacleId || ''),
-          issue: `${severity} obstacle at (${lat}, ${lon})${zone ? ` in ${zone}` : ''}. Backend is auto-rerouting.`,
-          countdown: 60,
-        };
-      });
+      // One alert on screen at a time; every alert is in the event log above.
+      setDecisionRequest((prev) => prev ?? alert);
     };
 
     // `TASK_ASSIGNED` (capitals) — unchanged by the cutover and genuinely means
@@ -830,12 +995,12 @@ export default function AppProvider({ children }) {
       setTaskRoutes((prev) => ({ ...prev, [taskId]: { pathToPickup, pathToDrop } }));
     };
 
-    // Reroute notification — route overlays handled by useRobotStream.
+    // The backend alerted a robot whose planned path crosses the obstacle. Emitted before
+    // any replanning is attempted, so it is logged as an alert, not as a reroute (FS-06).
+    // A replanned path, when one exists, arrives as TASK_UPDATED `REROUTED` (useRobotStream).
     const onRerouteAlert = (data) => {
-      const robotId = String(data?.robotId || '').trim();
-      if (robotId) {
-        addEvent(`Robot ${robotId} rerouted around obstacle`, 'warning');
-      }
+      const line = rerouteAlertLogLine(data);
+      if (line) addEvent(line, 'warning');
     };
 
     // ── PHASE 15 — §3.4's intake acknowledgement ────────────────────────────
@@ -911,6 +1076,8 @@ export default function AppProvider({ children }) {
     socket.on(DASHBOARD_EVENTS.ROBOT_UPDATE, onRobotUpdate);
     socket.on(DASHBOARD_EVENTS.ROBOT_UPDATED, onRobotUpdated);
     socket.on(DASHBOARD_EVENTS.ROBOT_SPECIFICATION_UPDATED, onRobotSpecificationUpdated);
+    socket.on(DASHBOARD_EVENTS.ROBOT_OFFLINE, onRobotOffline);
+    socket.on(DASHBOARD_EVENTS.ROBOT_ONLINE, onRobotOnline);
     socket.on(DASHBOARD_EVENTS.TASK_CREATED, onTaskCreated);
     socket.on(DASHBOARD_EVENTS.TASK_ACCEPTED, onTaskAccepted);
     socket.on(DASHBOARD_EVENTS.TASK_ERROR, onTaskError);
@@ -924,6 +1091,8 @@ export default function AppProvider({ children }) {
       socket.off(DASHBOARD_EVENTS.ROBOT_UPDATE, onRobotUpdate);
       socket.off(DASHBOARD_EVENTS.ROBOT_UPDATED, onRobotUpdated);
       socket.off(DASHBOARD_EVENTS.ROBOT_SPECIFICATION_UPDATED, onRobotSpecificationUpdated);
+      socket.off(DASHBOARD_EVENTS.ROBOT_OFFLINE, onRobotOffline);
+      socket.off(DASHBOARD_EVENTS.ROBOT_ONLINE, onRobotOnline);
       socket.off(DASHBOARD_EVENTS.TASK_CREATED, onTaskCreated);
       socket.off(DASHBOARD_EVENTS.TASK_ACCEPTED, onTaskAccepted);
       socket.off(DASHBOARD_EVENTS.TASK_ERROR, onTaskError);
@@ -933,7 +1102,7 @@ export default function AppProvider({ children }) {
       socket.off(DASHBOARD_EVENTS.ALERT_CREATED, onAlertCreated);
       socket.off(DASHBOARD_EVENTS.REROUTE_ALERT, onRerouteAlert);
     };
-  }, [addEvent, setDecisionRequest]);
+  }, [addEvent, refreshDbState, setDecisionRequest]);
   // ─────────────────────────────────────────────────────────────────────────
 
   useNotificationsDismiss({
@@ -947,6 +1116,8 @@ export default function AppProvider({ children }) {
     () => ({
       effectiveRoute,
       isAuthResolved,
+      isAuthUnreachable,
+      connection,
       isSidebarOpen,
       isNotificationsOpen,
       notificationsRef,
@@ -968,6 +1139,8 @@ export default function AppProvider({ children }) {
     [
       effectiveRoute,
       isAuthResolved,
+      isAuthUnreachable,
+      connection,
       isSidebarOpen,
       isNotificationsOpen,
       session,

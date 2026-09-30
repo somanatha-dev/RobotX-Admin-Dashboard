@@ -47,10 +47,11 @@ export function refusalMessage(data) {
   );
 }
 
-export async function requestJson(path, { method = 'GET', body, errorMessage = 'Request failed' } = {}) {
+export async function requestJson(path, { method = 'GET', body, headers, errorMessage = 'Request failed' } = {}) {
+  const merged = { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(headers || {}) };
   const res = await fetch(`${API_URL}${path}`, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: Object.keys(merged).length ? merged : undefined,
     credentials: 'include',
     body: body ? JSON.stringify(body) : undefined,
   });

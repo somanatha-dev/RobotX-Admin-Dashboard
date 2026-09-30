@@ -116,6 +116,14 @@ export const DASHBOARD_EVENTS = Object.freeze({
 	 * would make a page that shows configuration re-render on every heartbeat.
 	 */
 	ROBOT_SPECIFICATION_UPDATED: "ROBOT_SPECIFICATION_UPDATED",
+	/**
+	 * FS-01 — a robot's session ended / began (robot.handler.js). `{ robotId }` only.
+	 * Emitted after the Robot row is written (`isOnline:false, status:"OFFLINE"` / `isOnline:
+	 * true` with the prior status restored). Telemetry stopping says nothing by itself, so
+	 * without these a disconnected robot kept its green dot until the next page refetch.
+	 */
+	ROBOT_OFFLINE: "robot_offline",
+	ROBOT_ONLINE: "robot_online",
 	ALERT_CREATED: "ALERT_CREATED",
 	REROUTE_ALERT: "REROUTE_ALERT",
 });

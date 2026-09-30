@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 
 import { socket, DASHBOARD_EVENTS } from '@/lib/socket.js';
+import { isTerminalTaskStatus, replayableRoutes, staleMapRoutes } from '@/lib/liveState.js';
 import { injectPulseCSS, applyMarkerZoomScale } from '@/lib/mapboxMarkers.js';
 
 // ── The robot rendering seam ────────────────────────────────────────────────
@@ -1088,10 +1089,23 @@ export function useRobotStream({
   }, []);
 
   useEffect(() => {
+    // FS-04 — a task has one robot. When the backend names the robot for a task, any other
+    // robot this map still ties to it (the one it was reassigned from) loses the task and
+    // its route line, instead of keeping both drawn.
+    const releaseFromOtherRobots = (taskId, robotId) => {
+      if (!taskId || !robotId) return;
+      for (const [otherId, record] of robotTasksRef.current.entries()) {
+        if (otherId === robotId || String(record?.taskId || '') !== taskId) continue;
+        robotTasksRef.current.delete(otherId);
+        removeRouteForRobot(otherId);
+      }
+    };
+
     const onAssigned = (msg) => {
       const taskId = String(msg?.taskId || '').trim();
       const robotId = String(msg?.robotId || '').trim();
       if (!taskId) return;
+      releaseFromOtherRobots(taskId, robotId);
 
       const pathToPickup = Array.isArray(msg?.pathToPickup) ? msg.pathToPickup : null;
       const pathToDrop = Array.isArray(msg?.pathToDrop) ? msg.pathToDrop : null;
@@ -1142,7 +1156,6 @@ export function useRobotStream({
 
     // Single handler for all TASK_UPDATED cases — previously split across two
     // useEffects which caused two subscriptions to the same event per render.
-    const TERMINAL_STATUSES_ROUTE = new Set(['COMPLETED', 'CANCELLED', 'FAILED']);
     const onTaskUpdated = (msg) => {
       const taskId = String(msg?.taskId || '').trim();
       const robotId = String(msg?.robotId || '').trim();
@@ -1152,13 +1165,19 @@ export function useRobotStream({
       // This, and a robot leaving the visible set, are now the ONLY two things
       // that delete a route. Forgetting the task record is what makes the
       // removal stick: without it the next cache replay would draw it again.
-      if (TERMINAL_STATUSES_ROUTE.has(msg?.status)) {
+      if (isTerminalTaskStatus(msg?.status)) {
         if (robotId) {
           robotTasksRef.current.delete(robotId);
           removeRouteForRobot(robotId);
         }
+        // The finished task's paths leave this hook's cache too (the provider's replayed
+        // cache is evicted by AppProvider), so nothing here can redraw it.
+        if (taskId) taskPathsRef.current.delete(taskId);
         return;
       }
+
+      // A non-terminal update naming the task's robot (an assignment or a reassignment).
+      releaseFromOtherRobots(taskId, robotId);
 
       // Case B: backend replanned a segment after an obstacle.
       if (msg?.action !== 'REROUTED') return;
@@ -1349,7 +1368,8 @@ export function useRobotStream({
       // now read as "telemetry does not carry tasks" rather than as "the task
       // ended".
       const carried = robot?.task || robot?.currentTask;
-      if (carried?.taskId) rememberTask(visual.id, { ...carried, taskId: String(carried.taskId) });
+      // A row read before the task finished can still name it; a finished task is not re-registered.
+      if (carried?.taskId && !isTerminalTaskStatus(carried.status)) rememberTask(visual.id, { ...carried, taskId: String(carried.taskId) });
 
       // Routes are a separate operational overlay keyed by task, not part of
       // the robot's representation — a 3D robot would not change any of this.
@@ -1440,6 +1460,22 @@ export function useRobotStream({
     const map = mapRef?.current;
     if (!map) return;
 
+    // First, what is drawn must still be backed by the provider's route cache: a terminal
+    // task the map never heard about (it was disconnected when it finished) was evicted by
+    // the refetch that follows the reconnect, and that refetch is what re-runs this effect.
+    // Done before the markers sync, so no stale record is drawn from on the way.
+    if (taskPathCacheRef?.current) {
+      const stale = staleMapRoutes(
+        { rendered: routesRef.current, records: robotTasksRef.current, localPaths: taskPathsRef.current },
+        taskPathCacheRef.current,
+      );
+      for (const { robotId, taskId, finished } of stale) {
+        robotTasksRef.current.delete(robotId);
+        if (finished) taskPathsRef.current.delete(taskId);
+        removeRouteForRobot(robotId);
+      }
+    }
+
     // Only coordinates the backend actually reported — never a default position.
     const list = (Array.isArray(globalRobots) ? globalRobots : []).filter(
       (r) => Number.isFinite(r?.lat) && Number.isFinite(r?.lon)
@@ -1450,12 +1486,13 @@ export function useRobotStream({
 
     // After markers are placed, draw any routes we have cached but haven't
     // drawn yet (e.g. TASK_ASSIGNED fired while user was on a different page).
+    // A finished task is not in this cache (AppProvider evicts it), so it cannot come back here.
     if (taskPathCacheRef?.current) {
-      for (const [taskId, entry] of taskPathCacheRef.current.entries()) {
-        const { robotId, pathToPickup, pathToDrop, pickup, drop } = entry;
-        if (!robotId || !pathToPickup || !pathToDrop) continue;
-        if (!activeRobotIdsRef.current.has(robotId)) continue;
-        if (routesRef.current.has(robotId)) continue; // already drawn
+      const replay = replayableRoutes(taskPathCacheRef.current, {
+        activeRobotIds: activeRobotIdsRef.current,
+        drawnRobotIds: routesRef.current,
+      });
+      for (const { taskId, robotId, pathToPickup, pathToDrop, pickup, drop } of replay) {
         // No `pendingSegment`: this is a REPLAY of an assignment that may have
         // happened minutes ago, not the engine saying where the unit is now.
         // Declaring TO_PICKUP here would drag the drawn progress back to the
@@ -1477,6 +1514,7 @@ export function useRobotStream({
     upsertRoutes,
     rememberTask,
     lastKnownPoint,
+    removeRouteForRobot,
     taskPathCacheRef,
   ]);
 

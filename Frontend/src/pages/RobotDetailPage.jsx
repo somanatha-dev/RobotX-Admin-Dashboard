@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Camera, Pencil, Trash2, X } from 'lucide-react';
 import { useAppActions, useAppState } from '@/context/appContext.js';
 import useRobotCommand from '@/hooks/useRobotCommand.js';
-import { RESUME_UNAVAILABLE_REASON } from '@/lib/robotCommands.js';
+import { RESUME_UNAVAILABLE_REASON, returnAvailability } from '@/lib/robotCommands.js';
 import { RobotIdentityBadge, SimulatorRuntimeBadge } from '@/components/system/RobotIdentity.jsx';
 import {
   identityOf,
@@ -35,7 +35,7 @@ function draftFrom(specification) {
 }
 
 export default function RobotDetailPage() {
-  const { robots, simulatorStatus } = useAppState();
+  const { robots, tasks, simulatorStatus } = useAppState();
   const { retire, updateRobotSpecification } = useAppActions();
   const navigate = useNavigate();
   const { id } = useParams();
@@ -43,6 +43,8 @@ export default function RobotDetailPage() {
 
   const robot = robots.find((r) => r.robotId === id);
   const specification = robot?.specification || null;
+  // FS-05 — RETURN is not offered while the backend says this unit holds a task.
+  const returnState = returnAvailability(robot, tasks);
 
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(() => draftFrom(specification));
@@ -140,9 +142,20 @@ export default function RobotDetailPage() {
           >
             RESUME (N/A IN V1)
           </button>
+          {/* FS-05: RETURN bypasses the engine and abandons a delivery, so it is not
+              offered while the unit holds a task; otherwise it carries its warning. */}
           <button
+            type="button"
             onClick={() => sendCommand(robot.robotId, 'RETURN')}
-            className="flex-1 sm:flex-none bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-4 py-2.5 rounded-lg text-xs font-bold transition-colors shadow-sm"
+            disabled={!returnState.available}
+            aria-disabled={!returnState.available}
+            title={returnState.reason || undefined}
+            data-command-unavailable={returnState.available ? undefined : 'RETURN'}
+            className={`flex-1 sm:flex-none border px-4 py-2.5 rounded-lg text-xs font-bold transition-colors shadow-sm ${
+              returnState.available
+                ? 'bg-white border-slate-300 hover:bg-slate-50 text-slate-700'
+                : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+            }`}
           >
             RETURN
           </button>

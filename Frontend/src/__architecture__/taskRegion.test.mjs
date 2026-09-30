@@ -94,7 +94,8 @@ test('the form sends its campus, and the provider submits through the builder', 
   const provider = read('context/AppProvider.jsx');
   assert.match(
     provider,
-    /tasksApi\.assignTask\(buildAssignTaskRequest\(taskDraft\)\)/,
+    // FS-08 added the draft's Idempotency-Key as a header option; the body is unchanged.
+    /tasksApi\.assignTask\(buildAssignTaskRequest\(taskDraft\), \{ idempotencyKey \}\)/,
     'createTask submits exactly what buildAssignTaskRequest builds',
   );
 });

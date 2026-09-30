@@ -16,8 +16,23 @@ import TasksPage from '@/pages/TasksPage.jsx';
 import { useAppState } from '@/context/appContext.js';
 
 function RequireAuth({ children }) {
-  const { session, isAuthResolved } = useAppState();
+  const { session, isAuthResolved, isAuthUnreachable } = useAppState();
 
+  // FS-03 — the session check could not reach the backend. That is not "signed out", so
+  // this is not the login page: the check repeats until the backend answers.
+  if (!isAuthResolved && isAuthUnreachable) {
+    return (
+      <div role="status" data-session-check="unreachable" className="flex h-screen items-center justify-center p-6">
+        <div className="max-w-sm rounded-xl border border-amber-300 bg-amber-50 px-5 py-4 text-sm text-amber-900">
+          <div className="font-semibold">Cannot reach the RobotX backend</div>
+          <div className="mt-1 text-xs">
+            Your session could not be checked, so nothing is shown yet. Retrying automatically;
+            you have not been signed out.
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (!isAuthResolved) return null;
   if (!session?.isAuthenticated) return <Navigate to="/login" replace />;
 
