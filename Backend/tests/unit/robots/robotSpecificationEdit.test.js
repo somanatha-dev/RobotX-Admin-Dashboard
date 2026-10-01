@@ -49,7 +49,7 @@ function editPrisma() {
   prisma.containerModel.upsert.mockImplementation(async ({ create }) => ({ id: "ctr-1", ...create }));
   prisma.capabilityBundle.upsert.mockImplementation(async ({ create }) => ({ id: "cap-1", ...create }));
   prisma.capability.deleteMany.mockResolvedValue({ count: 3 });
-  prisma.capability.create.mockImplementation(async ({ data }) => data);
+  prisma.capability.createMany.mockImplementation(async ({ data }) => ({ count: data.length }));
   prisma.agentClass.upsert.mockImplementation(async ({ create }) => ({ id: "class-1", ...create }));
   prisma.agent.upsert.mockImplementation(async ({ create }) => ({ id: "agent-1", ...create }));
   return prisma;

@@ -226,7 +226,7 @@ describe("T1 — integration with the one shared commissioning transaction", () 
     prisma.containerModel.upsert.mockResolvedValue({ id: "ctr-1" });
     prisma.capabilityBundle.upsert.mockResolvedValue({ id: "bundle-1" });
     prisma.capability.deleteMany.mockResolvedValue({ count: 0 });
-    prisma.capability.create.mockResolvedValue({});
+    prisma.capability.createMany.mockResolvedValue({ count: 0 });
     prisma.agent.upsert.mockResolvedValue({ id: "agent-row-1" });
     prisma.robot.findUnique.mockResolvedValueOnce(null);
   }

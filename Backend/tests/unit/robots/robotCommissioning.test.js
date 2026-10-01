@@ -28,7 +28,7 @@ function commissioningPrisma() {
   prisma.containerModel.upsert.mockImplementation(async ({ create }) => ({ id: "ctr-1", ...create }));
   prisma.capabilityBundle.upsert.mockImplementation(async ({ create }) => ({ id: "cap-1", ...create }));
   prisma.capability.deleteMany.mockResolvedValue({ count: 0 });
-  prisma.capability.create.mockImplementation(async ({ data }) => data);
+  prisma.capability.createMany.mockImplementation(async ({ data }) => ({ count: data.length }));
   prisma.agentClass.upsert.mockImplementation(async ({ create }) => ({ id: "class-1", ...create }));
   prisma.agent.upsert.mockImplementation(async ({ create }) => ({ id: "agent-1", ...create }));
 
@@ -114,7 +114,7 @@ describe("commissionRobot — the specification persists (P0-2)", () => {
     const prisma = commissioningPrisma();
     await robotService.commissionRobot(prisma, BODY);
 
-    const names = prisma.capability.create.mock.calls.map(([{ data }]) => data.name);
+    const names = prisma.capability.createMany.mock.calls.flatMap(([{ data }]) => data.map((row) => row.name));
     expect(names).toEqual(expect.arrayContaining(["chassis_type", "max_payload_mass"]));
   });
 

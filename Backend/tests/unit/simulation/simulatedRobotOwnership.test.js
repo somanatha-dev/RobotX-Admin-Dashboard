@@ -227,7 +227,7 @@ function createStorePrisma() {
     // `simulatedClassDeclaration.service`), passthrough spies for the reason given below.
     compartment: { upsert: jest.fn(async ({ create }) => ({ id: "compartment-1", ...create })) },
     capabilityBundle: { upsert: passthroughUpsert("cap") },
-    capability: { deleteMany: jest.fn(async () => ({ count: 0 })), create: jest.fn(async ({ data }) => data) },
+    capability: { deleteMany: jest.fn(async () => ({ count: 0 })), createMany: jest.fn(async ({ data }) => ({ count: data.length })) },
     agentClass: { upsert: passthroughUpsert("class"), update: jest.fn(async ({ where }) => ({ id: where.id })) },
     agent: { upsert: jest.fn(async ({ create }) => ({ id: "agent-1", ...create })) },
 

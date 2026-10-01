@@ -185,6 +185,7 @@ function createMockPrisma() {
     },
     capability: {
       create: jest.fn(),
+      createMany: jest.fn(),
       deleteMany: jest.fn(),
     },
     location: {

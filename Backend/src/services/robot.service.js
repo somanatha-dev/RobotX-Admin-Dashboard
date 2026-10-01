@@ -13,6 +13,22 @@ function clamp(n, min, max) {
 }
 
 /**
+ * The latency budget of the one commissioning transaction, in milliseconds.
+ *
+ * Prisma's interactive-transaction default is 5000 ms. This transaction is about twenty
+ * sequential statements that must commit together (Robot, Agent, class, models,
+ * capabilities and, for a simulated unit, its energy rows). Against a remote PostgreSQL
+ * every statement costs a few network round trips, so at about 65 ms RTT the default
+ * expired before the transaction finished. The request then answered 500 with P2028 at
+ * whichever statement was running when the deadline passed, which was the final re-read.
+ * There is no non-database work inside it to move out.
+ *
+ * Set on this transaction only, not on the client. It is still a hard bound: a
+ * transaction that outlives it is rolled back and leaves no rows.
+ */
+const COMMISSIONING_TRANSACTION_TIMEOUT_MS = 15_000;
+
+/**
  * Commission a **physical** unit — the service behind `POST /api/robots`.
  *
  * ── STEP 2: this endpoint no longer creates simulated robots ────────────────
@@ -221,6 +237,9 @@ async function createRobotWithProjection(prisma, body, identity) {
   // The returned shape is unchanged: the caller receives the same Robot row with
   // the same includes it received before Phase 2, so no HTTP response moves.
   const created = await prisma.$transaction(async (tx) => {
+    // No `include`: inside the transaction this row only supplies `id` and `robotId`, to
+    // the Agent projection and the final re-read. The re-read below carries the includes
+    // the response needs, and each include here cost a round trip of its own.
     const robot = await tx.robot.create({
       data: {
         robotId: robotCode,
@@ -260,7 +279,6 @@ async function createRobotWithProjection(prisma, body, identity) {
         massKg: rows.robot.massKg ?? null,
         batteryReservePct: rows.robot.batteryReservePct ?? null,
       },
-      include: { location: true, campus: true, currentTask: true },
     });
 
     // In the same transaction as the Robot and the Agent, for the same reason those two
@@ -319,7 +337,7 @@ async function createRobotWithProjection(prisma, body, identity) {
         ...robotSpecification.SPECIFICATION_INCLUDE,
       },
     });
-  });
+  }, { timeout: COMMISSIONING_TRANSACTION_TIMEOUT_MS });
 
   return created;
 }
@@ -378,11 +396,14 @@ async function applySpecification(tx, input) {
   // Replaced, not merged: a bundle states what the unit **is**, and merging a new
   // statement into an old one leaves capabilities nobody currently claims. Both halves are
   // in the caller's transaction, so no reader observes a bundle mid-rewrite.
+  //
+  // One INSERT for the whole set. It has the same rows, and `skipDuplicates` is left off,
+  // so a repeated name still fails on `@@unique([bundleId, name])` and aborts the
+  // transaction exactly as a per-row create did.
   await tx.capability.deleteMany({ where: { bundleId: bundle.id } });
-  for (const capability of capabilities) {
-    // eslint-disable-next-line no-await-in-loop
-    await tx.capability.create({ data: { ...capability, bundleId: bundle.id } });
-  }
+  await tx.capability.createMany({
+    data: capabilities.map((capability) => ({ ...capability, bundleId: bundle.id })),
+  });
 
   const classFields = {
     ...rows.agentClass,
@@ -622,6 +643,7 @@ module.exports = {
   // the only other caller: the simulated path needs the same Robot/AgentClass/Agent
   // transaction and must not have a second copy of it.
   createRobotWithProjection,
+  COMMISSIONING_TRANSACTION_TIMEOUT_MS,
   listRobots,
   ensureAgentForRobot,
   readAgentProjection,

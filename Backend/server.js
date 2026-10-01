@@ -16,6 +16,7 @@ const {
   selectForUpdate,
   isSerializationFailure,
 } = require("./src/db/prisma");
+const { assertSchemaMatchesClient } = require("./src/db/schemaDrift");
 const { initKv } = require("./src/cache/kv");
 const initSocketServer = require("./src/sockets/socket.server");
 const { createVirtualRobotSimulator } = require("./src/simulation/SimulationEngine");
@@ -415,6 +416,16 @@ async function start() {
   });
 
   const prisma = await connectPrismaWithRetry({ logger });
+
+  // A database behind prisma/migrations connects fine and then fails every query that names
+  // a column it lacks (P2022) — the simulator-creation 500 at the Robot insert was this.
+  // Refused here, naming the columns, instead of per request as an Internal Server Error.
+  try {
+    await assertSchemaMatchesClient(prisma);
+  } catch (error) {
+    logger.error(`Refusing to start: ${error.message}`);
+    throw error;
+  }
   const { kv, close: closeKv } = await initKv({ logger });
 
   // Socket.IO's default adapter only broadcasts within its own process — a
