@@ -1006,6 +1006,23 @@ describe("4 — provenance is not an assignment preference", () => {
     expect(anonymous(pricedTwo)).toBe(anonymous(pricedOne));
   });
 
+  test("D1: a priced entry written by the real pipeline carries the authority epoch of the snapshot it was priced from", async () => {
+    const { assembly, seen } = await twinWorld({
+      labels: { t1: SIMULATED, t2: PHYSICAL },
+      simulated: { t1: true, t2: false },
+    });
+    await expandOnce(assembly);
+
+    for (const id of ["agent-t1", "agent-t2"]) {
+      const evaluated = seen.find((row) => row.agentId === id);
+      const priced = assembly.deps.pricedCandidateFor(id, "leg-row-1", {});
+      expect(evaluated.agentSnapshot.authorityEpoch).not.toBeUndefined();
+      expect(evaluated.agentSnapshot.authorityEpoch).not.toBeNull();
+      // G3's pin (`commitFor`) is this value, never a read made at commit time.
+      expect(priced.authorityEpoch).toBe(evaluated.agentSnapshot.authorityEpoch);
+    }
+  });
+
   test("assignment: swapping the labels between identical twins does not move the decision", async () => {
     const decide = async (labels, simulated) => {
       const world = await twinWorld({ labels, simulated });

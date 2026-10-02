@@ -96,11 +96,22 @@ function createAgentFactsProvider(settings) {
     // The agent's region: declared on the Agent, else the region of the shard the index
     // maintainer placed it in (`indexMaintainer.regionForObservedPosition`) — the same
     // published assignment, read back rather than recomputed.
+    //
+    // B1 — a caller that has already read those two rows for this agent (its
+    // `AgentCellPosition.shardId`, and that Shard's `regionId`, or `null` for no Shard row)
+    // hands them over as `placement`, and they are not read a second time: two sequential
+    // round trips per agent, on the coordinator's planning read and on both of its commit-path
+    // reads. Without it, they are read here, as before.
     let regionId = agent.regionId || null;
     if (!regionId) {
-      const mirror = await prisma.agentCellPosition.findUnique({ where: { agentId: agent.id }, select: { shardId: true } });
-      const shard = mirror ? await prisma.shard.findUnique({ where: { shardId: mirror.shardId }, select: { regionId: true } }) : null;
-      regionId = shard ? shard.regionId : null;
+      const placement = input && input.placement;
+      if (placement && placement.agentId === agent.id && typeof placement.shardId === "string") {
+        regionId = placement.regionId ?? null;
+      } else {
+        const mirror = await prisma.agentCellPosition.findUnique({ where: { agentId: agent.id }, select: { shardId: true } });
+        const shard = mirror ? await prisma.shard.findUnique({ where: { shardId: mirror.shardId }, select: { regionId: true } }) : null;
+        regionId = shard ? shard.regionId : null;
+      }
     }
 
     const [position, reservations, zones] = await Promise.all([

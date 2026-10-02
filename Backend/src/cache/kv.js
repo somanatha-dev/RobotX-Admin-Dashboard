@@ -271,6 +271,37 @@ async function initKv({ logger }) {
       return memorySMembers(key);
     },
 
+    // Batch SMEMBERS as one Redis pipeline: one network round trip for N keys instead of N
+    // (B1 — the Availability Index sweep made ~8,750 sequential reads per Leg). Returns one
+    // array per key, in key order, `[]` for a missing key: exactly what N calls to
+    // `smembers` return. Error semantics are the sequential calls' too: the first command that
+    // fails disables Redis just as `smembers` would on it, and that key and every later one
+    // are answered from the in-memory sets, as each later sequential call would have been.
+    async smembersMany(keys) {
+      if (!Array.isArray(keys) || keys.length === 0) return [];
+      const out = new Array(keys.length);
+      let next = 0;
+      if (redisAvailable && redis) {
+        try {
+          const p = redis.pipeline();
+          for (const key of keys) p.smembers(key);
+          const results = await p.exec();
+          for (; next < keys.length; next += 1) {
+            const [err, value] = (results && results[next]) || [new Error("no pipeline reply")];
+            if (err) {
+              disableRedis(err);
+              break;
+            }
+            out[next] = Array.isArray(value) ? value : [];
+          }
+        } catch (e) {
+          disableRedis(e);
+        }
+      }
+      for (; next < keys.length; next += 1) out[next] = memorySMembers(keys[next]);
+      return out;
+    },
+
     // Batch set using Redis pipelining (performance-critical for simulation).
     // entries: [{ key, value, ex }]
     async setManyEx(entries) {

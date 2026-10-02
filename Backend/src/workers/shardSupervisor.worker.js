@@ -42,6 +42,7 @@
 
 const election = require("../engine/shard/election");
 const failover = require("../engine/shard/failover");
+const leadership = require("../engine/shard/leadership");
 const membership = require("../engine/shard/membership");
 const shardModel = require("../engine/shard/shardModel");
 const sizing = require("../engine/shard/sizing");
@@ -126,15 +127,18 @@ async function renewalPass(deps, context) {
     storeRoundTripMillis: settings.storeRoundTripMillis,
   });
 
-  return {
-    session: renewed,
-    transition:
-      renewed.state === election.LEADERSHIP_STATE.STEPPING_DOWN
-        ? renewed.lastRefusal
-          ? "LOST_LEASE"
-          : "MARGIN_EXHAUSTED"
-        : "RENEWED",
-  };
+  return { session: renewed, transition: renewalTransition(renewed) };
+}
+
+/**
+ * The transition a renewal result reports.
+ *
+ * @param {object} renewed an `election.renew()` result
+ * @returns {string}
+ */
+function renewalTransition(renewed) {
+  if (renewed.state !== election.LEADERSHIP_STATE.STEPPING_DOWN) return "RENEWED";
+  return renewed.lastRefusal ? "LOST_LEASE" : "MARGIN_EXHAUSTED";
 }
 
 /**
@@ -480,6 +484,14 @@ async function publishLeaderHint(deps, input) {
  * them before renewal would be acting on a leadership belief one tick out of date, which
  * over a lease duration is the whole vulnerability window §19.5 is written about.
  *
+ * ── `context.authority` — the session as `start()` owns it ──────────────────
+ * Without it this is a function from one session to the next, as every direct caller uses it.
+ * `start()` passes one, because its session can change while this tick is still running: the
+ * loop renews the lease while a long reconciliation runs (A-2). With it, the lease result is
+ * published the moment it is known (`adoptLease`), the reconciliation's promotion is applied
+ * only to the term it ran for (`promote`), and every later pass reads the session as it is
+ * then (`current`), so a tick that finishes late can never put back a session that has moved on.
+ *
  * @param {object} deps
  * @param {object} context
  * @returns {Promise<object>}
@@ -487,20 +499,24 @@ async function publishLeaderHint(deps, input) {
 async function runOnce(deps, context) {
   const settings = context || {};
   const storeTime = settings.storeTime || new Date(typeof deps.now === "function" ? deps.now() : Date.now());
+  const authority = settings.authority || null;
 
   const renewal = await renewalPass(deps, { ...settings, storeTime });
-  const recovery = await failoverPass(deps, { ...settings, storeTime, session: renewal.session });
-  const sizingResult = await sizingPass(deps, { ...settings, storeTime, session: recovery.session });
+  const leased = authority ? authority.adoptLease(renewal.session) : renewal.session;
+  const recovery = await failoverPass(deps, { ...settings, storeTime, session: leased });
+  const reconciled = authority ? authority.promote(leased, recovery) : recovery.session;
+  const sizingResult = await sizingPass(deps, { ...settings, storeTime, session: authority ? authority.current() : reconciled });
   // Unconditional. It used to be gated on `settings.plan`, a key nothing in production ever
   // set, so the pass never ran anywhere — the consumer half of P13-R4. The plan now lives
   // in `ShardRebalance` and the pass decides for itself whether there is one.
-  const migration = await migrationPass(deps, { ...settings, storeTime, session: recovery.session });
+  const migration = await migrationPass(deps, { ...settings, storeTime, session: authority ? authority.current() : reconciled });
 
-  const hint = await publishLeaderHint(deps, { session: recovery.session, nowMs: storeTime.getTime() });
+  const session = authority ? authority.current() : reconciled;
+  const hint = await publishLeaderHint(deps, { session, nowMs: storeTime.getTime() });
 
   return {
     storeTimeMs: storeTime.getTime(),
-    session: recovery.session,
+    session,
     transition: renewal.transition,
     failover: recovery.result,
     failoverRan: recovery.ran,
@@ -509,7 +525,7 @@ async function runOnce(deps, context) {
     leaderHintPublished: hint.published,
     // The one question a coordinator asks this worker, answered in one place rather than
     // reconstructed from the four passes above.
-    mayRunRound: recovery.session ? recovery.session.mayCommit === true : false,
+    mayRunRound: session ? session.mayCommit === true : false,
   };
 }
 
@@ -619,28 +635,139 @@ function start(deps, context) {
     );
   }
 
+  // ── One owner of the session, and a lease that is kept while reconciling ──────────────
+  //
+  // The loop used to start a full `runOnce` on every interval with no guard, hand each the
+  // session as it was when the tick started, and replace the session with whichever tick
+  // *finished* last. Step 1's tests measured the consequences: a late FOLLOWER tick demoting a
+  // valid leader, a stale tick acquiring a second fence while the first was still reconciling,
+  // two failover passes at once, and the lease lapsing whenever the acquiring tick ran longer
+  // than ~4.5 s, because nothing could renew until it returned (A-2).
+  //
+  //   - A-1: at most one tick runs the state machine at a time. A boundary that finds it busy
+  //     is skipped; there is no catch-up burst.
+  //   - A-2: the acquisition is published as soon as it is won (LEADER, `mayCommit: false`),
+  //     and a boundary that finds the tick busy renews the lease on its own. Commit permission
+  //     still comes only from `promote()`, after a complete reconciliation, and only for the
+  //     term that reconciliation ran for.
+  //   - At most one lease operation (acquire, renew, release) is in flight at a time, so this
+  //     process never races itself at the store.
+  //   - Every result is folded into the session as it is when the result arrives, never into
+  //     the one the operation started from (`election.foldRenewal`, `promoteIfCurrent`).
   let session = election.followerSession({ shardId: settings.shardId, candidateId: settings.candidateId });
+  let stopped = false;
+  let tickInFlight = false;
+  /** The lease operation in flight, as an identity token; null when none is. */
+  let leaseOperation = null;
+
+  const reportError = (error) => {
+    // A failed tick loses one renewal. It must not take the process down: the lease
+    // will lapse on its own and a standby will take the shard, which is the designed
+    // response to a coordinator that has stopped working (§19.3). Crashing here would
+    // convert a recoverable failover into an outage of whatever else this process
+    // hosts.
+    if (deps && typeof deps.onError === "function") deps.onError(error);
+  };
+  // `stop()` ends the loop, its callbacks included: a tick resolving after it must not drive
+  // the leadership lifecycle back up during a shutdown. The session itself is still kept
+  // current, because the shutdown drain releases whatever it holds.
+  const reportTick = (tick) => {
+    if (!stopped && typeof settings.onTick === "function") settings.onTick(tick);
+  };
+
+  const runTick = () => {
+    const operation = {};
+    tickInFlight = true;
+    leaseOperation = operation;
+    const authority = {
+      adoptLease(next) {
+        // The only lease operation in flight was this tick's, so the session is still the one
+        // it started from. A renewal is folded anyway, so the in-memory lease never regresses.
+        session = next.state === election.LEADERSHIP_STATE.LEADER && election.sameTerm(session, next)
+          ? election.foldRenewal(session, next)
+          : next;
+        if (leaseOperation === operation) leaseOperation = null;
+        return session;
+      },
+      promote(basis, recovery) {
+        if (!recovery || !recovery.ran || !recovery.result || recovery.result.complete !== true) return session;
+        // A reconciliation can outlast every renewal attempted meanwhile. One that threw (an
+        // unreachable store) changes nothing in the session, so the lease may have run out at
+        // the store unrecorded here. Promotion is refused once the session's own lease margin
+        // is gone; the next tick's renewal then says whether this term still exists.
+        const margin = leadership.shouldStopCommitting({
+          leaseExpiry: session.leaseExpiry,
+          storeTime: new Date(typeof deps.now === "function" ? deps.now() : Date.now()),
+          maxClockSkewMillis: settings.maxClockSkewMillis,
+          storeRoundTripMillis: settings.storeRoundTripMillis,
+        });
+        if (margin.shouldStop) return session;
+        session = election.promoteIfCurrent(session, basis, recovery.result);
+        return session;
+      },
+      current() {
+        return session;
+      },
+    };
+
+    runOnce(deps, { ...settings, session, authority })
+      .then(reportTick)
+      .catch(reportError)
+      .finally(() => {
+        tickInFlight = false;
+        if (leaseOperation === operation) leaseOperation = null;
+      });
+  };
+
+  const renewWhileBusy = () => {
+    const operation = {};
+    leaseOperation = operation;
+    const basis = session;
+    const storeTime = new Date(typeof deps.now === "function" ? deps.now() : Date.now());
+
+    election
+      .renew(deps.store, basis, {
+        storeTime,
+        leaseDurationSeconds: settings.leaseDurationSeconds,
+        maxClockSkewMillis: settings.maxClockSkewMillis,
+        storeRoundTripMillis: settings.storeRoundTripMillis,
+      })
+      .then((renewed) => {
+        session = election.foldRenewal(session, renewed);
+        reportTick({
+          storeTimeMs: storeTime.getTime(),
+          session,
+          transition: renewalTransition(renewed),
+          pass: "RENEWAL_ONLY",
+          failover: null,
+          failoverRan: false,
+          sizing: null,
+          migration: { migrated: 0, skipped: "RENEWAL_ONLY", outcomes: [] },
+          leaderHintPublished: false,
+          mayRunRound: session.mayCommit === true,
+        });
+      })
+      .catch(reportError)
+      .finally(() => {
+        if (leaseOperation === operation) leaseOperation = null;
+      });
+  };
 
   const handle = setInterval(() => {
-    runOnce(deps, { ...settings, session })
-      .then((tick) => {
-        session = tick.session;
-        if (typeof settings.onTick === "function") settings.onTick(tick);
-      })
-      .catch((error) => {
-        // A failed tick loses one renewal. It must not take the process down: the lease
-        // will lapse on its own and a standby will take the shard, which is the designed
-        // response to a coordinator that has stopped working (§19.3). Crashing here would
-        // convert a recoverable failover into an outage of whatever else this process
-        // hosts.
-        if (deps && typeof deps.onError === "function") deps.onError(error);
-      });
+    if (stopped || leaseOperation !== null) return;
+    if (!tickInFlight) {
+      runTick();
+      return;
+    }
+    // The tick is busy — reconciling, sizing or migrating. A leader keeps its lease meanwhile.
+    if (session.state === election.LEADERSHIP_STATE.LEADER) renewWhileBusy();
   }, intervalMs);
 
   if (typeof handle.unref === "function") handle.unref();
 
   return {
     stop() {
+      stopped = true;
       clearInterval(handle);
     },
     /** The current session, for a shutdown drain that needs to release it. */

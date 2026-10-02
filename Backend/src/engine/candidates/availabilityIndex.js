@@ -371,6 +371,43 @@ function candidatesInFineCell(deps, shardId, fineCellId, availabilityClass, filt
 }
 
 /**
+ * §6.3 tiers 1, 2 and 5, for many (fine cell, class) partitions at once: the same answer
+ * `candidatesInFineCell` gives for each, in request order, read in one pipelined round trip
+ * where the KV offers `smembersMany` (B1).
+ *
+ * Each answer is exactly `membersOf`'s for that key — the members as strings, de-duplicated,
+ * in canonical agent-id order (§6.6), `[]` for a missing key. A KV without `smembersMany`, or a
+ * batch read that fails, is read key by key through `membersOf`, so each key keeps its own
+ * error-is-empty semantics (I16: the index is advisory).
+ *
+ * @param {object} deps `{ kv }`
+ * @param {string} shardId
+ * @param {{ fineCellId: string, availabilityClass: string }[]} requests
+ * @returns {Promise<string[][]>}
+ */
+async function candidatesInFineCells(deps, shardId, requests) {
+  const keys = (requests || []).map((request) => fineKey(shardId, request.fineCellId, request.availabilityClass));
+  if (keys.length === 0) return [];
+  if (deps && deps.kv && typeof deps.kv.smembersMany === "function") {
+    let lists = null;
+    try {
+      lists = await deps.kv.smembersMany(keys);
+    } catch {
+      lists = null;
+    }
+    if (Array.isArray(lists) && lists.length === keys.length) {
+      return lists.map((members) => [...new Set((members || []).map(String))].sort(compareStrings));
+    }
+  }
+  const out = [];
+  for (const key of keys) {
+    // eslint-disable-next-line no-await-in-loop
+    out.push(await membersOf(deps, key));
+  }
+  return out;
+}
+
+/**
  * §6.3 tier 4: the regional coarse-cell sweep.
  *
  * @param {object} deps `{ kv }`
@@ -440,6 +477,7 @@ module.exports = {
   applyPosition,
   removePosition,
   candidatesInFineCell,
+  candidatesInFineCells,
   candidatesInCoarseCell,
   rebuildFromRecords,
 };

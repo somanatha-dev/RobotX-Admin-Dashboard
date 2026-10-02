@@ -424,10 +424,20 @@ async function tryAcquire(prisma, input) {
  * one of them silently unable to make progress. Refusing the renewal turns that into an
  * explicit re-acquisition, which is a leadership change, which advances the fence.
  *
+ * ── The expiry never moves backwards ────────────────────────────────────────
+ * The new expiry is `storeTime + lease`, and `storeTime` is when the caller *started*, not
+ * when the row lock was granted. Two renewals by the same leader can therefore land out of
+ * order — one slow behind a lock, one fast — and the later-landing one carries the earlier
+ * expiry. Writing it would shorten a lease the store had already granted (measured in Step 1:
+ * T0+8,000 then T0+6,500, both reporting success). So the write is conditional on the stored
+ * expiry being earlier than the proposed one, and a renewal that would not extend the lease
+ * leaves the row alone and reports the stored expiry. It is still a successful renewal: the
+ * holder, the fence and an unexpired lease were all confirmed under the lock.
+ *
  * @param {object} prisma
  * @param {object} input `{ shardId?, holder, expectedFence, storeTime, leaseDurationSeconds }`
  * @returns {Promise<{ renewed: boolean, refusal: string|null, leadershipFence: bigint|null,
- *                     leaseExpiry: Date|null }>}
+ *                     leaseExpiry: Date|null, extended?: boolean }>}
  */
 async function renewLease(prisma, input) {
   const settings = input || {};
@@ -459,8 +469,17 @@ async function renewLease(prisma, input) {
       return { renewed: false, refusal, leadershipFence: observed, leaseExpiry: before.leaseExpiry };
     }
 
+    // Not lapsed, so the stored expiry is a Date. A renewal that would not extend it is a
+    // late one (see above): confirmed, and not written.
+    const stored = new Date(before.leaseExpiry);
+    if (stored.getTime() >= leaseExpiry.getTime()) {
+      return { renewed: true, refusal: null, leadershipFence: expected, leaseExpiry: stored, extended: false };
+    }
+
     const result = await tx.shardLeadership.updateMany({
-      where: { shardId, holder: settings.holder, leadershipFence: expected },
+      // `leaseExpiry < proposed` beside the lock for the same reason `tryAcquire` keeps its
+      // fence condition: it is the half of the monotonic rule that survives losing the lock.
+      where: { shardId, holder: settings.holder, leadershipFence: expected, leaseExpiry: { lt: leaseExpiry } },
       // The fence is deliberately absent from this `data`. See the module header: a
       // renewal that advanced it would abort the renewing leader's own in-flight commits
       // through G1, at exactly the renewal cadence.
@@ -471,7 +490,7 @@ async function renewLease(prisma, input) {
       return { renewed: false, refusal: CAS_REFUSAL.FENCE_SUPERSEDED, leadershipFence: observed, leaseExpiry: before.leaseExpiry };
     }
 
-    return { renewed: true, refusal: null, leadershipFence: expected, leaseExpiry };
+    return { renewed: true, refusal: null, leadershipFence: expected, leaseExpiry, extended: true };
   });
 }
 

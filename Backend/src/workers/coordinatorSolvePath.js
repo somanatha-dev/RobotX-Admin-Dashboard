@@ -452,6 +452,84 @@ function routingSeamFor(context) {
 }
 
 /**
+ * The agent class as the decision path reads it — one definition, shared by the per-agent
+ * loader's include and the round's batched read (`readPlanningFleet`), so the two cannot
+ * load different shapes of the same row.
+ *
+ * @returns {object} a Prisma `include` for `AgentClass`
+ */
+function agentClassInclude() {
+  return {
+    mobilityModel: true,
+    energyModel: true,
+    // §15.2's compartments are the container: without them `container.normalise`
+    // reports "declares no compartments" for every agent, however it was
+    // commissioned.
+    containerModel: { include: { compartments: { orderBy: { ordinal: "asc" } } } },
+    // The bundle's `capabilities` rows, not just the bundle row: F21 matches the
+    // mission's requirements against them (`domain/capability.indexBundle` reads
+    // `bundle.capabilities`). `capabilityBundle: true` loaded the row alone, so
+    // every stated requirement was INDETERMINATE and denied.
+    capabilityBundle: { include: { capabilities: true } },
+    energyModelParams: { orderBy: { modelVersion: "desc" }, take: 1 },
+  };
+}
+
+/**
+ * The agent row's own relations, without its class — the half of the snapshot include the
+ * round's batched read issues beside the class read rather than beneath it.
+ *
+ * @returns {object} a Prisma `include` for `Agent`, minus `agentClass`
+ */
+function agentCoreInclude() {
+  return {
+    // The Robot row carries the live session (`isOnline`, `lastSeenAt`), the
+    // legacy status the health tier derives from, and `massKg` — read by the
+    // agent-facts seam below and by §14.2's mass term. Never branched on here.
+    robot: true,
+    batteryState: true,
+    commitments: { where: { releasedAt: null } },
+  };
+}
+
+/**
+ * The `AgentCellPosition` include `loadAgentSnapshot` reads — the whole agent graph.
+ *
+ * @returns {object}
+ */
+function agentSnapshotInclude() {
+  return {
+    agent: {
+      include: {
+        ...agentCoreInclude(),
+        agentClass: { include: agentClassInclude() },
+      },
+    },
+  };
+}
+
+/**
+ * The §7.5 agent facts for one agent, from the injected provider, or `null` without one.
+ *
+ * @param {object} context
+ * @param {object} agent the `Agent` row with its relations
+ * @param {number|undefined} asOfMs
+ * @param {object} [placement] the agent's placement rows, when the caller already read them
+ *   (`readAgentGraph`'s `placements`); the provider then does not read them again
+ * @returns {Promise<object|null>}
+ */
+function agentFactsOf(context, agent, asOfMs, placement) {
+  return isFunction(context.agentFactsFor)
+    ? context.agentFactsFor({
+        agent,
+        asOfMs,
+        config: (name) => resolve(coordinatorPipeline.snapshotFrom(context), name, {}),
+        ...(placement ? { placement } : {}),
+      })
+    : Promise.resolve(null);
+}
+
+/**
  * Load one agent as the decision path reads it: position, class, mobility and energy
  * models, battery state, and its live HARD commitments.
  *
@@ -480,164 +558,337 @@ function agentSnapshotLoaderFor(context) {
       // identifier, and resolving it here is what stops a correct pairing aborting
       // `AGENT_NOT_FOUND` at §10.3.2 step 1.
       where: { OR: [{ agentId }, { agent: { agentId } }] },
-      include: {
-        agent: {
-          include: {
-            // The Robot row carries the live session (`isOnline`, `lastSeenAt`), the
-            // legacy status the health tier derives from, and `massKg` — read by the
-            // agent-facts seam below and by §14.2's mass term. Never branched on here.
-            robot: true,
-            batteryState: true,
-            commitments: { where: { releasedAt: null } },
-            agentClass: {
-              include: {
-                mobilityModel: true,
-                energyModel: true,
-                // §15.2's compartments are the container: without them `container.normalise`
-                // reports "declares no compartments" for every agent, however it was
-                // commissioned.
-                containerModel: { include: { compartments: { orderBy: { ordinal: "asc" } } } },
-                // The bundle's `capabilities` rows, not just the bundle row: F21 matches the
-                // mission's requirements against them (`domain/capability.indexBundle` reads
-                // `bundle.capabilities`). `capabilityBundle: true` loaded the row alone, so
-                // every stated requirement was INDETERMINATE and denied.
-                capabilityBundle: { include: { capabilities: true } },
-                energyModelParams: { orderBy: { modelVersion: "desc" }, take: 1 },
-              },
-            },
-          },
-        },
-      },
+      include: agentSnapshotInclude(),
     });
-    if (!position || !position.agent) return null;
+    return agentSnapshotFrom(context, position, asOfMs);
+  };
+}
 
-    const agent = position.agent;
-    const agentClass = agent.agentClass || null;
-    const params = agentClass && agentClass.energyModelParams ? agentClass.energyModelParams[0] : null;
-    const battery = agent.batteryState || null;
-    const environment = isFunction(context.environmentFor) ? context.environmentFor(agent.agentId, agent) : null;
+/**
+ * Every relation `readAgentGraph` assembles, with the options it applies — the second place
+ * the snapshot's shape is stated. `b1RoundSnapshot.test.js` holds it equal to
+ * `agentSnapshotInclude()`, so a relation added to the include and not to the batched read
+ * fails a test rather than silently going missing from the snapshot (the E-8 / N-2 family).
+ * @structural the include tree, restated
+ */
+const AGENT_GRAPH_RELATIONS = Object.freeze({
+  agent: true,
+  "agent.robot": true,
+  "agent.batteryState": true,
+  "agent.commitments": { where: { releasedAt: null } },
+  "agent.agentClass": true,
+  "agent.agentClass.mobilityModel": true,
+  "agent.agentClass.energyModel": true,
+  "agent.agentClass.containerModel": true,
+  "agent.agentClass.containerModel.compartments": { orderBy: { ordinal: "asc" } },
+  "agent.agentClass.capabilityBundle": true,
+  "agent.agentClass.capabilityBundle.capabilities": true,
+  "agent.agentClass.energyModelParams": { orderBy: { modelVersion: "desc" }, take: 1 },
+});
 
-    // The §7.5 agent facts no column carries (commissioning, e-stop, faults, session, …),
-    // from the injected provider or not at all. Absent, each stays `undefined` and its
-    // predicate denies by name — which is exactly what happened before this seam existed.
-    // Only the named fields are taken, so a provider cannot overwrite a column-derived one.
-    const facts = isFunction(context.agentFactsFor)
-      ? await context.agentFactsFor({
-          agent,
-          asOfMs,
-          config: (name) => resolve(coordinatorPipeline.snapshotFrom(context), name, {}),
-        })
-      : null;
-    const supplied = {};
-    if (facts && typeof facts === "object") {
-      for (const field of AGENT_FACT_FIELDS) {
-        if (facts[field] !== undefined) supplied[field] = facts[field];
-      }
-    }
+/**
+ * The rows `agentSnapshotInclude()` loads for every position matching `where`, read in three
+ * dependent levels of concurrent statements instead of eight sequential ones (B1).
+ *
+ * Prisma resolves a nested include one relation at a time, each a separate `WHERE … IN (…)`
+ * statement on the ids the level above returned — 13 statements in sequence. This issues the
+ * same statements' reads concurrently wherever one does not need another's result:
+ *
+ *   A  the positions; the agents those positions belong to
+ *   B  by the agents' ids and foreign keys — robots, battery rows, live commitments, classes —
+ *      and, through the class ids, each class's mobility and energy models, its newest energy
+ *      parameters, its container with compartments and its capability bundle with capabilities
+ *
+ * and joins them on the same foreign keys the include follows, producing the same nested rows.
+ *
+ * **Exact or nothing.** Each level filters by ids the level before returned, as the include
+ * does, so a row is absent only when the include would find it absent. The two reads that use
+ * a relation filter instead (the agents beside the positions; the class models beside the
+ * classes) are checked against the foreign keys they must satisfy: a position whose agent, an
+ * agent whose robot or class, or a class whose model the concurrent read did not return — a row
+ * that moved between two statements — throws, and the caller reads exactly as before.
+ *
+ * @param {object} prisma
+ * @param {object} where an `AgentCellPosition` filter
+ * @param {{ first?: boolean, placements?: boolean }} [options] `first`: the one position
+ *   `findFirst` would return; `placements`: also read each position's Shard and return, as the
+ *   array's non-enumerable `placements` (agent row id → `{ agentId, shardId, regionId }`), the
+ *   two rows `agentFacts` reads to find an agent's region — the position itself and its Shard
+ * @returns {Promise<object[]>} positions, each with `agent` and its relations
+ */
+async function readAgentGraph(prisma, where, options) {
+  const first = Boolean(options && options.first);
+  const withPlacements = Boolean(options && options.placements);
+  const [positions, agents] = await Promise.all([
+    first ? prisma.agentCellPosition.findFirst({ where }).then((row) => (row ? [row] : [])) : prisma.agentCellPosition.findMany({ where }),
+    prisma.agent.findMany({ where: { cellPosition: { is: where } } }),
+  ]);
+  if (positions.length === 0) return [];
 
+  const agentById = new Map(agents.map((row) => [row.id, row]));
+  for (const position of positions) {
+    if (!agentById.has(position.agentId)) throw new Error(`the concurrent read did not return the agent of position ${position.id}`);
+  }
+  const wanted = positions.map((position) => agentById.get(position.agentId));
+  const agentIds = wanted.map((agent) => agent.id);
+  const robotIds = [...new Set(wanted.map((agent) => agent.robotDbId).filter((id) => id !== null && id !== undefined))];
+  const classIds = [...new Set(wanted.map((agent) => agent.agentClassId).filter((id) => id !== null && id !== undefined))];
+  const ofClasses = { agentClasses: { some: { id: { in: classIds } } } };
+  const none = Promise.resolve([]);
+
+  const shardIds = [...new Set(positions.map((position) => position.shardId))];
+  const [robots, batteries, commitments, classes, mobilityModels, energyModels, params, containers, bundles, shards] = await Promise.all([
+    robotIds.length ? prisma.robot.findMany({ where: { id: { in: robotIds } } }) : none,
+    prisma.batteryState.findMany({ where: { agentId: { in: agentIds } } }),
+    prisma.commitment.findMany({ where: { releasedAt: null, agentId: { in: agentIds } } }),
+    classIds.length ? prisma.agentClass.findMany({ where: { id: { in: classIds } } }) : none,
+    classIds.length ? prisma.mobilityModel.findMany({ where: ofClasses }) : none,
+    classIds.length ? prisma.energyModel.findMany({ where: ofClasses }) : none,
+    classIds.length
+      ? prisma.energyModelParams.findMany({ where: { agentClassId: { in: classIds } }, orderBy: { modelVersion: "desc" } })
+      : none,
+    classIds.length
+      ? prisma.containerModel.findMany({ where: ofClasses, include: { compartments: { orderBy: { ordinal: "asc" } } } })
+      : none,
+    classIds.length ? prisma.capabilityBundle.findMany({ where: ofClasses, include: { capabilities: true } }) : none,
+    withPlacements ? prisma.shard.findMany({ where: { shardId: { in: shardIds } }, select: { shardId: true, regionId: true } }) : none,
+  ]);
+
+  const byId = (rows) => new Map(rows.map((row) => [row.id, row]));
+  const robotsById = byId(robots);
+  const classesById = byId(classes);
+  const mobilityById = byId(mobilityModels);
+  const energyById = byId(energyModels);
+  const containersById = byId(containers);
+  const bundlesById = byId(bundles);
+  const batteryByAgent = new Map(batteries.map((row) => [row.agentId, row]));
+  const commitmentsByAgent = new Map(agentIds.map((id) => [id, []]));
+  for (const row of commitments) commitmentsByAgent.get(row.agentId).push(row);
+  // `take: 1` under `orderBy: { modelVersion: "desc" }`: each class's newest version.
+  const newestParams = new Map();
+  for (const row of params) if (!newestParams.has(row.agentClassId)) newestParams.set(row.agentClassId, row);
+
+  /** The row a foreign key names, `null` for no key, and a throw for a key the read did not return. */
+  const follow = (rowsById, key, what) => {
+    if (key === null || key === undefined) return null;
+    if (!rowsById.has(key)) throw new Error(`the concurrent read did not return ${what} ${key}`);
+    return copyRow(rowsById.get(key));
+  };
+
+  const classFor = (classId) => {
+    if (classId === null || classId === undefined) return null;
+    const row = follow(classesById, classId, "agent class");
     return {
-      ...supplied,
-      // Identity. Both, deliberately: `commit.js` locks on `Agent.id` and every engine
-      // module reads the business identifier, and conflating them is a defect
-      // `diagnoseMissingRow` exists to name.
-      agentId: agent.agentId,
-      agentRowId: agent.id,
-      agentClassId: agentClass ? agentClass.classId : null,
-
-      lifecycleState: agent.lifecycleState,
-      authorityEpoch: agent.authorityEpoch,
-      fenceCounter: agent.fenceCounter,
-      capacityOverride: agent.capacityOverride,
-      // The column wins; a provider's tenant fills only a null column (F4).
-      tenantId: agent.tenantId ?? (facts && facts.tenantId !== undefined ? facts.tenantId : agent.tenantId),
-      fleetId: agent.fleetId,
-      // `Robot.massKg` — the commissioning column `robotSpecification` writes and §14.2's
-      // β_mass term needs. E-8b recorded it as "written and never read on the decision
-      // path"; `vehicleMassKgFor` reads it from here.
-      vehicleMassKg: agent.robot && isNumber(agent.robot.massKg) ? agent.robot.massKg : null,
-      regionId: agent.regionId,
-      homeDepotId: agent.homeDepotId,
-
-      lat: position.lat,
-      lon: position.lon,
-      cellId: position.fineCellId,
-      coarseCellId: position.coarseCellId,
-      availabilityClass: position.availabilityClass,
-      capabilityClasses: position.capabilityClasses,
-      containerClasses: position.containerClasses,
-      observedAtMs: Number(position.observedAtMs),
-
-      // The whole declared model, not the two fields the expansion happens to read.
-      //
-      // E-10 (§M.4) measured F28 and F29 denying on *"the agent's MobilityModel"* while
-      // the row was loaded and four of its columns were dropped on the way through this
-      // mapper — `permissionSet` (F28's enumerated surface classes), `envelopeConstraints`
-      // and `dimensionalFootprint` (F29's passage limits) and `speedModel`. A mapper that
-      // narrows a row is a mapper that makes a predicate report an absent record when the
-      // record exists, which is the E-8 family of defect at the schema boundary. Each
-      // column is passed through exactly as declared: absent columns stay `undefined` and
-      // the predicates name them.
-      mobilityModel: agentClass && agentClass.mobilityModel
-        ? {
-            traversalDomain: agentClass.mobilityModel.traversalDomain,
-            kinematicLimits: agentClass.mobilityModel.kinematicLimits,
-            permissionSet: agentClass.mobilityModel.permissionSet,
-            envelopeConstraints: agentClass.mobilityModel.envelopeConstraints,
-            dimensionalFootprint: agentClass.mobilityModel.dimensionalFootprint,
-            speedModel: agentClass.mobilityModel.speedModel,
-          }
-        : null,
-      containerModel: agentClass ? agentClass.containerModel : null,
-      capabilityBundle: agentClass ? agentClass.capabilityBundle : null,
-
-      // ── Two AgentClass columns the mapper dropped (N-2) ────────────────────
-      //
-      // The same defect §M.4 found on `MobilityModel` and W-A5 found on
-      // `EnergyModelParams.stressCurves`, at a third row: the loader already fetches
-      // `AgentClass` and two of its declared columns never reached the snapshot.
-      //
-      // `AgentClass.firmwareVersionSet` (`prisma/schema.prisma:1121`) is what F5 reads.
-      // The predicate names the column in its own refusal — *"the agent class's
-      // firmwareVersionSet"* (`predicates/f05.js:73-79`) — and validates the shape itself:
-      // a non-object is `absent`, a non-array member is `indeterminate`, and an unlisted
-      // mission type is *"not an unrestricted one"*. So the column is passed through
-      // exactly as declared and no shape is asserted here.
-      //
-      // `AgentClass.hardwareRevision` (`:1120`) is what F12 matches a hardware-scoped
-      // advisory against (`predicates/f12.js:53`). Absent, an advisory keyed by hardware
-      // revision matches nothing and does so **silently**, which is the permissive
-      // direction for a predicate whose whole purpose is to withhold an agent.
-      //
-      // **A divergence recorded rather than resolved.** `security/attestation.js:95-112`
-      // signs a manifest carrying a *per-device* `hardwareRevision`, so a device's attested
-      // revision and its class's declared one are two different facts. The class column is
-      // the control plane's own statement and is the only one on a row this loader reads;
-      // reconciling the two is the attestation read path N-2 records and does not build.
-      supportedFirmwareByMissionType: agentClass ? agentClass.firmwareVersionSet : null,
-      hardwareRevision: agentClass ? agentClass.hardwareRevision : null,
-
-      energyModel: agentClass ? agentClass.energyModel : null,
-      energyModelParams: params,
-      energyCoefficients: energyCoefficientsFrom(params),
-      battery,
-      // §14.2's self-correcting multiplier, from the row that carries it. Absent, it stays
-      // absent: `consumption.missionEnergyWh` refuses a non-numeric κ rather than reading
-      // one as neutral, and a κ silently read as 1 is an uncalibrated fleet reported as a
-      // calibrated one.
-      kappa: battery && isNumber(battery.kappa) ? battery.kappa : null,
-      soc: battery && isNumber(battery.lastObservedSoc) ? battery.lastObservedSoc : null,
-      soh: battery && isNumber(battery.soh) ? battery.soh : null,
-
-      commitments: agent.commitments || [],
-      hardCommitmentCount: (agent.commitments || []).length,
-
-      // §14.2's thermal term. No column and no producer: supplied by the injected seam or
-      // not at all — never an assumed ambient, which is the assumed range §14.3 removes.
-      ambientC: environment && isNumber(environment.ambientC) ? environment.ambientC : null,
-      packC: environment && isNumber(environment.packC) ? environment.packC : null,
-
-      _position: position,
+      ...row,
+      mobilityModel: follow(mobilityById, row.mobilityModelId, "mobility model"),
+      energyModel: follow(energyById, row.energyModelId, "energy model"),
+      containerModel: follow(containersById, row.containerModelId, "container model"),
+      capabilityBundle: follow(bundlesById, row.capabilityBundleId, "capability bundle"),
+      energyModelParams: newestParams.has(row.id) ? [copyRow(newestParams.get(row.id))] : [],
     };
+  };
+
+  const graph = positions.map((position) => {
+    const agent = agentById.get(position.agentId);
+    return {
+      ...position,
+      agent: {
+        ...copyRow(agent),
+        robot: follow(robotsById, agent.robotDbId, "robot"),
+        batteryState: batteryByAgent.has(agent.id) ? copyRow(batteryByAgent.get(agent.id)) : null,
+        commitments: commitmentsByAgent.get(agent.id).map(copyRow),
+        agentClass: classFor(agent.agentClassId),
+      },
+    };
+  });
+  if (withPlacements) {
+    const regionByShard = new Map(shards.map((row) => [row.shardId, row.regionId]));
+    const placements = new Map(
+      positions.map((position) => [
+        position.agentId,
+        { agentId: position.agentId, shardId: position.shardId, regionId: regionByShard.has(position.shardId) ? regionByShard.get(position.shardId) : null },
+      ]),
+    );
+    Object.defineProperty(graph, "placements", { value: placements, enumerable: false });
+  }
+  return graph;
+}
+
+/**
+ * The same agent read as `loadAgentSnapshot`, issued as two concurrent reads instead of one
+ * nested include — for the commit path, where both agent reads must be FRESH (B1).
+ *
+ * `loadAgentSnapshot`'s include resolves level by level, 13 sequential statements, and the
+ * commit path makes it twice per assignment: before the transaction, and again for the
+ * volatile recheck while the row locks are held (≈ 1.3 s of lock hold at 78 ms, the B1 audit).
+ * This reads the position with the agent's own relations and, beside it, the agent class with
+ * `agentClassInclude()` filtered through the same position condition, then joins the class to
+ * the agent by `Agent.agentClassId`. Same rows, same moment — both reads are issued where the
+ * single read was — and the same mapping (`agentSnapshotFrom`), so the same snapshot.
+ *
+ * **Never a cache.** It reads the store on every call. If the class read does not return the
+ * agent's class, or the concurrent read cannot be made at all, it reads exactly as
+ * `loadAgentSnapshot` does instead.
+ *
+ * @param {object} context
+ * @returns {(agentId: string, options?: { asOfMs?: number }) => Promise<object|null>}
+ */
+function freshAgentSnapshotLoaderFor(context) {
+  const prisma = context.prisma;
+  const loadAgentSnapshot = agentSnapshotLoaderFor(context);
+
+  return async function freshAgentSnapshot(agentId, options) {
+    const asOfMs = options && isNumber(options.asOfMs) ? options.asOfMs : undefined;
+    let positions;
+    try {
+      // `loadAgentSnapshot`'s own filter: either identifier.
+      positions = await readAgentGraph(prisma, { OR: [{ agentId }, { agent: { agentId } }] }, { first: true, placements: true });
+    } catch {
+      return loadAgentSnapshot(agentId, options);
+    }
+    const position = positions[0] || null;
+    return agentSnapshotFrom(context, position, asOfMs, position ? { placement: positions.placements.get(position.agentId) } : undefined);
+  };
+}
+
+/**
+ * The agent snapshot for one loaded position row — the mapping `loadAgentSnapshot` applies,
+ * shared with the round's batched read so both produce the same object for the same row.
+ *
+ * @param {object} context
+ * @param {object|null} position an `AgentCellPosition` row with `agentSnapshotInclude()`
+ * @param {number|undefined} asOfMs
+ * @param {{ facts?: object|null, placement?: object }} [prefetched] `facts`: already read for
+ *   this agent at `asOfMs` by the round's preparation; absent, they are read here, as before —
+ *   with `placement` handed to the provider when the caller read it
+ * @returns {Promise<object|null>}
+ */
+async function agentSnapshotFrom(context, position, asOfMs, prefetched) {
+  if (!position || !position.agent) return null;
+
+  const agent = position.agent;
+  const agentClass = agent.agentClass || null;
+  const params = agentClass && agentClass.energyModelParams ? agentClass.energyModelParams[0] : null;
+  const battery = agent.batteryState || null;
+  const environment = isFunction(context.environmentFor) ? context.environmentFor(agent.agentId, agent) : null;
+
+  // The §7.5 agent facts no column carries (commissioning, e-stop, faults, session, …),
+  // from the injected provider or not at all. Absent, each stays `undefined` and its
+  // predicate denies by name — which is exactly what happened before this seam existed.
+  // Only the named fields are taken, so a provider cannot overwrite a column-derived one.
+  const facts =
+    prefetched && Object.prototype.hasOwnProperty.call(prefetched, "facts")
+      ? prefetched.facts
+      : await agentFactsOf(context, agent, asOfMs, prefetched && prefetched.placement);
+  const supplied = {};
+  if (facts && typeof facts === "object") {
+    for (const field of AGENT_FACT_FIELDS) {
+      if (facts[field] !== undefined) supplied[field] = facts[field];
+    }
+  }
+
+  return {
+    ...supplied,
+    // Identity. Both, deliberately: `commit.js` locks on `Agent.id` and every engine
+    // module reads the business identifier, and conflating them is a defect
+    // `diagnoseMissingRow` exists to name.
+    agentId: agent.agentId,
+    agentRowId: agent.id,
+    agentClassId: agentClass ? agentClass.classId : null,
+
+    lifecycleState: agent.lifecycleState,
+    authorityEpoch: agent.authorityEpoch,
+    fenceCounter: agent.fenceCounter,
+    capacityOverride: agent.capacityOverride,
+    // The column wins; a provider's tenant fills only a null column (F4).
+    tenantId: agent.tenantId ?? (facts && facts.tenantId !== undefined ? facts.tenantId : agent.tenantId),
+    fleetId: agent.fleetId,
+    // `Robot.massKg` — the commissioning column `robotSpecification` writes and §14.2's
+    // β_mass term needs. E-8b recorded it as "written and never read on the decision
+    // path"; `vehicleMassKgFor` reads it from here.
+    vehicleMassKg: agent.robot && isNumber(agent.robot.massKg) ? agent.robot.massKg : null,
+    regionId: agent.regionId,
+    homeDepotId: agent.homeDepotId,
+
+    lat: position.lat,
+    lon: position.lon,
+    cellId: position.fineCellId,
+    coarseCellId: position.coarseCellId,
+    availabilityClass: position.availabilityClass,
+    capabilityClasses: position.capabilityClasses,
+    containerClasses: position.containerClasses,
+    observedAtMs: Number(position.observedAtMs),
+
+    // The whole declared model, not the two fields the expansion happens to read.
+    //
+    // E-10 (§M.4) measured F28 and F29 denying on *"the agent's MobilityModel"* while
+    // the row was loaded and four of its columns were dropped on the way through this
+    // mapper — `permissionSet` (F28's enumerated surface classes), `envelopeConstraints`
+    // and `dimensionalFootprint` (F29's passage limits) and `speedModel`. A mapper that
+    // narrows a row is a mapper that makes a predicate report an absent record when the
+    // record exists, which is the E-8 family of defect at the schema boundary. Each
+    // column is passed through exactly as declared: absent columns stay `undefined` and
+    // the predicates name them.
+    mobilityModel: agentClass && agentClass.mobilityModel
+      ? {
+          traversalDomain: agentClass.mobilityModel.traversalDomain,
+          kinematicLimits: agentClass.mobilityModel.kinematicLimits,
+          permissionSet: agentClass.mobilityModel.permissionSet,
+          envelopeConstraints: agentClass.mobilityModel.envelopeConstraints,
+          dimensionalFootprint: agentClass.mobilityModel.dimensionalFootprint,
+          speedModel: agentClass.mobilityModel.speedModel,
+        }
+      : null,
+    containerModel: agentClass ? agentClass.containerModel : null,
+    capabilityBundle: agentClass ? agentClass.capabilityBundle : null,
+
+    // ── Two AgentClass columns the mapper dropped (N-2) ────────────────────
+    //
+    // The same defect §M.4 found on `MobilityModel` and W-A5 found on
+    // `EnergyModelParams.stressCurves`, at a third row: the loader already fetches
+    // `AgentClass` and two of its declared columns never reached the snapshot.
+    //
+    // `AgentClass.firmwareVersionSet` (`prisma/schema.prisma:1121`) is what F5 reads.
+    // The predicate names the column in its own refusal — *"the agent class's
+    // firmwareVersionSet"* (`predicates/f05.js:73-79`) — and validates the shape itself:
+    // a non-object is `absent`, a non-array member is `indeterminate`, and an unlisted
+    // mission type is *"not an unrestricted one"*. So the column is passed through
+    // exactly as declared and no shape is asserted here.
+    //
+    // `AgentClass.hardwareRevision` (`:1120`) is what F12 matches a hardware-scoped
+    // advisory against (`predicates/f12.js:53`). Absent, an advisory keyed by hardware
+    // revision matches nothing and does so **silently**, which is the permissive
+    // direction for a predicate whose whole purpose is to withhold an agent.
+    //
+    // **A divergence recorded rather than resolved.** `security/attestation.js:95-112`
+    // signs a manifest carrying a *per-device* `hardwareRevision`, so a device's attested
+    // revision and its class's declared one are two different facts. The class column is
+    // the control plane's own statement and is the only one on a row this loader reads;
+    // reconciling the two is the attestation read path N-2 records and does not build.
+    supportedFirmwareByMissionType: agentClass ? agentClass.firmwareVersionSet : null,
+    hardwareRevision: agentClass ? agentClass.hardwareRevision : null,
+
+    energyModel: agentClass ? agentClass.energyModel : null,
+    energyModelParams: params,
+    energyCoefficients: energyCoefficientsFrom(params),
+    battery,
+    // §14.2's self-correcting multiplier, from the row that carries it. Absent, it stays
+    // absent: `consumption.missionEnergyWh` refuses a non-numeric κ rather than reading
+    // one as neutral, and a κ silently read as 1 is an uncalibrated fleet reported as a
+    // calibrated one.
+    kappa: battery && isNumber(battery.kappa) ? battery.kappa : null,
+    soc: battery && isNumber(battery.lastObservedSoc) ? battery.lastObservedSoc : null,
+    soh: battery && isNumber(battery.soh) ? battery.soh : null,
+
+    commitments: agent.commitments || [],
+    hardCommitmentCount: (agent.commitments || []).length,
+
+    // §14.2's thermal term. No column and no producer: supplied by the injected seam or
+    // not at all — never an assumed ambient, which is the assumed range §14.3 removes.
+    ambientC: environment && isNumber(environment.ambientC) ? environment.ambientC : null,
+    packC: environment && isNumber(environment.packC) ? environment.packC : null,
+
+    _position: position,
   };
 }
 
@@ -653,81 +904,119 @@ function legLoaderFor(context) {
   return async function loadLeg(legId) {
     const leg = await prisma.leg.findFirst({
       where: { OR: [{ legId }, { id: legId }] },
-      include: {
-        stops: { orderBy: { sequence: "asc" } },
-        manifests: true,
-        mission: {
-          include: {
-            legs: { select: { id: true, sequence: true }, orderBy: { sequence: "asc" } },
-            // §2.8 — `Task >──< Mission`. §2.4 puts the RequirementSet, the payload
-            // specification, the SLA class and the tenant on the **Task**, and the Mission
-            // is what discharges Tasks; the decision path reads them through this relation
-            // or not at all. F4, F21 and F25 denied on `mission.tenantId`,
-            // `mission.requirements` and `mission.payload` while every one of those was a
-            // column on a row this query did not join (§M.4).
-            tasks: { include: { payloadSpec: true } },
-          },
-        },
-      },
+      include: legInclude(),
     });
-    if (!leg) return null;
+    return legFromRow(leg);
+  };
+}
 
-    const isTerminal =
-      leg.mission && leg.mission.legs.length > 0
-        ? leg.mission.legs[leg.mission.legs.length - 1].id === leg.id
-        : true;
+/**
+ * The Leg include `loadLeg` reads — one definition, shared with the round's batched read.
+ *
+ * @returns {object}
+ */
+function legInclude() {
+  return {
+    ...legOwnInclude(),
+    mission: { include: missionInclude() },
+  };
+}
 
-    return {
-      legRowId: leg.id,
-      legId: leg.legId,
-      missionId: leg.mission ? leg.mission.missionId : null,
-      missionRowId: leg.missionId,
-      purpose: leg.purpose,
-      state: leg.state,
-      custodyState: leg.custodyState,
-      version: leg.version,
-      cancelRequestedAt: leg.cancelRequestedAt,
-      obstructionClass: leg.obstructionClass,
-      role: isTerminal ? cDelay.LEG_ROLE.TERMINAL : cDelay.LEG_ROLE.UPSTREAM,
-      // §8.7 prices lateness against the Leg's own target and deadline. `Leg.slaDeadline`
-      // is the only one the schema carries, so target and deadline are the same instant
-      // here — stated rather than silently split into two different numbers.
-      targetMs: leg.slaDeadline ? leg.slaDeadline.getTime() : null,
-      deadlineMs: leg.slaDeadline ? leg.slaDeadline.getTime() : null,
-      startNotBeforeMs: leg.startNotBefore ? leg.startNotBefore.getTime() : null,
-      createdAtMs: leg.createdAt ? leg.createdAt.getTime() : null,
-      manifests: leg.manifests || [],
-      // §2.4's Task attributes, resolved across the Mission's Tasks. Absent rather than
-      // guessed when the Tasks disagree — see `agreedTaskAttribute`.
-      tasks: taskAttributesFor(leg.mission),
-      stops: leg.stops.map((stop) => ({
-        stopId: stop.stopId,
-        sequence: stop.sequence,
-        stopType: stop.stopType,
-        siteId: stop.siteId,
-        lat: stop.lat,
-        lon: stop.lon,
-        // **The pinned geofence verdict (D1).** This projection is a whitelist, and until
-        // RD-2026-09-14-01 it silently dropped this column — so a verdict written at
-        // intake could never reach the round that needed it, and the layer that produced
-        // it and the layer that consumed it were each individually correct.
-        //
-        // Carried raw, as the string the column holds, and interpreted by
-        // `deliveryDomain.pinnedMembership` at the one place that reads it. Coercing it to
-        // a boolean here would collapse INDETERMINATE and OUTSIDE into one value, and
-        // those are the two answers D1 most needs kept apart.
-        geofenceResult: stop.geofenceResult ?? null,
-        // §2.4's per-Stop access constraints, for F32. **Only a stated list is carried.**
-        // F32 reads `undefined` as *"nobody established what this site requires"* and
-        // `null`/`[]` as *"none required"*, and those are different facts: a `Json?`
-        // column nobody has populated is the first, not the second. So an array is passed
-        // through and anything else — including a `null` column — leaves the field absent
-        // and F32 denies. Populating the column with `[]` is how an operator declares a
-        // kerbside stop, which is a statement someone makes rather than one this mapper
-        // makes for them.
-        accessPrerequisites: Array.isArray(stop.accessConstraints) ? stop.accessConstraints : undefined,
-      })),
-    };
+/**
+ * The Leg's own relations — the half of `legInclude()` the round's batched read issues beside
+ * the mission read rather than beneath it.
+ *
+ * @returns {object}
+ */
+function legOwnInclude() {
+  return {
+    stops: { orderBy: { sequence: "asc" } },
+    manifests: true,
+  };
+}
+
+/**
+ * The Leg's Mission as the decision path reads it.
+ *
+ * @returns {object}
+ */
+function missionInclude() {
+  return {
+    legs: { select: { id: true, sequence: true }, orderBy: { sequence: "asc" } },
+    // §2.8 — `Task >──< Mission`. §2.4 puts the RequirementSet, the payload
+    // specification, the SLA class and the tenant on the **Task**, and the Mission
+    // is what discharges Tasks; the decision path reads them through this relation
+    // or not at all. F4, F21 and F25 denied on `mission.tenantId`,
+    // `mission.requirements` and `mission.payload` while every one of those was a
+    // column on a row this query did not join (§M.4).
+    tasks: { include: { payloadSpec: true } },
+  };
+}
+
+/**
+ * The Leg as `planBuilder` and the gate read it, from one row loaded with `legInclude()`.
+ *
+ * @param {object|null} leg
+ * @returns {object|null}
+ */
+function legFromRow(leg) {
+  if (!leg) return null;
+
+  const isTerminal =
+    leg.mission && leg.mission.legs.length > 0
+      ? leg.mission.legs[leg.mission.legs.length - 1].id === leg.id
+      : true;
+
+  return {
+    legRowId: leg.id,
+    legId: leg.legId,
+    missionId: leg.mission ? leg.mission.missionId : null,
+    missionRowId: leg.missionId,
+    purpose: leg.purpose,
+    state: leg.state,
+    custodyState: leg.custodyState,
+    version: leg.version,
+    cancelRequestedAt: leg.cancelRequestedAt,
+    obstructionClass: leg.obstructionClass,
+    role: isTerminal ? cDelay.LEG_ROLE.TERMINAL : cDelay.LEG_ROLE.UPSTREAM,
+    // §8.7 prices lateness against the Leg's own target and deadline. `Leg.slaDeadline`
+    // is the only one the schema carries, so target and deadline are the same instant
+    // here — stated rather than silently split into two different numbers.
+    targetMs: leg.slaDeadline ? leg.slaDeadline.getTime() : null,
+    deadlineMs: leg.slaDeadline ? leg.slaDeadline.getTime() : null,
+    startNotBeforeMs: leg.startNotBefore ? leg.startNotBefore.getTime() : null,
+    createdAtMs: leg.createdAt ? leg.createdAt.getTime() : null,
+    manifests: leg.manifests || [],
+    // §2.4's Task attributes, resolved across the Mission's Tasks. Absent rather than
+    // guessed when the Tasks disagree — see `agreedTaskAttribute`.
+    tasks: taskAttributesFor(leg.mission),
+    stops: leg.stops.map((stop) => ({
+      stopId: stop.stopId,
+      sequence: stop.sequence,
+      stopType: stop.stopType,
+      siteId: stop.siteId,
+      lat: stop.lat,
+      lon: stop.lon,
+      // **The pinned geofence verdict (D1).** This projection is a whitelist, and until
+      // RD-2026-09-14-01 it silently dropped this column — so a verdict written at
+      // intake could never reach the round that needed it, and the layer that produced
+      // it and the layer that consumed it were each individually correct.
+      //
+      // Carried raw, as the string the column holds, and interpreted by
+      // `deliveryDomain.pinnedMembership` at the one place that reads it. Coercing it to
+      // a boolean here would collapse INDETERMINATE and OUTSIDE into one value, and
+      // those are the two answers D1 most needs kept apart.
+      geofenceResult: stop.geofenceResult ?? null,
+      // §2.4's per-Stop access constraints, for F32. **Only a stated list is carried.**
+      // F32 reads `undefined` as *"nobody established what this site requires"* and
+      // `null`/`[]` as *"none required"*, and those are different facts: a `Json?`
+      // column nobody has populated is the first, not the second. So an array is passed
+      // through and anything else — including a `null` column — leaves the field absent
+      // and F32 denies. Populating the column with `[]` is how an operator declares a
+      // kerbside stop, which is a statement someone makes rather than one this mapper
+      // makes for them.
+      accessPrerequisites: Array.isArray(stop.accessConstraints) ? stop.accessConstraints : undefined,
+    })),
   };
 }
 
@@ -1049,7 +1338,17 @@ async function pinnedChargerProjection(context) {
     return { projection: null, problems: ["the store exposes no ChargerAvailabilityProjection table"] };
   }
 
-  const row = await table.findFirst({ orderBy: { version: "desc" } });
+  return pinnedChargerProjectionFrom(await table.findFirst({ orderBy: { version: "desc" } }));
+}
+
+/**
+ * `pinnedChargerProjection`'s validation of the latest row — shared with a round that already
+ * read that row (`prepareRound`), so both pin exactly the same projection or refuse alike.
+ *
+ * @param {object|null} row the latest `ChargerAvailabilityProjection` row, or `null`
+ * @returns {{ projection: object|null, problems: string[] }}
+ */
+function pinnedChargerProjectionFrom(row) {
   if (!row) return { projection: null, problems: ["no charger availability projection has been published"] };
 
   const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
@@ -1267,7 +1566,8 @@ async function chargerCandidatesFor(input) {
 
   // Ordered by identifier so the read itself is deterministic before the distance sort
   // ranks it — two hosts must not disagree about which chargers were even considered.
-  const rows = await table.findMany({ orderBy: { chargerId: "asc" } });
+  // The same read the round's preparation made, when it made it (`input.chargerRows`).
+  const rows = Array.isArray(input.chargerRows) ? input.chargerRows : await table.findMany({ orderBy: { chargerId: "asc" } });
   if (rows.length === 0) {
     return { candidates: [], truncated: false, problems: ["no Charger rows are declared in this deployment"] };
   }
@@ -1710,6 +2010,9 @@ function evaluateExactFor(context, round) {
     // store read and a routing call — and `planBuilder`'s input is built synchronously.
     // The return leg starts where the mission ends, which for this plan is the last stop.
     const lastStop = leg.stops.length > 0 ? leg.stops[leg.stops.length - 1] : null;
+    // The charger rows and the projection row are round-constant: read once by
+    // `prepareRound` when the round prepared them, per pairing (as before) when it did not.
+    const planning = round.planning;
     const estate = await chargerCandidatesFor({
       context,
       routing,
@@ -1717,8 +2020,10 @@ function evaluateExactFor(context, round) {
       profileKey,
       snapshot,
       scope,
+      chargerRows: planning && planning.chargerRows ? planning.chargerRows : undefined,
     });
-    const pinned = await pinnedChargerProjection(context);
+    const pinned =
+      planning && planning.projection ? pinnedChargerProjectionFrom(planning.projection.row) : await pinnedChargerProjection(context);
 
     /* ── 2b. §14.6's target state of charge, from its owner ────────────────── */
     //
@@ -1833,6 +2138,10 @@ function evaluateExactFor(context, round) {
       legExclusions: legExclusions ?? null,
       mission,
       plan: gated.candidate,
+      // §9.6 requirement 5 — the authority epoch of the agent snapshot this pairing was priced
+      // from. G3 is pinned to it (`commitFor`), so an epoch advanced after planning aborts the
+      // commit even when the pre-transaction read already sees the newer value.
+      authorityEpoch: agentSnapshot.authorityEpoch ?? null,
       // `plan₀` for an idle agent is the empty plan, so `column.price` uses `Φ(∅) = 0`
       // exactly rather than evaluating a second plan (§8.1's degenerate case).
       basePlan: null,
@@ -1990,14 +2299,17 @@ function perLegFor(round) {
  * @returns {(input: object) => Promise<object>}
  */
 function expandCandidatesFor(context, round) {
-  const loadAgentSnapshot = agentSnapshotLoaderFor(context);
   const loadLeg = legLoaderFor(context);
 
   return async function expandCandidates(input) {
     const snapshot = round.snapshotFor(input);
     const scope = { sla_class: input.slaClass ?? null };
+    const shardId = input.shardId ?? context.shardId;
+    // What `prepareRound` already read for this round, when it read it. Each part is used only
+    // if it answers this exact question; otherwise the read below is made, as before.
+    const planning = round.planning;
 
-    const leg = await loadLeg(String(input.legId));
+    const leg = (planning && planning.legFor(String(input.legId))) || (await loadLeg(String(input.legId)));
     if (!leg) {
       return round.refusedExpansion([`no Leg "${String(input.legId)}" is resolvable from the store`]);
     }
@@ -2030,27 +2342,35 @@ function expandCandidatesFor(context, round) {
 
     // The fleet's best case, over the agents this expansion can actually reach. Read from
     // the same rows `loadAgentSnapshot` reads, so the ring floor and the per-agent bound
-    // describe one fleet.
-    const positions = await context.prisma.agentCellPosition.findMany({
-      where: { shardId: input.shardId ?? context.shardId },
-      include: {
-        agent: {
-          include: {
-            agentClass: {
-              include: { mobilityModel: true, energyModelParams: { orderBy: { modelVersion: "desc" }, take: 1 } },
+    // describe one fleet. The prepared fleet is the same shard's positions with a superset
+    // of this include, and `fleetBestCaseFrom` reads only the class's kinematic limits and
+    // newest energy parameters from either.
+    const positions =
+      planning && planning.fleet && planning.shardId === shardId
+        ? planning.fleet.positions
+        : await context.prisma.agentCellPosition.findMany({
+            where: { shardId },
+            include: {
+              agent: {
+                include: {
+                  agentClass: {
+                    include: { mobilityModel: true, energyModelParams: { orderBy: { modelVersion: "desc" }, take: 1 } },
+                  },
+                },
+              },
             },
-          },
-        },
-      },
-    });
+          });
 
     // §7.5 F20's input: this Leg's Commitment history, read once per Leg per round.
-    const commitments = leg.legRowId
-      ? await context.prisma.commitment.findMany({
-          where: { legId: leg.legRowId },
-          select: { agentId: true, releasedAt: true },
-        })
-      : [];
+    const prepared = planning ? planning.historyFor(leg.legRowId) : null;
+    const commitments = prepared
+      ? prepared
+      : leg.legRowId
+        ? await context.prisma.commitment.findMany({
+            where: { legId: leg.legRowId },
+            select: { agentId: true, releasedAt: true },
+          })
+        : [];
 
     round.rememberLeg({
       leg,
@@ -2090,8 +2410,10 @@ function expandCandidatesFor(context, round) {
       deadlineMs: budgetMs,
       elapsedMs: () => Date.now() - startedAtMs,
       kv: context.kv,
-      // As of the round's pinned decision time, so no fact postdates the decision.
-      loadAgentSnapshot: (agentId) => loadAgentSnapshot(agentId, { asOfMs: input.decisionTimeMs }),
+      // As of the round's pinned decision time, so no fact postdates the decision. Through
+      // the round's planning snapshot: one load per agent per round, shared by every Leg the
+      // round expands and by `energyFor` (B1).
+      loadAgentSnapshot: (agentId) => round.planningSnapshotFor(agentId, { asOfMs: input.decisionTimeMs }),
       waitUntilAvailableFor: round.waitUntilAvailableFor,
       energyFor: round.energyFor,
       evaluateExact: round.evaluateExact,
@@ -2142,7 +2464,9 @@ function commitFor(context, round) {
       // round — §10.3.2's own disposition, reached without this adapter deciding anything.
       return { agentSnapshot: null, mission: null, plan: null, config: null, decisionTimeMs: null };
     }
-    const agentSnapshot = await round.loadAgentSnapshot(commitContext.agent.agentId, {
+    // Fresh, as of the store's time under the row locks — never the round's planning snapshot
+    // (B1 reads the same rows concurrently; it reads them here, now, every time).
+    const agentSnapshot = await round.freshAgentSnapshot(commitContext.agent.agentId, {
       asOfMs: commitContext.storeTime instanceof Date ? commitContext.storeTime.getTime() : state.decisionTimeMs,
     });
     return {
@@ -2181,7 +2505,11 @@ function commitFor(context, round) {
       });
     }
 
-    const agentSnapshot = await round.loadAgentSnapshot(String(assignment.agentId));
+    // Fresh, never the round's planning snapshot: its capacity override is what G2 enforces,
+    // its identity is the offer's addressee, and its position is where the offer's geometry
+    // starts. B1 reads the same rows concurrently instead of level by level. Its
+    // `authorityEpoch` is NOT what G3 is pinned to — that is the priced entry's (D1, below).
+    const agentSnapshot = await round.freshAgentSnapshot(String(assignment.agentId));
     if (!agentSnapshot) {
       return Object.freeze({ committed: false, outcome: "ABORTED", reason: "AGENT_NOT_FOUND", detail: `no agent "${assignment.agentId}"` });
     }
@@ -2313,9 +2641,14 @@ function commitFor(context, round) {
         // §9.6 requirement 5 — the round's pinned view of the two rows the guards fence
         // against. Read from the snapshot the plan was built on, never re-read here: a
         // guard comparing a freshly-read value against itself would always pass.
+        //
+        // D1 — G3's epoch is the one the pairing was priced from. It used to be the
+        // pre-transaction read above, so an epoch advanced between planning and that read
+        // (a migration, a dedup re-fence) passed G3. No priced entry means no planning
+        // epoch, and G3 refuses an absent one ("absence is not agreement").
         snapshot: {
           leadershipFence: roundResult.leadershipFence ?? null,
-          authorityEpoch: agentSnapshot.authorityEpoch,
+          authorityEpoch: entry && entry.authorityEpoch !== undefined ? entry.authorityEpoch : null,
           legVersion: state.leg.version,
           expectedLegState: ASSIGNABLE_LEG_STATES.includes(state.leg.state) ? state.leg.state : ASSIGNABLE_LEG_STATES,
         },
@@ -2331,6 +2664,212 @@ function commitFor(context, round) {
       },
     );
   };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   B1 — the round's planning read.
+
+   A round used to read its planning inputs one item at a time, as the expansion reached them:
+   the agent graph (13 statements) and its facts once for the expansion and again for
+   `energyFor`, for every agent and every Leg; the Leg, the fleet and the Leg's history per
+   Leg; the charger estate and the projection per pairing. Every one of those reads is
+   sequential, so a round cost ≈ 360 round trips for one Leg and six agents and grew linearly
+   with the fleet (measured 2026-10-01, `tools/verify/b1/`).
+
+   `prepareRound` reads the same rows once, in a bounded number of concurrent statements that
+   does not depend on the number of agents, and the round's planning answers from them. It is
+   **planning data only**: the commit path (`commitFor`) reads every authoritative value fresh,
+   exactly as before, and nothing below is ever consulted there. The one planning value the
+   commit carries is a *pin*, not a read: the priced entry's `authorityEpoch`, which G3 compares
+   against the locked row (D1).
+
+   Every part is optional. A part that was not read, or that does not answer the exact
+   question asked, falls through to the per-item read the round always made — so a failed
+   preparation costs latency and never a decision.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * How many agents' facts the round's preparation reads at once. Each `agentFactsFor` call
+ * issues at most three statements concurrently, so this bounds the preparation's share of the
+ * connection pool (Prisma's default is 2 × physical cores + 1) whatever the fleet size, and
+ * leaves room for the round's other concurrent reads and for the other workers.
+ * @structural a concurrency bound on I/O, not a decision parameter
+ */
+const PLANNING_FACTS_CONCURRENCY = 8;
+
+/**
+ * Map `items` through `fn` with at most `limit` calls in flight, preserving order. Every call
+ * is awaited before the first failure is rethrown, so nothing is left running unobserved.
+ *
+ * @template T, R
+ * @param {T[]} items
+ * @param {number} limit
+ * @param {(item: T) => Promise<R>} fn
+ * @returns {Promise<R[]>}
+ */
+async function mapBounded(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  let failure = null;
+  const worker = async () => {
+    while (next < items.length && failure === null) {
+      const index = next;
+      next += 1;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        out[index] = await fn(items[index]);
+      } catch (error) {
+        if (failure === null) failure = error;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, worker));
+  if (failure !== null) throw failure;
+  return out;
+}
+
+/**
+ * A plain deep copy that keeps `Date` and `bigint` and leaves any other class instance as is.
+ * The batched read joins one class row to every agent of that class; Prisma's include hands
+ * each agent its own copy, and so does this.
+ *
+ * @param {*} value
+ * @returns {*}
+ */
+function copyRow(value) {
+  if (Array.isArray(value)) return value.map(copyRow);
+  if (value instanceof Date) return new Date(value.getTime());
+  if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    const out = {};
+    for (const key of Object.keys(value)) out[key] = copyRow(value[key]);
+    return out;
+  }
+  return value;
+}
+
+/**
+ * The shard's fleet as `loadAgentSnapshot` reads it — every position with
+ * `agentSnapshotInclude()` — plus each agent's facts at the round's decision time.
+ *
+ * The rows come from `readAgentGraph` — the include's own statements, issued concurrently and
+ * joined on its foreign keys. A row that moved between two of those statements makes the
+ * whole read unusable rather than giving an agent a fabricated absence, and the round then
+ * reads per item. The facts are read only once every agent's rows are complete, so the
+ * provider is handed exactly the agent object the per-agent loader hands it.
+ *
+ * @param {object} context
+ * @param {string} shardId
+ * @param {number} decisionTimeMs
+ * @returns {Promise<object>} `{ positions, positionFor(id), factsFor(agentRowId) }`
+ */
+async function readPlanningFleet(context, shardId, decisionTimeMs) {
+  const positions = await readAgentGraph(context.prisma, { shardId }, { placements: true });
+
+  const facts = await mapBounded(
+    positions.filter((position) => position.agent),
+    PLANNING_FACTS_CONCURRENCY,
+    async (position) => [position.agentId, await agentFactsOf(context, position.agent, decisionTimeMs, positions.placements.get(position.agentId))],
+  );
+  const factsByAgentRowId = new Map(facts);
+
+  const byRowId = new Map();
+  const byBusinessId = new Map();
+  for (const position of positions) {
+    byRowId.set(String(position.agentId), position);
+    if (position.agent && position.agent.agentId !== undefined) byBusinessId.set(String(position.agent.agentId), position);
+  }
+
+  return {
+    positions,
+    /**
+     * The position `loadAgentSnapshot(id)` would find, or `null` to read per item. An
+     * identifier two different agents answer to (one's row id, another's business id) is
+     * left to the per-item read, whose own query decides it exactly as before.
+     */
+    positionFor(id) {
+      const byRow = byRowId.get(String(id)) || null;
+      const byBusiness = byBusinessId.get(String(id)) || null;
+      if (byRow && byBusiness && byRow !== byBusiness) return null;
+      return byRow || byBusiness;
+    },
+    factsFor: (agentRowId) => factsByAgentRowId.get(agentRowId) ?? null,
+  };
+}
+
+/**
+ * The claimed Legs as `loadLeg` reads them, by the identifiers the queue rows carry.
+ *
+ * @param {object} prisma
+ * @param {string[]} legIds
+ * @returns {Promise<Map<string, object>>} requested id → the one row `loadLeg` would find
+ */
+async function readPlanningLegs(prisma, legIds) {
+  if (legIds.length === 0) return new Map();
+  // `legInclude()`'s two halves, issued together: the Legs with their own relations, and the
+  // Missions those Legs belong to with theirs — joined on `Leg.missionId`, the foreign key the
+  // include follows. A Leg whose Mission the concurrent read did not return makes the whole
+  // read unusable (the round then reads per Leg), never a Leg with no Mission.
+  const legsWhere = { OR: [{ id: { in: legIds } }, { legId: { in: legIds } }] };
+  const [rows, missions] = await Promise.all([
+    prisma.leg.findMany({ where: legsWhere, include: legOwnInclude() }),
+    prisma.mission.findMany({ where: { legs: { some: legsWhere } }, include: missionInclude() }),
+  ]);
+  const missionsById = new Map(missions.map((row) => [row.id, row]));
+  for (const row of rows) {
+    if (row.missionId === null || row.missionId === undefined) {
+      row.mission = null;
+    } else if (missionsById.has(row.missionId)) {
+      row.mission = copyRow(missionsById.get(row.missionId));
+    } else {
+      throw new Error(`the concurrent read did not return the Mission of Leg ${row.id}`);
+    }
+  }
+  const byRequested = new Map();
+  for (const id of legIds) {
+    // `loadLeg`'s own `OR` would match both a row with this id and a row with this business
+    // id; only an identifier exactly one row answers to is taken from the batch.
+    const matches = rows.filter((row) => row.id === id || row.legId === id);
+    if (matches.length === 1) byRequested.set(id, matches[0]);
+  }
+  return byRequested;
+}
+
+/**
+ * §7.5 F20's input for the claimed Legs: each Leg's Commitment history, in the shape the
+ * per-Leg read selects (`{ agentId, releasedAt }`).
+ *
+ * @param {object} prisma
+ * @param {string[]} legRowIds
+ * @returns {Promise<Map<string, object[]>>}
+ */
+async function readPlanningHistories(prisma, legRowIds) {
+  const byLeg = new Map(legRowIds.map((id) => [id, []]));
+  if (legRowIds.length === 0) return byLeg;
+  const rows = await prisma.commitment.findMany({
+    where: { legId: { in: legRowIds } },
+    select: { agentId: true, releasedAt: true, legId: true },
+  });
+  for (const row of rows) {
+    if (byLeg.has(row.legId)) byLeg.get(row.legId).push({ agentId: row.agentId, releasedAt: row.releasedAt });
+  }
+  return byLeg;
+}
+
+/**
+ * Run one part of the preparation and settle it into `{ ok, value }` or `{ ok: false, error }`
+ * — including a part that throws before it returns a promise (a store with no such table) — so
+ * one failed part never discards the others.
+ *
+ * @param {() => Promise<*>} read
+ * @returns {Promise<{ ok: boolean, value?: *, error?: Error }>}
+ */
+function settled(read) {
+  return Promise.resolve()
+    .then(read)
+    .then(
+      (value) => ({ ok: true, value }),
+      (error) => ({ ok: false, error }),
+    );
 }
 
 /**
@@ -2420,9 +2959,22 @@ function create(context) {
      * by `evaluateExact`; observation only — nothing on the decision path reads it.
      */
     outcomes: new Map(),
+    /**
+     * B1 — the round's agent snapshots, one per agent: identifier → `{ asOfMs, promise }`.
+     * Planning reads only (expansion, `energyFor`); the commit path never reads it. Cleared
+     * at the round boundary, so no snapshot outlives the round that read it.
+     */
+    agentSnapshots: new Map(),
+    /** B1 — what `prepareRound` read for this round, or `null`. Cleared at the boundary. */
+    planning: null,
+    /** Advanced at every round boundary, so a preparation can never install into a later round. */
+    generation: 0,
     snapshot,
     expansionWallClockBudgetMs: enriched.expansionWallClockBudgetMs,
+    /** The per-agent loader, always fresh. */
     loadAgentSnapshot,
+    /** The commit path's agent read: always fresh, the same rows read concurrently (B1). */
+    freshAgentSnapshot: freshAgentSnapshotLoaderFor(enriched),
     // §20.3 item 2 keys a cell-pair entry on the congestion bucket, so *"an entry computed
     // under one mobility profile or one congestion bucket is never silently applied under
     // another"*. Supplied by the routing seam; absent, `cellPairCache.key` refuses and
@@ -2449,6 +3001,93 @@ function create(context) {
       round.agentIdentity.clear();
       round.legIdentity.clear();
       round.outcomes.clear();
+      round.agentSnapshots.clear();
+      round.planning = null;
+      round.generation += 1;
+    },
+
+    /**
+     * The agent as this round's planning reads it — loaded once per agent per round.
+     *
+     * The same answer `loadAgentSnapshot(agentId, options)` gives, from the round's prepared
+     * fleet when it holds this agent at this decision time, and from that per-agent read
+     * otherwise. The first answer for an identifier is kept for the round; a request at a
+     * different as-of time is read again (facts are as-of), never served from the other.
+     *
+     * @param {string} agentId
+     * @param {{ asOfMs?: number }} [options]
+     * @returns {Promise<object|null>}
+     */
+    planningSnapshotFor(agentId, options) {
+      const asOfMs = options && isNumber(options.asOfMs) ? options.asOfMs : undefined;
+      const key = String(agentId);
+      const held = round.agentSnapshots.get(key);
+      if (held && held.asOfMs === asOfMs) return held.promise;
+      const planning = round.planning;
+      const position = planning && planning.fleet && asOfMs === planning.decisionTimeMs ? planning.fleet.positionFor(key) : null;
+      const promise = position
+        ? agentSnapshotFrom(enriched, position, asOfMs, { facts: planning.fleet.factsFor(position.agentId) })
+        : loadAgentSnapshot(key, asOfMs === undefined ? undefined : { asOfMs });
+      if (!held) round.agentSnapshots.set(key, { asOfMs, promise });
+      return promise;
+    },
+
+    /**
+     * B1 — read the round's planning inputs in one bounded pass: the shard's fleet with each
+     * agent's facts, the claimed Legs, their Commitment histories, the charger estate and the
+     * latest projection. Each part that reads cleanly is installed; a part that fails is
+     * left to the per-item read the round always made.
+     *
+     * @param {{ shardId?: string, decisionTimeMs: number, legIds?: string[] }} input
+     * @returns {Promise<object>} what was prepared, and why any part was not
+     */
+    async prepare(input) {
+      const source = input || {};
+      const shardId = source.shardId ?? enriched.shardId;
+      const decisionTimeMs = source.decisionTimeMs;
+      const generation = round.generation;
+      const legIds = [...new Set((source.legIds || []).map(String))];
+      const prisma = enriched.prisma;
+
+      const [fleet, legs, histories, chargerRows, projectionRow] = await Promise.all([
+        settled(() => readPlanningFleet(enriched, shardId, decisionTimeMs)),
+        settled(() => readPlanningLegs(prisma, legIds)),
+        settled(() => readPlanningHistories(prisma, legIds)),
+        // The same two reads `chargerCandidatesFor` and `pinnedChargerProjection` make.
+        settled(() => prisma.charger.findMany({ orderBy: { chargerId: "asc" } })),
+        settled(() => prisma.chargerAvailabilityProjection.findFirst({ orderBy: { version: "desc" } })),
+      ]);
+
+      // A boundary crossed while reading: these rows belong to a round that is over.
+      if (round.generation !== generation) return Object.freeze({ prepared: false, reason: "ROUND_ENDED" });
+
+      const legRows = legs.ok ? legs.value : new Map();
+      const historyRows = histories.ok ? histories.value : new Map();
+      round.planning = Object.freeze({
+        shardId,
+        decisionTimeMs,
+        fleet: fleet.ok && isNumber(decisionTimeMs) ? fleet.value : null,
+        legFor: (legId) => (legRows.has(legId) ? legFromRow(legRows.get(legId)) : null),
+        historyFor: (legRowId) => (historyRows.has(legRowId) ? historyRows.get(legRowId).map((row) => ({ ...row })) : null),
+        chargerRows: chargerRows.ok ? chargerRows.value : null,
+        projection: projectionRow.ok ? { row: projectionRow.value } : null,
+      });
+
+      const failures = [
+        ["fleet", fleet],
+        ["legs", legs],
+        ["histories", histories],
+        ["chargers", chargerRows],
+        ["projection", projectionRow],
+      ]
+        .filter(([, part]) => !part.ok)
+        .map(([name, part]) => ({ part: name, message: part.error && part.error.message }));
+      return Object.freeze({
+        prepared: round.planning.fleet !== null,
+        agents: round.planning.fleet ? round.planning.fleet.positions.length : 0,
+        legs: legRows.size,
+        failures,
+      });
     },
 
     /**
@@ -2549,7 +3188,12 @@ function create(context) {
      * `unresolvedBoundAgentIds` rather than silently dropped (§6.1, §6.4).
      */
     async energyFor(agentId) {
-      const agentSnapshot = await loadAgentSnapshot(agentId);
+      // The round's snapshot of this agent, whichever as-of time it was read at: κ and the
+      // coefficients come from `BatteryState.kappa` and `EnergyModelParams`, columns the facts'
+      // as-of time does not reach. Before B1 this re-read the whole agent graph and its facts
+      // for every agent of every Leg — 29 % of a round at 78 ms (the B1 audit).
+      const held = round.agentSnapshots.get(String(agentId));
+      const agentSnapshot = held ? await held.promise : await round.planningSnapshotFor(agentId);
       if (!agentSnapshot) return { kappa: null, model: null };
       return { kappa: agentSnapshot.kappa, model: agentSnapshot.energyCoefficients };
     },
@@ -2687,6 +3331,9 @@ function create(context) {
     kv: enriched.kv,
     planState: roundScopedPlanState,
     expandCandidates: expandCandidatesFor(enriched, round),
+    // B1 — the round's planning read, once claimed Legs are known (`coordinator.worker`
+    // step 4b). Planning data only; the commit reads its own, fresh.
+    prepareRound: (input) => round.prepare(input),
     pricedCandidateFor: (agentId, legId, candidate) =>
       round.priced.get(pricedKey(round.canonicalLegId(legId), round.canonicalAgentId(agentId))) || null,
     // The queue row's own fields, synchronously — the Leg and its stops are loaded inside
@@ -2705,6 +3352,10 @@ function create(context) {
     perLegFor: () => perLegFor(round),
     // Legs the lifecycle returned to QUEUED go back on the work list (coordinator.worker).
     requeueReturnedLegs: (input) => coordinatorWorker.requeueReturnedLegs({ prisma: enriched.prisma }, input),
+    // Claims of rounds that died between claim and settlement go back on the work list,
+    // under the same Leg row lock the commit takes (coordinator.worker).
+    recoverOrphanedClaims: (input) =>
+      coordinatorWorker.recoverOrphanedClaims({ prisma: enriched.prisma, selectForUpdate: enriched.selectForUpdate }, input),
     record: enriched.record,
     // `deferPriceFor` is deliberately absent. `cost/cDefer.js` is Tier 2 behind the
     // `deferral` kill switch, and `round.plan` creates no deferral arc without it — which
@@ -2753,6 +3404,13 @@ module.exports = {
   latestFeasibleStartFor,
   legExclusionsFor,
   AGENT_FACT_FIELDS,
+  PLANNING_FACTS_CONCURRENCY,
+  agentSnapshotInclude,
+  AGENT_GRAPH_RELATIONS,
+  readAgentGraph,
+  freshAgentSnapshotLoaderFor,
+  legInclude,
+  mapBounded,
   create,
   // Re-exported so a caller that has an assembly can start the worker it was built for
   // without a second require, and so the composition test can assert the two are the same

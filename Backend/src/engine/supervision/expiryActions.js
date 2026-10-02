@@ -1148,6 +1148,14 @@ async function leaseExpiryRecovery(ctx) {
     externalEscalation: assessment.externalEscalation,
   });
 
+  // Custody RELEASED: delivered, awaiting verification. No reassignment and no write — not
+  // even the lease-expiry self-transition, which would cancel and re-arm the Leg's
+  // `VERIFICATION_ESCALATION` deadline on every reconciler sweep, so the operator escalation
+  // would never fire. The commitment stays live until settlement releases it.
+  if (assessment.outcome === leases.RECOVERY_OUTCOME.AWAIT_VERIFICATION) {
+    return { disposition: DISPOSITION.NOTHING_TO_DO, outcome: `AWAITING_VERIFICATION:${leg.state}` };
+  }
+
   if (assessment.outcome === leases.RECOVERY_OUTCOME.REASSIGN) {
     const agent = await ctx.tx.agent.findUnique({ where: { id: commitment.agentId } });
     const all = await ctx.tx.commitment.findMany({ where: { legId: leg.id } });

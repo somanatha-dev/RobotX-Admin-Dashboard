@@ -77,6 +77,12 @@ const RECOVERY_OUTCOME = Object.freeze({
   TRANSFER: "TRANSFER",
   /** §4.7: "Incumbent unreachable, unsafe, or unable to release". */
   PHYSICAL_RECOVERY: "PHYSICAL_RECOVERY",
+  /**
+   * Custody `RELEASED` — the goods were delivered (§2.5: "Task complete pending
+   * verification"). Nothing is reassigned and the Leg does not move: it waits in `RELEASED`
+   * under §4.4's evidence-insufficient row and its own `VERIFICATION_ESCALATION` deadline.
+   */
+  AWAIT_VERIFICATION: "AWAIT_VERIFICATION",
 });
 
 /**
@@ -256,6 +262,24 @@ function assessRecovery(input) {
   const source = input || {};
   const leg = source.leg || {};
   const custodyState = source.custodyState || leg.custodyState || custody.CUSTODY_STATES.NONE.name;
+
+  // Custody RELEASED: the goods were delivered and the release was recorded. A lease that
+  // lapses afterwards is the agent having finished, not a scheduling problem, so it must not
+  // take the custody-NONE path below: `holdsGoods` is false here too, and reassigning would
+  // dispatch a second delivery of goods that are already at the drop (measured in the V1
+  // final E2E, F-1: verification INSUFFICIENT after a telemetry gap, lease expired, Leg
+  // reassigned, delivered twice). The Leg stays where it is, awaiting verification — §4.4's
+  // `RELEASED | evidence insufficient` row and `VERIFICATION_ESCALATION` own it from here,
+  // and the commitment is released only by settlement.
+  if (custodyState === custody.CUSTODY_STATES.RELEASED.name) {
+    return {
+      outcome: RECOVERY_OUTCOME.AWAIT_VERIFICATION,
+      legState: typeof leg.state === "string" && leg.state !== "" ? leg.state : legMachine.LEG_STATE.RELEASED,
+      reason: "CUSTODY_RELEASED_AWAITING_VERIFICATION",
+      obstructionClass: null,
+      externalEscalation: false,
+    };
+  }
 
   // Custody NONE: "a failure before custody is a scheduling problem" (§2.5). The Leg is
   // reassigned through §4.7's custody-NONE protocol. `holdsGoods` answers **true** for

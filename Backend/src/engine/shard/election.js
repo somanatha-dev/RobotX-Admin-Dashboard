@@ -367,8 +367,11 @@ async function renew(store, session, input) {
     });
   }
 
+  // Never earlier than the lease this session already holds. The store keeps the later of the
+  // two as well (`leadership.renewLease`); the session must not regress on its own either.
+  const leaseExpiry = laterExpiry(session.leaseExpiry, outcome.leaseExpiry);
   const margin = leadership.shouldStopCommitting({
-    leaseExpiry: outcome.leaseExpiry,
+    leaseExpiry,
     storeTime: settings.storeTime,
     maxClockSkewMillis: settings.maxClockSkewMillis,
     storeRoundTripMillis: settings.storeRoundTripMillis,
@@ -377,14 +380,113 @@ async function renew(store, session, input) {
   return Object.freeze({
     ...session,
     state: margin.shouldStop ? LEADERSHIP_STATE.STEPPING_DOWN : LEADERSHIP_STATE.LEADER,
-    leaseExpiry: outcome.leaseExpiry,
-    lastRenewedAtMs: settings.storeTime.getTime(),
+    leaseExpiry,
+    lastRenewedAtMs: Math.max(session.lastRenewedAtMs ?? Number.NEGATIVE_INFINITY, settings.storeTime.getTime()),
     lastRefusal: null,
     // A session that has not reconciled never gains commit permission from a renewal:
     // renewal extends a lease, it does not discharge §19.5's reconciliation obligation.
     mayCommit: session.reconciled === true && !margin.shouldStop,
     marginMillis: margin.marginMillis,
   });
+}
+
+/**
+ * The later of two lease expiries; either may be absent.
+ *
+ * @param {Date|string|null|undefined} a
+ * @param {Date|string|null|undefined} b
+ * @returns {Date|string|null}
+ */
+function laterExpiry(a, b) {
+  if (a === null || a === undefined) return b === undefined ? null : b;
+  if (b === null || b === undefined) return a;
+  return new Date(b).getTime() > new Date(a).getTime() ? b : a;
+}
+
+/**
+ * Whether two sessions describe the same leadership term: the same coordinator holding the
+ * same shard at the same fence. The fence is advanced on every acquisition, so it names the
+ * term; a FOLLOWER holds no term at all.
+ *
+ * @param {object} a
+ * @param {object} b
+ * @returns {boolean}
+ */
+function sameTerm(a, b) {
+  if (!a || !b) return false;
+  if (a.state === LEADERSHIP_STATE.FOLLOWER || b.state === LEADERSHIP_STATE.FOLLOWER) return false;
+  if (a.leadershipFence === null || a.leadershipFence === undefined) return false;
+  if (b.leadershipFence === null || b.leadershipFence === undefined) return false;
+  return (
+    a.shardId === b.shardId && a.candidateId === b.candidateId && BigInt(a.leadershipFence) === BigInt(b.leadershipFence)
+  );
+}
+
+/**
+ * Fold the result of a renewal into the session that is current **now**.
+ *
+ * A renewal is computed from the session as it was when the renewal started. By the time it
+ * returns, the supervisor's session may have moved on — promoted by a reconciliation that
+ * finished meanwhile, stepped down, released, or replaced by a later term. So the result is
+ * not adopted wholesale. Three rules:
+ *
+ *   - A result for another term (or for none) is stale and changes nothing.
+ *   - A failed renewal for the current term withdraws authority: the session steps down. A
+ *     refusal for a term is permanent for that term (the fence moved, the holder changed, or
+ *     the lease lapsed), so a late one is still true.
+ *   - A successful renewal never restores authority. It extends the lease of a session that
+ *     is still LEADER, never earlier than the lease it already holds, and leaves `reconciled`
+ *     and the commit permission it implies to the current session.
+ *
+ * @param {object} current the session the supervisor holds now
+ * @param {object} renewed an `election.renew()` result
+ * @returns {object} the session to hold next
+ */
+function foldRenewal(current, renewed) {
+  if (!sameTerm(current, renewed)) return current;
+
+  if (renewed.state !== LEADERSHIP_STATE.LEADER) {
+    return Object.freeze({
+      ...current,
+      state: LEADERSHIP_STATE.STEPPING_DOWN,
+      mayCommit: false,
+      leaseExpiry: laterExpiry(current.leaseExpiry, renewed.leaseExpiry),
+      lastRefusal: renewed.lastRefusal ?? null,
+      observedFence: renewed.observedFence ?? current.observedFence ?? null,
+      marginMillis: renewed.marginMillis ?? current.marginMillis,
+    });
+  }
+
+  if (current.state !== LEADERSHIP_STATE.LEADER) return current;
+
+  return Object.freeze({
+    ...current,
+    leaseExpiry: laterExpiry(current.leaseExpiry, renewed.leaseExpiry),
+    lastRenewedAtMs: Math.max(current.lastRenewedAtMs ?? Number.NEGATIVE_INFINITY, renewed.lastRenewedAtMs),
+    lastRefusal: null,
+    marginMillis: renewed.marginMillis,
+    mayCommit: current.reconciled === true,
+  });
+}
+
+/**
+ * Promote the current session, but only if it is still the term the reconciliation ran for.
+ *
+ * The reconciliation is evidence about the shard as the leader of one term found it. Applied
+ * to a session that has since stepped down, been released, or been replaced by another term,
+ * it would grant commit permission nobody earned — so it is applied to nothing. The current
+ * session is promoted rather than the one the reconciliation started from, so a lease renewed
+ * meanwhile is kept.
+ *
+ * @param {object} current the session the supervisor holds now
+ * @param {object} basis the LEADER session the reconciliation ran for
+ * @param {object} reconciliation a completed `failover.run()` result
+ * @returns {object} the session to hold next
+ */
+function promoteIfCurrent(current, basis, reconciliation) {
+  if (!sameTerm(current, basis)) return current;
+  if (current.state !== LEADERSHIP_STATE.LEADER || current.reconciled === true) return current;
+  return promote(current, reconciliation);
 }
 
 /**
@@ -509,6 +611,9 @@ module.exports = {
   promote,
   renew,
   release,
+  sameTerm,
+  foldRenewal,
+  promoteIfCurrent,
   assessCommitPermission,
   renewalBudget,
 };

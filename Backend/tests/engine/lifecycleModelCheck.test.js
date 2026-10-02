@@ -156,8 +156,14 @@ describe("§24.2 — the lifecycle is model-checked at capacity 1, 2 and 3", () 
     expect(saturated.violations).toEqual([]);
     // And the shipped depths do not reach the bound at all, so today's numbers are the
     // same numbers with and without it.
+    //
+    // 5 712, was 5 750 until the F-1 fix (2026-10-02). The 38 states that left are exactly
+    // the ones in which a Leg whose custody is RELEASED sits in REASSIGNING — a delivered Leg
+    // being reassigned — reached by LEASE_EXPIRY from RELEASED, which now stays in RELEASED.
+    // Measured by diffing the visited sets before and after: the new set is a strict subset,
+    // with no state added and every removed state of that one shape.
     const shipped = model.check({ capacity: 1, legs: 2, depth: 12 });
-    expect(shipped.states).toBe(5750);
+    expect(shipped.states).toBe(5712);
   });
 
   test("no exhaustive lifecycle model check exists at any shipped capacity — pinned, not implied", () => {

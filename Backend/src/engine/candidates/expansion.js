@@ -82,6 +82,14 @@ const WIDENED_CLASSES = Object.freeze([
 ]);
 
 /**
+ * The most Availability Index partitions one pipelined read asks for (B1). Bounds a read-ahead
+ * chunk's size, so a wide radius costs a few round trips rather than one unbounded pipeline;
+ * at V1's radius a whole tier fits in one.
+ * @structural an I/O batching bound, not a search parameter — it changes no cell visited
+ */
+const PREFETCH_MAX_KEYS = 8192;
+
+/**
  * @param {*} value
  * @returns {boolean}
  */
@@ -409,16 +417,37 @@ async function expandCandidates(input) {
     }
   }
 
-  async function queryFineCell(fineCellId, availabilityClasses, tier) {
+  // ── B1: the index reads of a tier, pipelined ahead of the sweep ─────────────
+  //
+  // Where the KV offers `smembersMany`, the (fine cell, class) partitions this sweep will
+  // visit are read ahead in chunks of at most `PREFETCH_MAX_KEYS`, one round trip per chunk,
+  // and `queryFineCell` consumes them in exactly the order it always visited them: the same
+  // cells, the same classes, the same agent order (§6.6), the same `cellsExplored`, and the
+  // same wall-clock and pruning checks at the same points. Only *when* the advisory index was
+  // read moves (§3.3, I16): before the chunk rather than cell by cell. A KV without it takes the
+  // per-cell path unchanged. A partition a chunk did not cover is read live, never assumed
+  // empty.
+  const batchedKv = Boolean(source.kv && typeof source.kv.smembersMany === "function");
+  const partitionKey = (fineCellId, availabilityClass) => `${fineCellId}|${availabilityClass}`;
+  async function readAhead(fineCellIds, availabilityClasses, into) {
+    const requests = [];
+    for (const fineCellId of fineCellIds) {
+      for (const availabilityClass of availabilityClasses) requests.push({ fineCellId, availabilityClass });
+    }
+    const lists = await availabilityIndex.candidatesInFineCells({ kv: source.kv }, source.shardId, requests);
+    requests.forEach((request, index) => into.set(partitionKey(request.fineCellId, request.availabilityClass), lists[index]));
+    return into;
+  }
+
+  async function queryFineCell(fineCellId, availabilityClasses, tier, readAheadPartitions) {
     cellsExplored += 1;
     for (const availabilityClass of availabilityClasses) {
-      // eslint-disable-next-line no-await-in-loop
-      const agentIds = await availabilityIndex.candidatesInFineCell(
-        { kv: source.kv },
-        source.shardId,
-        fineCellId,
-        availabilityClass,
-      );
+      const key = partitionKey(fineCellId, availabilityClass);
+      const agentIds =
+        readAheadPartitions && readAheadPartitions.has(key)
+          ? readAheadPartitions.get(key)
+          : // eslint-disable-next-line no-await-in-loop
+            await availabilityIndex.candidatesInFineCell({ kv: source.kv }, source.shardId, fineCellId, availabilityClass);
       // eslint-disable-next-line no-await-in-loop
       await considerAgentIds(ordering.orderAgentsWithinCell(agentIds), tier);
       if (truncatedBy) return;
@@ -447,6 +476,27 @@ async function expandCandidates(input) {
     ? Math.ceil(source.maxRadiusMetres / Math.max(1, cells.edgeLengthMetres(cells.RESOLUTION.FINE))) + 1
     : Number.POSITIVE_INFINITY;
 
+  // B1 — the ready partitions of the rings this loop may visit, read ahead a chunk at a time:
+  // from `ring` up to the last ring the loop can reach (the radius bound, or ring 0 alone when
+  // tier 2 is closed), stopping before a chunk would exceed `PREFETCH_MAX_KEYS`.
+  const readyAhead = new Map();
+  let readAheadThroughRing = -1;
+  async function readRingsAhead(fromRing) {
+    if (!batchedKv || fromRing <= readAheadThroughRing) return;
+    const lastRing = maxTiers >= TIER.KRING ? maxRadiusRings : 0;
+    const chunk = [];
+    let next = fromRing;
+    while (next <= lastRing) {
+      const nextCells = next === 0 ? [originFineCellId] : cells.ringAt(originFineCellId, next);
+      if (chunk.length > 0 && (chunk.length + nextCells.length) * READY_CLASSES.length > PREFETCH_MAX_KEYS) break;
+      chunk.push(...nextCells);
+      next += 1;
+    }
+    if (chunk.length === 0) return;
+    await readAhead(chunk, READY_CLASSES, readyAhead);
+    readAheadThroughRing = next - 1;
+  }
+
   // Ring 0 (the origin fine cell) is tier 1; ring ≥ 1 (the k-ring expansion proper)
   // is tier 2. Gated separately so `maxExpansionTiers = 1` still searches the
   // origin cell — the "overwhelmingly common answer" (§6.3) — without opening the
@@ -464,9 +514,11 @@ async function expandCandidates(input) {
     // Entering ring `r`: until it is queried in full, `r` is the lowest unexplored ring.
     unexploredRingDistance = ring;
     const ringCells = ring === 0 ? [originFineCellId] : cells.ringAt(originFineCellId, ring);
+    // eslint-disable-next-line no-await-in-loop
+    await readRingsAhead(ring);
     for (const fineCellId of ringCells) {
       // eslint-disable-next-line no-await-in-loop
-      await queryFineCell(fineCellId, READY_CLASSES, ring === 0 ? TIER.ORIGIN_CELL : TIER.KRING);
+      await queryFineCell(fineCellId, READY_CLASSES, ring === 0 ? TIER.ORIGIN_CELL : TIER.KRING, batchedKv ? readyAhead : null);
       if (truncatedBy) {
         stopped = true;
         break;
@@ -604,10 +656,17 @@ async function expandCandidates(input) {
   if (!truncatedBy && maxTiers >= TIER.WIDENED_CLASSES && !enoughFeasible()) {
     const widenedRing = Math.max(ring, 1);
     const widenedCells = cells.diskAround(originFineCellId, widenedRing);
-    for (const fineCellId of widenedCells) {
+    // B1 — read ahead in chunks of at most `PREFETCH_MAX_KEYS`, visited in the same order.
+    const chunkCells = Math.max(1, Math.floor(PREFETCH_MAX_KEYS / WIDENED_CLASSES.length));
+    for (let start = 0; start < widenedCells.length && !truncatedBy; start += chunkCells) {
+      const chunk = widenedCells.slice(start, start + chunkCells);
       // eslint-disable-next-line no-await-in-loop
-      await queryFineCell(fineCellId, WIDENED_CLASSES, TIER.WIDENED_CLASSES);
-      if (truncatedBy) break;
+      const widenedAhead = batchedKv ? await readAhead(chunk, WIDENED_CLASSES, new Map()) : null;
+      for (const fineCellId of chunk) {
+        // eslint-disable-next-line no-await-in-loop
+        await queryFineCell(fineCellId, WIDENED_CLASSES, TIER.WIDENED_CLASSES, widenedAhead);
+        if (truncatedBy) break;
+      }
     }
   }
 
