@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 
 import { socket, DASHBOARD_EVENTS } from '@/lib/socket.js';
-import { isTerminalTaskStatus, replayableRoutes, staleMapRoutes } from '@/lib/liveState.js';
+import { isTerminalTaskStatus, replayableRoutes, staleMapRoutes, standDownRobot } from '@/lib/liveState.js';
 import { injectPulseCSS, applyMarkerZoomScale } from '@/lib/mapboxMarkers.js';
 
 // ── The robot rendering seam ────────────────────────────────────────────────
@@ -909,11 +909,10 @@ export function useRobotStream({
       let pickupMarker = existing?.pickupMarker || null;
       let dropMarker = existing?.dropMarker || null;
 
-      // Use the road-snapped PATH ENDPOINT for each marker, not the raw task address.
-      // Mapbox snaps coordinates to the nearest road; pathToPickup[-1] is where the
-      // dashed line actually ends, and pathToDrop[-1] is where the solid line ends.
-      // Placing markers at task.pickup/task.drop (unsnapped) causes a visible gap
-      // between the end of the line and the pin.
+      // Place each pin at the PATH ENDPOINT — where the dashed (pickup) and solid (drop)
+      // lines actually end — rather than at the task's stated address. On the V1 engine path
+      // the route ends at the stop's exact coordinate, so the two coincide; a provider route
+      // (which may end on the nearest road) would otherwise leave a gap between line and pin.
       const snapPickupLL = pathToPickup && pathToPickup.length > 0
         ? toLngLat(pathToPickup[pathToPickup.length - 1])
         : toLngLat(pickup);
@@ -1173,6 +1172,21 @@ export function useRobotStream({
         // The finished task's paths leave this hook's cache too (the provider's replayed
         // cache is evicted by AppProvider), so nothing here can redraw it.
         if (taskId) taskPathsRef.current.delete(taskId);
+        return;
+      }
+
+      // Case A′: the unit acknowledged a RECALL / WITHDRAW and stood down. The task is not
+      // finished — it goes back to the queue — but this unit's route describes nothing it is
+      // doing any more, so it goes, unless the record has already moved to another task.
+      const stoodDown = standDownRobot(msg);
+      if (stoodDown) {
+        const record = robotTasksRef.current.get(stoodDown);
+        if (!record || String(record.taskId || '') === taskId) {
+          robotTasksRef.current.delete(stoodDown);
+          removeRouteForRobot(stoodDown);
+        }
+        const cached = taskId ? taskPathsRef.current.get(taskId) : null;
+        if (cached && String(cached.robotId || '') === stoodDown) taskPathsRef.current.delete(taskId);
         return;
       }
 

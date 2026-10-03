@@ -52,12 +52,14 @@
  *
  * ── Where each of the six fields comes from ────────────────────────────────
  *
- *   `distanceM`        the great-circle distance between the two cells' projected
- *                      coordinates, via `utils/distance.haversineMeters` — **the same
- *                      function `VirtualRobot._stepAlongPath` advances on**. It is the
- *                      simulator's own measure of ground covered, not a routing engine's.
- *                      See `DISTANCE_IS_A_LOWER_BOUND` below: this is the *optimistic*
- *                      direction and is stated rather than dressed up.
+ *   `distanceM`        with a campus network composed (`traversalNetworkFor`, the V1
+ *                      demonstration), the length of the route over that network between the
+ *                      request's exact endpoints when it names them, else between the cells'
+ *                      projected coordinates — see `DISTANCE_IS_THE_NETWORK_ROUTE`. Without
+ *                      one, the great circle between the projected coordinates — see
+ *                      `DISTANCE_IS_A_LOWER_BOUND`. Both are measured with
+ *                      `utils/distance.haversineMeters`, the function
+ *                      `VirtualRobot._stepAlongPath` advances on.
  *
  *   `travelSeconds`    the owner's declared V1 campus travel model,
  *                      `routing/campusTravelModel.travelTimeFor`, over that distance. The
@@ -90,6 +92,7 @@ const {
   DECLARED_SPREAD_SOURCE,
 } = require("../engine/routing/campusTravelModel");
 const { ProjectionError } = require("../engine/routing/cellProjection");
+const { ENDPOINT_BASIS, hasExactEndpoints } = require("../engine/routing/cellPairCache");
 const {
   FIELD_PROVENANCE,
   EVIDENCE_AXIS,
@@ -203,29 +206,41 @@ const SIMULATED_STOP_START_BASIS =
 const SIMULATED_STOP_START_CYCLES = 1;
 
 /**
- * **Why the distance is a lower bound, stated rather than hidden.**
+ * **The distance when no campus network is composed — a lower bound, stated as one.**
  *
- * The simulated agent drives `activePath`, which `services/executionGeometry.service`
- * populates from a provider polyline when one is available; a polyline between two points
- * is never shorter than the great circle between them. When no polyline is available the
- * agent has no path at all and refuses the offer. So the great-circle distance this module
- * computes is the *minimum* ground a simulated traversal could cover, and it is optimistic
- * in the same direction as the stop-start floor.
+ * Without `traversalNetworkFor` this producer measures the great circle between the two
+ * cells' projected coordinates. No traversal is shorter, so it is the *minimum* ground a
+ * simulated hop could cover — optimistic in the same direction as the stop-start floor.
+ * §20.3's intra-cell offset is added on top by `cellPairCache` in the pessimistic
+ * direction. No detour factor is applied: none has been declared.
  *
- * It is used anyway, and the reason is that the alternative is worse: a detour factor
- * chosen here would be a number nobody declared, applied to make the estimate look
- * defensible. §20.3's intra-cell offset is added on top by `cellPairCache` in the
- * pessimistic direction, and the honest statement of the residual is this one.
- * @structural the stated basis of this producer's distance
+ * The V1 demonstration composition no longer uses this branch; it composes the campus
+ * network (`DISTANCE_IS_THE_NETWORK_ROUTE`). It remains for a composition that supplies none.
+ * @structural the stated basis of this producer's distance without a network
  */
 const DISTANCE_IS_A_LOWER_BOUND =
   "DEVELOPMENT_SIMULATION. Great-circle distance between the two cells' projected " +
-  "coordinates, computed with utils/distance.haversineMeters — the same function " +
-  "VirtualRobot._stepAlongPath advances on, so it is the simulator's own geometry. It is a " +
-  "LOWER BOUND on the ground a simulated traversal covers, because the agent drives a " +
-  "polyline when one exists. No detour factor is applied: none has been declared, and " +
+  "coordinates, computed with utils/distance.haversineMeters. It is a LOWER BOUND on any " +
+  "traversal between them. No detour factor is applied: none has been declared, and " +
   "inventing one to make the estimate look defensible is the fabrication this producer exists " +
   "to avoid making.";
+
+/**
+ * **The distance over the campus network — the route itself.**
+ *
+ * With a network composed, `distanceM` is the length of the route the network returns,
+ * measured by `haversineMeters` over its points — the function `VirtualRobot._stepAlongPath`
+ * advances on. For an exact-endpoint request those points are carried on the cache entry
+ * and become the agent's `activePath`, so the priced distance and the driven distance are
+ * the same sum over the same points.
+ * @structural the stated basis of this producer's distance over a network
+ */
+const DISTANCE_IS_THE_NETWORK_ROUTE =
+  "DEVELOPMENT_SIMULATION. Length of the route over the campus traversal network " +
+  "(simulation/campusTraversalNetwork: OSM ways of the agent class's permitted road classes, " +
+  "from the extract the delivery domain was published from), measured by haversine over the " +
+  "route's points. For exact endpoints those points are the path the agent drives and the " +
+  "dashboard draws. It is the simulated world's geometry, NOT a production route.";
 
 /**
  * The simulated fleet's nominal speed, in metres per second, when a composition supplies
@@ -376,6 +391,12 @@ function createSimulationRouter(config) {
   if (source.speedFor !== undefined && typeof source.speedFor !== "function") {
     problems.push("speedFor, when supplied, must be a function (profileKey) -> metres per second");
   }
+  if (source.traversalNetworkFor !== undefined && typeof source.traversalNetworkFor !== "function") {
+    problems.push(
+      "traversalNetworkFor, when supplied, must be a function (profileKey) -> a campusTraversalNetwork for that " +
+        "profile's permitted ways",
+    );
+  }
 
   if (problems.length > 0) {
     throw new RouteRefusedError(
@@ -396,6 +417,58 @@ function createSimulationRouter(config) {
   );
   const speedFor =
     typeof source.speedFor === "function" ? source.speedFor : () => SIMULATED_NOMINAL_SPEED_MS;
+  const traversalNetworkFor = typeof source.traversalNetworkFor === "function" ? source.traversalNetworkFor : null;
+
+  /**
+   * The traversal for one request: over the campus network when one is composed, else the
+   * great circle between the two cells' projected coordinates (the original producer, kept
+   * for compositions that supply no network).
+   *
+   * With a network there is **no** great-circle fallback. A profile with no network, or
+   * endpoints the network does not connect, is refused by name — a straight line through
+   * buildings is exactly what this replaces.
+   */
+  function traverse(request, parts, origin, destination) {
+    if (!traversalNetworkFor) {
+      return {
+        distanceM: haversineMeters(origin.lat, origin.lon, destination.lat, destination.lon),
+        path: null,
+        endpointBasis: ENDPOINT_BASIS.CELL_REPRESENTATIVE,
+        accessM: null,
+        basis: DISTANCE_IS_A_LOWER_BOUND,
+      };
+    }
+
+    let network;
+    try {
+      network = traversalNetworkFor(request.profileKey);
+    } catch (error) {
+      throw new RouteRefusedError(ROUTE_REFUSAL.NOT_ROUTABLE, `no campus traversal network: ${error && error.message}`);
+    }
+    if (!network || typeof network.route !== "function") {
+      throw new RouteRefusedError(
+        ROUTE_REFUSAL.NOT_ROUTABLE,
+        `no campus traversal network is composed for routing profile "${request.profileKey}" (its agent class ` +
+          "declares no permitted ground way classes, or the campus extract could not be loaded)",
+      );
+    }
+
+    // Exact coordinates when the request names them (the delivery route); the cells'
+    // projected coordinates otherwise (a cell-keyed question, such as the return leg to a
+    // charger, which `cellPairCache` still corrects for quantisation).
+    const exact = hasExactEndpoints(parts);
+    const routed = network.route(exact ? parts.originPoint : origin, exact ? parts.destPoint : destination);
+    if (!routed.ok) {
+      throw new RouteRefusedError(ROUTE_REFUSAL.NOT_ROUTABLE, routed.reason, { refusal: routed.refusal });
+    }
+    return {
+      distanceM: routed.distanceM,
+      path: exact ? routed.points : null,
+      endpointBasis: exact ? ENDPOINT_BASIS.EXACT_POINTS : ENDPOINT_BASIS.CELL_REPRESENTATIVE,
+      accessM: routed.accessM,
+      basis: DISTANCE_IS_THE_NETWORK_ROUTE,
+    };
+  }
 
   return Object.freeze({
     mode: ROUTER_MODE.DEVELOPMENT,
@@ -443,7 +516,8 @@ function createSimulationRouter(config) {
         throw error;
       }
 
-      const distanceM = haversineMeters(origin.lat, origin.lon, destination.lat, destination.lon);
+      const traversal = traverse(request, parts, origin, destination);
+      const distanceM = traversal.distanceM;
       if (!isFiniteNumber(distanceM) || distanceM < 0) {
         throw new RouteRefusedError(
           ROUTE_REFUSAL.NOT_ROUTABLE,
@@ -492,8 +566,14 @@ function createSimulationRouter(config) {
         descentM: SIMULATED_DESCENT_M,
         stopStartCycles: SIMULATED_STOP_START_CYCLES,
 
+        // ── the traversal's own geometry, which `cellPairCache.buildEntry` keeps for an
+        //    exact-endpoint route so the priced points are the driven and drawn points ──
+        endpointBasis: traversal.endpointBasis,
+        ...(traversal.path ? { path: traversal.path } : {}),
+
         // ── audit only: `cellPairCache.buildEntry` drops everything below this line,
         //    which is why the control is the refusals above and not this block ──
+        accessM: traversal.accessM,
         provenance: Object.freeze({
           mode: ROUTER_MODE.DEVELOPMENT,
           distanceM: simulatedProvenance,
@@ -515,7 +595,7 @@ function createSimulationRouter(config) {
           }),
         }),
         basis: Object.freeze({
-          distanceM: DISTANCE_IS_A_LOWER_BOUND,
+          distanceM: traversal.basis,
           terrain: SIMULATED_TERRAIN_BASIS,
           stopStartCycles: SIMULATED_STOP_START_BASIS,
         }),
@@ -544,7 +624,10 @@ function createSimulationRouter(config) {
       return (
         "RobotX DEVELOPMENT_SIMULATION routing producer. NOT a production router and NOT a B1 adapter: it " +
         "exposes no matrix(), it is absent from tools/routing/adapters, and every field it emits is " +
-        `${FIELD_PROVENANCE.DEVELOPMENT_SIMULATION}. distanceM is the simulator's own haversine geometry; ` +
+        `${FIELD_PROVENANCE.DEVELOPMENT_SIMULATION}. ` +
+        (traversalNetworkFor
+          ? "distanceM is the length of the route over the campus traversal network (between exact endpoints when the request names them); "
+          : "distanceM is the great circle between the cells' projected coordinates; ") +
         `travelSeconds and travelSdSeconds are the owner's declared V1 campus model (buffer ` +
         `${travelModel.bufferSecondsPer100m} s per 100 m, spread source ${SIMULATED_SPREAD_SOURCE}) at a ` +
         `simulated speed; climb/descent are ${SIMULATED_CLIMB_M} m because the simulated world has no elevation ` +
@@ -603,6 +686,7 @@ module.exports = {
   SIMULATED_TERRAIN_BASIS,
   SIMULATED_STOP_START_BASIS,
   DISTANCE_IS_A_LOWER_BOUND,
+  DISTANCE_IS_THE_NETWORK_ROUTE,
   SIMULATED_CLIMB_M,
   SIMULATED_DESCENT_M,
   SIMULATED_STOP_START_CYCLES,

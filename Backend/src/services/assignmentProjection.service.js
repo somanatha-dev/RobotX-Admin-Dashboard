@@ -203,6 +203,54 @@ async function projectAcceptedAssignment(prisma, input) {
   };
 }
 
+/** The legacy status a recalled assignment returns its Task to — the one it was projected from. */
+const RELEASED_STATUS = PROJECTABLE_FROM[0];
+
+/**
+ * Undo `projectAcceptedAssignment` for an agent that has stood down from the work.
+ *
+ * Called when the agent **acknowledges** a `RECALL` or `WITHDRAW` for the commitment — the
+ * moment the server knows the unit is no longer carrying it. The engine has already
+ * released the commitment and returned the Leg to be re-planned; nothing here touches that
+ * authority. What it corrects is the read model, which otherwise kept the Task `ASSIGNED`
+ * to a unit that had gone idle, and the dashboard kept drawing that unit's route.
+ *
+ * Conditional on the Task still naming **this** robot in a projected status, so a Task
+ * already re-projected onto the robot the Leg was reassigned to, or one cancelled in the
+ * meantime, is left alone — the same discipline the projection itself writes under.
+ *
+ * @param {object} prisma
+ * @param {{ commitmentId: string, robotCode: string }} input
+ * @returns {Promise<{ released: boolean, reason: string|null, taskId: string|null }>}
+ */
+async function releaseRecalledAssignment(prisma, input) {
+  const settings = input || {};
+  const commitmentId = toStringOrNull(settings.commitmentId);
+  const robotCode = toStringOrNull(settings.robotCode);
+  if (!commitmentId || !robotCode) return { released: false, reason: "INCOMPLETE_INPUT", taskId: null };
+
+  const commitment = await prisma.commitment.findUnique({ where: { commitmentId }, select: { legId: true } });
+  if (!commitment) return { released: false, reason: "UNKNOWN_COMMITMENT", taskId: null };
+
+  const task = await taskForLeg(prisma, commitment.legId);
+  if (!task) return { released: false, reason: "NO_SINGLE_TASK_FOR_LEG", taskId: null };
+
+  const robot = await prisma.robot.findUnique({ where: { robotId: robotCode }, select: { id: true } });
+  if (!robot) return { released: false, reason: "UNKNOWN_ROBOT", taskId: task.taskId };
+
+  const count = await prisma.$transaction(async (tx) => {
+    const taskUpdate = await tx.task.updateMany({
+      where: { id: task.id, robotId: robot.id, status: { in: REPROJECTABLE_FROM } },
+      data: { robotId: null, status: RELEASED_STATUS, startedAt: null },
+    });
+    if (taskUpdate.count !== 1) return 0;
+    await tx.robot.updateMany({ where: { id: robot.id, currentTaskId: task.id }, data: { currentTaskId: null } });
+    return 1;
+  });
+
+  return { released: count === 1, reason: count === 1 ? null : "TASK_NOT_HELD_BY_ROBOT", taskId: task.taskId };
+}
+
 /**
  * The route the offer carried, read back for the frontend's map.
  *
@@ -324,8 +372,10 @@ async function writeRouteCache(kv, input) {
 module.exports = {
   PROJECTABLE_FROM,
   PROJECTED_STATUS,
+  RELEASED_STATUS,
   taskForLeg,
   projectAcceptedAssignment,
+  releaseRecalledAssignment,
   offeredRouteFor,
   taskAssignedPayload,
   writeRouteCache,

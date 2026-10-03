@@ -30,7 +30,7 @@ import { STOP_ALL_WARNING, summariseStopAll } from '@/lib/robotCommands.js';
 import { reopensAssignment } from '@/features/tasks/taskLifecycle.js';
 import { CONNECTION, connectionStateOf } from '@/lib/connectionState.js';
 import { SESSION_CHECK, sessionCheckOutcome, sessionRetryDelayMs } from '@/lib/sessionCheck.js';
-import { applyRobotOffline, applyRobotOnline, applyTaskUpdate, evictOnTerminalUpdate, evictTerminalRoutes } from '@/lib/liveState.js';
+import { applyRobotOffline, applyRobotOnline, applyTaskUpdate, evictOnStandDown, evictOnTerminalUpdate, evictTerminalRoutes } from '@/lib/liveState.js';
 import { obstacleAlertFrom, rerouteAlertLogLine } from '@/lib/obstacleAlert.js';
 import { DUPLICATE_OUTCOME, newIdempotencyKey } from '@/lib/idempotency.js';
 
@@ -936,6 +936,9 @@ export default function AppProvider({ children }) {
       // tick; left in it, the route came back within one tick of being removed. `taskRoutes`
       // is kept: it is the Tasks card's planned-route distance, and the map never reads it.
       evictOnTerminalUpdate(taskPathCacheRef.current, data);
+      // A unit that acknowledged a RECALL / WITHDRAW no longer drives this route; the task
+      // returns to the queue and its next assignment brings its own route.
+      evictOnStandDown(taskPathCacheRef.current, data);
       // The backend re-bound `Robot.currentTaskId` (and unbound the previous robot on a
       // reassignment) before emitting this, and nothing on the socket carries that. It used
       // to be picked up only by the refetch every page navigation triggered (FS-03); now the

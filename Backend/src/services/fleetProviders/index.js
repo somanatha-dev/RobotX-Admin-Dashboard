@@ -36,7 +36,7 @@
  *
  * Mission-scoped seams (`missionProfileFor`, `defaultConsignmentFor`,
  * `defaultStopAccessPrerequisites`) and the process-level declarations (`timeBucket`,
- * `hopTerrainSource`, `travelTimeSpread`, `v1Demonstration`) describe the Leg or the round,
+ * `hopTerrainSource`, `travelTimeSpread`, `routeEndpointBasis`, `v1Demonstration`) describe the Leg or the round,
  * not an agent, so they are passed through unchanged from the V1 demonstration composition,
  * which is their only source today.
  */
@@ -87,6 +87,7 @@ const PASS_THROUGH = Object.freeze([
   "hopTerrainSource",
   "travelTimeSpread",
   "timeBucket",
+  "routeEndpointBasis",
   "missionProfileFor",
   "defaultConsignmentFor",
   "defaultStopAccessPrerequisites",

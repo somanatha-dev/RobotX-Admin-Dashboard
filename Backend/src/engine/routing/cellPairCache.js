@@ -77,6 +77,54 @@ const KEY_FIELDS = Object.freeze(["originCell", "destCell", "profileKey", "timeB
 const TERRAIN_FIELDS = Object.freeze(["climbM", "descentM", "stopStartCycles"]);
 
 /**
+ * What the endpoints of a cached traversal were.
+ *
+ * `CELL_REPRESENTATIVE` is the §20.3 entry this cache was built for: the router answered
+ * between the two cells' representative points, so the real endpoints are up to a cell away
+ * and `route.intra_cell_offset_m` corrects for that. It is the default for every entry that
+ * does not say otherwise.
+ *
+ * `EXACT_POINTS` is an entry whose router answered between the request's **exact**
+ * coordinates (`originPoint` / `destPoint`). There is no quantisation left to correct, so the
+ * offset is not added — adding it would price a distance nobody travels. It is honoured only
+ * when the request itself carried both points, because the key is then point-specific; an
+ * entry merely *claiming* exactness under a cell key is still corrected.
+ *
+ * @structural the vocabulary, not a tunable
+ */
+const ENDPOINT_BASIS = Object.freeze({
+  CELL_REPRESENTATIVE: "CELL_REPRESENTATIVE",
+  EXACT_POINTS: "EXACT_POINTS",
+});
+
+/**
+ * Coordinates are keyed at 1e-7° (≈1 cm).
+ * @structural decimal places of a WGS-84 coordinate in the key — a representation precision
+ * (≈1 cm on the ground), not a behavioural tolerance
+ */
+const POINT_KEY_DECIMALS = 7;
+
+/**
+ * The fewest points a traversal's geometry can have: one point has no direction and is no
+ * traversal at all (`VirtualRobot.isTraversablePath` applies the same floor).
+ * @structural a polyline's minimum vertex count
+ */
+const MIN_PATH_POINTS = 2;
+
+function isPoint(value) {
+  return Boolean(value) && isNumber(value.lat) && isNumber(value.lon);
+}
+
+function pointToken(point) {
+  return `${point.lat.toFixed(POINT_KEY_DECIMALS)},${point.lon.toFixed(POINT_KEY_DECIMALS)}`;
+}
+
+/** Whether a request names exact endpoints for both ends of the hop. */
+function hasExactEndpoints(parts) {
+  return Boolean(parts) && isPoint(parts.originPoint) && isPoint(parts.destPoint);
+}
+
+/**
  * @param {*} value
  * @returns {boolean}
  */
@@ -107,9 +155,15 @@ function key(parts) {
     };
   }
 
+  // An exact-endpoint request is keyed on its points as well as its cells: two pickups in one
+  // cell are two different traversals once the router answers between exact coordinates, and
+  // a cell-only key would hand one of them the other's route. A cell-only request keys
+  // exactly as before.
+  const exact = hasExactEndpoints(source) ? `:${pointToken(source.originPoint)}>${pointToken(source.destPoint)}` : "";
+
   return {
     ok: true,
-    key: `${KEY_PREFIX}:${source.originCell}:${source.destCell}:${source.profileKey}:${source.timeBucket}`,
+    key: `${KEY_PREFIX}:${source.originCell}:${source.destCell}:${source.profileKey}:${source.timeBucket}${exact}`,
     reason: null,
   };
 }
@@ -167,6 +221,16 @@ function buildEntry(input) {
   }
   if (missing.length > 0) return { ok: false, entry: null, missing };
 
+  // An exact-endpoint traversal also carries its geometry — the points the router measured
+  // `distanceM` over — so the route that is priced is the route that is later driven and
+  // drawn, read from one entry rather than recomputed. Carried only together with the basis
+  // that makes it meaningful; a cell-representative entry keeps exactly its eight fields.
+  const exact =
+    source.endpointBasis === ENDPOINT_BASIS.EXACT_POINTS &&
+    Array.isArray(source.path) &&
+    source.path.length >= MIN_PATH_POINTS &&
+    source.path.every(isPoint);
+
   return {
     ok: true,
     entry: Object.freeze({
@@ -178,9 +242,29 @@ function buildEntry(input) {
       stopStartCycles: source.stopStartCycles ?? null,
       profileKey: source.profileKey ?? null,
       timeBucket: source.timeBucket ?? null,
+      ...(exact
+        ? {
+            endpointBasis: ENDPOINT_BASIS.EXACT_POINTS,
+            path: Object.freeze(source.path.map((point) => Object.freeze({ lat: point.lat, lon: point.lon }))),
+          }
+        : {}),
     }),
     missing: [],
   };
+}
+
+/**
+ * The intra-cell offset settings for one entry: unchanged for a cell-representative entry,
+ * and zero ends for an exact-endpoint entry the request was keyed on (see `ENDPOINT_BASIS`).
+ *
+ * @param {object} entry
+ * @param {object} parts the request
+ * @param {object} settings `{ intraCellOffsetM, speedMetresPerSecond, ends }`
+ * @returns {object}
+ */
+function offsetSettingsFor(entry, parts, settings) {
+  const exact = entry && entry.endpointBasis === ENDPOINT_BASIS.EXACT_POINTS && hasExactEndpoints(parts);
+  return exact ? { ...settings, ends: 0 } : settings;
 }
 
 /**
@@ -247,7 +331,7 @@ async function read(deps, parts, options) {
       if (raw) {
         if (source.counters) source.counters.hit();
         const entry = JSON.parse(raw);
-        const corrected = applyIntraCellOffset(entry, settings);
+        const corrected = applyIntraCellOffset(entry, offsetSettingsFor(entry, parts, settings));
         return corrected.ok
           ? { ok: true, entry: corrected.corrected, hit: true, reason: null }
           : { ok: true, entry, hit: true, reason: null };
@@ -281,7 +365,7 @@ async function read(deps, parts, options) {
 
   await write(source, parts, entry.entry, settings.ttlSeconds);
 
-  const corrected = applyIntraCellOffset(entry.entry, settings);
+  const corrected = applyIntraCellOffset(entry.entry, offsetSettingsFor(entry.entry, parts, settings));
   return {
     ok: true,
     entry: corrected.ok ? corrected.corrected : entry.entry,
@@ -318,8 +402,16 @@ async function write(deps, parts, entry, ttlSeconds) {
  * The first hop is the approach from the agent's release position; the rest are the
  * linehaul. Returned in stop order so `plan/timeline.project()` can consume it directly.
  *
+ * ── Exact endpoints, when the composition's router routes between them ──────
+ * With `exactEndpoints: true` each hop also names its exact endpoints — the agent's
+ * `originPoint` for the approach, then each stop's own `lat`/`lon` — so a router that
+ * routes between coordinates rather than cell representatives (the V1 demonstration's
+ * campus network) is asked about the traversal that will actually be driven. A hop whose
+ * endpoint has no coordinate is asked about cells alone and keeps the §20.3 correction.
+ * Without the flag every request is exactly the cell-pair request it always was.
+ *
  * @param {object} deps `{ kv, route, counters }`
- * @param {object} input `{ originCell, stops, profileKey, timeBucket, options }`
+ * @param {object} input `{ originCell, originPoint?, exactEndpoints?, stops, profileKey, timeBucket, options }`
  * @returns {Promise<{ ok: boolean, hops: object[], misses: number, problems: string[] }>}
  */
 async function hopsFor(deps, input) {
@@ -328,14 +420,18 @@ async function hopsFor(deps, input) {
   const hops = [];
   const problems = [];
   let misses = 0;
+  const exact = source.exactEndpoints === true;
 
   let originCell = source.originCell;
+  let originPoint = exact && isPoint(source.originPoint) ? source.originPoint : null;
   for (const stop of stops) {
-    const result = await read(
-      deps,
-      { originCell, destCell: stop.cellId, profileKey: source.profileKey, timeBucket: source.timeBucket },
-      source.options,
-    );
+    const destPoint = exact && isPoint(stop) ? { lat: stop.lat, lon: stop.lon } : null;
+    const parts = { originCell, destCell: stop.cellId, profileKey: source.profileKey, timeBucket: source.timeBucket };
+    if (originPoint && destPoint) {
+      parts.originPoint = originPoint;
+      parts.destPoint = destPoint;
+    }
+    const result = await read(deps, parts, source.options);
     if (!result.ok) {
       problems.push(`stop ${String(stop.sequence)}: ${result.reason}`);
       hops.push(null);
@@ -344,6 +440,7 @@ async function hopsFor(deps, input) {
       hops.push(result.entry);
     }
     originCell = stop.cellId;
+    originPoint = destPoint;
   }
 
   return { ok: problems.length === 0, hops, misses, problems };
@@ -386,6 +483,8 @@ module.exports = {
   KEY_PREFIX,
   KEY_FIELDS,
   TERRAIN_FIELDS,
+  ENDPOINT_BASIS,
+  hasExactEndpoints,
   key,
   buildEntry,
   applyIntraCellOffset,

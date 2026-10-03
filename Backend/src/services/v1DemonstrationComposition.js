@@ -22,8 +22,11 @@
  *     `PHYSICAL_ROBOT_REPLACEMENTS`.
  *
  * ── Per seam: the V1 model and what replaces it ────────────────────────────
- *   route / terrain / spread / speed  simulation/simulationRouter (flat: the simulator
- *                                     has no elevation)       → a production router (B1)
+ *   route / terrain / spread / speed  simulation/simulationRouter over the campus traversal
+ *                                     network (simulation/campusTraversalNetwork: the campus
+ *                                     OSM extract's permitted ways), between EXACT endpoints;
+ *                                     flat: the simulator has no elevation
+ *                                                              → a production router (B1)
  *   agentFactsFor                     services/agentFacts + simulatedAgentState
  *                                                              → a control-plane provider
  *   agentEnergyDeclarationsFor        the simulated pack's declared floor + dispersion
@@ -39,15 +42,17 @@
  *   routeDescriptorFor / forecast     the simulated world's surfaces, zones, windows
  *                                                              → map + weather providers
  *   missionProfileFor                 V1_DEMONSTRATION mission profile (both kinds)
- *   directionsFor                     the simulator's planar segment (simulated agents)
+ *   directionsFor                     none for a simulated agent: it drives the priced route,
+ *                                     which the commit attaches to the OFFER
  *                                                              → Mapbox (default, unchanged)
  */
 
 const logger = require("../config/logger");
-const { haversineMeters } = require("../utils/distance");
 
 const simulationPolicy = require("../simulation/simulationPolicy");
 const simulationRouter = require("../simulation/simulationRouter");
+const campusTraversalNetwork = require("../simulation/campusTraversalNetwork");
+const { ENDPOINT_BASIS } = require("../engine/routing/cellPairCache");
 const simulatedAgentState = require("../simulation/simulatedAgentState");
 
 const cellProjection = require("../engine/routing/cellProjection");
@@ -120,6 +125,11 @@ function lazyRouter(settings) {
     const declaration = pinned && (pinned.deliveryDomain || (pinned.spatial && pinned.spatial.deliveryDomain));
     if (!declaration) throw new Error("the pinned configuration carries no delivery-domain declaration to project cells within");
     const agents = await prisma.robot.findMany({ where: { simulated: true }, select: { robotId: true, simulated: true } });
+    // The campus network, from the extract this delivery domain was published from. Refused
+    // here, at the build, when the extract cannot be found — the route then names why on
+    // every request instead of falling back to a straight line.
+    const extract = campusTraversalNetwork.extractForDeclaration(declaration);
+    if (!extract.ok) throw new Error(`the campus traversal network cannot be built: ${extract.problems.join("; ")}`);
     const router = simulationRouter.createSimulationRouter({
       projection: cellProjection.createCellProjection({
         serviceability: campusServiceability.createServiceabilityOracle(declaration),
@@ -130,6 +140,8 @@ function lazyRouter(settings) {
       env,
       // Refuses (NO_SPEED) for a profile that is not a simulated one.
       speedFor: speedForProfile,
+      // One network per permitted class set, built once from the extract's ways.
+      traversalNetworkFor: networksFrom(extract),
     });
     built = router;
     return router;
@@ -157,16 +169,50 @@ function simulatedProfileKeyFor(agentSnapshot) {
   const packWh = agentSnapshot.energyModel && isNumber(agentSnapshot.energyModel.packNominalWh)
     ? agentSnapshot.energyModel.packNominalWh
     : simulatedAgentState.simulatedPackDeclaration().packNominalWh;
-  return `${PROFILE_PREFIX}:v=${nominal}:wh=${packWh}`;
+  // The third thing the route depends on: which ways the class may use
+  // (`MobilityModel.permissionSet`), so two classes with different permissions never share a
+  // cached route. An empty set is stated, and the router refuses it rather than guessing.
+  const permissionSet = agentSnapshot.mobilityModel && agentSnapshot.mobilityModel.permissionSet;
+  const network = campusTraversalNetwork.permittedClasses(permissionSet).join("+");
+  return `${PROFILE_PREFIX}:v=${nominal}:wh=${packWh}:net=${network}`;
 }
 
-/** @returns {{ speed: number, packWh: number }|null} */
+/** @returns {{ speed: number, packWh: number, roadClasses: string[] }|null} */
 function parseSimulatedProfile(profileKey) {
-  const match = /^SIMULATED:v=([0-9.]+):wh=([0-9.]+)$/u.exec(String(profileKey || ""));
+  const match = /^SIMULATED:v=([0-9.]+):wh=([0-9.]+)(?::net=([a-z_+]*))?$/u.exec(String(profileKey || ""));
   if (!match) return null;
   const speed = Number(match[1]);
   const packWh = Number(match[2]);
-  return isNumber(speed) && speed > 0 && isNumber(packWh) && packWh > 0 ? { speed, packWh } : null;
+  const roadClasses = match[3] ? match[3].split("+").filter(Boolean) : [];
+  return isNumber(speed) && speed > 0 && isNumber(packWh) && packWh > 0 ? { speed, packWh, roadClasses } : null;
+}
+
+/**
+ * The campus network for a simulated profile: the extract's ways of the profile's permitted
+ * classes, built once per class set. `undefined` for a profile that is not a simulated one or
+ * permits no ways — the router then refuses by name.
+ *
+ * @param {{ features: object[], file: string }} extract `campusTraversalNetwork.extractForDeclaration`
+ * @returns {(profileKey: string) => object|undefined}
+ */
+function networksFrom(extract) {
+  const built = new Map();
+  return (profileKey) => {
+    const parsed = parseSimulatedProfile(profileKey);
+    if (!parsed || parsed.roadClasses.length === 0) return undefined;
+    const classKey = parsed.roadClasses.join("+");
+    if (!built.has(classKey)) {
+      built.set(
+        classKey,
+        campusTraversalNetwork.createCampusTraversalNetwork({
+          features: extract.features,
+          roadClasses: parsed.roadClasses,
+          source: extract.file,
+        }),
+      );
+    }
+    return built.get(classKey);
+  };
 }
 
 /** The speed a simulated profile drives at, or `undefined` for any other profile. */
@@ -222,6 +268,16 @@ function batteryWearInputsFor(agentSnapshot, plan) {
 }
 
 /**
+ * The execution-geometry provider for a simulated agent: it produces nothing. Its route is
+ * the priced one; no route is computed after the decision.
+ *
+ * @returns {Promise<null>}
+ */
+async function noIndependentGeometry() {
+  return null;
+}
+
+/**
  * Build the composition.
  *
  * @param {object} settings
@@ -258,6 +314,10 @@ function createV1DemonstrationComposition(settings) {
     speedMetresPerSecondFor: speedForProfile,
     // §20.3's congestion bucket at composition (promotion) time.
     timeBucket: timeline.hourOfWeek(Date.now(), UTC_OFFSET_SECONDS),
+    // The router above routes between exact coordinates, so the round asks it about the
+    // agent's exact position and each stop's exact coordinate rather than cell
+    // representatives, and the priced route's points become the OFFER's geometry.
+    routeEndpointBasis: ENDPOINT_BASIS.EXACT_POINTS,
 
     /* ── agent facts (§7.5) ───────────────────────────────────────────────── */
     agentFactsFor: agentFacts.createAgentFactsProvider({ prisma, kv, tenantId: profile.DEMONSTRATION_TENANT_ID }),
@@ -335,18 +395,13 @@ function createV1DemonstrationComposition(settings) {
     returnLegEnergyWhPerMetreFor: simulatedWhPerMetre,
 
     /* ── execution geometry ───────────────────────────────────────────────── */
-    // A simulated agent drives the simulator's own planar segment — the same geometry its
-    // route was priced on. A physical agent keeps the default (Mapbox) provider.
-    directionsFor: (agentSnapshot) =>
-      isSimulatedSnapshot(agentSnapshot)
-        ? async ({ from, to }) => ({
-            points: [
-              { lat: from.lat, lon: from.lon },
-              { lat: to.lat, lon: to.lon },
-            ],
-            distanceMeters: haversineMeters(from.lat, from.lon, to.lat, to.lon),
-          })
-        : undefined,
+    // A simulated agent drives the route it was priced on: the campus-network points the
+    // round's routing carried (`routeEndpointBasis` above), attached to the OFFER by the
+    // commit. It is given NO second producer here — this seam used to hand it a two-point
+    // chord computed after the decision, which was a different line from the one priced.
+    // Absent a priced route, the stop carries no path and the agent refuses it by name.
+    // A physical agent keeps the default (Mapbox) provider.
+    directionsFor: (agentSnapshot) => (isSimulatedSnapshot(agentSnapshot) ? noIndependentGeometry : undefined),
   };
 }
 

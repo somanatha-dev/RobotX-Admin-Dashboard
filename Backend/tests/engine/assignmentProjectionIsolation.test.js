@@ -79,8 +79,11 @@ describe("structural — nothing in the decision path can read what it wrote", (
     expect(importers).not.toContain("src/workers/coordinator.worker.js");
   });
 
-  test("its only importer is the socket handler that runs after the decision", () => {
-    expect(importers).toEqual(["src/sockets/handlers/offer.handler.js"]);
+  test("its only importers are the socket handlers that run after the decision", () => {
+    // `offer.handler` projects an accepted assignment; `command.handler` releases it when
+    // the agent acknowledges a RECALL / WITHDRAW (2026-10-02). Both run on an agent's
+    // response to a command already decided and delivered — neither is on the decision path.
+    expect(importers).toEqual(["src/sockets/handlers/command.handler.js", "src/sockets/handlers/offer.handler.js"]);
   });
 });
 

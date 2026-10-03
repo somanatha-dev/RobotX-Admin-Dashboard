@@ -3,6 +3,15 @@
 /**
  * Execution geometry — the drivable route an offer's stop sequence carries.
  *
+ * ── Two producers, chosen by the composition ────────────────────────────────
+ *   * `attachPricedPaths` — the route the assignment was **priced** on, carried from the
+ *     round's routing. Used where the decision-path router returns the traversal's geometry
+ *     (the V1 demonstration's campus network, `routeEndpointBasis: EXACT_POINTS`). The
+ *     priced route and the driven route are then the same points.
+ *   * `attachStopPaths` — a provider route per stop (Mapbox by default), computed for an
+ *     agent already chosen. Used where the decision-path router carries no geometry; it is
+ *     what the paragraphs below describe.
+ *
  * ── What this is, and the one thing it is emphatically not ──────────────────
  * It is an **execution-path addition**. It produces the waypoint list an agent drives
  * between two points that the assignment has already been made about, using the same
@@ -178,9 +187,61 @@ async function attachStopPaths(input) {
   return { stops: out, routed, unroutable };
 }
 
+/** The `pathProfile` an OFFER stop carries when its path is the route it was priced on. @structural */
+const PRICED_ROUTE_PROFILE = "PRICED_ROUTE";
+
+/**
+ * Attach the route each stop was **priced** on — no provider call, no second route.
+ *
+ * Where the composition's decision-path router returns the traversal's own geometry (the V1
+ * demonstration's campus network), the round already holds, per stop, the points the hop's
+ * distance and travel time were measured over. Those points are the execution geometry:
+ * attaching them is what makes the route the agent drives and the dashboard draws the route
+ * the assignment was decided on, rather than a line computed afterwards.
+ *
+ * Same output shape and the same absence rule as `attachStopPaths`: a stop with no priced
+ * path (or one the agent could not traverse) is returned unchanged with no `path` key, and
+ * the agent refuses the offer by name.
+ *
+ * @param {object} input
+ * @param {object[]} input.stops the offer's stop sequence
+ * @param {Array<{ path: object[], distanceM: number }|null>|null} input.pricedPaths per stop, in order
+ * @returns {{ stops: object[], routed: number, unroutable: number[] }}
+ */
+function attachPricedPaths(input) {
+  const settings = input || {};
+  const stops = Array.isArray(settings.stops) ? settings.stops : [];
+  const priced = Array.isArray(settings.pricedPaths) ? settings.pricedPaths : [];
+
+  const out = [];
+  const unroutable = [];
+  let routed = 0;
+
+  stops.forEach((stop, index) => {
+    const entry = priced[index];
+    const points = entry && Array.isArray(entry.path) ? entry.path.map((point) => ({ lat: point.lat, lon: point.lon })) : null;
+    if (!isTraversable(points)) {
+      unroutable.push(stop && stop.sequence !== undefined ? stop.sequence : index);
+      out.push(stop);
+      return;
+    }
+    out.push({
+      ...stop,
+      path: points,
+      pathProfile: PRICED_ROUTE_PROFILE,
+      pathDistanceMeters: Number.isFinite(entry.distanceM) ? entry.distanceM : null,
+    });
+    routed += 1;
+  });
+
+  return { stops: out, routed, unroutable };
+}
+
 module.exports = {
   PROFILES,
+  PRICED_ROUTE_PROFILE,
   isTraversable,
   routeBetween,
   attachStopPaths,
+  attachPricedPaths,
 };

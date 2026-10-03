@@ -435,6 +435,10 @@ function routingSeamFor(context) {
   return {
     counters,
     deps: { kv: context.kv, route: context.route, counters },
+    // Declared by a composition whose router routes between exact coordinates (the V1
+    // demonstration's campus network). Absent, every request is the cell-pair request §20.3
+    // describes and the intra-cell correction applies as before.
+    exactEndpoints: context.routeEndpointBasis === cellPairCache.ENDPOINT_BASIS.EXACT_POINTS,
     optionsFor(profileKey) {
       const speed = isFunction(context.speedMetresPerSecondFor)
         ? context.speedMetresPerSecondFor(profileKey)
@@ -2001,7 +2005,12 @@ function evaluateExactFor(context, round) {
     if (!agentSnapshot.cellId) return refuse(REFUSAL.MISSING_HOP, ["the agent has no resolved origin cell"]);
 
     const profileKey = round.profileKeyFor(agentSnapshot);
-    const traversal = await routing.forPairing(agentSnapshot.cellId, leg.stops, profileKey);
+    // The agent's own position as well as its cell: where the composition routes between
+    // exact coordinates, this is where the approach really starts.
+    const traversal = await routing.forPairing(agentSnapshot.cellId, leg.stops, profileKey, {
+      lat: agentSnapshot.lat,
+      lon: agentSnapshot.lon,
+    });
     if (!traversal.ok) return refuse(REFUSAL.MISSING_HOP, traversal.problems);
 
     /* ── 2. §14.5's return-leg destinations, from the declared estate ──────── */
@@ -2142,6 +2151,12 @@ function evaluateExactFor(context, round) {
       // from. G3 is pinned to it (`commitFor`), so an epoch advanced after planning aborts the
       // commit even when the pre-transaction read already sees the newer value.
       authorityEpoch: agentSnapshot.authorityEpoch ?? null,
+      // The geometry this plan was priced on, per stop in plan order — the points each
+      // hop's distance and travel time were measured over. The commit attaches exactly these
+      // to the OFFER, so the agent drives and the dashboard draws the route that was priced.
+      // `null` when the composition's routing carries no geometry (a cell-pair router); the
+      // commit then takes the execution-geometry seam as before.
+      stopPaths: isFunction(traversal.pathsForSequence) ? traversal.pathsForSequence(gated.candidate.stops) : null,
       // `plan₀` for an idle agent is the empty plan, so `column.price` uses `Φ(∅) = 0`
       // exactly rather than evaluating a second plan (§8.1's degenerate case).
       basePlan: null,
@@ -2524,10 +2539,12 @@ function commitFor(context, round) {
     //
     // **This changes no assignment.** The agent has already been chosen — by candidate
     // generation, the feasibility gate and the solve — and the geometry describes the
-    // journey that choice implies. Nothing here is read by a cost term, and
-    // `coordinatorPipeline.requirements()` is untouched: the §5 `route` contract the
-    // composition declares is six fields and remains unresolved, so a polyline here is
-    // not, and must never be presented as, the missing traversal source.
+    // journey that choice implies. Nothing here is read by a cost term.
+    //
+    // Where the composition routes between exact coordinates (`routeEndpointBasis`), the
+    // geometry is not fetched at all: it is the route the round priced, read from the
+    // priced entry. A provider polyline fetched here would be a second route, and is never
+    // presented as the traversal the decision was made on.
     //
     // A failure to route attaches nothing. The agent's own `assessExecutability` then
     // refuses the offer by name (`NO_EXECUTABLE_PATH`), which returns the Leg to `QUEUED`
@@ -2545,13 +2562,19 @@ function commitFor(context, round) {
         }))
       : [];
 
-    const geometry = await executionGeometry.attachStopPaths({
-      from: { lat: agentSnapshot.lat, lon: agentSnapshot.lon },
-      stops: plannedStops,
-      // Per agent where the composition distinguishes producers: a simulated agent drives
-      // the simulator's own geometry, the one its route was priced on.
-      directions: isFunction(context.directionsFor) ? context.directionsFor(agentSnapshot) : context.directions,
-    });
+    // Where the decision-path router returned the traversal's own geometry, the OFFER carries
+    // exactly the route this pairing was priced on — the points its distance, travel time and
+    // energy were computed over — and nothing is routed again here. Otherwise the
+    // execution-geometry seam produces a route for the already-chosen agent, as before.
+    const pricedRoute = context.routeEndpointBasis === cellPairCache.ENDPOINT_BASIS.EXACT_POINTS;
+    const geometry = pricedRoute
+      ? executionGeometry.attachPricedPaths({ stops: plannedStops, pricedPaths: entry ? entry.stopPaths : null })
+      : await executionGeometry.attachStopPaths({
+          from: { lat: agentSnapshot.lat, lon: agentSnapshot.lon },
+          stops: plannedStops,
+          // Per agent where the composition distinguishes producers.
+          directions: isFunction(context.directionsFor) ? context.directionsFor(agentSnapshot) : context.directions,
+        });
 
     if (geometry.unroutable.length > 0) {
       logger.warn(
@@ -3133,42 +3156,73 @@ function create(context) {
        * carried into the composition: a re-sequenced list looks its hops up by *where the
        * agent actually travels*, so a shifted index cannot silently return a neighbour's.
        */
-      async forPairing(originCell, stops, profileKey) {
+      async forPairing(originCell, stops, profileKey, originPoint) {
         const resolvedStops = stops.map((stop) => ({
           ...stop,
           cellId: stop.cellId || cellIdFor(stop),
         }));
 
+        // A composition whose router answers between exact coordinates says so
+        // (`routeEndpointBasis`), and only then is the router asked about the agent's exact
+        // position and each stop's coordinate. Every other composition keeps the cell-pair
+        // request exactly as it was. A caller with no origin point (the return leg to a
+        // charger) is asked about cells alone and keeps the §20.3 correction.
+        const exactEndpoints = routingSeam.exactEndpoints && isNumber(originPoint && originPoint.lat) && isNumber(originPoint.lon);
+
         const result = await cellPairCache.hopsFor(routingSeam.deps, {
           originCell,
+          originPoint: exactEndpoints ? originPoint : undefined,
+          exactEndpoints,
           stops: resolvedStops,
           profileKey,
           timeBucket: round.timeBucket,
           options: routingSeam.optionsFor(profileKey),
         });
-        if (!result.ok) return { ok: false, hops: [], hopsForSequence: null, problems: result.problems };
+        if (!result.ok) return { ok: false, hops: [], hopsForSequence: null, pathsForSequence: null, problems: result.problems };
+
+        // Keyed by where the agent actually travels. With exact endpoints that is the exact
+        // coordinate as well as the cell: two stops in one cell are two different hops, and
+        // a cell-only key would hand the second the first one's route.
+        const place = (cellId, point) =>
+          exactEndpoints && point && isNumber(point.lat) && isNumber(point.lon) ? `${cellId}@${point.lat},${point.lon}` : cellId;
 
         const memo = new Map();
-        let from = originCell;
+        let from = place(originCell, originPoint);
         resolvedStops.forEach((stop, index) => {
-          memo.set(`${from}>${stop.cellId}`, result.hops[index]);
-          from = stop.cellId;
+          const to = place(stop.cellId, stop);
+          memo.set(`${from}>${to}`, result.hops[index]);
+          from = to;
         });
+
+        const hopsForSequence = (sequenced) => {
+          const hops = [];
+          let cursor = place(originCell, originPoint);
+          for (const stop of sequenced || []) {
+            const destination = place(stop.cellId || cellIdFor(stop), stop);
+            const hop = memo.get(`${cursor}>${destination}`);
+            if (!hop) return null;
+            hops.push(hop);
+            cursor = destination;
+          }
+          return hops;
+        };
 
         return {
           ok: true,
           hops: result.hops,
-          hopsForSequence(sequenced) {
-            const hops = [];
-            let cursor = originCell;
-            for (const stop of sequenced || []) {
-              const destination = stop.cellId || cellIdFor(stop);
-              const hop = memo.get(`${cursor}>${destination}`);
-              if (!hop) return null;
-              hops.push(hop);
-              cursor = destination;
-            }
-            return hops;
+          hopsForSequence,
+          /**
+           * The priced geometry of each stop's approach, in plan order — the very points the
+           * hop's `distanceM` and `travelSeconds` were computed over, carried on the cache
+           * entry. `null` for a stop whose hop carries none (a cell-representative entry), and
+           * `null` overall for a sequence containing a pair this pairing did not route.
+           */
+          pathsForSequence(sequenced) {
+            const hops = hopsForSequence(sequenced);
+            if (!hops) return null;
+            return hops.map((hop) =>
+              hop && Array.isArray(hop.path) ? { path: hop.path, distanceM: hop.distanceM } : null,
+            );
           },
           problems: [],
         };

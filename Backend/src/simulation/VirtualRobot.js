@@ -2015,15 +2015,12 @@ class VirtualRobot {
 
     // Snap to nearest point on the path.
     //
-    // Two scenarios handled by the same algorithm:
-    //   A) Fresh assignment — robot is inside campus (off-road).
-    //      path[0] is Mapbox-snapped to the nearest road.
-    //      → robot teleports to path[0] (on-road) and starts moving.
-    //
-    //   B) Restart resume — robot's last DB position is somewhere along the route.
-    //      recoverActiveTasks re-computes a fresh route from that position,
-    //      so path[0] IS the robot's current road position.
-    //      → robot resumes from where it left off (no backtrack to route start).
+    // An engine OFFER's first path starts at the position the assignment was priced from —
+    // the agent's own last accepted fix — then runs onto the campus network and along it, so
+    // the nearest point is normally path[0] and nothing moves. Snapping still matters for a
+    // path that does not start exactly where the robot is (a legacy TASK_ASSIGN, or a fix that
+    // advanced between pricing and delivery): the robot joins the route at its nearest
+    // waypoint rather than backtracking to its start.
     const firstPath = stops[0].path;
     const snapIdx = this._findNearestPathIndex(firstPath, this.lat, this.lon);
     this.pathIndex = snapIdx;

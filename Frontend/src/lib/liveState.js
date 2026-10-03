@@ -134,6 +134,39 @@ export function evictOnTerminalUpdate(cache, data) {
   return cache.delete(taskId);
 }
 
+/** The `TASK_UPDATED` action the backend sends when a unit acknowledged a RECALL / WITHDRAW. */
+export const STAND_DOWN_ACTION = 'RECALLED';
+
+/**
+ * The unit a `TASK_UPDATED` says stood down from its task, or '' when it says nothing of
+ * the kind. The task itself is not finished — it returns to the queue — but the route drawn
+ * for THIS unit no longer describes anything it is doing.
+ *
+ * @param {object} data the `TASK_UPDATED` payload
+ * @returns {string}
+ */
+export function standDownRobot(data) {
+  return data?.action === STAND_DOWN_ACTION ? trimmed(data?.releasedRobotId) : '';
+}
+
+/**
+ * `TASK_UPDATED` → the task-route cache: a stand-down removes the task's route if the route
+ * is the stood-down unit's. A route already re-bound to the unit the task was reassigned to
+ * is left alone.
+ *
+ * @param {Map<string, object>} cache taskId → cached route
+ * @param {object} data the `TASK_UPDATED` payload
+ * @returns {boolean} whether an entry was removed
+ */
+export function evictOnStandDown(cache, data) {
+  const taskId = trimmed(data?.taskId);
+  const robotId = standDownRobot(data);
+  if (!taskId || !robotId || !cache || typeof cache.get !== 'function') return false;
+  const entry = cache.get(taskId);
+  if (!entry || trimmed(entry.robotId) !== robotId) return false;
+  return cache.delete(taskId);
+}
+
 /**
  * The cached routes the map redraws on a sync pass (`useRobotStream`, every telemetry
  * tick): complete paths for a visible robot that has no route drawn — the first cached

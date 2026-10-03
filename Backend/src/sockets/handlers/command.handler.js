@@ -7,6 +7,7 @@ const outbox = require("../../engine/dispatch/outbox");
 // PHASE 15 remediation (D-6) — both halves of the cutover switch, from the one module that
 // owns the question. Settling an outbox row is an engine write.
 const agentGate = require("../../engine/cutover/agentGate");
+const assignmentProjection = require("../../services/assignmentProjection.service");
 
 // PHASE 4 — §11.1 item 2: "Dispatcher workers claim outbox rows, deliver, and mark
 // them delivered." The mark that closes the loop is the agent's acknowledgement, and
@@ -67,7 +68,51 @@ async function acknowledgeOutboxRow(prisma, robotId, data) {
 
   const storeTime = await clockModule.readStoreTime(prisma);
   const count = await outbox.settleRow(prisma, { id: row.id, state: outbox.OUTBOX_STATE.ACKED, storeTime });
-  return { acked: count === 1, reason: count === 1 ? null : "ROW_MOVED" };
+  return {
+    acked: count === 1,
+    reason: count === 1 ? null : "ROW_MOVED",
+    // Which command the agent confirmed applying, for the read-model follow-up below.
+    command: row.command ?? null,
+    commitmentId: row.commitmentId ?? null,
+  };
+}
+
+/**
+ * The mission commands after whose acknowledgement the agent no longer carries the work:
+ * `VirtualRobot` answers both by abandoning the mission and going idle (`_applyReturnToBase`).
+ * `ABORT_MISSION` is deliberately absent — the agent halts *holding* its task, so its route is
+ * still the one it is on.
+ * @structural
+ */
+const STAND_DOWN_COMMANDS = new Set(["RECALL", "WITHDRAW"]);
+
+/**
+ * After an acknowledged stand-down, release the legacy read model and tell the dashboard.
+ *
+ * Without this the Task stayed `ASSIGNED` to the idle unit and the map kept its route —
+ * `TASK_UPDATED` was the only event that clears a route, and nothing emitted it for a recall.
+ * Best effort: the engine's authority is already settled, so a failure here is a stale
+ * screen, never a lost command.
+ */
+async function publishStandDown({ prisma, kv, io, log, robotId, commitmentId }) {
+  const released = await assignmentProjection.releaseRecalledAssignment(prisma, { commitmentId, robotCode: robotId });
+  if (!released.released) return released;
+  try {
+    await Promise.all([kv?.del?.(`taskPath:${released.taskId}`), kv?.del?.(`robotTaskState:${robotId}`)]);
+  } catch {
+    // the route cache is best effort, as when it is written
+  }
+  io.to("dashboard").emit("TASK_UPDATED", {
+    taskId: released.taskId,
+    // Not `robotId`: on `TASK_UPDATED` that field names the robot the task is now on, and
+    // the task is on none. This names the unit that stood down, whose route is to be removed.
+    releasedRobotId: robotId,
+    status: assignmentProjection.RELEASED_STATUS,
+    action: "RECALLED",
+    timestamp: Date.now(),
+  });
+  log.info("assignment released after an acknowledged stand-down", { robotId, commitmentId, taskId: released.taskId });
+  return released;
 }
 
 function registerCommandHandlers(io, socket, { prisma, kv, logger, appLocals }) {
@@ -101,6 +146,11 @@ function registerCommandHandlers(io, socket, { prisma, kv, logger, appLocals }) 
             reason: e?.message || "ACK_FAILED",
           }));
           log.info("COMMAND_ACK (outbox)", { robotId, outboxId: engineAck.data.outboxId, ...result });
+          if (result.acked && STAND_DOWN_COMMANDS.has(result.command) && result.commitmentId) {
+            await publishStandDown({ prisma, kv, io, log, robotId, commitmentId: result.commitmentId }).catch((e) =>
+              log.warn("stand-down read model not released", { robotId, message: e?.message }),
+            );
+          }
         }
       }
 
@@ -182,4 +232,6 @@ function registerCommandHandlers(io, socket, { prisma, kv, logger, appLocals }) 
 module.exports = {
   registerCommandHandlers,
   acknowledgeOutboxRow,
+  publishStandDown,
+  STAND_DOWN_COMMANDS,
 };
