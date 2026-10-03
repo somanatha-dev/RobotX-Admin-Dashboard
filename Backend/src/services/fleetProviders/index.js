@@ -46,6 +46,7 @@ const v1DemonstrationComposition = require("../v1DemonstrationComposition");
 const profile = require("../v1DemonstrationProfile");
 const simulationProvider = require("./simulationProvider");
 const physicalProvider = require("./physicalProvider");
+const physicalPolicy = require("./physicalPolicy");
 
 /** The environment variable that selects this dispatcher. Infrastructure only. @structural */
 const ENV_VAR = "FLEET_PROVIDER_DISPATCH";
@@ -142,6 +143,12 @@ function createFleetComposition(providers) {
     for (const name of PASS_THROUGH) {
       if (Object.prototype.hasOwnProperty.call(sim.seams, name)) composition[name] = sim.seams[name];
     }
+  } else if (physical.processSeams) {
+    // Gate 1 (F05) — a process with no simulator: the round- and mission-level declarations
+    // come from the physical provider's own (PRODUCTION_DECLARED labels, the V1 mission profile).
+    for (const name of PASS_THROUGH) {
+      if (Object.prototype.hasOwnProperty.call(physical.processSeams, name)) composition[name] = physical.processSeams[name];
+    }
   }
   for (const [name, keyOf] of Object.entries(SNAPSHOT_SEAMS)) {
     composition[name] = dispatchOn(name, keyOf, (snapshot) => sim.ownsSnapshot(snapshot));
@@ -188,6 +195,29 @@ function createChargingScope(providers) {
   };
 }
 
+/**
+ * The index maintainer's charging-status reader over both providers (Gate 1, F01). The
+ * simulator's reader answers for its roster; any agent it does not know is asked of the
+ * physical provider's availability policy, which answers known only for a declared physical
+ * unit with a live operator-declared state of charge.
+ *
+ * @param {{ simulationStatusFor?: Function, physical: { chargingStatusFor: Function } }} readers
+ * @returns {(agentRowId: string) => Promise<object>}
+ */
+function createChargingStatusFor(readers) {
+  const { simulationStatusFor, physical } = readers || {};
+  if (!physical || typeof physical.chargingStatusFor !== "function") {
+    throw new TypeError("createChargingStatusFor requires a physical provider");
+  }
+  return async (agentRowId) => {
+    if (typeof simulationStatusFor === "function") {
+      const simulationStatus = await simulationStatusFor(agentRowId);
+      if (simulationStatus && simulationStatus.known === true) return simulationStatus;
+    }
+    return physical.chargingStatusFor(agentRowId);
+  };
+}
+
 /** Is the dispatcher selected for this process? Default: no. */
 function isDispatchEnabled(env) {
   return String(((env || process.env)[ENV_VAR]) || "").trim().toLowerCase() === "true";
@@ -207,13 +237,29 @@ function isFleetComposition(composition) {
  */
 function composeIfEnabled(settings) {
   const env = (settings && settings.env) || process.env;
-  if (!v1DemonstrationComposition.isEnabled(env)) return {};
+  const physicalFleet = physicalPolicy.isEnabled(env);
+  const simulationComposed = v1DemonstrationComposition.isEnabled(env);
+  if (!simulationComposed && !physicalFleet) return {};
+  const physical =
+    (settings && settings.physical) ||
+    physicalProvider.createPhysicalProvider({
+      prisma: settings.prisma,
+      kv: settings.kv,
+      tenantId: profile.DEMONSTRATION_TENANT_ID,
+      // Gate 1 — the physical fleet declaration and the pinned snapshot (for routing) only when
+      // the process opted into the physical fleet; otherwise the P1 provider, unchanged.
+      ...(physicalFleet ? { snapshot: settings.snapshot, policy: physicalPolicy.load(env) } : {}),
+    });
+  if (!simulationComposed) {
+    const composition = createFleetComposition({ simulation: null, physical });
+    logger.warn(
+      "[physical] PHYSICAL FLEET composition is active with no simulator: physical agents are priced on real rows and " +
+        "the owner's PRODUCTION_DECLARED physical fleet declaration. Declaration problems: " +
+        (physical.policy && physical.policy.problems.length > 0 ? physical.policy.problems.join("; ") : "none"),
+    );
+    return composition;
+  }
   const simulation = simulationProvider.fromSettings(settings);
-  const physical = physicalProvider.createPhysicalProvider({
-    prisma: settings.prisma,
-    kv: settings.kv,
-    tenantId: profile.DEMONSTRATION_TENANT_ID,
-  });
   const composition = createFleetComposition({ simulation, physical });
   logger.warn(
     "[v1] V1 DEMONSTRATION composition is active behind the FLEET PROVIDER boundary: simulated agents are " +
@@ -234,9 +280,11 @@ module.exports = {
   PASS_THROUGH,
   createFleetComposition,
   createChargingScope,
+  createChargingStatusFor,
   isDispatchEnabled,
   isFleetComposition,
   composeIfEnabled,
   simulationProvider,
   physicalProvider,
+  physicalPolicy,
 };

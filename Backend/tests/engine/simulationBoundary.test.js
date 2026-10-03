@@ -422,7 +422,12 @@ describe("P1 — provenance and the provider choice never reach the assignment e
     const providerFiles = filesUnder(path.join(SRC, "services", "fleetProviders"));
     expect(providerFiles.map((file) => file.rel).sort()).toEqual([
       "services/fleetProviders/index.js",
+      // Gate 1 (2026-10-03) — the physical provider's own policy, router and control-plane facts.
+      // Added rather than the check being loosened: still an exact list.
+      "services/fleetProviders/physicalFacts.js",
+      "services/fleetProviders/physicalPolicy.js",
       "services/fleetProviders/physicalProvider.js",
+      "services/fleetProviders/physicalRouter.js",
       "services/fleetProviders/simulationProvider.js",
     ]);
     expect(providerReferences(providerFiles).length).toBeGreaterThan(0);

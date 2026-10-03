@@ -17,6 +17,7 @@ const robotStateCache = require("../cache/robotStateCache");
 // (its resolved Agent.id and its telemetry ordering high-water mark). Decommissioning is
 // the one event that invalidates both.
 const positionObservation = require("../services/positionObservation.service");
+const physicalDeclaration = require("../services/physicalDeclaration.service");
 // PHASE 14 — §23.6's override discipline. The rules live in the engine module; this
 // controller applies them at the one operator surface that returns a withdrawn agent to
 // service.
@@ -785,7 +786,23 @@ const sendRobotCommand = asyncHandler(async (req, res) => {
   res.json({ ok: true, command, delivered: Boolean(delivery?.dispatched) });
 });
 
+// GATE 1 (2026-10-03) — POST /api/robots/:robotId/soc-declaration { socPct }.
+// Owner decision: the physical rover has no battery ADC, so an operator declares its state of
+// charge. Recorded as OPERATOR_ENTERED; the physical availability policy expires it after the
+// declaration's maxAgeSeconds. Refused for any unit that is not physical.
+const declareStateOfCharge = asyncHandler(async (req, res) => {
+  const robotId = toStringOrNull(req.params?.robotId);
+  const socPct = typeof req.body?.socPct === "number" ? req.body.socPct : Number(req.body?.socPct);
+  const declared = await physicalDeclaration.declareStateOfCharge(getPrisma(), {
+    robotId,
+    socPct,
+    enteredBy: req.user?.id ?? null,
+  });
+  res.status(201).json({ ok: true, declaration: declared });
+});
+
 module.exports = {
+  declareStateOfCharge,
   // Exported so `simulator.controller.js` writes the `robot:{id}` live-state key through
   // the same writer rather than a second one. The shape of that key is read by the list
   // and dashboard-state overlays, and two writers of one shape is one that drifts.

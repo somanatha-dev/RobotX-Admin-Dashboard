@@ -1,0 +1,39 @@
+{
+  "declaredBy": "REPLACE: owner name",
+  "declaredAt": "2026-10-03",
+  "charging": { "policy": "MANUAL_OUT_OF_SERVICE" },
+  "stateOfCharge": { "policy": "OPERATOR_DECLARED", "maxAgeSeconds": 7200 },
+  "emergencyStop": { "mechanism": "SOFTWARE_STOP_LATCH" },
+  "site": {
+    "ambientC": { "min": 18, "max": 38 },
+    "terrain": "FLAT_DECLARED",
+    "connectivityDeadZones": "NONE_DECLARED",
+    "constrictions": "NONE_DECLARED",
+    "stopStartCyclesPerHop": 1
+  },
+  "localisation": { "referenceRadiusM": 25, "acceptedFixTypes": ["3D", "RTK_FLOAT", "RTK_FIXED"] },
+  "risk": { "failureProbabilityPrior": 0.05, "routeHazardCu": 0 },
+  "robots": [
+    {
+      "robotId": "robotx-pi",
+      "control": {
+        "firmwareVersion": "REPLACE: Pi RobotAgent version string",
+        "hardwareRevision": "rover-rev-a",
+        "missionTypes": ["DELIVERY"],
+        "calibrations": [],
+        "serviceDueAt": "2027-06-01T00:00:00Z",
+        "regionId": "rnsit",
+        "authorisation": "REGION",
+        "advisories": [],
+        "operatingAmbientC": { "min": 0, "max": 45 }
+      },
+      "energy": {
+        "idlePowerW": 5,
+        "movingPowerW": 20,
+        "soh": 0.9,
+        "residualCv": 0.2,
+        "reserveFloorWh": 8.6
+      }
+    }
+  ]
+}

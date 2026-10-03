@@ -407,6 +407,11 @@ async function recordPositionObservation(prisma, input) {
   if (fix && fix.fixType === "NO_FIX") return refuse(OUTCOME.NO_FIX_DECLARED);
   const uncertaintyRadiusM =
     fix && FIX_TYPES.includes(fix.fixType) && Number.isFinite(fix.hAccM) && fix.hAccM > 0 ? fix.hAccM : null;
+  // Gate 1 — the declared fix type travels with the position (F10's confidence mapping reads
+  // it), and an agent-declared dead-reckoned position is stored as one (§2.7): extrapolation
+  // is admissible for cost, never for a safety constraint.
+  const fixType = fix && FIX_TYPES.includes(fix.fixType) ? fix.fixType : null;
+  const deadReckoned = Boolean(fix && fix.deadReckoned === true);
 
   const binding = await resolveBinding(prisma, robotId, nowMs);
   if (!binding) return refuse(OUTCOME.AGENT_NOT_PROJECTED);
@@ -439,8 +444,9 @@ async function recordPositionObservation(prisma, input) {
     record = observation.createObservation({
       agentId: binding.agentRowId,
       kind: POSITION_KIND,
-      value: { lat, lon, provenance: binding.provenance },
+      value: { lat, lon, provenance: binding.provenance, ...(fixType ? { fixType } : {}) },
       observedAt: observedAtMs,
+      deadReckoned,
       // §23.5 makes an agent report untrusted input; `AGENT_REPORT` is what it is, for a
       // simulated agent exactly as for a physical one. The two are told apart by
       // `value.provenance`, not by a sixth source the specification does not define.

@@ -77,6 +77,8 @@ const fairnessWorker = require("./src/workers/fairness.worker");
 const indexMaintainer = require("./src/workers/indexMaintainer.worker");
 const chargingStatus = require("./src/services/chargingStatus.service");
 const v1DemonstrationComposition = require("./src/services/v1DemonstrationComposition");
+const v1DemonstrationProfile = require("./src/services/v1DemonstrationProfile");
+const physicalDeclaration = require("./src/services/physicalDeclaration.service");
 // P1 — the fleet provider boundary: one seam set for simulated and physical agents, selected
 // by `FLEET_PROVIDER_DISPATCH=true` (default off: the composition above, exactly as before).
 const fleetProviders = require("./src/services/fleetProviders");
@@ -604,11 +606,48 @@ async function start() {
    *
    * @returns {object}
    */
+  // GATE 1 (2026-10-03) — the physical fleet, independent of the simulator. One provider for the
+  // process: the coordinator's seams and the index maintainer's availability policy must answer
+  // from the same loaded declaration. Absent `PHYSICAL_FLEET_ENABLED=true`, nothing here exists.
+  const physicalFleetPolicy = fleetProviders.physicalPolicy.isEnabled(process.env)
+    ? fleetProviders.physicalPolicy.load(process.env)
+    : null;
+  const physicalFleetProvider = physicalFleetPolicy
+    ? fleetProviders.physicalProvider.createPhysicalProvider({
+        prisma,
+        kv,
+        tenantId: v1DemonstrationProfile.DEMONSTRATION_TENANT_ID,
+        snapshot: () => app.locals.config,
+        policy: physicalFleetPolicy,
+      })
+    : null;
+  if (physicalFleetPolicy) {
+    logger.warn("[physical] physical fleet declaration loaded", {
+      declaredBy: physicalFleetPolicy.declaredBy,
+      robots: [...physicalFleetPolicy.robots.keys()],
+      problems: physicalFleetPolicy.problems,
+    });
+    try {
+      const applied = await physicalDeclaration.applyDeclaration(prisma, physicalFleetPolicy, { logger });
+      logger.info("[physical] declaration applied to engine rows", { applied });
+    } catch (e) {
+      logger.error("[physical] declaration could not be applied", { message: e?.message });
+    }
+  }
+
   const indexMaintainerDeps = () => ({
     prisma,
     kv,
     snapshot: app.locals.config,
-    chargingStatusFor: chargingStatus.createChargingStatusReader({
+    chargingStatusFor: physicalFleetProvider
+      ? fleetProviders.createChargingStatusFor({ simulationStatusFor: simulationChargingStatusFor(), physical: physicalFleetProvider })
+      : simulationChargingStatusFor(),
+    onError: (error, agentId) =>
+      logger.error("Index maintainer sweep failed", { agentId, message: error && error.message }),
+  });
+
+  /** The simulator's charging-status reader (dev Charging Scheduler), unchanged. */
+  const simulationChargingStatusFor = () => chargingStatus.createChargingStatusReader({
       prisma,
       // With the fleet provider boundary selected, each provider answers for the agents whose
       // charging state it owns — the simulator's roster, and nobody yet for a physical agent.
@@ -623,10 +662,7 @@ async function start() {
         : (subject) => (virtualSimulator ? virtualSimulator.managesAgent(subject) === true : false),
       onError: (error, agentRowId) =>
         logger.warn("Charging status could not be read", { agentRowId, message: error && error.message }),
-    }),
-    onError: (error, agentId) =>
-      logger.error("Index maintainer sweep failed", { agentId, message: error && error.message }),
-  });
+    });
 
   // ─────────────────────────────────────────────────────────────────────────
   // PHASE 13 — the coordinator lifecycle (§19.3, §19.5).
@@ -856,8 +892,17 @@ async function start() {
         // boundary (`services/fleetProviders`), under the same gate: simulated agents are
         // answered by the composition above, physical agents by real sources only. One
         // coordinator, one round, one commitment path either way.
-        ...(fleetProviders.isDispatchEnabled(process.env)
-          ? fleetProviders.composeIfEnabled({ prisma, kv, snapshot: () => app.locals.config, env: process.env })
+        //
+        // GATE 1 — `PHYSICAL_FLEET_ENABLED=true` always goes through the boundary, with the
+        // process's one physical provider; with no simulator it composes physical-only.
+        ...(fleetProviders.isDispatchEnabled(process.env) || physicalFleetProvider
+          ? fleetProviders.composeIfEnabled({
+              prisma,
+              kv,
+              snapshot: () => app.locals.config,
+              env: process.env,
+              ...(physicalFleetProvider ? { physical: physicalFleetProvider } : {}),
+            })
           : v1DemonstrationComposition.composeIfEnabled({ prisma, kv, snapshot: () => app.locals.config, env: process.env })),
       });
 

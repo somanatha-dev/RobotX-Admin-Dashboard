@@ -665,7 +665,10 @@ describe("2 — a physical agent receives what is real and nothing the simulator
     const input = { agent: world.byKey.a.agent, config: configOf(world.snapshot), asOfMs: DECISION_TIME_MS };
     expect(await physicalOnly.agentFactsFor(input)).toBeNull();
     expect(physicalOnly.profileKeyFor({ provenance: SIMULATED, mobilityModel: {}, energyModel: {} })).toBeNull();
-    for (const name of fleetProviders.PASS_THROUGH) expect({ name, present: name in physicalOnly }).toEqual({ name, present: false });
+    // Gate 1 (F05) — a physical-only process carries the round- and mission-level declarations
+    // itself: present, and none of them is a simulator value.
+    for (const name of fleetProviders.PASS_THROUGH) expect({ name, present: name in physicalOnly }).toEqual({ name, present: true });
+    expect(flat(fleetProviders.PASS_THROUGH.map((name) => physicalOnly[name]))).not.toMatch(/DEVELOPMENT_SIMULATION/);
   });
 });
 

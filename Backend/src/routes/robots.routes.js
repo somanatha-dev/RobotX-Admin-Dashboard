@@ -45,6 +45,8 @@ router.post("/commission", commissionLimiter, robotsController.commissionRobotWi
 router.post("/:robotId/pairing/unlock", commandLimiter, quarantineOverride, robotsController.unlockPairing);
 // New: command API with ACK tracking (robot must be online to receive immediately).
 router.post("/:robotId/command", commandLimiter, robotsController.sendRobotCommand);
+// Gate 1: operator-declared state of charge for a physical unit (no battery ADC).
+router.post("/:robotId/soc-declaration", commandLimiter, robotsController.declareStateOfCharge);
 // F33: deliberate fault-recovery — clears ERROR/healthStatus:FAULT back to a live state.
 router.post("/:robotId/clear-fault", commandLimiter, quarantineOverride, robotsController.clearRobotFault);
 // Edit a commissioned unit's configuration — name, chassis family, and the six

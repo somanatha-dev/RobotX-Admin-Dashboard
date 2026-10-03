@@ -82,6 +82,9 @@ const isNumber = (value) => typeof value === "number" && Number.isFinite(value);
  */
 function createAgentFactsProvider(settings) {
   const { prisma, kv, tenantId } = settings || {};
+  // Gate 1 — the physical provider connects the control-plane half itself; it says so here so
+  // the gap is not announced for a robot whose facts it is about to supply.
+  const physicalControlPlaneConnected = Boolean(settings && settings.physicalControlPlaneConnected);
   if (!prisma) throw new TypeError("createAgentFactsProvider requires prisma");
 
   return async function agentFactsFor(input) {
@@ -200,7 +203,7 @@ function createAgentFactsProvider(settings) {
     if (!simulationPolicy.isSimulatedRobot(robot)) {
       // PHYSICAL: the control-plane half is not connected yet. The predicates deny by
       // name; `PHYSICAL_CONTROL_PLANE_FACTS` is the list to connect.
-      announcePhysicalGap(robot.robotId);
+      if (!physicalControlPlaneConnected) announcePhysicalGap(robot.robotId);
       return { ...facts, provenance: "PHYSICAL_DERIVED_ONLY" };
     }
 

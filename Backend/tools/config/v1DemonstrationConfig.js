@@ -285,6 +285,17 @@ const EXECUTION_PARAMETERS = Object.freeze([
       "value, not Safety; the promise per SLA class is what the register's awaits text names.",
   },
   {
+    name: "cost.uncertainty_penalty",
+    level: "global",
+    value: Object.freeze({ F11: 300 }),
+    basis:
+      "300 CU on F11 only — five minutes of agent time. F11's declared policy is ADMIT_WITH_PENALTY: an agent " +
+      "with no intervention history yet (every newly commissioned physical unit) is admitted at a price, so an " +
+      "agent with a measured rate is preferred until the new one is clearly cheaper. Unbound, F11 denied every new " +
+      "unit for ever, which the register itself names as wrong. An Ops policy statement (Gate 1, 2026-10-03); no " +
+      "other predicate is given a penalty, so F15 still requires a measured link quality.",
+  },
+  {
     name: "reliability.max_intervention_rate",
     level: "global",
     value: Object.freeze({ DELIVERY: 0.1 }),

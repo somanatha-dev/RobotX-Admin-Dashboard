@@ -23,6 +23,8 @@ const legProgress = require("../../services/legProgress.service");
 const positionObservation = require("../../services/positionObservation.service");
 // The reported state of charge → `BatteryState.lastObservedSoc`, update-only (see module).
 const batteryObservation = require("../../services/batteryObservation.service");
+// Gate 1 — the Pi's software stop-latch report (F7 under SOFTWARE_STOP_LATCH).
+const stopLatchObservation = require("../../services/stopLatchObservation.service");
 
 // §23.5 — "Persistent implausibility triggers quarantine and a security event."
 //
@@ -956,6 +958,20 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
       try {
         await writes.exec();
       } catch { /* non-critical — same degrade-gracefully policy as before */ }
+
+      // Gate 1 — the rover's software stop latch (F7 under the physical fleet declaration).
+      // After the pipelined registry write above, never before it: that write replaces the
+      // registry value with one merged from the read at the top of this handler, so a latch
+      // written earlier in the frame was overwritten every tick (measured live, 2026-10-03:
+      // every round refused the physical unit on F7). Only from an accepted frame. Contained:
+      // a failed write costs F7 a fresh reading, never the telemetry frame.
+      if (!trustVerdict.refused) {
+        try {
+          await stopLatchObservation.recordStopLatch({ prisma, kv, robotId, payload, snapshot: configOf() });
+        } catch (e) {
+          log.warn?.("stop latch not recorded", { robotId, message: e?.message });
+        }
+      }
 
       // Sampled DEBUG-level telemetry log. Unconditional INFO-level logging
       // here was measured (2026-07-26 CPU profile) to be a meaningful share

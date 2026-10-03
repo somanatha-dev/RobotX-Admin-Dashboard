@@ -58,6 +58,11 @@ const MAX_PENDING = 8;
 /** The environment variable that enables the emitter, in milliseconds. Infrastructure. @structural */
 const ENV_VAR = "AGENT_PROBE_INTERVAL_MS";
 
+/**
+ * Gate 1 — how many recent probes F15's measured link quality is taken over. @structural
+ */
+const LINK_QUALITY_WINDOW = 10;
+
 /** Why a PROBE_RESULT was or was not recorded. @structural outcome labels */
 const OUTCOME = Object.freeze({
   RECORDED: "RECORDED",
@@ -80,11 +85,29 @@ function pendingOf(socket) {
  * @param {number} nowMs server clock
  * @returns {{ correlationId: string, issuedAtMs: number }|null} null for an unauthenticated socket
  */
+function ledgerOf(socket) {
+  if (!Array.isArray(socket.data.probeLedger)) socket.data.probeLedger = [];
+  return socket.data.probeLedger;
+}
+
+/**
+ * Gate 1 — F15's link quality: the share of this socket's recent probes answered in time.
+ * Probes still inside their answer window are not counted either way.
+ */
+function linkQualityOf(socket, nowMs) {
+  const settled = ledgerOf(socket).filter((entry) => entry.answered || nowMs - entry.issuedAtMs > RESULT_TIMEOUT_MS);
+  if (settled.length === 0) return null;
+  return settled.filter((entry) => entry.answered).length / settled.length;
+}
+
 function issueProbe(socket, nowMs) {
   if (!socket || !socket.data || socket.data.isAuthed !== true || !socket.data.robotId) return null;
   const pending = pendingOf(socket);
   const correlationId = crypto.randomUUID();
   pending.set(correlationId, nowMs);
+  const ledger = ledgerOf(socket);
+  ledger.push({ correlationId, issuedAtMs: nowMs, answered: false });
+  while (ledger.length > LINK_QUALITY_WINDOW) ledger.shift();
   while (pending.size > MAX_PENDING) pending.delete(pending.keys().next().value);
   socket.emit(PROBE_EVENT, { command: PROBE_EVENT, correlationId, issuedAtMs: nowMs });
   return { correlationId, issuedAtMs: nowMs };
@@ -116,7 +139,14 @@ async function recordProbeResult(input) {
   const named = payload && payload.robotId !== undefined && payload.robotId !== null ? String(payload.robotId) : null;
   if (named !== null && named !== robotId) return { outcome: OUTCOME.MISMATCHED_IDENTITY, robotId };
 
-  await setRobotState(kv, robotId, { lastProbeAckAt: nowMs, lastProbeSocketId: socket.id });
+  const entry = ledgerOf(socket).find((row) => row.correlationId === correlationId);
+  if (entry) entry.answered = true;
+  const linkQuality = linkQualityOf(socket, nowMs);
+  await setRobotState(kv, robotId, {
+    lastProbeAckAt: nowMs,
+    lastProbeSocketId: socket.id,
+    ...(linkQuality === null ? {} : { linkQuality }),
+  });
   return { outcome: OUTCOME.RECORDED, robotId };
 }
 
@@ -162,6 +192,8 @@ module.exports = {
   MAX_PENDING,
   ENV_VAR,
   OUTCOME,
+  LINK_QUALITY_WINDOW,
+  linkQualityOf,
   issueProbe,
   recordProbeResult,
   intervalFromEnv,
