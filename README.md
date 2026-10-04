@@ -164,6 +164,18 @@ npm run dev                 # or: npm start
 
 The backend listens on `http://localhost:3000` (override with `PORT`).
 
+> **This process does not run the assignment engine.** With `ENGINE_ENABLED=false` it starts
+> no coordinator, so every dashboard task is refused with `503 ENGINE_NOT_LIVE` before anything
+> is written. That is by design: the legacy dispatcher was removed at Phase 15. To create and
+> assign tasks from the dashboard, start the V1 demonstration backend instead. Do not edit
+> `.env`. The launcher sets the engine environment itself and only accepts a disposable
+> loopback database. See `docs/runbooks/v1-demonstration-assignment.md` §4:
+>
+> ```bash
+> node tools/demo/seedV1Demonstration.js --database-url postgresql://<user>@127.0.0.1:<port>/<db> --fleet baseline
+> node tools/demo/startV1Server.js       --database-url postgresql://<user>@127.0.0.1:<port>/<db> --port 3000
+> ```
+
 > **Resetting the database.** `npx prisma migrate reset` drops everything, re-applies migrations,
 > and re-runs the seed. All data is lost.
 

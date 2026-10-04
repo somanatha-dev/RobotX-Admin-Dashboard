@@ -359,7 +359,7 @@ describe("every engine decision reads the switch through the module that owns it
     for (const entry of CONVERTED_AGENT_PATHS) {
       const source = read(entry.file);
       expect({ file: entry.file, rawReads: rawReads(source).length }).toEqual({ file: entry.file, rawReads: 0 });
-      expect({ file: entry.file, usesGate: /agentGate\.(assess|mayAct)\s*\(/.test(source) }).toEqual({
+      expect({ file: entry.file, usesGate: /agentGate\.(assess|mayAct|assessResolvingIdentity)\s*\(/.test(source) }).toEqual({
         file: entry.file,
         usesGate: true,
       });
@@ -374,7 +374,9 @@ describe("every engine decision reads the switch through the module that owns it
       "src/sockets/handlers/robot.handler.js",
     ];
     for (const file of writers) {
-      expect({ file, gated: /agentGate\.(assess|mayAct)\s*\(/.test(read(file)) }).toEqual({ file, gated: true });
+      // RB-1 — `assessResolvingIdentity` is `assess()` with one re-read of the identity; it is
+      // the gate, not a way around it.
+      expect({ file, gated: /agentGate\.(assess|mayAct|assessResolvingIdentity)\s*\(/.test(read(file)) }).toEqual({ file, gated: true });
     }
   });
 

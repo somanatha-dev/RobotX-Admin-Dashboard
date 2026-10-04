@@ -60,6 +60,7 @@ const robotService = require(path.join(BACKEND_ROOT, "src/services/robot.service
 const robotSpecification = require(path.join(BACKEND_ROOT, "src/services/robotSpecification"));
 const agentEnergyProvisioning = require(path.join(BACKEND_ROOT, "src/services/agentEnergyProvisioning.service"));
 const observationModel = require(path.join(BACKEND_ROOT, "src/engine/domain/observation"));
+const membership = require(path.join(BACKEND_ROOT, "src/engine/shard/membership"));
 const simulationConstants = require(path.join(BACKEND_ROOT, "src/simulation/constants"));
 
 const publishTool = require(path.join(BACKEND_ROOT, "tools/config/publishV1Demonstration"));
@@ -270,6 +271,19 @@ async function seedWorld(prisma, options) {
       observedAtMs: BigInt(observedAt.getTime()),
     },
   });
+  // ── …and the shard membership that goes with an index row (§3.5) ─────────
+  //
+  // The index maintainer never writes a mirror row without placing the agent in that row's
+  // shard; this seed did. At boot the index is rebuilt from the mirror, so this agent was a
+  // candidate before the first sweep — and an agent offered work before that sweep is not
+  // indexed again (it holds a commitment), so it was never placed while its OFFER was open:
+  // its OFFER_ACCEPT and COMMAND_ACK could not resolve a shard, and the OFFER expired
+  // (RB-1, measured 2026-10-04). The same `membership.place` the maintainer calls.
+  const placed = await membership.place(
+    { prisma },
+    { agentId: agent.id, shardId, at: observedAt, movedBy: "seedV1Demonstration:initial-placement" },
+  );
+  if (!placed.ok) throw new Error(`seed could not place ${robotCode} in shard ${shardId}: ${placed.refusal}`);
 
   /* ── 7. One depot-class charger, with the cell §20.3 item 3 requires ───── */
   //

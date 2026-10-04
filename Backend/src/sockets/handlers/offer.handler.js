@@ -264,9 +264,21 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
       // that this shard may act and supplies the deadline the entered state is armed with,
       // which is §22.1 rule 4's "a process observes exactly one version" applied to one
       // agent response rather than to a round.
+      //
+      // RB-1 — an unresolved or stale identity is re-read once from `ShardMembership` before
+      // the response is refused (`assessResolvingIdentity`). A refusal that remains is logged:
+      // dropped silently, it surfaced only as the offer's TTL expiry 20 s later.
       const snapshot = configOf();
-      const gate = agentGate.assess({ socket, snapshot, nowMs: Date.now() });
-      if (!gate.allowed) return;
+      const gate = await agentGate.assessResolvingIdentity(prisma, { socket, snapshot, nowMs: Date.now() });
+      if (!gate.allowed) {
+        log.warn(`${event} refused by the agent gate`, {
+          robotId: socket.data?.robotId,
+          refusal: gate.refusal,
+          firstRefusal: gate.firstRefusal,
+          reresolved: gate.reresolved,
+        });
+        return;
+      }
 
       const parsed = responseSchema.safeParse(payload || {});
       if (!parsed.success) {

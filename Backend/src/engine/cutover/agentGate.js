@@ -305,14 +305,72 @@ function mayAct(input) {
   return assess(input).allowed === true;
 }
 
+/**
+ * The refusals that mean "the cached identity is missing or old", and nothing else. Only
+ * these are worth one re-read of the durable record; every other refusal is a fact about
+ * the process, the session or the configuration that re-reading the membership cannot change.
+ *
+ * @structural the subset of `REFUSAL` that `assessResolvingIdentity` retries
+ */
+const IDENTITY_REFUSALS = Object.freeze(new Set([REFUSAL.SHARD_IDENTITY_UNRESOLVED, REFUSAL.SHARD_IDENTITY_STALE]));
+
+/**
+ * `assess()`, with one re-resolution of the shard identity when — and only when — the
+ * refusal is that the cached identity is unresolved or stale.
+ *
+ * ── The race this closes (RB-1) ─────────────────────────────────────────────
+ * The identity is resolved at AUTH and refreshed on the heartbeat's 15 s throttle. On a fresh
+ * start an agent authenticates *before* the index maintainer places it in a shard
+ * (`membership.place`), so its session carries no identity until the next throttled refresh.
+ * A round can offer it work inside that window, and its `OFFER_ACCEPT` and `COMMAND_ACK` were
+ * then refused as `SHARD_IDENTITY_UNRESOLVED` and dropped: the OFFER expired
+ * (`NO_ACK_WITHIN_OFFER_TTL`), was withdrawn and replanned, and a one-robot fleet sat out
+ * `dispatch.nack_cooloff` (measured on the V1 launcher, 2026-10-04).
+ *
+ * ── Why this is still fail closed ───────────────────────────────────────────
+ * The re-read is `resolveIdentity()`, the same durable lookup AUTH and the heartbeat use, and
+ * the verdict is `assess()` again over what it bound. An agent with no live `ShardMembership`
+ * resolves to `null` and is refused exactly as before; nothing here supplies an identity the
+ * store does not hold, and no refusal other than the two identity ones is retried. A store
+ * error leaves the previous binding in place — the heartbeat path's rule — and the first
+ * verdict stands.
+ *
+ * One read per refused response, at the moment the agent answers: no loop, no timer.
+ *
+ * @param {object} prisma
+ * @param {object} input as `assess`
+ * @returns {Promise<{ allowed: boolean, refusal: string|null, shardId: string|null,
+ *   regionId: string|null, agentId: string|null, reresolved: boolean, firstRefusal: string|null }>}
+ */
+async function assessResolvingIdentity(prisma, input) {
+  const source = input || {};
+  const first = assess(source);
+  if (first.allowed || !IDENTITY_REFUSALS.has(first.refusal)) {
+    return Object.freeze({ ...first, reresolved: false, firstRefusal: first.allowed ? null : first.refusal });
+  }
+
+  const robotId = source.socket && source.socket.data ? source.socket.data.robotId : null;
+  const nowMs = Number.isFinite(source.nowMs) ? source.nowMs : Date.now();
+  try {
+    bind(source.socket, await resolveIdentity(prisma, isNonEmptyString(robotId) ? robotId : null, nowMs));
+  } catch {
+    return Object.freeze({ ...first, reresolved: false, firstRefusal: first.refusal });
+  }
+
+  const second = assess({ ...source, nowMs });
+  return Object.freeze({ ...second, reresolved: true, firstRefusal: first.refusal });
+}
+
 module.exports = {
   SOCKET_DATA_KEY,
   DEFAULT_MAX_AGE_MS,
   REFUSAL,
+  IDENTITY_REFUSALS,
   resolveIdentity,
   bind,
   invalidate,
   identityOf,
   assess,
   mayAct,
+  assessResolvingIdentity,
 };

@@ -136,10 +136,23 @@ function registerCommandHandlers(io, socket, { prisma, kv, logger, appLocals }) 
       // rollout it settled outbox rows for every shard, including ones the staging order
       // had not reached. `agentGate.assess()` folds the session check in, so the
       // conjunction is one call rather than a partial one reassembled here.
-      const gate = agentGate.assess({ socket, snapshot: configOf(), nowMs: Date.now() });
-      if (gate.allowed) {
-        const engineAck = outboxAckSchema.safeParse(payload || {});
-        if (engineAck.success) {
+      //
+      // RB-1 — asked only of a payload that names an outbox row, the only thing the verdict
+      // governs. An unresolved or stale identity is re-read once from `ShardMembership`
+      // (`assessResolvingIdentity`); a refusal that remains is logged, because a dropped ACK
+      // otherwise surfaces only as the offer's TTL expiry.
+      const engineAck = outboxAckSchema.safeParse(payload || {});
+      if (engineAck.success) {
+        const gate = await agentGate.assessResolvingIdentity(prisma, { socket, snapshot: configOf(), nowMs: Date.now() });
+        if (!gate.allowed) {
+          log.warn("COMMAND_ACK (outbox) refused by the agent gate", {
+            robotId: socket.data?.robotId,
+            outboxId: engineAck.data.outboxId,
+            refusal: gate.refusal,
+            firstRefusal: gate.firstRefusal,
+            reresolved: gate.reresolved,
+          });
+        } else {
           const robotId = toStringOrNull(socket.data.robotId);
           const result = await acknowledgeOutboxRow(prisma, robotId, engineAck.data).catch((e) => ({
             acked: false,
