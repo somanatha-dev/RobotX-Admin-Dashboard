@@ -410,17 +410,30 @@ describe("the schema carries what Phase 3 needs and nothing more", () => {
     expect(schema).toMatch(/model AgentCellPosition \{/);
   });
 
-  test("Phase 7's six energy and payload tables are present", () => {
+  test("Phase 7's five live energy and payload tables are present", () => {
     for (const table of [
       "EnergyModelParams",
       "BatteryState",
       "Charger",
       "ChargerReservation",
       "ChargerAvailabilityProjection",
-      "PackingResultCache",
     ]) {
       expect({ table, present: new RegExp(`model ${table} \\{`).test(schema) }).toEqual({ table, present: true });
     }
+  });
+
+  // Phase 7 created a sixth table, `PackingResultCache`. No runtime path ever read or wrote
+  // it — §15.3's memo is the KV key `engine:pack:*` — and schema cleanup stage 1 dropped it
+  // (forensic re-proof 2026-10-05; 0 production rows). Its absence is asserted as deliberate,
+  // tied to the one migration allowed to cause it, so an accidental loss still fails above.
+  test("Phase 7's sixth table, PackingResultCache, is retired by cleanup stage 1 and by nothing else", () => {
+    expect(schema).not.toMatch(/model PackingResultCache \{/);
+    const migrationsRoot = path.join(BACKEND_ROOT, "prisma", "migrations");
+    const dropping = fs
+      .readdirSync(migrationsRoot)
+      .filter((name) => fs.existsSync(path.join(migrationsRoot, name, "migration.sql")))
+      .filter((name) => /DROP TABLE "PackingResultCache"/.test(fs.readFileSync(path.join(migrationsRoot, name, "migration.sql"), "utf8")));
+    expect(dropping).toEqual(["20261005180000_schema_cleanup_stage1"]);
   });
 
   test("Phase 6's two rejection-telemetry tables are present", () => {

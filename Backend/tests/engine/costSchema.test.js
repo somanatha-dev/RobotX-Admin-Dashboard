@@ -68,14 +68,39 @@ describe("the migration is Prisma's own output plus annotated CHECK constraints"
     expect(normalise(fromMigration[0])).toBe(normalise(fromPrisma[0]));
   });
 
+  // The Phase 8 migration created eight indexes on the two tables. Schema cleanup stage 1
+  // (forensic re-proof 2026-10-05) dropped the two single-column `version` indexes: each is
+  // the leading column of the table's `(version, …)` unique key, which the planner uses for
+  // every `WHERE version = ?`. Six remain declared; the historical eight remain in the file.
+  const RETIRED_BY_STAGE_1 = ["ServiceTimeModel_version_idx", "ZonePriceSnapshot_version_idx"];
+
   test("every index Prisma generates for the two tables is in the migration", () => {
     const indexes = generatedSql()
       .split("\n")
       .filter((line) => /^CREATE (UNIQUE )?INDEX/.test(line))
       .filter((line) => PHASE_8_TABLES.some((table) => line.includes(`ON "${table}"`)));
-    expect(indexes.length).toBe(8);
+    expect(indexes.length).toBe(6);
     for (const statement of indexes) {
       expect(normalise(migration)).toContain(normalise(statement));
+    }
+  });
+
+  test("the migration created eight indexes, and stage 1 retired exactly the two left-prefix ones", () => {
+    const created = migration
+      .split("\n")
+      .filter((line) => /^CREATE (UNIQUE )?INDEX/.test(line))
+      .filter((line) => PHASE_8_TABLES.some((table) => line.includes(`ON "${table}"`)));
+    expect(created.length).toBe(8);
+    const generated = generatedSql();
+    const cleanup = fs
+      .readFileSync(path.join(__dirname, "..", "..", "prisma", "migrations", "20261005180000_schema_cleanup_stage1", "migration.sql"), "utf8")
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("--"))
+      .join("\n");
+    for (const name of RETIRED_BY_STAGE_1) {
+      expect(created.some((line) => line.includes(`"${name}"`))).toBe(true);
+      expect(generated).not.toContain(`"${name}"`);
+      expect(cleanup).toContain(`DROP INDEX "${name}";`);
     }
   });
 

@@ -29,7 +29,12 @@ const MIGRATION = fs.readFileSync(
 );
 const SCHEMA = fs.readFileSync(path.join(BACKEND_ROOT, "prisma", "schema.prisma"), "utf8");
 
-const TABLES = [
+/**
+ * The six tables the Phase 7 migration created. Historical, like the migration itself:
+ * the migration file is never edited, so every assertion about what it contains holds
+ * against this list for ever.
+ */
+const MIGRATION_TABLES = [
   "EnergyModelParams",
   "BatteryState",
   "Charger",
@@ -37,6 +42,17 @@ const TABLES = [
   "ChargerAvailabilityProjection",
   "PackingResultCache",
 ];
+
+/**
+ * Phase 7 tables a later migration removed. `PackingResultCache` was never read or written
+ * by any runtime path: §15.3 tier 4's memo is the KV key `engine:pack:*`
+ * (`engine/payload/packing.js`), and a lost memo costs a recomputation. Schema cleanup
+ * stage 1 dropped it once production held 0 rows (forensic re-proof, 2026-10-05).
+ */
+const RETIRED = Object.freeze({ PackingResultCache: "20261005180000_schema_cleanup_stage1" });
+
+/** The Phase 7 tables `schema.prisma` declares today — what Prisma's generated SQL can be compared against. */
+const TABLES = MIGRATION_TABLES.filter((table) => !(table in RETIRED));
 
 let generated = null;
 function generatedSql() {
@@ -71,7 +87,7 @@ function normalise(sql) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   The six tables
+   The Phase 7 tables (six created; one since retired)
    ═══════════════════════════════════════════════════════════════════════════ */
 
 describe("the Phase 7 migration", () => {
@@ -88,6 +104,29 @@ describe("the Phase 7 migration", () => {
   test.each(TABLES.map((table) => [table]))("%s is declared in schema.prisma", (table) => {
     expect(SCHEMA).toMatch(new RegExp(`model ${table} \\{`));
   });
+
+  test.each(MIGRATION_TABLES.map((table) => [table]))("%s is created by the Phase 7 migration", (table) => {
+    // Historical and unconditional: retiring a table later never rewrites this file.
+    expect(block(MIGRATION, `CREATE TABLE "${table}" (`)).not.toBeNull();
+  });
+
+  test.each(Object.entries(RETIRED))(
+    "%s is retired: absent from schema.prisma and dropped, without CASCADE, by %s",
+    (table, cleanupDirectory) => {
+      expect(SCHEMA).not.toMatch(new RegExp(`model ${table} \\{`));
+      expect(generatedSql()).not.toContain(`"${table}"`);
+      const cleanup = fs.readFileSync(
+        path.join(BACKEND_ROOT, "prisma", "migrations", cleanupDirectory, "migration.sql"),
+        "utf8",
+      );
+      const statements = cleanup
+        .split("\n")
+        .filter((line) => !line.trimStart().startsWith("--"))
+        .join("\n");
+      expect(statements).toMatch(new RegExp(`DROP TABLE "${table}";`));
+      expect(statements).not.toMatch(/CASCADE/i);
+    },
+  );
 
   test("every index and foreign key Prisma generates for these tables is in the migration", () => {
     const wanted = generatedSql()
@@ -122,7 +161,7 @@ describe("the Phase 7 migration", () => {
     expect(alters.length).toBeGreaterThan(0);
     for (const statement of alters) {
       expect(statement).toMatch(/ADD CONSTRAINT/);
-      expect(TABLES.some((table) => statement.includes(`"${table}"`))).toBe(true);
+      expect(MIGRATION_TABLES.some((table) => statement.includes(`"${table}"`))).toBe(true);
     }
   });
 
@@ -158,9 +197,12 @@ describe("the five CHECK constraints Prisma cannot express", () => {
     expect(generatedSql()).not.toContain(name);
   });
 
-  test("the packing memo may hold only a decided verdict", () => {
+  test("the packing memo table (historical, retired at cleanup stage 1) admitted only a decided verdict", () => {
     // §15.3's third outcome is deliberately not storable: "the budget may be larger next
     // time", and memoising an indecision would make it permanent for the entry's life.
+    // HISTORICAL: asserts the unedited Phase 7 migration. The table itself was dropped by
+    // `20261005180000_schema_cleanup_stage1`; the live memo is the KV, which applies the
+    // same rule in `engine/payload/packing.js`.
     expect(MIGRATION).toMatch(/PackingResultCache_verdict_decided[\s\S]*?FEASIBLE', 'INFEASIBLE'/);
     expect(MIGRATION).not.toMatch(/verdict" IN \([^)]*BUDGET_EXHAUSTED/);
     expect(Object.values(packing.VERDICT)).toContain("BUDGET_EXHAUSTED");

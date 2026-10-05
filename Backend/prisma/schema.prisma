@@ -72,11 +72,6 @@ enum EventType {
   CRITICAL
 }
 
-enum DecisionAction {
-  WAIT
-  REROUTE
-  CANCEL
-}
 
 enum LocationType {
   COUNTRY
@@ -338,7 +333,6 @@ model Robot {
   telemetry Telemetry[]
   events    Event[]
   commands  Command[]
-  decisions Decision[]
 
   // Phase 2 (§2.1): the domain-side Agent this Robot projects to. A back-relation
   // only — no column is added to Robot, and no legacy read path observes it.
@@ -356,11 +350,9 @@ model Robot {
   @@index([status])
   @@index([isOnline])
   @@index([lastSeenAt])
-  @@index([locationId])
   @@index([locationId, isOnline])
   @@index([campusId])
   @@index([zoneId])
-  @@index([lat, lon])
 }
 
 //////////////////////////////////////////////////////
@@ -534,7 +526,6 @@ model Task {
   completedAt DateTime?
 
   events    Event[]
-  decisions Decision[]
 
   //////////////////////////////////////////////////
   // PHASE 2 (§2.4) — the Task as the unit of customer-visible work
@@ -659,30 +650,10 @@ model Command {
   @@index([issuedAt])
 }
 
-//////////////////////////////////////////////////////
-// DECISION SYSTEM (YOUR MODAL FEATURE)
-//////////////////////////////////////////////////////
-
-model Decision {
-  id String @id @default(uuid())
-
-  robotId String
-  robot   Robot  @relation(fields: [robotId], references: [id], onDelete: Cascade)
-
-  taskId String?
-  task   Task?   @relation(fields: [taskId], references: [id])
-
-  reason   String
-  imageUrl String?
-
-  action     DecisionAction?
-  resolvedAt DateTime?
-
-  createdAt DateTime @default(now())
-
-  @@index([robotId])
-  @@index([taskId])
-}
+// `Decision` and its enum `DecisionAction` (the dashboard's original decision modal) were
+// dropped by `20261005180000_schema_cleanup_stage1`: nothing read or wrote them, and FS-06
+// retired the WAIT/REROUTE/CANCEL actions they stored. Decision observability is
+// `DecisionRecordA`/`DecisionRecordB`.
 
 //////////////////////////////////////////////////////
 // CONFIGURATION AND GOVERNANCE (§22) — Phase 1
@@ -713,12 +684,6 @@ enum CalibrationStatus {
   UNCALIBRATED
 }
 
-enum OperatingRegimeState {
-  INACTIVE
-  PROPOSED_ENTRY
-  ACTIVE
-  PROPOSED_EXIT
-}
 
 model ConfigVersion {
   id String @id @default(uuid())
@@ -814,32 +779,11 @@ model ParameterRegisterEntry {
   @@index([calibrationStatus])
 }
 
-model OperatingRegime {
-  id          String  @id @default(uuid())
-  name        String  @unique
-  description String?
-
-  triggerCondition Json
-  parameterDeltas  Json
-  entryCriteria    String
-  exitCriteria     String
-  owner            String
-
-  state             OperatingRegimeState @default(INACTIVE)
-  // Calibration is per regime: a coefficient set fitted across a mixed year is wrong
-  // in both regimes (§22.4).
-  calibrationStatus CalibrationStatus    @default(UNCALIBRATED)
-
-  proposedAt  DateTime?
-  confirmedBy String?
-  confirmedAt DateTime?
-  exitedAt    DateTime?
-  history     Json?
-
-  createdAt DateTime @default(now())
-
-  @@index([state])
-}
+// Operating regimes (§22.2) are declared, validated and resolved from
+// `ConfigVersion.payload.regimes` (`engine/config/regimes.js`, `service.js`). The
+// `OperatingRegime` table and its enum `OperatingRegimeState`, never read or written, were
+// dropped by `20261005180000_schema_cleanup_stage1`. `CalibrationStatus` stays: it is
+// `ParameterRegisterEntry`'s.
 
 //////////////////////////////////////////////////////
 // DOMAIN MODEL (§2), SPATIAL HIERARCHY (§3.6), AND THE §4.2/§4.3
@@ -1198,7 +1142,6 @@ model Compartment {
   createdAt DateTime @default(now())
 
   @@unique([containerModelId, ordinal])
-  @@index([containerModelId])
 }
 
 /// §2.3 — capabilities are typed, not string tags, because untyped tags cannot
@@ -1244,7 +1187,6 @@ model Capability {
   createdAt DateTime @default(now())
 
   @@unique([bundleId, name])
-  @@index([bundleId])
 }
 
 /// §2.1 — the agent class keys every model-specific parameter set.
@@ -1558,7 +1500,6 @@ model Leg {
   @@index([state])
   @@index([purpose])
   @@index([custodyState])
-  @@index([missionId])
 }
 
 /// §2.4 — a located, time-windowed action at a place. `stopType` is a string
@@ -1630,7 +1571,6 @@ model Stop {
   updatedAt DateTime @updatedAt
 
   @@unique([legId, sequence])
-  @@index([legId])
   @@index([siteId])
   @@index([stopType])
   @@index([identityKey])
@@ -2733,7 +2673,6 @@ model EnergyModelParams {
   updatedAt DateTime  @updatedAt
 
   @@unique([agentClassId, modelVersion])
-  @@index([agentClassId])
 }
 
 /// §14.3 / §14.2 — the per-agent battery and efficiency state.
@@ -2891,36 +2830,10 @@ model ChargerAvailabilityProjection {
   @@index([regionId])
 }
 
-/// §15.3 tier 4 — the memoised packing result.
-///
-/// Keyed by `(container_config, item_multiset_signature)`: two consignments of the same
-/// items in a different order are the same packing problem, and keying on the order
-/// would miss the repeat that §15.3 says should cost nothing.
-///
-/// A `BUDGET_EXHAUSTED` verdict is deliberately never stored — the budget may be larger
-/// next time, and memoising an indecision would make it permanent for the entry's life.
-model PackingResultCache {
-  id String @id @default(uuid())
-
-  containerConfig String
-  itemSignature   String
-
-  verdict String
-  tier    Int?
-
-  bindingConstraint String?
-  thermalAssignment Json?
-  compartmentLoads  Json?
-  loadingPlan       Json?
-
-  nodesExplored Int?
-
-  computedAt DateTime  @default(now())
-  expiresAt  DateTime?
-
-  @@unique([containerConfig, itemSignature])
-  @@index([expiresAt])
-}
+// §15.3 tier 4's memoised packing result lives only in the KV (`engine:pack:*`, see
+// `engine/payload/packing.js`); a lost entry costs a recomputation. The `PackingResultCache`
+// table Phase 7 created for it was never read or written and was dropped by
+// `20261005180000_schema_cleanup_stage1`.
 
 //////////////////////////////////////////////////////
 // (i) PHASE 8 — COST FUNCTION AND PLAN BUILDER (§8, §13)
@@ -3010,7 +2923,6 @@ model ServiceTimeModel {
   /// migration. Do not accept that proposal — it silently reintroduces the defect
   /// (`tools/verify/phase8LiveDatabase.js` catches it against a live database).
   @@unique([version, siteId, stopType, missionClass, hourOfWeek])
-  @@index([version])
   @@index([siteId, stopType])
   @@index([stopType, missionClass])
 }
@@ -3075,7 +2987,6 @@ model ZonePriceSnapshot {
   createdAt DateTime @default(now())
 
   @@unique([version, zoneId, bucket])
-  @@index([version])
   @@index([zoneId, bucketStart])
   @@index([publishedAt])
 }
@@ -4170,7 +4081,6 @@ model LadderEscalation {
   updatedAt DateTime @updatedAt
 
   @@unique([legId, step])
-  @@index([legId])
   @@index([step])
   @@index([regionId, humanStep, resolvedAt])
   @@index([regionId, admittedAt])

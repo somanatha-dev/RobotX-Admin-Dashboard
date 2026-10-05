@@ -756,7 +756,7 @@ Three behaviours worth knowing:
 | `engine:price:{version}` | λ_zone snapshot | Tier 2, kill switch thrown at launch |
 | `engine:sli:{shard}:{instance}` · `engine:sli:instances:{shard}` | SLI registry | — |
 | `engine:timerlag` | Timer-lag SLI gauge | `Timer` table |
-| `engine:pack` | Packing result cache | `PackingResultCache` |
+| `engine:pack` | Packing result cache (§15.3 tier 4 memo; never memoises `BUDGET_EXHAUSTED`) | none — recomputation. The `PackingResultCache` table was never read or written and was dropped by `20261005180000_schema_cleanup_stage1` |
 | `config:v:{version}` · `derived:{digest}` · `regime:{name}` | Config mirrors | `ConfigVersion` |
 
 ### 8.4 The lifecycle of one robot's Redis state

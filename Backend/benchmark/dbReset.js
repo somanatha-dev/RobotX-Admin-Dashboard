@@ -18,7 +18,7 @@ function robotIdFor(i) {
 
 async function resetAndSeed(prisma, redis, count) {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE TABLE "Telemetry","Command","Event","Decision","Task","Robot" RESTART IDENTITY CASCADE;`
+    `TRUNCATE TABLE "Telemetry","Command","Event","Task","Robot" RESTART IDENTITY CASCADE;`
   );
   await redis.flushdb();
 

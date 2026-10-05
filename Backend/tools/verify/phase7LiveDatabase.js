@@ -39,6 +39,16 @@
  * Deliberately **not** a Jest suite, for the same reason Phases 3–6's harnesses are
  * not: it requires a PostgreSQL instance, and a test that silently skips when its
  * environment is absent is a test that reports green for having done nothing.
+ *
+ * ── HISTORICAL: schema cleanup stage 1 ──────────────────────────────────────
+ * Migration `20261005180000_schema_cleanup_stage1` dropped `PackingResultCache` (never
+ * read or written at runtime: §15.3's memo is the KV key `engine:pack:*`) and the
+ * left-prefix-redundant `EnergyModelParams_agentClassId_idx`, together with `Decision`
+ * and `OperatingRegime`. On a database where stage 1 is applied, claim 3 and the two
+ * retired-object checks are **not skipped**: each becomes an assertion that the object is
+ * gone. Stage 1 must be wholly applied or wholly absent — a database missing only some of
+ * its three tables fails, so an accidental loss of `PackingResultCache` cannot pass as a
+ * retirement. On a pre-stage-1 database the original Phase 7 claims run unchanged.
  */
 
 const { PrismaClient } = require("@prisma/client");
@@ -59,6 +69,41 @@ const PHASE_7_TABLES = [
   "ChargerAvailabilityProjection",
   "PackingResultCache",
 ];
+
+/** The migration that retired `PackingResultCache` and `EnergyModelParams_agentClassId_idx`. */
+const STAGE_1 = "20261005180000_schema_cleanup_stage1";
+/** The three tables stage 1 drops; all present (before) or all absent (after), never a mix. */
+const STAGE_1_TABLES = ["Decision", "OperatingRegime", "PackingResultCache"];
+/** Phase 7 indexes stage 1 drops (the table's own three go with the table). */
+const STAGE_1_RETIRED_INDEXES = [
+  "EnergyModelParams_agentClassId_idx",
+  "PackingResultCache_pkey",
+  "PackingResultCache_containerConfig_itemSignature_key",
+  "PackingResultCache_expiresAt_idx",
+];
+
+let stage1 = null;
+/**
+ * Has cleanup stage 1 been applied to this database? Cached; read before anything is written.
+ *
+ * @returns {Promise<{ applied: boolean, present: string[] }>}
+ */
+async function stage1State() {
+  if (stage1 === null) {
+    const rows = await prisma.$queryRawUnsafe(
+      `select table_name from information_schema.tables
+        where table_schema = 'public' and table_name in (${STAGE_1_TABLES.map((t) => `'${t}'`).join(",")})`,
+    );
+    const present = rows.map((row) => row.table_name).sort();
+    stage1 = { applied: present.length === 0, present };
+  }
+  return stage1;
+}
+
+/** The Phase 7 tables this database is expected to have. */
+async function liveTables() {
+  return (await stage1State()).applied ? PHASE_7_TABLES.filter((t) => t !== "PackingResultCache") : PHASE_7_TABLES;
+}
 
 let passed = 0;
 let failed = 0;
@@ -148,8 +193,20 @@ async function main() {
     byTable.get(row.table_name).set(row.column_name, row);
   }
 
+  const { applied: stage1Applied, present: stage1Present } = await stage1State();
+  check(
+    `cleanup stage 1 (${STAGE_1}) is wholly applied or wholly absent`,
+    stage1Present.length === 0 || stage1Present.length === STAGE_1_TABLES.length,
+    `only ${stage1Present.join(", ")} of ${STAGE_1_TABLES.join(", ")} present`,
+  );
+  console.log(`  stage 1 ${stage1Applied ? "APPLIED — PackingResultCache checks assert its retirement" : "not applied — original Phase 7 claims"}\n`);
+
   for (const table of PHASE_7_TABLES) {
-    check(`${table} exists`, byTable.has(table));
+    if (stage1Applied && table === "PackingResultCache") {
+      check(`${table} is absent — retired by ${STAGE_1}`, !byTable.has(table));
+    } else {
+      check(`${table} exists`, byTable.has(table));
+    }
   }
 
   // §14.2 — every β term the consumption model reads has a column to be fitted into.
@@ -210,7 +267,15 @@ async function main() {
     "PackingResultCache_containerConfig_itemSignature_key",
     "PackingResultCache_expiresAt_idx",
   ]) {
-    check(`index ${name}`, indexNames.has(name));
+    if (stage1Applied && STAGE_1_RETIRED_INDEXES.includes(name)) {
+      check(`index ${name} is absent — retired by ${STAGE_1}`, !indexNames.has(name));
+    } else {
+      check(`index ${name}`, indexNames.has(name));
+    }
+  }
+  if (stage1Applied) {
+    // The retired standalone index's access pattern is still served — by the unique key.
+    check("EnergyModelParams_agentClassId_modelVersion_key still covers agentClassId lookups", indexNames.has("EnergyModelParams_agentClassId_modelVersion_key"));
   }
 
   /* ── 3. Foreign keys and their delete behaviour ────────────────────────────── */
@@ -329,14 +394,23 @@ async function main() {
        values ('${id}', '${id}-container', '${id}-items', '${verdict}')`,
     );
 
-  // §15.3 tier 4 — the memo may hold only a *decided* verdict. Memoising an indecision
-  // turns a transient node-budget limit into a standing refusal for the entry's life.
-  await refuses("verdict 'BUDGET_EXHAUSTED' is refused by the database", "PackingResultCache_verdict_decided", () =>
-    insertMemo(`${PREFIX}-memo-a`, "BUDGET_EXHAUSTED"),
-  );
-  await refuses("verdict 'INDETERMINATE' is refused", "PackingResultCache_verdict_decided", () => insertMemo(`${PREFIX}-memo-b`, "INDETERMINATE"));
-  await accepts("verdict 'FEASIBLE' is accepted", () => insertMemo(`${PREFIX}-memo-c`, "FEASIBLE"));
-  await accepts("verdict 'INFEASIBLE' is accepted", () => insertMemo(`${PREFIX}-memo-d`, "INFEASIBLE"));
+  if (stage1Applied) {
+    // HISTORICAL claim 3. The storage-side memo is gone; a direct writer must now be refused
+    // by the table's absence, not by a CHECK. The application half below still holds: the
+    // KV memo (`packing.evaluateMemoised`) never writes BUDGET_EXHAUSTED.
+    await refuses(`a direct memo write is refused — PackingResultCache was dropped by ${STAGE_1}`, ["does not exist", "42P01"], () =>
+      insertMemo(`${PREFIX}-memo-a`, "FEASIBLE"),
+    );
+  } else {
+    // §15.3 tier 4 — the memo may hold only a *decided* verdict. Memoising an indecision
+    // turns a transient node-budget limit into a standing refusal for the entry's life.
+    await refuses("verdict 'BUDGET_EXHAUSTED' is refused by the database", "PackingResultCache_verdict_decided", () =>
+      insertMemo(`${PREFIX}-memo-a`, "BUDGET_EXHAUSTED"),
+    );
+    await refuses("verdict 'INDETERMINATE' is refused", "PackingResultCache_verdict_decided", () => insertMemo(`${PREFIX}-memo-b`, "INDETERMINATE"));
+    await accepts("verdict 'FEASIBLE' is accepted", () => insertMemo(`${PREFIX}-memo-c`, "FEASIBLE"));
+    await accepts("verdict 'INFEASIBLE' is accepted", () => insertMemo(`${PREFIX}-memo-d`, "INFEASIBLE"));
+  }
 
   // And the application half of the same rule, from the shipped module rather than from
   // a restatement of it: the set of verdicts the memo writer will ever offer the
@@ -369,15 +443,19 @@ async function main() {
   );
   await accepts("a projection at a new version inserts", () => insertProjection(9002, `${PREFIX}-proj-c`));
 
-  await refuses(
-    "a duplicate (containerConfig, itemSignature) memo is refused",
-    ["PackingResultCache_containerConfig_itemSignature_key", 'Key ("containerConfig", "itemSignature")'],
-    () =>
-    prisma.$executeRawUnsafe(
-      `insert into "PackingResultCache" (id, "containerConfig", "itemSignature", verdict)
-       values ('${PREFIX}-memo-e', '${PREFIX}-memo-c-container', '${PREFIX}-memo-c-items', 'INFEASIBLE')`,
-    ),
-  );
+  // HISTORICAL claim 3 (uniqueness half). Not applicable once stage 1 dropped the table; its
+  // absence is asserted in sections 1, 2 and 4.
+  if (!stage1Applied) {
+    await refuses(
+      "a duplicate (containerConfig, itemSignature) memo is refused",
+      ["PackingResultCache_containerConfig_itemSignature_key", 'Key ("containerConfig", "itemSignature")'],
+      () =>
+      prisma.$executeRawUnsafe(
+        `insert into "PackingResultCache" (id, "containerConfig", "itemSignature", verdict)
+         values ('${PREFIX}-memo-e', '${PREFIX}-memo-c-container', '${PREFIX}-memo-c-items', 'INFEASIBLE')`,
+      ),
+    );
+  }
 
   await accepts("a second EnergyModelParams row for the same class at a new modelVersion inserts", async () => {
     await prisma.$executeRawUnsafe(
@@ -492,8 +570,9 @@ main()
   })
   .then(cleanup)
   .then(async () => {
+    const tables = await liveTables();
     const leftovers = await query(
-      `select ${PHASE_7_TABLES.map((t) => `(select count(*) from "${t}" where id like '${PREFIX}-%')`).join(" + ")} as n`,
+      `select ${tables.map((t) => `(select count(*) from "${t}" where id like '${PREFIX}-%')`).join(" + ")} as n`,
     );
     check("\n  the harness left no rows behind", Number(leftovers[0].n) === 0);
     console.log(`\n${passed} passed, ${failed} failed.`);
