@@ -18,6 +18,8 @@ const robotStateCache = require("../../cache/robotStateCache");
 // why the shard identity is resolved at AUTH rather than per event.
 const agentGate = require("../../engine/cutover/agentGate");
 const commitmentLeaseRenewal = require("../../services/commitmentLeaseRenewal.service");
+// C1 (LAN-3) — the durable half of the legacy session, consulted when the KV has none.
+const robotSession = require("../../services/robotSession.service");
 
 // Per-robot throttle for the HEARTBEAT path's Postgres write, mirroring the
 // same gate in telemetry.handler.js. Per-process and in-memory (same pattern
@@ -435,6 +437,17 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
     }
   }
 
+  // C1 — fails closed. A read error is "no durable session", which is what AUTH concluded
+  // before this record existed.
+  async function durableSessionValid(robotDbId, robotId, token) {
+    try {
+      return await robotSession.validate(prisma, robotDbId, token);
+    } catch (e) {
+      log.warn?.("durable session check failed — treated as no session", { robotId, message: e?.message });
+      return false;
+    }
+  }
+
   async function clearPairingAttempts(robotId) {
     try {
       await kv.del(`pairingAttempts:${robotId}`);
@@ -534,6 +547,10 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
         // binding that is meaningless without the certificate whose fingerprint it names.
         // Reusing the namespace rather than minting a second one means a deployment
         // cannot end up with both schemes alive at once.
+        //
+        // C1 — the durable record of the bearer token goes with it. Otherwise a restart, or the
+        // binding being deleted, would leave the KV empty and the replaced token valid again.
+        await robotSession.revoke(prisma, robot.id);
         await kv.set(sessionBinding.sessionKey(robotId), JSON.stringify(certificateSession.binding), {
           ex: Math.max(1, Math.round((certificateSession.binding.expiresAtMs - certificateSession.binding.establishedAtMs) / 1000)) || 86400,
         });
@@ -568,6 +585,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       }
 
       let nextToken = null;
+      let authMode = "pairing";
 
       // An mTLS session is authenticated by the certificate and skips both weaker
       // branches entirely — §23.2's "a session cannot act for another agent" is the
@@ -575,11 +593,38 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       // credential the binding replaces.
       if (certificateSession.mode === "MTLS") {
         // Nothing to do: the binding above is the authentication.
+        authMode = "mtls";
       } else if (sessionToken && token && token === sessionToken) {
         // Reconnect path: valid existing session token.
         nextToken = sessionToken;
+        authMode = "session";
         // Refresh TTL on successful reconnect
-        await kv.set(`session:${robotId}`, nextToken, { ex: 86400 });
+        await kv.set(`session:${robotId}`, nextToken, { ex: robotSession.SESSION_TTL_SEC });
+        // C1 — slide the durable expiry with it. Best-effort: the KV has already admitted
+        // this token, and a failed refresh costs only restart survival, never admission.
+        try {
+          await robotSession.refresh(prisma, robot.id, nextToken);
+        } catch (e) {
+          log.warn?.("durable session refresh failed — the session will not survive a restart until it is refreshed", {
+            robotId,
+            message: e?.message,
+          });
+        }
+      } else if (
+        (storedSession === null || storedSession === undefined) &&
+        token &&
+        (await durableSessionValid(robot.id, robotId, token))
+      ) {
+        // C1 (LAN-3) — the KV holds no session for this robot at all. With the KV in process
+        // memory, that is a restart. The durable record is the only place left to check the
+        // token, and it is checked to the same standard: this robot, this token's hash, an
+        // expiry still in the future. Any other answer falls through to pairing below,
+        // exactly as an unknown token always has.
+        //
+        // The KV is deliberately not re-warmed. The next reconnect reads the row again, so
+        // a pairing that races this one can never be overwritten by the older token.
+        nextToken = token;
+        authMode = "durable-session";
       } else {
         // PHASE 14 — §23.2: "Pairing and commissioning are privileged control-plane
         // operations." Where mTLS is required, pairing is a commissioning bootstrap and
@@ -615,7 +660,11 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
         }
         // After first successful pairing, mint a session token.
         nextToken = crypto.randomUUID();
-        await kv.set(`session:${robotId}`, nextToken, { ex: 86400 });
+        // C1 — recorded durably first. If the record fails, AUTH fails here, before the
+        // pairing code is consumed, so the robot can retry with the same code. It also
+        // replaces the previous token's record, which revokes that token across restarts.
+        await robotSession.recordIssued(prisma, robot.id, nextToken);
+        await kv.set(`session:${robotId}`, nextToken, { ex: robotSession.SESSION_TTL_SEC });
       }
 
       // Replace old connection (auto-reconnect safe).
@@ -734,7 +783,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       log.info("Robot AUTH success", {
         robotId,
         socketId: socket.id,
-        mode: sessionToken && token === sessionToken ? "session" : "pairing",
+        mode: authMode,
       });
     } catch (e) {
       log.error("AUTH handler failed", e);

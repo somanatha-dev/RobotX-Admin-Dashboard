@@ -344,6 +344,9 @@ model Robot {
   // only — no column is added to Robot, and no legacy read path observes it.
   agent Agent?
 
+  // C1: the durable half of this robot's legacy session. A back-relation only.
+  session RobotSession?
+
   createdAt DateTime @default(now())
 
   //////////////////////////////////////////////////
@@ -358,6 +361,35 @@ model Robot {
   @@index([campusId])
   @@index([zoneId])
   @@index([lat, lon])
+}
+
+//////////////////////////////////////////////////////
+// ROBOT SESSION (C1: LEGACY SESSION DURABILITY)
+//////////////////////////////////////////////////////
+
+/// C1 — the durable record of a robot's legacy (bearer-token) session.
+///
+/// The session token is minted at pairing and lives in the KV as `session:{robotId}`. With
+/// `REDIS_ENABLED=false` that KV is process memory, so a restart erased every session. A
+/// paired robot then fell through to pairing with a code already consumed, and into the
+/// five-attempt lockout (LAN-3). This row is what AUTH falls back to when the KV has no
+/// `session:` value at all. Its lifetime is the KV key's: written at pairing, slid
+/// forward on every successful reconnect, replaced by the next pairing, and removed when an
+/// mTLS binding replaces the bearer scheme or the Robot row is deleted.
+///
+/// Only a SHA-256 of the token is stored, never the token. The token is a random UUID
+/// (122 bits), so an unsalted hash cannot be inverted by guessing, and a database read
+/// yields nothing that authenticates.
+model RobotSession {
+  robotDbId String @id
+  robot     Robot  @relation(fields: [robotDbId], references: [id], onDelete: Cascade)
+
+  /// Lowercase hex SHA-256 of the bearer token.
+  tokenHash String
+  expiresAt DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 //////////////////////////////////////////////////////

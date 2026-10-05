@@ -192,6 +192,16 @@ function createMockPrisma() {
       findUnique: jest.fn(),
       create: jest.fn(),
     },
+    // C1 — the durable half of a robot's legacy session, which AUTH writes at pairing and
+    // reads when the KV has no session. `updateMany` defaults to matching nothing, so a
+    // test that has not seeded a durable session sees "no durable session", as before C1.
+    robotSession: {
+      findUnique: jest.fn(async () => null),
+      upsert: jest.fn(async () => ({})),
+      create: jest.fn(async () => ({})),
+      updateMany: jest.fn(async () => ({ count: 0 })),
+      deleteMany: jest.fn(async () => ({ count: 0 })),
+    },
     // An interactive transaction is handed a client that does **not** itself expose
     // `$transaction` — that is how Prisma's own type distinguishes the two, and
     // `engine/supervision/timers.requireTransaction` tests exactly that shape before it
