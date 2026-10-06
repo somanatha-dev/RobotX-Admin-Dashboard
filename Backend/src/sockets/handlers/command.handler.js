@@ -4,6 +4,7 @@ const { z } = require("zod");
 
 const clockModule = require("../../engine/commitment/clock");
 const outbox = require("../../engine/dispatch/outbox");
+const { FENCE_SCOPE } = require("../../engine/domain/agent");
 // PHASE 15 remediation (D-6) — both halves of the cutover switch, from the one module that
 // owns the question. Settling an outbox row is an engine write.
 const agentGate = require("../../engine/cutover/agentGate");
@@ -26,10 +27,27 @@ const outboxAckSchema = z
     outboxId: z.string().min(1),
     // The agent echoes the fence it applied the command under, so an acknowledgement
     // generated under a superseded authority cannot close a row that superseded it.
-    fence: z.union([z.string(), z.number()]).optional().nullable(),
+    // Any shape is let through to `acknowledgeOutboxRow`, which refuses a malformed one
+    // by name; a schema miss here would drop the ACK without a verdict line.
+    fence: z.unknown(),
     authorityEpoch: z.union([z.string(), z.number()]).optional().nullable(),
   })
   .passthrough();
+
+/**
+ * A fence or an authority epoch as the wire carries it. Both are non-negative BigInt counters
+ * (invariant I6) that `outbox.worker`'s `envelopeOf` renders as `String(BigInt)`, and the agent
+ * echoes that string verbatim; a non-negative safe integer is also read. Anything else is null —
+ * never coerced, because `BigInt()` reads `"0x5"` and `" 5"` as 5n.
+ *
+ * @param {unknown} value
+ * @returns {bigint|null}
+ */
+function parseWireCounter(value) {
+  if (typeof value === "string") return /^(0|[1-9][0-9]*)$/.test(value) ? BigInt(value) : null;
+  if (typeof value === "number") return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+  return null;
+}
 
 /**
  * Acknowledge one outbox row.
@@ -52,10 +70,37 @@ async function acknowledgeOutboxRow(prisma, robotId, data) {
   if (row.agentId !== agent.id) return { acked: false, reason: "ACK_FROM_ANOTHER_AGENT" };
   if (outbox.isTerminal(row.state)) return { acked: false, reason: `ALREADY_${row.state}` };
 
-  if (data.fence !== undefined && data.fence !== null && row.fence !== null && row.fence !== undefined) {
-    if (BigInt(data.fence) !== BigInt(row.fence)) return { acked: false, reason: "ACK_CARRIES_A_DIFFERENT_FENCE" };
+  // A mission row is issued under its commitment's fence (§10.3.1 row 1; the
+  // `Outbox_fence_scope_columns` CHECK makes it NOT NULL), and only an ACK echoing that fence
+  // settles it. Absent is not "the current fence": a settled OFFER row silences §11.4's
+  // NO_ACK_WITHIN_OFFER_TTL withdrawal, and a settled RECALL/WITHDRAW releases the assignment.
+  // An agent-scope row carries no commitment fence by construction; its guard is the epoch below.
+  // A fence that is present but malformed is refused on either scope.
+  const echoed = data.fence === undefined || data.fence === null ? null : parseWireCounter(data.fence);
+  if (echoed === null && data.fence !== undefined && data.fence !== null) {
+    return { acked: false, reason: "ACK_FENCE_MALFORMED" };
   }
-  if (
+  if (row.fenceScope !== FENCE_SCOPE.AGENT) {
+    if (row.fence === null || row.fence === undefined) return { acked: false, reason: "ROW_CARRIES_NO_FENCE" };
+    if (echoed === null) return { acked: false, reason: "ACK_WITHOUT_FENCE" };
+    if (echoed !== BigInt(row.fence)) return { acked: false, reason: "ACK_CARRIES_A_DIFFERENT_FENCE" };
+  }
+  // An agent-scope row is issued under the agent's authority epoch (§10.3.1 row 2; the same
+  // CHECK makes it NOT NULL on every AGENT row), which is that row's fence: only an ACK echoing
+  // it settles the row. Absent is not "the current epoch".
+  if (row.fenceScope === FENCE_SCOPE.AGENT) {
+    if (row.authorityEpoch === null || row.authorityEpoch === undefined) {
+      return { acked: false, reason: "ROW_CARRIES_NO_AUTHORITY_EPOCH" };
+    }
+    if (data.authorityEpoch === undefined || data.authorityEpoch === null) {
+      return { acked: false, reason: "ACK_WITHOUT_AUTHORITY_EPOCH" };
+    }
+    const epoch = parseWireCounter(data.authorityEpoch);
+    if (epoch === null) return { acked: false, reason: "ACK_AUTHORITY_EPOCH_MALFORMED" };
+    if (epoch !== BigInt(row.authorityEpoch)) {
+      return { acked: false, reason: "ACK_CARRIES_A_DIFFERENT_AUTHORITY_EPOCH" };
+    }
+  } else if (
     data.authorityEpoch !== undefined &&
     data.authorityEpoch !== null &&
     row.authorityEpoch !== null &&

@@ -15,12 +15,15 @@ const silentLogger = require("../mocks/silentLogger");
 const USER_ID = "44444444-4444-4444-8444-444444444444";
 const ADMIN_USER = { id: USER_ID, email: "admin@robotx.test", role: "SUPER_ADMIN" };
 
-// P1.4 (LAN-4) — the legacy `assign_task` socket event reaches the same intake as
-// `POST /api/tasks/assign`, which requires an authenticated user. The socket path had no
-// check: measured live with the engine on, a bare socket.io client created a queued Task.
-// A real HTTP + Socket.IO server and a real client, so the classification a socket gets at
-// connection time is the one production gives it.
-describe("socket `assign_task` requires an authenticated dashboard user (P1.4, LAN-4)", () => {
+// The legacy `assign_task` socket event is retired. It reached the same intake as
+// `POST /api/tasks/assign` but without that route's rate limiter or its manual-assignment
+// (waiver) gate. P1.4 (LAN-4) had already closed it to unauthenticated sockets; no client
+// emitted it. Task submission is REST only, so the assertion is now stronger than LAN-4's:
+// **no** socket — bare, robot, or an authenticated dashboard user — reaches intake, and the
+// server registers no listener for the event at all. A real HTTP + Socket.IO server and a
+// real client, so the classification a socket gets at connection time is the one
+// production gives it.
+describe("socket `assign_task` is retired: no socket reaches task intake (LAN-4)", () => {
   let httpServer;
   let io;
   let port;
@@ -35,6 +38,7 @@ describe("socket `assign_task` requires an authenticated dashboard user (P1.4, L
     dropLon: 77.501,
     regionId: "rnsit",
   };
+  const INTAKE_EVENTS = ["task_accepted", "task_assigned", "task_error"];
 
   beforeAll(async () => {
     const prisma = {
@@ -83,30 +87,48 @@ describe("socket `assign_task` requires an authenticated dashboard user (P1.4, L
     });
   }
 
-  const next = (client, event) => new Promise((resolve) => client.once(event, resolve));
+  /** The server-side Socket for a connected client — the object listeners are registered on. */
+  const serverSocketOf = (client) => io.of("/").sockets.get(client.id);
 
-  test("a bare client (no Origin, no browser UA, no session) is refused and intake is never called", async () => {
-    const client = await connect({ "user-agent": "node-test-client" });
-    const refused = next(client, "task_error");
-    client.emit("assign_task", REQUEST);
-    await expect(refused).resolves.toMatchObject({ code: "UNAUTHORIZED" });
-    expect(taskService.assignTask).not.toHaveBeenCalled();
-  });
+  /** Emit `assign_task` and record every intake event that comes back within the window. */
+  async function emitAndListen(client, payload) {
+    const received = [];
+    for (const event of INTAKE_EVENTS) client.on(event, (body) => received.push({ event, body }));
+    client.emit("assign_task", payload);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return received;
+  }
 
-  test("a robot socket that has AUTHed is still not a user: refused", async () => {
+  test("the server registers no `assign_task` listener (control: a robot event is registered)", async () => {
     const client = await connect({ "user-agent": "robotx-agent/1.0" });
-    const refused = next(client, "task_error");
-    client.emit("assign_task", { ...REQUEST, robotId: "V1DEMO-01" });
-    await expect(refused).resolves.toMatchObject({ code: "UNAUTHORIZED" });
+    const socket = serverSocketOf(client);
+    expect(socket).toBeDefined();
+    expect(socket.listenerCount("AUTH")).toBeGreaterThan(0);
+    expect(socket.listenerCount("assign_task")).toBe(0);
+  });
+
+  test("a bare client (no Origin, no browser UA, no session): nothing reaches intake", async () => {
+    const client = await connect({ "user-agent": "node-test-client" });
+    expect(await emitAndListen(client, REQUEST)).toEqual([]);
     expect(taskService.assignTask).not.toHaveBeenCalled();
   });
 
-  test("an authenticated dashboard socket still reaches intake", async () => {
+  test("a robot socket: nothing reaches intake", async () => {
+    const client = await connect({ "user-agent": "robotx-agent/1.0" });
+    expect(await emitAndListen(client, { ...REQUEST, robotId: "V1DEMO-01" })).toEqual([]);
+    expect(taskService.assignTask).not.toHaveBeenCalled();
+  });
+
+  test("an authenticated dashboard user cannot create a task over the socket either", async () => {
     const token = jwt.sign({ id: USER_ID }, process.env.JWT_SECRET, { expiresIn: "1h" });
     const client = await connect({ "user-agent": "Mozilla/5.0 (test dashboard)", cookie: `token=${token}` });
-    const accepted = next(client, "task_accepted");
-    client.emit("assign_task", REQUEST);
-    await expect(accepted).resolves.toMatchObject({ taskId: "TSK-1" });
-    expect(taskService.assignTask).toHaveBeenCalledTimes(1);
+    const socket = serverSocketOf(client);
+    // Control: the dashboard session was accepted, so a refusal below is not an auth artefact.
+    expect(socket && socket.data.userId).toBe(USER_ID);
+    expect(socket.listenerCount("assign_task")).toBe(0);
+
+    expect(await emitAndListen(client, REQUEST)).toEqual([]);
+    expect(taskService.assignTask).not.toHaveBeenCalled();
+    expect(client.connected).toBe(true);
   });
 });

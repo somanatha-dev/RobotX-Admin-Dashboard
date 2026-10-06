@@ -80,7 +80,7 @@ async function main() {
       ENGINE_ENABLED: "false",
       REDIS_ENABLED: "false",
       REDIS_URL: "",
-      JWT_SECRET: "batch2-boot-secret",
+      JWT_SECRET: "batch2-boot-verification-secret-not-for-production",
       NODE_ENV: "development",
     },
     stdio: ["ignore", "pipe", "pipe"],

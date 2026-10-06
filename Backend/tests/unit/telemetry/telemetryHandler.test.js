@@ -32,6 +32,9 @@ describe("telemetry.handler — TELEMETRY (real-time pipeline)", () => {
 
     prisma = createMockPrisma();
     prisma.zone.findMany.mockResolvedValue([]);
+    // A flush that carries a status is conditional on the status it was validated against
+    // (the stale-write guard); the row these tests stand in for still holds it.
+    prisma.robot.updateMany.mockResolvedValue({ count: 1 });
     ({ kv } = await createTestKv());
     io = createFakeIo();
     socket = createFakeSocket();
@@ -133,9 +136,10 @@ describe("telemetry.handler — TELEMETRY (real-time pipeline)", () => {
     const registry = await getRobotState(kv, "R1");
     expect(registry.status).toBe("CHARGING");
 
-    await waitFor(() => prisma.robot.update.mock.calls.length > 0);
-    const [{ data }] = prisma.robot.update.mock.calls[0];
+    await waitFor(() => prisma.robot.updateMany.mock.calls.length > 0);
+    const [{ where, data }] = prisma.robot.updateMany.mock.calls[0];
     expect(data.status).toBe("PAUSED");
+    expect(where).toEqual({ robotId: "R1", status: "IDLE" });
   });
 
   test("broadcasts robot:update ONLY to the dashboard room, never globally", async () => {
@@ -161,7 +165,7 @@ describe("telemetry.handler — TELEMETRY (real-time pipeline)", () => {
       prisma.robot.update.mockResolvedValue({});
 
       socket.trigger("TELEMETRY", { lat: 1, lon: 1, battery: 50, status: "ACTIVE" });
-      await waitFor(() => prisma.robot.update.mock.calls.length > 0);
+      await waitFor(() => prisma.robot.updateMany.mock.calls.length > 0);
     });
 
     test("a second tick moments later, with no status/battery change, does NOT re-flush to Postgres", async () => {
@@ -173,7 +177,7 @@ describe("telemetry.handler — TELEMETRY (real-time pipeline)", () => {
       socket.trigger("TELEMETRY", { lat: 1, lon: 1, battery: 50, status: "ACTIVE" });
       await waitFor(() => io.emittedTo("dashboard", "robot:update").length >= 1);
       const firstEmitCount = io.emittedTo("dashboard", "robot:update").length;
-      const flushesAfterFirst = prisma.robot.update.mock.calls.length;
+      const flushesAfterFirst = prisma.robot.updateMany.mock.calls.length;
       expect(flushesAfterFirst).toBeGreaterThan(0);
 
       await new Promise((r) => setTimeout(r, 150)); // clear the 100ms rate-limit gate
@@ -183,7 +187,7 @@ describe("telemetry.handler — TELEMETRY (real-time pipeline)", () => {
 
       // Movement/position alone does not force a DB write — Redis carries
       // live position every tick regardless (see the handler's own comment).
-      expect(prisma.robot.update.mock.calls.length).toBe(flushesAfterFirst);
+      expect(prisma.robot.updateMany.mock.calls.length).toBe(flushesAfterFirst);
     });
 
     test("a battery swing of >=2% forces an immediate flush even before the time-based interval", async () => {
@@ -192,15 +196,15 @@ describe("telemetry.handler — TELEMETRY (real-time pipeline)", () => {
       prisma.robot.findUnique.mockResolvedValue(existingRobot({ status: "ACTIVE", battery: 50 }));
       prisma.robot.update.mockResolvedValue({});
       socket.trigger("TELEMETRY", { lat: 1, lon: 1, battery: 50, status: "ACTIVE" });
-      await waitFor(() => prisma.robot.update.mock.calls.length > 0);
-      const afterFirst = prisma.robot.update.mock.calls.length;
+      await waitFor(() => prisma.robot.updateMany.mock.calls.length > 0);
+      const afterFirst = prisma.robot.updateMany.mock.calls.length;
 
       await new Promise((r) => setTimeout(r, 150)); // clear the 100ms rate-limit gate
       // DB row still reports battery=50 (unchanged) while live battery drops by 3%.
       prisma.robot.findUnique.mockResolvedValue(existingRobot({ status: "ACTIVE", battery: 50 }));
       socket.trigger("TELEMETRY", { lat: 1, lon: 1, battery: 47, status: "ACTIVE" });
-      await waitFor(() => prisma.robot.update.mock.calls.length > afterFirst);
-      const [{ data }] = prisma.robot.update.mock.calls[prisma.robot.update.mock.calls.length - 1];
+      await waitFor(() => prisma.robot.updateMany.mock.calls.length > afterFirst);
+      const [{ data }] = prisma.robot.updateMany.mock.calls[prisma.robot.updateMany.mock.calls.length - 1];
       expect(data.battery).toBe(47);
     });
   });

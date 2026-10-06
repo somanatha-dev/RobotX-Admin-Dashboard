@@ -45,16 +45,19 @@ describe("software stop latch (F7)", () => {
     const prisma = prismaDouble();
     const now = Date.now();
     const frame = (engaged, at) => ({ timestamp: at, safety: { stopLatch: { engaged, components: { esp32SafetyStop: engaged } } } });
+    const socket = { id: "sock-pi", data: { isAuthed: true, robotId: "pi" } };
 
-    expect(await stopLatch.recordStopLatch({ prisma, kv, robotId: "pi", payload: frame(false, now - 100), nowMs: now })).toMatchObject({ recorded: true, engaged: false });
-    await stopLatch.recordStopLatch({ prisma, kv, robotId: "pi", payload: frame(false, now - 50), nowMs: now });
-    await stopLatch.recordStopLatch({ prisma, kv, robotId: "pi", payload: frame(true, now - 10), nowMs: now });
+    expect(await stopLatch.recordStopLatch({ prisma, kv, robotId: "pi", payload: frame(false, now - 100), nowMs: now, socket })).toMatchObject({ recorded: true, engaged: false });
+    await stopLatch.recordStopLatch({ prisma, kv, robotId: "pi", payload: frame(false, now - 50), nowMs: now, socket });
+    await stopLatch.recordStopLatch({ prisma, kv, robotId: "pi", payload: frame(true, now - 10), nowMs: now, socket });
 
     expect(prisma.created.map((row) => [row.kind, row.value.engaged, row.value.mechanism])).toEqual([
       ["emergency_stop", false, "SOFTWARE_STOP_LATCH"],
       ["emergency_stop", true, "SOFTWARE_STOP_LATCH"],
     ]);
-    expect((await getRobotState(kv, "pi")).stopLatch).toEqual({ engaged: true, observedAtMs: now - 10, mechanism: "SOFTWARE_STOP_LATCH" });
+    // Its own key, bound to the reporting socket; never the registry.
+    expect(await stopLatch.getStopLatchState(kv, "pi")).toEqual({ robotId: "pi", socketId: "sock-pi", engaged: true, observedAtMs: now - 10 });
+    expect((await getRobotState(kv, "pi")) || {}).not.toHaveProperty("stopLatch");
   });
 
   test.each([
@@ -80,16 +83,16 @@ describe("software stop latch (F7)", () => {
   });
 
   test("F7 reads the latch only under the SOFTWARE_STOP_LATCH policy, labelled as such", () => {
-    const live = { stopLatch: { engaged: false, observedAtMs: 1000 } };
-    expect(physicalFacts.emergencyStopFrom({ live, policy: POLICY, asOfMs: 2000 })).toEqual({
+    const latch = { engaged: false, observedAtMs: 1000 };
+    expect(physicalFacts.emergencyStopFrom({ latch, policy: POLICY, asOfMs: 2000 })).toEqual({
       value: false,
       observedAt: new Date(1000),
       source: "AGENT_REPORT",
       mechanism: "SOFTWARE_STOP_LATCH",
     });
-    expect(physicalFacts.emergencyStopFrom({ live, policy: physicalPolicy.NONE, asOfMs: 2000 })).toBeUndefined();
+    expect(physicalFacts.emergencyStopFrom({ latch, policy: physicalPolicy.NONE, asOfMs: 2000 })).toBeUndefined();
     // Nothing observed after the decision it is for.
-    expect(physicalFacts.emergencyStopFrom({ live, policy: POLICY, asOfMs: 500 })).toBeUndefined();
+    expect(physicalFacts.emergencyStopFrom({ latch, policy: POLICY, asOfMs: 500 })).toBeUndefined();
   });
 });
 
@@ -134,12 +137,12 @@ describe("measured link quality (F15)", () => {
     expect(agentProbe.linkQualityOf(s, t0 + 10_001)).toBeCloseTo(0.5, 12);
   });
 
-  test("the recorded proof carries the link quality to live state", async () => {
+  test("the recorded proof carries the link quality to the probe state (F7-A: not the registry)", async () => {
     const kv = await freshKv();
     const s = socket();
     const t0 = 2_000_000;
     const probe = agentProbe.issueProbe(s, t0);
     await agentProbe.recordProbeResult({ kv, socket: s, payload: { correlationId: probe.correlationId }, nowMs: t0 + 100 });
-    expect(await getRobotState(kv, "pi")).toMatchObject({ lastProbeAckAt: t0 + 100, lastProbeSocketId: "sock-1", linkQuality: 1 });
+    expect(await agentProbe.getProbeState(kv, "pi")).toMatchObject({ lastProbeAckAt: t0 + 100, lastProbeSocketId: "sock-1", linkQuality: 1 });
   });
 });

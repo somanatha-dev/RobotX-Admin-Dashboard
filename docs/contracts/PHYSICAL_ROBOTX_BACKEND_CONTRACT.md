@@ -149,7 +149,7 @@ Missions arrive as signed **command envelopes**. The Socket.IO event name is the
 6. **Completion.** After the last stop, send `TASK_COMPLETE {"taskId":"<payload.taskId>","lat":…,"lon":…,"timestamp":…}`.
    - The backend grades it against your track and the commanded route.
    - The reply is `TASK_COMPLETE_ACK {taskId}`, or `{taskId, verifying:true}` when the evidence is insufficient. In that case an operator reviews the task; do **not** repeat the claim.
-7. **Withdrawal.** On `WITHDRAW`, `RECALL` or `ABORT_MISSION` for a commitment: stop that mission, discard it, tombstone the commitment id, and send `COMMAND_ACK{outboxId}`.
+7. **Withdrawal.** On `WITHDRAW`, `RECALL` or `ABORT_MISSION` for a commitment: stop that mission, discard it, tombstone the commitment id, and send `COMMAND_ACK{outboxId,fence,authorityEpoch}` echoing that command's own envelope. The backend refuses a mission command's ACK whose `fence` is missing, null, malformed, or not that row's fence.
 8. **Other engine commands.** `REROUTE`, `RESEQUENCE`, `RESUME`, `TRANSFER_CUSTODY`, `STAND_DOWN_ALL`, `QUARANTINE`, `RELEASE_QUARANTINE`, `ESTOP_CLEAR`, `SHARD_MIGRATE` and `PARAMETER_PUSH` have no backend producer today. Admit them through the same checks, ACK them, and on an unfamiliar one do nothing physical.
 
 `TASK_ASSIGN` is legacy restart recovery. It is not how the engine assigns missions.

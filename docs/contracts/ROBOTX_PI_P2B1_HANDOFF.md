@@ -170,7 +170,8 @@ Other engine commands:
 
 - **Engine:** `{"outboxId":"<envelope.outboxId>","fence":"<envelope.fence>","authorityEpoch":<envelope.authorityEpoch>}`.
   - `outboxId` is required (non-empty string).
-  - `fence` and `authorityEpoch` are optional, but a value that is present must match the row or the ACK is refused.
+  - `fence` is **required** for a mission command (OFFER, WITHDRAW, RECALL, ABORT_MISSION and the other commitment-scoped commands). Echo the envelope's `fence` exactly as it arrived: the canonical decimal string, or a non-negative integer. A missing, null or malformed fence, or one that differs from the row's, is refused and the row is not acknowledged (2026-10-05).
+  - An agent-scope command (`SHARD_MIGRATE` and the other agent commands) carries `fence: null`. Echo `null` or omit it. Its guard is `authorityEpoch`, which is **required**: echo the envelope's `authorityEpoch` exactly as it arrived (the canonical decimal string, or a non-negative integer). A missing, null or malformed epoch, or one that differs from the row's, is refused and the row is not acknowledged (2026-10-05).
   - A repeated ACK of an already-acknowledged row is ignored harmlessly (`:52`).
 - **Operator:** `{"commandId":"<COMMAND.commandId>"}`.
 - No reply to the robot in either case.
@@ -346,7 +347,7 @@ Other engine commands:
 | OFFER_* | malformed, unknown/released commitment, other agent, fence ≠ current, no shard identity | silently ignored |
 | OFFER_DEFER | `until` missing, invalid, or not in the future | refused; the offer then expires |
 | CUSTODY_EVENT | no `commitmentId`, fence ≠ current, not this robot's live commitment, wrong stop | ignored |
-| COMMAND_ACK | unknown `commandId`/`outboxId`, fence/epoch mismatch | ignored |
+| COMMAND_ACK | unknown `commandId`/`outboxId`, fence/epoch mismatch; a mission command's ACK without a well-formed fence | ignored |
 | TASK_COMPLETE | L1 evidence insufficient | `TASK_COMPLETE_ACK {verifying:true}`, nothing completed |
 | TASK_COMPLETE | **[P2B-2]** verification unavailable | `TASK_COMPLETE_ACK {verifying:true, reason}`, nothing completed |
 | OFFER_* | **[P2B-2]** Leg no longer OFFERED, or offer expired | ignored, nothing changed |

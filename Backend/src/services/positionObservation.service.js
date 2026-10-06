@@ -112,7 +112,10 @@ const OUTCOME = Object.freeze({
   STALE_SEQUENCE: "STALE_SEQUENCE",
   /** The frame is stamped no later than one already accepted for this agent. */
   STALE_OBSERVED_AT: "STALE_OBSERVED_AT",
-  /** `createObservation` refused the record. Its problems are carried in `detail`. */
+  /**
+   * `createObservation` refused the record, or (C4) the frame's `position` block declared no
+   * recognised fix quality. The reason is carried in `detail`.
+   */
   INVALID_OBSERVATION: "INVALID_OBSERVATION",
   /**
    * P2B-2 — stamped further in the future than `time.max_clock_skew` allows. An agent clock
@@ -175,6 +178,29 @@ function maxClockSkewMsFrom(snapshot) {
 
 /** The fix types the P2A contract's optional `position` block may declare. @structural */
 const FIX_TYPES = Object.freeze(["NO_FIX", "2D", "3D", "RTK_FLOAT", "RTK_FIXED"]);
+
+/**
+ * C4 — why a present `position` block cannot be admitted, or null when it can.
+ *
+ * The block is optional; when it is sent, its `fixType` is the contract's declaration of what
+ * kind of measurement the lat/lon are (`docs/contracts/PHYSICAL_ROBOTX_BACKEND_CONTRACT.md`).
+ * A value outside `FIX_TYPES` — another word, another case, a number — declares a quality
+ * nothing here defines, so it is not admitted as a measurement. Nor is a block that declares
+ * no `fixType` at all. (A dead-reckoned declaration without one was already refused: §2.7
+ * requires its uncertainty radius, and that radius is only read alongside a recognised type.)
+ *
+ * @param {unknown} fix the frame's `position` value, known not to be null/undefined
+ * @returns {string|null}
+ */
+function fixBlockProblem(fix) {
+  if (typeof fix !== "object" || Array.isArray(fix)) return "the `position` block is not an object";
+  const declared = fix.fixType;
+  if (declared === undefined || declared === null) return "the `position` block declares no fixType";
+  if (!FIX_TYPES.includes(declared)) {
+    return `position.fixType ${JSON.stringify(String(declared).slice(0, 32))} is not one of ${FIX_TYPES.join("|")}`;
+  }
+  return null;
+}
 
 /**
  * How long a resolved `robotId → { Agent.id, provenance }` binding is trusted.
@@ -403,7 +429,14 @@ async function recordPositionObservation(prisma, input) {
   // P2B-2 — the contract's optional fix-quality block. Absent, nothing changes. A declared
   // NO_FIX means the lat/lon are not a measurement; a horizontal accuracy becomes the
   // Observation's uncertainty radius.
-  const fix = source.fix && typeof source.fix === "object" ? source.fix : null;
+  //
+  // C4 — a block that is present but does not declare a recognised quality is refused, the
+  // same way NO_FIX is: no Observation, so it reaches no arrival, completion or custody
+  // evidence. Before, it fell through as an ordinary measured fix with no fixType, which is
+  // indistinguishable from a frame that sent no block at all. Unknown stays unknown.
+  const fix = source.fix === undefined || source.fix === null ? null : source.fix;
+  const fixProblem = fix === null ? null : fixBlockProblem(fix);
+  if (fixProblem) return refuse(OUTCOME.INVALID_OBSERVATION, fixProblem);
   if (fix && fix.fixType === "NO_FIX") return refuse(OUTCOME.NO_FIX_DECLARED);
   const uncertaintyRadiusM =
     fix && FIX_TYPES.includes(fix.fixType) && Number.isFinite(fix.hAccM) && fix.hAccM > 0 ? fix.hAccM : null;

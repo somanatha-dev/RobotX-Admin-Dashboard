@@ -1,5 +1,3 @@
-const { toStringOrNull } = require("../utils/parse");
-const taskService = require("../services/task.service");
 const { registerRobotHandlers } = require("./handlers/robot.handler");
 const { registerTelemetryHandlers } = require("./handlers/telemetry.handler");
 const { registerCommandHandlers } = require("./handlers/command.handler");
@@ -286,101 +284,9 @@ function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig, appLoc
         // the handler never reaches the code that would use them.
         registerOfferHandlers(io, socket, { prisma, kv, logger, config: engineDispatchConfig, appLocals });
 
-        // ADMIN CREATES TASK (via socket — legacy path)
-        //
-        // ── PHASE 10 — routed to intake ─────────────────────────────────────
-        //
-        // The execution plan lists this file under Phase 10's "files to modify" with the
-        // note "`assign_task` legacy socket path routed to intake". The routing is
-        // structural rather than a second call site: `taskService.assignTask` is itself
-        // the router now, so this handler reaches §3.4's request path by the same
-        // function the REST controller uses. Two entry points calling one router cannot
-        // disagree about admission, shedding, or the queue position they quote — which is
-        // the same argument §9.2 makes for the fast path being the batch path.
-        //
-        // ── PHASE 15 — `task_accepted` is now the contract; `task_assigned` is a
-        // compatibility echo on its way out ────────────────────────────────
-        //
-        // The plan retires `assign_task`/`task_assigned` "once no client depends on them",
-        // with the Frontend updated in the same window and the events removed **after the
-        // retention window**. So both still fire, and the Frontend now reads
-        // `task_accepted`. The ordering is deliberate: `task_accepted` is emitted first,
-        // because it is the true one. `task_assigned` for a Leg that has merely been
-        // queued is exactly the conflation §3.4 forbids in the REST response, and it is no
-        // less wrong over a socket — it survives only so that an unmigrated dashboard
-        // still renders a card.
-        //
-        // A refusal (`ENGINE_NOT_LIVE`, 503) now reaches the `catch` below and becomes a
-        // `task_error`. That is the right shape: with the legacy dispatcher out of the
-        // build there is no second path for this handler to fall through to, and a socket
-        // client that got silence would retry into a shard that is still not live.
-        socket.on("assign_task", async (task) => {
-            if (typeof log.socketIn === "function") {
-                log.socketIn("assign_task", { robotId: task?.robotId });
-            }
-            // P1.4 (LAN-4) — the authentication `POST /api/tasks/assign` requires. Only a
-            // dashboard socket that presented a valid session carries `socket.data.userId`
-            // (set above). Every other socket — a robot's, or any client that did not
-            // identify as a dashboard — was reaching intake unauthenticated: measured live
-            // with the engine on, a bare socket.io client created a queued Task.
-            if (!socket.data || !socket.data.userId) {
-                log.warn("assign_task refused — the socket carries no authenticated user", { socketId: socket.id });
-                socket.emit("task_error", { code: "UNAUTHORIZED", error: "Authentication required" });
-                return;
-            }
-            try {
-                const created = await taskService.assignTask(prisma, task, {
-                    kv,
-                    io,
-                    // The same conjunction every other caller asks: the process flag AND
-                    // this shard's published `cutover.engine_enabled` binding.
-                    //
-                    // PHASE 15 remediation (P15-R4). This read was `io?.app?.locals?.config`,
-                    // and **`io.app` does not exist** — a Socket.IO server has no `app`
-                    // property and nothing under `src/` or `server.js` ever assigns one. So
-                    // the snapshot passed here was always `null`, `configEnabled()` answered
-                    // `false` for it, and every socket `assign_task` was refused
-                    // `ENGINE_NOT_LIVE` on every shard — including a correctly staged one,
-                    // for ever. It failed *closed*, which is why no test and no gate caught
-                    // it: the path simply never worked.
-                    //
-                    // `appLocals` is the express app's `locals`, threaded into this file as a
-                    // parameter by Phase 14's P14-R1 for exactly this reason — handlers used
-                    // to reach for it through the request object and got it wrong. This call
-                    // site was the one P14-R1 did not convert.
-                    config: appLocals?.config ?? null,
-                    regionId: toStringOrNull(task?.regionId),
-                });
-                if (created?.intake) {
-                    io.to("dashboard").emit("task_accepted", {
-                        taskId: created.intake.taskId,
-                        legId: created.intake.legId,
-                        accepted: created.intake.accepted,
-                        assigned: created.intake.assigned,
-                        idempotencyKey: created.intake.idempotencyKey,
-                        queuePosition: created.intake.queuePosition,
-                        predictedAssignmentWindow: created.intake.predictedAssignmentWindow,
-                        sentence: created.intake.sentence,
-                    });
-                }
-                io.to("dashboard").emit("task_assigned", created);
-                if (typeof log.socketOut === "function") {
-                    log.socketOut("task_assigned", "dashboard", { robotId: created?.robot?.robotId });
-                }
-            } catch (e) {
-                const taskId  = toStringOrNull(task?.taskId || task?.id);
-                const robotId = toStringOrNull(task?.robotId);
-                log.error("assign_task failed", { taskId, robotId, code: e?.code, message: e?.message });
-                io.to("dashboard").emit("task_error", {
-                    taskId,
-                    robotId,
-                    // `code` distinguishes "this shard has no decision path" from an
-                    // ordinary validation failure, so the dashboard can say which.
-                    code: e?.code || null,
-                    error: e?.message || "Failed to assign task",
-                });
-            }
-        });
+        // `assign_task`, the legacy socket task-creation path, is retired. No client emitted it,
+        // and it reached intake without the REST rate limiter or the manual-assignment gate.
+        // Task submission is `POST /api/tasks/assign` only.
     });
 }
 

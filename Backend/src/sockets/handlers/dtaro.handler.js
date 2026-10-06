@@ -19,13 +19,15 @@ const { allow } = require("../rateLimit");
 // divert a Task to VERIFYING, so it is a per-shard decision like every other engine path.
 const agentGate = require("../../engine/cutover/agentGate");
 const { processObstacleReport } = require("../../services/alertDissemination.service");
-const { updateHealthStatus, updateAssignedTask } = require("../../services/robotRegistry.service");
+const { updateHealthStatus } = require("../../services/robotRegistry.service");
 const { z } = require("zod");
 const robotStateCache = require("../../cache/robotStateCache");
 // PHASE 5 (§12.5) — graded completion verification.
 const verification = require("../../engine/supervision/verification");
 // §4.9 — a verified completion settles the Leg and releases its commitment.
 const settlement = require("../../engine/lifecycle/settlement");
+// C5 — the Task's completion, reached only once the Leg is settled.
+const taskCompletion = require("../../services/taskCompletion.service");
 const clockModule = require("../../engine/commitment/clock");
 // PHASE 14 remediation (P14-R14) — §23.5 row 3, the completion trust boundary.
 const trustBoundaries = require("../../engine/security/trustBoundaries");
@@ -184,7 +186,11 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       // completion block below. An insufficient one sends the Task to `VERIFYING` rather
       // than to `COMPLETED`, and since P2B-2 so does a claim that could not be graded at
       // all — the claim-only fallback this block used to run is gone.
-      const verdict = await verifyCompletionClaim({ prisma, log, robotId, taskId, payload, config: configOf(), socket });
+      // F2 — what the claim names, for the binding check: the Task it resolved to, or — when it
+      // resolved to none — the identifier as sent, which therefore names no Task and cannot
+      // match the Leg's. Absent stays absent.
+      const claimedTaskId = taskId !== null ? taskId : reportedId;
+      const verdict = await verifyCompletionClaim({ prisma, log, robotId, taskId, claimedTaskId, payload, config: configOf(), socket });
 
       // ── P2B-2 — no completion on the claim alone ─────────────────────────────
       //
@@ -199,7 +205,11 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       // the same for every agent; provenance is not consulted.
       if (!verdict || verdict.unavailable === true) {
         const reason = verdict && verdict.reason ? verdict.reason : VERIFICATION_UNAVAILABLE.UNKNOWN;
-        await holdUnverifiableCompletion({ prisma, io, socket, log, robotId, taskId, reason });
+        // F2 — a claim refused for naming the wrong Task is held against the Leg's own Task
+        // (null when there is no single one), never against the Task it named; the agent's ack
+        // still echoes what it sent.
+        const heldTaskId = verdict && "trustedTaskId" in verdict ? verdict.trustedTaskId : taskId;
+        await holdUnverifiableCompletion({ prisma, io, socket, log, robotId, taskId: heldTaskId, ackTaskId: taskId, reason });
         return;
       }
 
@@ -244,82 +254,70 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
         return;
       }
 
-      let settled = null;
-      await prisma.$transaction(async (tx) => {
-        // §4.9 settlement of the engine's Leg, in the same transaction as the Task's
-        // completion. It had no caller: a completed Task left its Leg ACCEPTED and its
-        // commitment live, so at lease expiry the reconciler re-queued the Leg and the
-        // engine re-offered delivered work (measured on the V1 demonstration path,
-        // 2026-09-23). Only on SUFFICIENT verification — `settle` refuses otherwise — and
-        // `settle` itself enforces custody discharge before release (I7).
-        if (verdict && verdict.outcome === verification.OUTCOME.SUFFICIENT && verdict.leg && verdict.commitment) {
-          const leg = await tx.leg.findUnique({ where: { id: verdict.leg.id } });
-          const manifests = leg ? await tx.payloadManifest.findMany({ where: { legId: leg.id } }) : [];
-          settled = await settlement.settle(tx, {
-            leg,
-            commitment: verdict.commitment,
-            verification: verdict,
-            manifests,
-            storeTime: await clockModule.readStoreTime(tx),
-          });
-        }
-
-        // Mark task COMPLETED if it belongs to this robot and isn't already done
-        if (taskId) {
-          await tx.task.updateMany({
-            where: {
-              taskId,
-              robot: { robotId },
-              status: { in: ["ASSIGNED", "IN_PROGRESS"] },
-            },
-            data: { status: "COMPLETED", completedAt: new Date() },
-          });
-        }
-
-        // Release robot back to IDLE
-        await tx.robot.update({
-          where: { robotId },
-          data: { currentTaskId: null, status: "IDLE", speed: 0 },
+      // §4.9 settlement of the engine's Leg, with the Task's completion in the same
+      // transaction. Settlement had no caller: a completed Task left its Leg ACCEPTED and its
+      // commitment live, so at lease expiry the reconciler re-queued the Leg and the engine
+      // re-offered delivered work (measured on the V1 demonstration path, 2026-09-23). Only on
+      // SUFFICIENT verification — `settle` refuses otherwise — and `settle` itself enforces
+      // custody discharge before release (I7).
+      //
+      // C5 (Gate 1b, 2026-10-04) — and the Task is completed **only if the Leg settled**.
+      // It used to be completed whatever `settle` answered, so a claim sent while custody was
+      // still HELD reported the delivery done with the goods aboard. Held now; the custody
+      // release settles the Leg against this claim's evidence and completes the Task through
+      // the same `taskCompletion` path (`legProgress.settleIfVerified`).
+      const settleAndComplete = async (tx, commitment) => {
+        const leg = await tx.leg.findUnique({ where: { id: verdict.leg.id } });
+        const manifests = leg ? await tx.payloadManifest.findMany({ where: { legId: leg.id } }) : [];
+        const settledNow = await settlement.settle(tx, {
+          leg,
+          commitment,
+          verification: verdict,
+          manifests,
+          storeTime: await clockModule.readStoreTime(tx),
         });
-      });
+        const completion = taskCompletion.isSettled(settledNow)
+          ? await taskCompletion.recordInTx(tx, {
+              robotId,
+              // F2 — the Leg's own Task, bound before grading; never the claim's identifier.
+              taskId: verdict.task.taskId,
+              settledNow: settledNow.outcome === settlement.OUTCOME.SETTLED,
+            })
+          : null;
+        return { settled: settledNow, completion };
+      };
 
-      // §4.9: "settlement is idempotent and retried until complete". The agent's own
-      // CUSTODY_EVENT can move the Leg (AT_DROP → RELEASED) in the same instant as this
-      // completion, and `settle`'s conditional write then loses on the version — measured,
-      // 28 ms apart, leaving a delivered Leg unsettled with its commitment live. Retried
-      // against a fresh read; each attempt is the same guarded write.
-      for (let attempt = 0; settled && settled.outcome === settlement.OUTCOME.LOST_RACE && attempt < 3; attempt += 1) {
-        // eslint-disable-next-line no-await-in-loop
-        settled = await prisma.$transaction(async (tx) => {
-          const leg = await tx.leg.findUnique({ where: { id: verdict.leg.id } });
-          const commitment = await tx.commitment.findUnique({ where: { commitmentId: verdict.commitment.commitmentId } });
-          const manifests = leg ? await tx.payloadManifest.findMany({ where: { legId: leg.id } }) : [];
-          return settlement.settle(tx, { leg, commitment, verification: verdict, manifests, storeTime: await clockModule.readStoreTime(tx) });
-        });
+      let result = null;
+      if (verdict && verdict.outcome === verification.OUTCOME.SUFFICIENT && verdict.leg && verdict.commitment) {
+        result = await prisma.$transaction((tx) => settleAndComplete(tx, verdict.commitment));
+
+        // §4.9: "settlement is idempotent and retried until complete". The agent's own
+        // CUSTODY_EVENT can move the Leg (AT_DROP → RELEASED) in the same instant as this
+        // completion, and `settle`'s conditional write then loses on the version — measured,
+        // 28 ms apart, leaving a delivered Leg unsettled with its commitment live. Retried
+        // against a fresh read; each attempt is the same guarded write.
+        for (let attempt = 0; result.settled.outcome === settlement.OUTCOME.LOST_RACE && attempt < 3; attempt += 1) {
+          // eslint-disable-next-line no-await-in-loop
+          result = await prisma.$transaction(async (tx) =>
+            settleAndComplete(tx, await tx.commitment.findUnique({ where: { commitmentId: verdict.commitment.commitmentId } })),
+          );
+        }
       }
+      const settled = result ? result.settled : null;
 
       if (settled) log.info("Leg settled on verified completion", { robotId, taskId, outcome: settled.outcome, reason: settled.reason || null });
 
-      robotStateCache.set(robotId, { status: "IDLE" });
-
-      // Clear Redis task state
-      if (kv && taskId) {
-        await Promise.allSettled([
-          kv.del(`robotTaskState:${robotId}`),
-          kv.del(`robotTask:${robotId}`),
-        ]);
+      if (!result || !result.completion) {
+        // Verified, not settled — `CUSTODY_STILL_HELD` when the drop's custody report has not
+        // been admitted yet. Nothing about the Task or the robot is written; the agent is told
+        // the claim is held and why, in the protocol's existing `verifying` form.
+        const reason = settled && settled.reason ? settled.reason : "NOT_SETTLED";
+        log.warn("TASK_COMPLETE verified but the Leg is not settled — the Task is not completed yet", { robotId, taskId, reason });
+        socket.emit("TASK_COMPLETE_ACK", { taskId, verifying: true, reason, timestamp: Date.now() });
+        return;
       }
 
-      // Update registry
-      await updateAssignedTask(kv, robotId, null);
-
-      // Notify dashboard
-      io.to("dashboard").emit("TASK_UPDATED", {
-        robotId,
-        taskId,
-        status: "COMPLETED",
-        timestamp: Date.now(),
-      });
+      await taskCompletion.publish({ io, kv, completion: result.completion });
 
       socket.emit("TASK_COMPLETE_ACK", { taskId, timestamp: Date.now() });
     } catch (e) {
@@ -455,7 +453,7 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
  * @param {object} input
  * @returns {Promise<object|null>}
  */
-async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, config, socket }) {
+async function verifyCompletionClaim({ prisma, log, robotId, taskId, claimedTaskId, payload, config, socket }) {
   // D-6: the process half alone used to gate this. During a staged rollout that graded
   // claims on every shard, including ones the staging order had not reached.
   if (!agentGate.mayAct({ socket, snapshot: config, nowMs: Date.now() })) {
@@ -475,6 +473,18 @@ async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, co
 
     const leg = await prisma.leg.findUnique({ where: { id: commitment.legId } });
     if (!leg) return unavailable(VERIFICATION_UNAVAILABLE.NO_LEG);
+
+    // F2 — the Task this completion would complete is the Leg's own, and the claim must name
+    // it. Refused here, before grading, so a mismatched claim leaves no SUFFICIENT evidence for
+    // the custody-release path to settle this Leg on. `trustedTaskId` lets the hold address
+    // the operator's queue to the Leg's Task rather than to the one the claim named.
+    const binding = await taskCompletion.bindClaim(prisma, {
+      legId: leg.id,
+      claimedTaskId: claimedTaskId === undefined ? taskId : claimedTaskId,
+    });
+    if (!binding.ok) {
+      return unavailable(binding.reason, { trustedTaskId: binding.task ? binding.task.taskId : null });
+    }
 
     const stops = await prisma.stop.findMany({ where: { legId: leg.id }, orderBy: { sequence: "desc" }, take: 1 });
     const finalStop = stops[0] || null;
@@ -546,7 +556,8 @@ async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, co
       data: {
         evidenceId: `${leg.legId}-${commitment.commitmentId}-${Date.now()}`,
         legId: leg.id,
-        taskId: taskId || null,
+        // The bound Task (F2): the Leg's own, which the claim was checked to name.
+        taskId: binding.task.taskId,
         requiredLevel: result.requiredLevel,
         achievedLevel: result.achievedLevel,
         outcome: result.outcome,
@@ -604,7 +615,7 @@ async function verifyCompletionClaim({ prisma, log, robotId, taskId, payload, co
 
     // The Leg and commitment the verdict was graded against, so the caller settles exactly
     // those (§4.9) rather than re-resolving them.
-    return { ...result, security, leg, commitment };
+    return { ...result, security, leg, commitment, task: binding.task };
   } catch (e) {
     // A defect in verification must not make a completion unreportable. It must,
     // however, be loud: a silent verification failure is indistinguishable from a pass,
@@ -627,6 +638,8 @@ const VERIFICATION_UNAVAILABLE = Object.freeze({
   NOT_CONFIGURED: "VERIFICATION_NOT_CONFIGURED",
   VERIFICATION_ERROR: "VERIFICATION_ERROR",
   UNKNOWN: "VERIFICATION_UNAVAILABLE",
+  // F2 — the claim is not bound to the Leg the live commitment names (`taskCompletion.bindClaim`).
+  ...taskCompletion.BINDING_REFUSAL,
 });
 
 /** P2B-2 — the two L1 failures the handler adds to the engine's grading. @structural */
@@ -635,8 +648,8 @@ const COMPLETION_FAILURE = Object.freeze({
   CLAIMED_POSITION_OUTSIDE_RADIUS: "CLAIMED_POSITION_OUTSIDE_RADIUS",
 });
 
-function unavailable(reason) {
-  return Object.freeze({ unavailable: true, reason });
+function unavailable(reason, extra) {
+  return Object.freeze({ unavailable: true, reason, ...(extra || {}) });
 }
 
 /**
@@ -655,6 +668,8 @@ function unavailable(reason) {
  */
 async function holdUnverifiableCompletion(input) {
   const { prisma, io, socket, log, robotId, taskId, reason } = input;
+  // The agent's own identifier, echoed in its ack; `taskId` is the Task the hold is about.
+  const ackTaskId = input.ackTaskId === undefined ? taskId : input.ackTaskId;
 
   if (taskId) {
     const task = await prisma.task
@@ -694,7 +709,7 @@ async function holdUnverifiableCompletion(input) {
     verification: { unavailable: true, reason },
     timestamp: Date.now(),
   });
-  socket.emit("TASK_COMPLETE_ACK", { taskId, verifying: true, reason, timestamp: Date.now() });
+  socket.emit("TASK_COMPLETE_ACK", { taskId: ackTaskId, verifying: true, reason, timestamp: Date.now() });
 }
 
 /**

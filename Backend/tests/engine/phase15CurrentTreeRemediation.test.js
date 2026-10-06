@@ -147,7 +147,7 @@ describe("P15-R5 — a caller that names no region does not inherit the global b
    P15-R4 — the socket intake path's configuration source
    ═══════════════════════════════════════════════════════════════════════════ */
 
-describe("P15-R4 — the socket `assign_task` path reads a snapshot that exists", () => {
+describe("P15-R4 — no socket path reads configuration through `io.app`", () => {
   test("`io.app` is never assigned anywhere, so reading through it yielded null for ever", () => {
     const sources = [serverSource(), socketServerSource()];
     for (const source of sources) expect(/\bio\.app\s*=/.test(source)).toBe(false);
@@ -158,12 +158,16 @@ describe("P15-R4 — the socket `assign_task` path reads a snapshot that exists"
     expect(io?.app?.locals?.config ?? null).toBeNull();
   });
 
-  test("the handler reads `appLocals`, the parameter Phase 14 threaded in for this", () => {
+  test("the `assign_task` handler that read it is retired, and the handlers still get `appLocals`", () => {
+    // P15-R4's fix pointed `assign_task` at `appLocals`. That handler has since been removed
+    // (it had no client, and bypassed the REST rate limiter and manual-assignment gate), so
+    // the guard is now that the dead read cannot come back and that `appLocals` — the
+    // parameter Phase 14 threaded in — still reaches the handlers that remain.
     const source = socketServerSource();
     expect(source).not.toContain("io?.app?.locals?.config");
-    expect(source).toMatch(/config:\s*appLocals\?\.config\s*\?\?\s*null/);
-    // `appLocals` is a parameter of `initSocketServer`, and the handler is inside it.
+    expect(source).not.toMatch(/socket\.on\("assign_task"/);
     expect(source).toMatch(/function initSocketServer\([^)]*appLocals/);
+    expect(source).toMatch(/registerRobotHandlers\(io, socket, \{[^}]*appLocals[^}]*\}\)/);
   });
 });
 

@@ -26,6 +26,8 @@ const physicalDeclaration = require("../../src/services/physicalDeclaration.serv
 const profile = require("../../src/services/v1DemonstrationProfile");
 const robotSpecification = require("../../src/services/robotSpecification");
 const { setRobotState } = require("../../src/services/robotRegistry.service");
+const agentProbe = require("../../src/services/agentProbe.service");
+const stopLatchObservation = require("../../src/services/stopLatchObservation.service");
 const { RouteRefusedError, ROUTE_REFUSAL } = require("../../src/engine/routing/productionRouter");
 const { ENDPOINT_BASIS } = require("../../src/engine/routing/cellPairCache");
 
@@ -34,6 +36,7 @@ const service = require("../../src/engine/config/service");
 const cells = require("../../src/engine/spatial/cells");
 const availabilityIndex = require("../../src/engine/candidates/availabilityIndex");
 const evaluate = require("../../src/engine/feasibility/evaluate");
+const volatileSubset = require("../../src/engine/feasibility/volatileSubset");
 const demonstration = require("../../tools/config/v1DemonstrationConfig");
 const energyFixture = require("./helpers/energyFixture");
 const { createTestKv } = require("../helpers/testKv");
@@ -313,11 +316,31 @@ function snapshotFor(points) {
 /** Live evidence the Pi supplies: a fresh stop-latch report and a PROBE proof on its socket. */
 async function liveEvidence(kv, decisionTimeMs, overrides) {
   const opts = overrides || {};
-  await setRobotState(kv, ROBOT_ID, {
-    lastHeartbeat: decisionTimeMs - 1_000,
-    ...(opts.noLatch ? {} : { stopLatch: { engaged: opts.engaged === true, observedAtMs: decisionTimeMs - 1_000 } }),
-    ...(opts.noProbe ? {} : { lastProbeAckAt: decisionTimeMs - 1_500, lastProbeSocketId: SOCKET_ID, linkQuality: 1 }),
-  });
+  await setRobotState(kv, ROBOT_ID, { lastHeartbeat: decisionTimeMs - 1_000 });
+  if (!opts.noLatch) {
+    // The stop latch through its own writer, on the unit's socket (never a registry field).
+    const socket = { id: SOCKET_ID, data: { isAuthed: true, robotId: ROBOT_ID } };
+    await stopLatchObservation.recordStopLatch({
+      prisma: { agent: { findUnique: async () => null } },
+      kv,
+      robotId: ROBOT_ID,
+      payload: { timestamp: decisionTimeMs - 1_000, safety: { stopLatch: { engaged: opts.engaged === true } } },
+      nowMs: decisionTimeMs,
+      socket,
+    });
+  }
+  if (opts.staleRegistryReleased) {
+    // A stale whole-record registry value claiming the latch is released, newer-stamped than the
+    // real report: what the 2026-10-06 audit showed a registry writer could leave behind.
+    const raw = JSON.parse((await kv.get(`registry:${ROBOT_ID}`)) || "{}");
+    await kv.set(`registry:${ROBOT_ID}`, JSON.stringify({ ...raw, stopLatch: { engaged: false, observedAtMs: decisionTimeMs - 500 } }), { ex: 30 });
+  }
+  if (!opts.noProbe) {
+    // F7-A — the proof (and link quality 1, one probe answered of one) through the PROBE boundary.
+    const socket = { id: SOCKET_ID, data: { isAuthed: true, robotId: ROBOT_ID }, emit: () => {} };
+    const { correlationId } = agentProbe.issueProbe(socket, decisionTimeMs - 1_550);
+    await agentProbe.recordProbeResult({ kv, socket, payload: { correlationId }, nowMs: decisionTimeMs - 1_500 });
+  }
 }
 
 async function assemble(world, decisionTimeMs, extra) {
@@ -528,6 +551,7 @@ describe("Gate 1 — a declared physical robot is a feasible, priced candidate (
   test.each([
     ["the robot is not in the declaration", { declaration: declaration({ robots: [] }) }, {}, /^\[\]$/],
     ["the stop latch is engaged", {}, { live: { engaged: true } }, /F7:VIOLATED/],
+    ["the stop latch is engaged and a stale registry copy says released", {}, { live: { engaged: true, staleRegistryReleased: true } }, /F7:VIOLATED/],
     ["no stop-latch report", {}, { live: { noLatch: true } }, /F7:INDETERMINATE/],
     ["no PROBE proof on this socket", {}, { live: { noProbe: true } }, /F14:/],
     ["a dead-reckoned fix", { deadReckoned: true }, {}, /F10:/],
@@ -542,5 +566,44 @@ describe("Gate 1 — a declared physical robot is a feasible, priced candidate (
     expect(feasible).toBe(false);
     const failures = verdicts ? notSatisfied(verdicts).join(" ") : JSON.stringify(seen.map((s) => s.result.refusal || s.result.denials));
     expect(failures).toMatch(named);
+  });
+});
+
+describe("stop latch at the commit recheck (§10.3.2 step 3)", () => {
+  // The commit path's own fresh read (`round.freshAgentSnapshot`, as `commitFor.buildContext`
+  // calls it) re-evaluated by the volatile subset, exactly as `createVolatileRecheck` does.
+  async function f7AtCommit(built, storeTimeMs) {
+    const agentSnapshot = await built.assembly.round.freshAgentSnapshot(ROBOT_ID, { asOfMs: storeTimeMs });
+    const outcome = volatileSubset.recheck({
+      agentSnapshot,
+      mission: null,
+      plan: null,
+      config: new Map([["connectivity.max_heartbeat_age", 10]]),
+      decisionTimeMs: storeTimeMs,
+    });
+    expect(outcome.evaluated).toContain("F7");
+    const f7 = outcome.failures.find((failure) => failure.predicateId === "F7");
+    return f7 ? f7.outcome : "SATISFIED";
+  }
+
+  test("engaged after planning, with a stale released copy in the registry: F7 VIOLATED under the locks", async () => {
+    const now = Date.now();
+    const world = physicalWorld({ decisionTimeMs: now });
+    const built = await assemble(world, now, { live: { engaged: false } });
+    expect(await f7AtCommit(built, now + 1_000)).toBe("SATISFIED"); // released at planning
+
+    // Inside the routing window the unit reports engaged; a stale registry write then lands.
+    await stopLatchObservation.recordStopLatch({
+      prisma: { agent: { findUnique: async () => null } },
+      kv: built.kv,
+      robotId: ROBOT_ID,
+      payload: { timestamp: now + 200, safety: { stopLatch: { engaged: true } } },
+      nowMs: now + 500,
+      socket: { id: SOCKET_ID, data: { isAuthed: true, robotId: ROBOT_ID } },
+    });
+    const raw = JSON.parse((await built.kv.get(`registry:${ROBOT_ID}`)) || "{}");
+    await built.kv.set(`registry:${ROBOT_ID}`, JSON.stringify({ ...raw, stopLatch: { engaged: false, observedAtMs: now + 300 } }), { ex: 30 });
+
+    expect(await f7AtCommit(built, now + 1_000)).toBe("VIOLATED");
   });
 });

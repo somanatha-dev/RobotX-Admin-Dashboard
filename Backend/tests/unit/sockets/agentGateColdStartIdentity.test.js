@@ -366,6 +366,401 @@ describe("COMMAND_ACK for an outbox row, from an agent placed after AUTH", () =>
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   The fence an outbox COMMAND_ACK must carry
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * A mission row is issued under its commitment's fence (the `Outbox_fence_scope_columns` CHECK
+ * makes `fence` NOT NULL on every COMMITMENT row), and the agent echoes it. An ACK that does not
+ * echo it — omitted, null, malformed, or another row's — must not settle the row: a settled
+ * OFFER row silences §11.4's NO_ACK_WITHIN_OFFER_TTL withdrawal, and a settled RECALL/WITHDRAW
+ * row releases the dashboard's assignment. The agent-scope row (SHARD_MIGRATE) carries no
+ * commitment fence by construction and is guarded by its authority epoch instead.
+ */
+function fenceWorld() {
+  const prisma = store();
+  const mission = (id, command, commitmentId, fence, agentId = "agent-1") => ({
+    id, agentId, state: "DELIVERED", command, commandClass: "MISSION", fenceScope: "COMMITMENT",
+    commitmentId, fence, authorityEpoch: null, fenceFloor: null,
+  });
+  // The shape `shard/membership.js` writes: no commitment, no fence, the epoch it advanced to.
+  const migrate = (id, authorityEpoch, fenceFloor, agentId = "agent-1") => ({
+    id, agentId, state: "DELIVERED", command: "SHARD_MIGRATE", commandClass: "AGENT", fenceScope: "AGENT",
+    commitmentId: null, fence: null, authorityEpoch, fenceFloor,
+  });
+  const rows = {
+    "OBX-OFFER": mission("OBX-OFFER", "OFFER", "CMT-1", 5n),
+    // The withdrawal of CMT-1's offer, at the advanced fence — the newer authority.
+    "OBX-WITHDRAW": mission("OBX-WITHDRAW", "WITHDRAW", "CMT-1", 6n),
+    "OBX-RECALL": mission("OBX-RECALL", "RECALL", "CMT-2", 7n),
+    "OBX-OTHER": mission("OBX-OTHER", "OFFER", "CMT-9", 9n, "agent-2"),
+    "OBX-MIGRATE": migrate("OBX-MIGRATE", 3n, 7n),
+    // The next migration of the same agent — the newer agent-scope authority.
+    "OBX-MIGRATE-NEXT": migrate("OBX-MIGRATE-NEXT", 4n, 8n),
+    "OBX-MIGRATE-OTHER": migrate("OBX-MIGRATE-OTHER", 3n, 2n, "agent-2"),
+  };
+  prisma.outbox.findUnique = jest.fn(async ({ where }) => (rows[where.id] ? { ...rows[where.id] } : null));
+  prisma.outbox.updateMany = jest.fn(async ({ where, data }) => {
+    const row = rows[where.id];
+    if (!row || where.state.notIn.includes(row.state)) return { count: 0 };
+    Object.assign(row, data);
+    return { count: 1 };
+  });
+  // The stand-down read model's first read: proof that a settled RECALL/WITHDRAW reached it.
+  prisma.commitment = { findUnique: jest.fn(async () => null) };
+  prisma.$queryRawUnsafe.mockResolvedValue([{ now: new Date() }]);
+  return { prisma, rows };
+}
+
+async function fenceConnection() {
+  const world = fenceWorld();
+  const logger = recordingLogger();
+  const io = createFakeIo();
+  const { kv } = await createTestKv();
+  const socket = authedSocket(null);
+  registerCommandHandlers(io, socket, { prisma: world.prisma, kv, logger, appLocals: { config: liveSnapshot() } });
+  // Spaced past the handler's own COMMAND_ACK rate limit (`minIntervalMs: 100`), so a second
+  // ACK in one test is judged by the handler rather than dropped by the limiter.
+  const ack = async (payload) => {
+    socket.trigger("COMMAND_ACK", { robotId: "RBT-1", timestamp: NOW, ...payload });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  };
+  /** The handler's own verdict lines, in order. */
+  const verdicts = () =>
+    logger.lines.info.filter((line) => line.message === "COMMAND_ACK (outbox)").map(({ detail }) => detail);
+  return { ...world, io, logger, ack, verdicts };
+}
+
+describe("COMMAND_ACK (outbox) — a mission row is settled only by its own fence", () => {
+  test("VALID: the echoed fence settles the row exactly as before (string as delivered, or a JSON integer)", async () => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-OFFER", fence: "5", authorityEpoch: null });
+    expect(world.rows["OBX-OFFER"].state).toBe("ACKED");
+    expect(world.rows["OBX-OFFER"].ackedAt).toBeInstanceOf(Date);
+    expect(world.verdicts()).toEqual([
+      { robotId: "RBT-1", outboxId: "OBX-OFFER", acked: true, reason: null, command: "OFFER", commitmentId: "CMT-1" },
+    ]);
+    // An OFFER is not a stand-down: the read model is not touched.
+    expect(world.prisma.commitment.findUnique).not.toHaveBeenCalled();
+
+    await world.ack({ outboxId: "OBX-RECALL", fence: 7 });
+    expect(world.rows["OBX-RECALL"].state).toBe("ACKED");
+    expect(world.logger.lines.warn).toEqual([]);
+  });
+
+  test.each([
+    ["missing", {}, "ACK_WITHOUT_FENCE"],
+    ["null", { fence: null }, "ACK_WITHOUT_FENCE"],
+  ])("FAIL CLOSED: a %s fence does not settle the row", async (_name, fence, reason) => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-OFFER", authorityEpoch: null, ...fence });
+    expect(world.rows["OBX-OFFER"].state).toBe("DELIVERED");
+    expect(world.prisma.outbox.updateMany).not.toHaveBeenCalled();
+    expect(world.verdicts()).toEqual([{ robotId: "RBT-1", outboxId: "OBX-OFFER", acked: false, reason }]);
+  });
+
+  test("FAIL CLOSED: a fenceless ACK of a RECALL neither settles it nor releases the assignment", async () => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-RECALL" });
+    expect(world.rows["OBX-RECALL"].state).toBe("DELIVERED");
+    expect(world.prisma.commitment.findUnique).not.toHaveBeenCalled();
+    expect(world.io.roomEmits("dashboard")).toEqual([]);
+    expect(world.verdicts()).toEqual([{ robotId: "RBT-1", outboxId: "OBX-RECALL", acked: false, reason: "ACK_WITHOUT_FENCE" }]);
+  });
+
+  test.each([
+    ["a non-numeric string", "abc"],
+    ["an empty string", ""],
+    ["a hex string (BigInt would read it as 5)", "0x5"],
+    ["a padded string (BigInt would read it as 5)", " 5"],
+    ["a decimal-point string", "5.0"],
+    ["a negative string", "-5"],
+    ["an exponent string", "5e0"],
+    ["a fractional number", 5.5],
+    ["a negative number", -5],
+    ["an unsafe integer", Number.MAX_SAFE_INTEGER + 2],
+    ["a boolean", true],
+    ["an object", { value: "5" }],
+    ["an array", ["5"]],
+  ])("FAIL CLOSED: a malformed fence — %s — does not settle the row", async (_name, fence) => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-OFFER", fence });
+    expect(world.rows["OBX-OFFER"].state).toBe("DELIVERED");
+    expect(world.prisma.outbox.updateMany).not.toHaveBeenCalled();
+    expect(world.verdicts()).toEqual([{ robotId: "RBT-1", outboxId: "OBX-OFFER", acked: false, reason: "ACK_FENCE_MALFORMED" }]);
+  });
+
+  test.each([
+    ["stale (below the row's)", "4"],
+    ["the newer withdrawal's", "6"],
+    ["zero — never allocated (allocateFence starts at 1)", "0"],
+    ["another commitment's", "7"],
+  ])("FAIL CLOSED: a %s fence does not settle the row", async (_name, fence) => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-OFFER", fence });
+    expect(world.rows["OBX-OFFER"].state).toBe("DELIVERED");
+    expect(world.prisma.outbox.updateMany).not.toHaveBeenCalled();
+    expect(world.verdicts()).toEqual([
+      { robotId: "RBT-1", outboxId: "OBX-OFFER", acked: false, reason: "ACK_CARRIES_A_DIFFERENT_FENCE" },
+    ]);
+  });
+
+  test("FAIL CLOSED: an ACK for the wrong command or commitment settles nothing", async () => {
+    const world = await fenceConnection();
+    // Another agent's row, with that row's own fence.
+    await world.ack({ outboxId: "OBX-OTHER", fence: "9" });
+    // CMT-2's RECALL fence against CMT-1's WITHDRAW.
+    await world.ack({ outboxId: "OBX-WITHDRAW", fence: "7" });
+    // A row the store never wrote.
+    await world.ack({ outboxId: "OBX-NOPE", fence: "5" });
+
+    expect(world.verdicts().map(({ outboxId, acked, reason }) => ({ outboxId, acked, reason }))).toEqual([
+      { outboxId: "OBX-OTHER", acked: false, reason: "ACK_FROM_ANOTHER_AGENT" },
+      { outboxId: "OBX-WITHDRAW", acked: false, reason: "ACK_CARRIES_A_DIFFERENT_FENCE" },
+      { outboxId: "OBX-NOPE", acked: false, reason: "UNKNOWN_OUTBOX_ROW" },
+    ]);
+    expect(world.rows["OBX-OTHER"].state).toBe("DELIVERED");
+    expect(world.rows["OBX-WITHDRAW"].state).toBe("DELIVERED");
+    expect(world.prisma.outbox.updateMany).not.toHaveBeenCalled();
+    expect(world.prisma.commitment.findUnique).not.toHaveBeenCalled();
+  });
+
+  test("DUPLICATE: a repeated valid ACK is ignored as before — one settlement, one stand-down", async () => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-RECALL", fence: "7" });
+    await world.ack({ outboxId: "OBX-RECALL", fence: "7" });
+
+    expect(world.rows["OBX-RECALL"].state).toBe("ACKED");
+    expect(world.prisma.outbox.updateMany).toHaveBeenCalledTimes(1);
+    expect(world.prisma.commitment.findUnique).toHaveBeenCalledTimes(1);
+    expect(world.verdicts().map(({ acked, reason }) => ({ acked, reason }))).toEqual([
+      { acked: true, reason: null },
+      { acked: false, reason: "ALREADY_ACKED" },
+    ]);
+  });
+
+  test("REPLAY: after a newer fence exists, the old ACK settles nothing — with its fence, without it, or retargeted", async () => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-OFFER", fence: "5" });
+    expect(world.rows["OBX-OFFER"].state).toBe("ACKED");
+
+    // The withdrawal at fence 6 is outstanding. Replays of the old acknowledgement:
+    await world.ack({ outboxId: "OBX-OFFER", fence: "5" }); // verbatim
+    await world.ack({ outboxId: "OBX-WITHDRAW", fence: "5" }); // retargeted at the newer row
+    await world.ack({ outboxId: "OBX-WITHDRAW" }); // retargeted with the fence stripped
+
+    expect(world.rows["OBX-WITHDRAW"].state).toBe("DELIVERED");
+    expect(world.prisma.commitment.findUnique).not.toHaveBeenCalled();
+    expect(world.verdicts().slice(1).map(({ outboxId, acked, reason }) => ({ outboxId, acked, reason }))).toEqual([
+      { outboxId: "OBX-OFFER", acked: false, reason: "ALREADY_ACKED" },
+      { outboxId: "OBX-WITHDRAW", acked: false, reason: "ACK_CARRIES_A_DIFFERENT_FENCE" },
+      { outboxId: "OBX-WITHDRAW", acked: false, reason: "ACK_WITHOUT_FENCE" },
+    ]);
+
+    // The withdrawal's own acknowledgement still settles it, and stands the assignment down.
+    await world.ack({ outboxId: "OBX-WITHDRAW", fence: "6" });
+    expect(world.rows["OBX-WITHDRAW"].state).toBe("ACKED");
+    expect(world.prisma.commitment.findUnique).toHaveBeenCalledTimes(1);
+  });
+
+  test("FAIL CLOSED: a mission row the store holds without a fence cannot be acknowledged at all", async () => {
+    const world = await fenceConnection();
+    world.rows["OBX-OFFER"].fence = null;
+    await world.ack({ outboxId: "OBX-OFFER", fence: "5" });
+    expect(world.rows["OBX-OFFER"].state).toBe("DELIVERED");
+    expect(world.verdicts()).toEqual([{ robotId: "RBT-1", outboxId: "OBX-OFFER", acked: false, reason: "ROW_CARRIES_NO_FENCE" }]);
+  });
+});
+
+describe("COMMAND_ACK (outbox) — the agent-scope exception: no commitment fence, guarded by the epoch", () => {
+  test.each([
+    ["fence null, as VirtualRobot echoes it", { fence: null, authorityEpoch: "3" }],
+    ["fence omitted", { authorityEpoch: "3" }],
+  ])("SHARD_MIGRATE ACK with %s settles the row (unchanged)", async (_name, payload) => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-MIGRATE", ...payload });
+    expect(world.rows["OBX-MIGRATE"].state).toBe("ACKED");
+    expect(world.verdicts()).toEqual([
+      { robotId: "RBT-1", outboxId: "OBX-MIGRATE", acked: true, reason: null, command: "SHARD_MIGRATE", commitmentId: null },
+    ]);
+  });
+
+  test.each([
+    ["a boolean", true],
+    ["an object", { value: "1" }],
+    ["a non-numeric string", "abc"],
+  ])("FAIL CLOSED: a SHARD_MIGRATE ACK whose fence is present but malformed — %s — is refused", async (_name, fence) => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-MIGRATE", fence, authorityEpoch: "3" });
+    expect(world.rows["OBX-MIGRATE"].state).toBe("DELIVERED");
+    expect(world.verdicts()[0]).toMatchObject({ acked: false, reason: "ACK_FENCE_MALFORMED" });
+  });
+
+  test("a SHARD_MIGRATE ACK carrying another epoch is still refused (unchanged)", async () => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-MIGRATE", fence: null, authorityEpoch: "2" });
+    expect(world.rows["OBX-MIGRATE"].state).toBe("DELIVERED");
+    expect(world.verdicts()[0]).toMatchObject({ acked: false, reason: "ACK_CARRIES_A_DIFFERENT_AUTHORITY_EPOCH" });
+  });
+});
+
+/**
+ * An agent-scope row is issued under the agent's `authority_epoch` (§10.3.1 row 2; the
+ * `Outbox_fence_scope_columns` CHECK makes it NOT NULL on every AGENT row), delivered as
+ * `String(row.authorityEpoch)` and echoed by the agent. It is that row's fence: an ACK that does
+ * not echo it — omitted, null, malformed, or another epoch — must not settle the row.
+ */
+describe("COMMAND_ACK (outbox) — an agent-scope row is settled only by its own authority epoch", () => {
+  test("VALID: the echoed epoch settles the row (string as delivered, or a JSON integer), with no stand-down", async () => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-MIGRATE", fence: null, authorityEpoch: "3" });
+    await world.ack({ outboxId: "OBX-MIGRATE-NEXT", authorityEpoch: 4 });
+
+    expect(world.rows["OBX-MIGRATE"].state).toBe("ACKED");
+    expect(world.rows["OBX-MIGRATE-NEXT"].state).toBe("ACKED");
+    expect(world.verdicts().map(({ acked, reason, command }) => ({ acked, reason, command }))).toEqual([
+      { acked: true, reason: null, command: "SHARD_MIGRATE" },
+      { acked: true, reason: null, command: "SHARD_MIGRATE" },
+    ]);
+    // SHARD_MIGRATE is not a stand-down: the assignment read model is untouched.
+    expect(world.prisma.commitment.findUnique).not.toHaveBeenCalled();
+    expect(world.io.roomEmits("dashboard")).toEqual([]);
+  });
+
+  test.each([
+    ["missing", { fence: null }, "ACK_WITHOUT_AUTHORITY_EPOCH"],
+    ["null", { fence: null, authorityEpoch: null }, "ACK_WITHOUT_AUTHORITY_EPOCH"],
+    ["missing, with the fence also omitted", {}, "ACK_WITHOUT_AUTHORITY_EPOCH"],
+  ])("FAIL CLOSED: a %s epoch does not settle the row, and nothing stands down", async (_name, payload, reason) => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-MIGRATE", ...payload });
+    expect(world.rows["OBX-MIGRATE"].state).toBe("DELIVERED");
+    expect(world.prisma.outbox.updateMany).not.toHaveBeenCalled();
+    expect(world.prisma.commitment.findUnique).not.toHaveBeenCalled();
+    expect(world.io.roomEmits("dashboard")).toEqual([]);
+    expect(world.verdicts()).toEqual([{ robotId: "RBT-1", outboxId: "OBX-MIGRATE", acked: false, reason }]);
+  });
+
+  test.each([
+    ["a non-numeric string", "abc"],
+    ["an empty string", ""],
+    ["a hex string (BigInt would read it as 3)", "0x3"],
+    ["a padded string (BigInt would read it as 3)", " 3"],
+    ["a decimal-point string", "3.0"],
+    ["a negative string", "-3"],
+    ["an exponent string", "3e0"],
+    ["a fractional number", 3.5],
+    ["a negative number", -3],
+    ["an unsafe integer", Number.MAX_SAFE_INTEGER + 2],
+  ])("FAIL CLOSED: a malformed epoch — %s — does not settle the row", async (_name, authorityEpoch) => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-MIGRATE", fence: null, authorityEpoch });
+    expect(world.rows["OBX-MIGRATE"].state).toBe("DELIVERED");
+    expect(world.prisma.outbox.updateMany).not.toHaveBeenCalled();
+    expect(world.verdicts()).toEqual([
+      { robotId: "RBT-1", outboxId: "OBX-MIGRATE", acked: false, reason: "ACK_AUTHORITY_EPOCH_MALFORMED" },
+    ]);
+  });
+
+  test.each([
+    ["a boolean", true],
+    ["an object", { value: "3" }],
+    ["an array", ["3"]],
+  ])("FAIL CLOSED: an epoch of the wrong type — %s — is dropped by the schema before any write", async (_name, authorityEpoch) => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-MIGRATE", fence: null, authorityEpoch });
+    expect(world.rows["OBX-MIGRATE"].state).toBe("DELIVERED");
+    expect(world.prisma.outbox.findUnique).not.toHaveBeenCalled();
+    expect(world.prisma.outbox.updateMany).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["stale (below the row's)", "2"],
+    ["newer (the next migration's)", "4"],
+    ["wrong", "9"],
+    ["zero — the agent's epoch before any migration", "0"],
+  ])("FAIL CLOSED: a %s epoch does not settle the row", async (_name, authorityEpoch) => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-MIGRATE", fence: null, authorityEpoch });
+    expect(world.rows["OBX-MIGRATE"].state).toBe("DELIVERED");
+    expect(world.prisma.outbox.updateMany).not.toHaveBeenCalled();
+    expect(world.verdicts()).toEqual([
+      { robotId: "RBT-1", outboxId: "OBX-MIGRATE", acked: false, reason: "ACK_CARRIES_A_DIFFERENT_AUTHORITY_EPOCH" },
+    ]);
+  });
+
+  test("FAIL CLOSED: an epoch ACK for the wrong agent, the wrong command or no row settles nothing", async () => {
+    const world = await fenceConnection();
+    // Another agent's migration, with that row's own epoch.
+    await world.ack({ outboxId: "OBX-MIGRATE-OTHER", fence: null, authorityEpoch: "3" });
+    // The older migration's epoch against the newer migration.
+    await world.ack({ outboxId: "OBX-MIGRATE-NEXT", fence: null, authorityEpoch: "3" });
+    // An agent-scope ACK aimed at a mission row: an epoch is not a fence.
+    await world.ack({ outboxId: "OBX-OFFER", fence: null, authorityEpoch: "3" });
+    // A row the store never wrote.
+    await world.ack({ outboxId: "OBX-NOPE", fence: null, authorityEpoch: "3" });
+
+    expect(world.verdicts().map(({ outboxId, acked, reason }) => ({ outboxId, acked, reason }))).toEqual([
+      { outboxId: "OBX-MIGRATE-OTHER", acked: false, reason: "ACK_FROM_ANOTHER_AGENT" },
+      { outboxId: "OBX-MIGRATE-NEXT", acked: false, reason: "ACK_CARRIES_A_DIFFERENT_AUTHORITY_EPOCH" },
+      { outboxId: "OBX-OFFER", acked: false, reason: "ACK_WITHOUT_FENCE" },
+      { outboxId: "OBX-NOPE", acked: false, reason: "UNKNOWN_OUTBOX_ROW" },
+    ]);
+    expect(world.prisma.outbox.updateMany).not.toHaveBeenCalled();
+  });
+
+  test("DUPLICATE: a repeated valid epoch ACK is ignored as before — one settlement", async () => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-MIGRATE", fence: null, authorityEpoch: "3" });
+    await world.ack({ outboxId: "OBX-MIGRATE", fence: null, authorityEpoch: "3" });
+
+    expect(world.rows["OBX-MIGRATE"].state).toBe("ACKED");
+    expect(world.prisma.outbox.updateMany).toHaveBeenCalledTimes(1);
+    expect(world.verdicts().map(({ acked, reason }) => ({ acked, reason }))).toEqual([
+      { acked: true, reason: null },
+      { acked: false, reason: "ALREADY_ACKED" },
+    ]);
+  });
+
+  test("REPLAY: after a newer migration exists, the old ACK settles nothing — verbatim, retargeted, or stripped", async () => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-MIGRATE", fence: null, authorityEpoch: "3" });
+
+    await world.ack({ outboxId: "OBX-MIGRATE", fence: null, authorityEpoch: "3" });
+    await world.ack({ outboxId: "OBX-MIGRATE-NEXT", fence: null, authorityEpoch: "3" });
+    await world.ack({ outboxId: "OBX-MIGRATE-NEXT", fence: null });
+
+    expect(world.rows["OBX-MIGRATE-NEXT"].state).toBe("DELIVERED");
+    expect(world.verdicts().slice(1).map(({ outboxId, reason }) => ({ outboxId, reason }))).toEqual([
+      { outboxId: "OBX-MIGRATE", reason: "ALREADY_ACKED" },
+      { outboxId: "OBX-MIGRATE-NEXT", reason: "ACK_CARRIES_A_DIFFERENT_AUTHORITY_EPOCH" },
+      { outboxId: "OBX-MIGRATE-NEXT", reason: "ACK_WITHOUT_AUTHORITY_EPOCH" },
+    ]);
+
+    await world.ack({ outboxId: "OBX-MIGRATE-NEXT", fence: null, authorityEpoch: "4" });
+    expect(world.rows["OBX-MIGRATE-NEXT"].state).toBe("ACKED");
+  });
+
+  test("FAIL CLOSED: an agent-scope row the store holds without an epoch cannot be acknowledged at all", async () => {
+    const world = await fenceConnection();
+    world.rows["OBX-MIGRATE"].authorityEpoch = null;
+    await world.ack({ outboxId: "OBX-MIGRATE", fence: null, authorityEpoch: "3" });
+    expect(world.rows["OBX-MIGRATE"].state).toBe("DELIVERED");
+    expect(world.verdicts()).toEqual([
+      { robotId: "RBT-1", outboxId: "OBX-MIGRATE", acked: false, reason: "ROW_CARRIES_NO_AUTHORITY_EPOCH" },
+    ]);
+  });
+
+  test("UNCHANGED: a mission row's ACK is judged by its fence; the epoch it echoes (null, omitted) does not matter", async () => {
+    const world = await fenceConnection();
+    await world.ack({ outboxId: "OBX-OFFER", fence: "5", authorityEpoch: null });
+    await world.ack({ outboxId: "OBX-RECALL", fence: "7" });
+    expect(world.rows["OBX-OFFER"].state).toBe("ACKED");
+    expect(world.rows["OBX-RECALL"].state).toBe("ACKED");
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
    The other half of the race: an index row with no membership
    ═══════════════════════════════════════════════════════════════════════════ */
 

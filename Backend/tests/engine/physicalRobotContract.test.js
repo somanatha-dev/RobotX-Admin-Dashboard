@@ -189,9 +189,18 @@ describe("J — liveness: heartbeat and the PROBE proof", () => {
     };
   }
 
+  // F7-A — the proof is recorded by the PROBE boundary into its own key, never the registry.
+  async function recordProofAt(kv, robotId, socketId, atMs) {
+    const socket = { id: socketId, data: { isAuthed: true, robotId }, emit: () => {} };
+    const { correlationId } = agentProbe.issueProbe(socket, atMs - 10);
+    await agentProbe.recordProbeResult({ kv, socket, payload: { correlationId }, nowMs: atMs });
+  }
+
   async function factsFor({ robot, live }) {
     const { kv } = await createTestKv();
-    if (live) await setRobotState(kv, robot.robotId, live);
+    const { lastProbeAckAt, lastProbeSocketId, ...registry } = live || {};
+    if (live) await setRobotState(kv, robot.robotId, registry);
+    if (lastProbeAckAt !== undefined) await recordProofAt(kv, robot.robotId, lastProbeSocketId, lastProbeAckAt);
     const provider = createAgentFactsProvider({ prisma: factsStore(robot), kv });
     return provider({ agent: { id: "agent-row-1", robot }, config: (name) => config.get(name) });
   }
@@ -285,8 +294,9 @@ describe("J/K — the PROBE boundary", () => {
     const { correlationId } = agentProbe.issueProbe(socket, 10_000);
     const out = await agentProbe.recordProbeResult({ kv, socket, payload: { correlationId, robotId: "robotx-pi" }, nowMs: 10_500 });
     expect(out.outcome).toBe("RECORDED");
-    const live = await getRobotState(kv, "robotx-pi");
-    expect(live).toMatchObject({ lastProbeAckAt: 10_500, lastProbeSocketId: "sock-now" });
+    expect(await agentProbe.getProbeState(kv, "robotx-pi")).toMatchObject({ lastProbeAckAt: 10_500, lastProbeSocketId: "sock-now" });
+    // F7-A — never in the registry, where a read-modify-write could restore an older one.
+    expect((await getRobotState(kv, "robotx-pi")) || {}).not.toHaveProperty("lastProbeAckAt");
   });
 
   test.each([
@@ -300,7 +310,7 @@ describe("J/K — the PROBE boundary", () => {
     const { correlationId } = agentProbe.issueProbe(socket, 10_000);
     const out = await agentProbe.recordProbeResult({ kv, socket, payload: payloadFor(correlationId), nowMs });
     expect(out.outcome).toBe(outcome);
-    expect((await getRobotState(kv, "robotx-pi")) || {}).not.toHaveProperty("lastProbeAckAt");
+    expect(await agentProbe.getProbeState(kv, "robotx-pi")).toBeNull();
   });
 
   test("a replayed answer is recorded once — the correlation is consumed", async () => {

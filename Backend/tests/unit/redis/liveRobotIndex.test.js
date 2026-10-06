@@ -59,8 +59,10 @@ describe("robots:all — the live-robot index tracks actual connection state", (
     await waitFor(async () => (await kv.smembers("robots:all")).includes("R1"));
 
     // The disconnect handler only acts when this socket is still the current
-    // one, which it is: AUTH wrote this socket id to the DB row.
+    // one, which it is: AUTH wrote this socket id to the DB row (so Y1's conditional offline
+    // write, keyed by that socket id, matches the row).
     prisma.robot.findUnique.mockResolvedValue({ socketId: socket.id });
+    prisma.robot.updateMany.mockResolvedValue({ count: 1 });
     socket.trigger("disconnect", "transport close");
 
     await waitFor(async () => !(await kv.smembers("robots:all")).includes("R1"));
@@ -70,17 +72,20 @@ describe("robots:all — the live-robot index tracks actual connection state", (
   test("disconnect also clears the stale socket binding on the Robot row", async () => {
     await authenticate("R1");
     prisma.robot.findUnique.mockResolvedValue({ socketId: socket.id });
+    prisma.robot.updateMany.mockResolvedValue({ count: 1 });
     socket.trigger("disconnect", "transport close");
 
     await waitFor(() =>
-      prisma.robot.update.mock.calls.some(([args]) => args?.data?.isOnline === false)
+      prisma.robot.updateMany.mock.calls.some(([args]) => args?.data?.isOnline === false)
     );
-    const offlineWrite = prisma.robot.update.mock.calls
+    const offlineWrite = prisma.robot.updateMany.mock.calls
       .map(([args]) => args)
       .find((args) => args?.data?.isOnline === false);
 
     // Leaving a dead socket id on the row makes it look like a live handle.
     expect(offlineWrite.data).toMatchObject({ isOnline: false, status: "OFFLINE", socketId: null });
+    // Y1 — and the write is conditional on this socket still being the row's socket.
+    expect(offlineWrite.where).toMatchObject({ robotId: "R1", socketId: socket.id });
   });
 
   test("a superseded socket's disconnect does not evict the robot that replaced it", async () => {

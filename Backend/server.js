@@ -22,9 +22,9 @@ const initSocketServer = require("./src/sockets/socket.server");
 const { createVirtualRobotSimulator } = require("./src/simulation/SimulationEngine");
 const simulationPolicy = require("./src/simulation/simulationPolicy");
 const { rehydrateSimulatedRobots } = require("./src/simulation/rehydrate");
-const { dispatchTaskAssign, outboxDeliveryArm: dispatchOutboxCommand } = require("./src/services/commandDispatcher.service");
+const { outboxDeliveryArm: dispatchOutboxCommand } = require("./src/services/commandDispatcher.service");
 const agentProbe = require("./src/services/agentProbe.service");
-const { safeJsonParse } = require("./src/utils/json");
+const { scheduleRestartRedispatch } = require("./src/services/legacyTaskRedispatch.service");
 const { ensureAdminUser } = require("./src/services/adminBootstrap.service");
 const configService = require("./src/engine/config/service");
 // PHASE 13 — §19.3's single writer.
@@ -85,6 +85,8 @@ const fleetProviders = require("./src/services/fleetProviders");
 const cutoverStore = require("./src/engine/cutover/store");
 const cutoverEnabled = require("./src/engine/cutover/enabled");
 const privacyKeys = require("./src/config/privacyKeys");
+const bootSecrets = require("./src/config/bootSecrets");
+const verificationThresholds = require("./src/config/verificationThresholds");
 // PHASE 15 remediation — the two halves of the cutover switch that had no production
 // producer: the pull that lets a published binding reach a running process (P15-R2), and
 // the publish that makes §22.4 item 4's automatic rollback take effect (P15-R1).
@@ -393,6 +395,25 @@ function startScheduledWorkers(context) {
 }
 
 async function start() {
+  // The two signing secrets, checked before anything connects. `JWT_SECRET` always;
+  // `COMMAND_SIGNING_KEY` when this process runs the engine. No value is ever logged.
+  try {
+    bootSecrets.assertValid(process.env, { engineEnabled: cutoverEnabled.processEnabled() });
+  } catch (error) {
+    logger.error(`Refusing to start: ${error.message}`);
+    throw error;
+  }
+
+  // §12.5's six completion verification thresholds, when this process runs the engine.
+  // Read only at the point of use, an absent one held every completion and verified no
+  // arrival without a word; checked here with the consumers' own rule. No value is logged.
+  try {
+    verificationThresholds.assertValid(process.env, { engineEnabled: cutoverEnabled.processEnabled() });
+  } catch (error) {
+    logger.error(`Refusing to start the engine: ${error.message}`);
+    throw error;
+  }
+
   // §23.7's two secrets, checked before anything connects — when this process runs the
   // engine. Every engine-path submission seals identities *after* writing its Task, Leg
   // and Stops, so a secret the sealer refuses would otherwise surface as a 500 that leaves
@@ -1363,56 +1384,13 @@ async function start() {
         // simulator was on by default; leaving it there would have made turning simulation
         // off silently disable task recovery for physical robots. Same dispatch path as
         // before — `dispatchTaskAssign`, addressed to whichever robot holds the task.
-        setTimeout(async () => {
-          try {
-            const activeTasks = await prisma.task.findMany({
-              where: { status: { in: ["ASSIGNED", "IN_PROGRESS"] } },
-              include: { robot: { select: { robotId: true } } },
-            });
-
-            for (const task of activeTasks) {
-              const robotId = task.robot?.robotId;
-              if (!robotId) continue;
-
-              const pathRaw = await kv.get(`taskPath:${task.taskId}`);
-              const path = safeJsonParse(pathRaw);
-              if (!path?.toPickup || !path?.toDrop) continue;
-
-              // NOTE: `io` is required — dispatchTaskAssign routes through the
-              // Socket.IO adapter (io.in(room)/io.to(room)) rather than a
-              // process-local socket map, so it works across worker processes.
-              // Omitting it silently bound the robotId to `io` and made every
-              // re-dispatch a no-op that still reported itself as attempted.
-              const result = await dispatchTaskAssign(io, robotId, {
-                taskId: task.taskId,
-                pickup: { lat: task.pickupLat, lon: task.pickupLon },
-                drop:   { lat: task.dropLat,   lon: task.dropLon   },
-                pathToPickup: path.toPickup,
-                pathToDrop:   path.toDrop,
-              });
-
-              logger.info(`[VR] Re-dispatched task ${task.taskId} → ${robotId}`, {
-                dispatched: result.dispatched,
-                attempts: result.attempts,
-              });
-
-              // Also re-emit TASK_ASSIGNED so connected dashboards can draw the route.
-              try {
-                io.to("dashboard").emit("TASK_ASSIGNED", {
-                  taskId:        task.taskId,
-                  robotId,
-                  pickup:        { lat: task.pickupLat, lon: task.pickupLon },
-                  drop:          { lat: task.dropLat,   lon: task.dropLon   },
-                  pathToPickup:  path.toPickup,
-                  pathToDrop:    path.toDrop,
-                  usedFallback:  false,
-                });
-              } catch { /* ignore */ }
-            }
-          } catch (e) {
-            logger.warn("[VR] Active task re-dispatch error", { message: e?.message });
-          }
-        }, 5000);
+        //
+        // C3 — legacy only. With the engine on the timer is never registered: the engine's
+        // OFFER_ACCEPT projection writes the Task status and `taskPath:` keys this sweep
+        // reads, and with Redis they survive a restart, so it would re-send an unsigned,
+        // unfenced TASK_ASSIGN for a mission the engine already committed. See
+        // `services/legacyTaskRedispatch.service.js`.
+        scheduleRestartRedispatch({ engineEnabled, prisma, kv, io, logger });
 
       } catch (e) {
         logger.warn("[VR] Startup re-hydration error", { message: e?.message });

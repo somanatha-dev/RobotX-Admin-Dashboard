@@ -64,7 +64,23 @@ async function markRobotOnline(prisma, robotId, socketId) {
   return row;
 }
 
-async function markRobotOffline(prisma, robotId) {
+/**
+ * Take a robot offline because `socketId` — the socket that just disconnected — went away.
+ *
+ * Y1 — only the robot's *current* socket may do this. A newer AUTH for the same robot writes
+ * its own socket id (`markRobotOnline`) and replaces the older socket, whose `disconnect`
+ * handler can run late. Every write below is therefore conditional on `{ robotId, socketId }`
+ * in the same statement, so once a newer socket owns the row the older one matches nothing:
+ * the robot stays online with the newer socket id. A row already taken offline has a null
+ * socket id and is matched by no socket, which makes a repeated disconnect a no-op.
+ *
+ * @param {object} prisma
+ * @param {string} robotId
+ * @param {string} socketId the disconnecting socket's id; without one nothing is written
+ * @returns {Promise<object|null>} what was written, or null when this socket owned nothing
+ */
+async function markRobotOffline(prisma, robotId, socketId) {
+  if (typeof socketId !== "string" || socketId === "") return null;
   const data = {
     isOnline: false,
     status: "OFFLINE",
@@ -76,10 +92,11 @@ async function markRobotOffline(prisma, robotId) {
   // P1.4 (LF-1) — keep the status this write replaces, for `markRobotOnline` to restore.
   // Conditional on the status just read, so a concurrent status change is never recorded
   // as the one replaced; a row already `OFFLINE` keeps what it remembered.
-  const current = await prisma.robot.findUnique({ where: { robotId }, select: { status: true } });
-  if (current && typeof current.status === "string" && current.status !== "OFFLINE") {
+  const current = await prisma.robot.findUnique({ where: { robotId }, select: { status: true, socketId: true } });
+  if (!current || current.socketId !== socketId) return null;
+  if (typeof current.status === "string" && current.status !== "OFFLINE") {
     const written = await prisma.robot.updateMany({
-      where: { robotId, status: current.status },
+      where: { robotId, socketId, status: current.status },
       data: { ...data, statusBeforeOffline: current.status },
     });
     if (written && written.count === 1) {
@@ -88,9 +105,10 @@ async function markRobotOffline(prisma, robotId) {
     }
   }
 
-  const row = await prisma.robot.update({ where: { robotId }, data });
+  const written = await prisma.robot.updateMany({ where: { robotId, socketId }, data });
+  if (!written || written.count !== 1) return null;
   robotStateCache.set(robotId, { isOnline: false, status: "OFFLINE" });
-  return row;
+  return { robotId, ...data };
 }
 
 // Brute-force lockout thresholds (F32): after this many failed pairing-code
@@ -100,6 +118,19 @@ async function markRobotOffline(prisma, robotId) {
 // clears it via the admin unlock endpoint.
 const PAIRING_LOCKOUT_THRESHOLD = 5;
 const PAIRING_LOCKOUT_TTL_SEC = 3600;
+
+/**
+ * R1 — the one reason `AUTH_FAILED` carries: the server reached a definite verdict that the
+ * credential presented (session token, pairing code or certificate, for this robotId) is not
+ * accepted. The robot may discard a stored token on it.
+ *
+ * Nothing else ever emits `AUTH_FAILED`. A failure the server could not turn into a verdict —
+ * a database or store error, an exception, a malformed request, a rate limit — stays the
+ * silent disconnect it always was, so a robot can tell "your credential is invalid" apart from
+ * "try again", and never throws away a valid token because the backend had a bad moment.
+ * @structural wire value
+ */
+const AUTH_FAILURE_REASON = Object.freeze({ INVALID_CREDENTIAL: "INVALID_CREDENTIAL" });
 
 // PHASE 4 — §11.5's session-establishment handshake.
 //
@@ -439,13 +470,27 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
 
   // C1 — fails closed. A read error is "no durable session", which is what AUTH concluded
   // before this record existed.
-  async function durableSessionValid(robotDbId, robotId, token) {
+  //
+  // R1 — but it is not a verdict on the token, so it is recorded on `check`: the refusal it
+  // leads to is then the silent disconnect, never `AUTH_FAILED`.
+  async function durableSessionValid(robotDbId, robotId, token, check) {
     try {
       return await robotSession.validate(prisma, robotDbId, token);
     } catch (e) {
       log.warn?.("durable session check failed — treated as no session", { robotId, message: e?.message });
+      if (check) check.unavailable = true;
       return false;
     }
+  }
+
+  // R1 — refuse a credential the server has a definite verdict on: say so, then disconnect as
+  // before. The payload is the reason alone — nothing presented, stored or internal is echoed.
+  // When the verdict could not be reached (`check.unavailable`), it is the plain disconnect.
+  function refuseCredential(check) {
+    if (!(check && check.unavailable)) {
+      socket.emit("AUTH_FAILED", { reason: AUTH_FAILURE_REASON.INVALID_CREDENTIAL });
+    }
+    return socket.disconnect(true);
   }
 
   async function clearPairingAttempts(robotId) {
@@ -509,7 +554,9 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
         where: { robotId },
         select: { id: true, status: true, isOnline: true, lat: true, lon: true, battery: true },
       });
-      if (!robot) return socket.disconnect(true);
+      // R1 — the same answer as a known robot with a wrong credential, so the refusal cannot be
+      // used to tell commissioned robot ids from uncommissioned ones.
+      if (!robot) return refuseCredential();
       robotStateCache.set(robotId, {
         id: robot.id,
         status: robot.status,
@@ -538,7 +585,8 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
           refusal: certificateSession.refusal,
           detail: certificateSession.detail,
         });
-        return socket.disconnect(true);
+        // R1 — every `refusal` here is a verdict on the certificate; a store error throws instead.
+        return refuseCredential();
       }
 
       if (certificateSession.mode === "MTLS") {
@@ -586,6 +634,8 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
 
       let nextToken = null;
       let authMode = "pairing";
+      // R1 — set when the durable session check could not answer (see `refuseCredential`).
+      const credentialCheck = { unavailable: false };
 
       // An mTLS session is authenticated by the certificate and skips both weaker
       // branches entirely — §23.2's "a session cannot act for another agent" is the
@@ -613,7 +663,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       } else if (
         (storedSession === null || storedSession === undefined) &&
         token &&
-        (await durableSessionValid(robot.id, robotId, token))
+        (await durableSessionValid(robot.id, robotId, token, credentialCheck))
       ) {
         // C1 (LAN-3) — the KV holds no session for this robot at all. With the KV in process
         // memory, that is a restart. The durable record is the only place left to check the
@@ -637,7 +687,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
             robotId,
             socketId: socket.id,
           });
-          return socket.disconnect(true);
+          return refuseCredential(credentialCheck);
         }
 
         // Brute-force lockout (F32): reject immediately, before comparing codes,
@@ -647,7 +697,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
             robotId,
             socketId: socket.id,
           });
-          return socket.disconnect(true);
+          return refuseCredential(credentialCheck);
         }
 
         // Fallback: pairing check
@@ -656,7 +706,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
           if (attempts >= PAIRING_LOCKOUT_THRESHOLD) {
             log.warn("Pairing brute-force limit hit — robot locked out", { robotId, socketId: socket.id, attempts });
           }
-          return socket.disconnect(true);
+          return refuseCredential(credentialCheck);
         }
         // After first successful pairing, mint a session token.
         nextToken = crypto.randomUUID();
@@ -672,6 +722,11 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       setRobotSocket(robotId, socket);
       socket.data.robotId = robotId;
       socket.data.isAuthed = true;
+      // R2 — what the heartbeat flush needs to keep this session's durable expiry sliding while
+      // the robot stays connected: its row and the hash of the bearer token it authenticated
+      // with, never the token. Null for an mTLS session, which holds no bearer token.
+      socket.data.robotDbId = robot.id;
+      socket.data.sessionTokenHash = authMode !== "mtls" && nextToken ? robotSession.hashToken(nextToken) : null;
 
       // PHASE 15 remediation (D-6) — resolve this agent's authoritative shard identity
       // **once**, here, and cache it on the socket.
@@ -855,6 +910,18 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       }
 
       await prisma.robot.update({ where: { robotId }, data: { lastSeenAt: new Date(nowMs) } });
+
+      // R2 — a session in continuous use must not lapse 24 h after its last AUTH. Slides the
+      // durable `RobotSession` only, and only while it is this socket's live, unexpired token;
+      // the KV `session:` key is left to lapse, after which AUTH's durable path reads this row.
+      // Its own try: a failed renewal is retried at the next flush and costs nothing else.
+      if (socket.data.robotDbId && socket.data.sessionTokenHash) {
+        try {
+          await robotSession.renewLive(prisma, socket.data.robotDbId, socket.data.sessionTokenHash);
+        } catch (e) {
+          log.warn?.("durable session renewal failed — retried at the next heartbeat flush", { robotId, message: e?.message });
+        }
+      }
 
       // PHASE 15 remediation (D-6) — refresh the cached shard identity on the same
       // throttle as the durable liveness mirror.
@@ -1043,9 +1110,13 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
 
         deleteRobotSocket(boundRobotId, socket);
 
-        await markRobotOffline(prisma, boundRobotId);
+        // Y1 — the checks above ran before these writes, and a newer AUTH can land in between.
+        // So the writes are conditional on this socket's id themselves: once a newer socket owns
+        // the robot, nothing here takes it offline, leaves the index or tells the dashboard.
+        const tookOffline = await markRobotOffline(prisma, boundRobotId, socket.id);
         // DTARO: update registry offline state
-        await markOffline(kv, boundRobotId);
+        await markOffline(kv, boundRobotId, socket.id);
+        if (!tookOffline) return;
 
         // Leave the live-robot index. Previously members were only ever
         // removed on decommission, so the set monotonically over-counted and
@@ -1069,4 +1140,6 @@ module.exports = {
   // Exported for the LF-1 tests (P1.4); AUTH and disconnect remain their only callers.
   markRobotOnline,
   markRobotOffline,
+  // R1 — the `AUTH_FAILED` wire reason.
+  AUTH_FAILURE_REASON,
 };

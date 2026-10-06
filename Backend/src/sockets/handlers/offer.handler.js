@@ -403,7 +403,9 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
       const snapshot = configOf();
       if (!agentGate.mayAct({ socket, snapshot, nowMs: Date.now() })) return;
       const robotId = toStringOrNull(socket.data.robotId);
-      const outcome = await legProgress.onCustodyReport({ prisma, robotId, report: payload || {}, snapshot });
+      // `io`/`kv`: a release that settles a Leg whose completion was already verified completes
+      // its Task (C5), and the dashboard is told once.
+      const outcome = await legProgress.onCustodyReport({ prisma, robotId, report: payload || {}, snapshot, io, kv });
       log.info("CUSTODY_EVENT handled", { robotId, kind: payload && payload.kind, outcome: outcome && outcome.outcome, reason: (outcome && outcome.reason) || null, to: (outcome && outcome.to) || null });
     } catch (e) {
       log.error("CUSTODY_EVENT handler failed", { message: e?.message });

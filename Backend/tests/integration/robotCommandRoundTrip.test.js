@@ -172,11 +172,14 @@ describe("server -> robot command round trip (integration)", () => {
     await waitFor(async () => (await kv.smembers("robots:all")).includes(ROBOT_ID), { timeout: 5000 });
 
     prisma.robot.findUnique.mockResolvedValue({ ...ROBOT_ROW, socketId: client.id });
+    // Y1 — the offline write is conditional on this socket's id; the row above names it, so it matches.
+    prisma.robot.updateMany.mockResolvedValue({ count: 1 });
     client.close();
 
     await waitFor(async () => !(await kv.smembers("robots:all")).includes(ROBOT_ID), { timeout: 5000 });
     expect(await kv.smembers("robots:all")).not.toContain(ROBOT_ID);
 
     prisma.robot.findUnique.mockResolvedValue(ROBOT_ROW);
+    prisma.robot.updateMany.mockResolvedValue({ count: 0 });
   });
 });

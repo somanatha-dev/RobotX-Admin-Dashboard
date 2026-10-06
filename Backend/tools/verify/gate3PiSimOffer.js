@@ -6,7 +6,7 @@
  * MotionIntent → Pi safety gate → DRIVE → the ESP32 firmware (host simulator) → ACK/telemetry.
  *
  *   node tools/verify/gate3PiSimOffer.js --database-url postgresql://<user>@127.0.0.1:<port>/<db>
- *        [--port 3043] [--pi-repo <path to RobotX-Pi>] [--sim-exe <rover_sim(.exe)>]
+ *        [--port 3043] [--pi-repo <path to RobotX-Pi>] [--sim-exe <rover_sim(.exe)>] [--completion]
  *
  * DISPOSABLE local database only. Steps 1–4 are the Gate 1 setup, unchanged (mixed fleet,
  * physical unit commissioned and declared, real server.js with PHYSICAL_FLEET_ENABLED,
@@ -18,6 +18,14 @@
  *   ROBOTX_CUSTODY_CONFIRMATION=operator
  * and TEST INPUTS for the two things this machine has no hardware for (GPS frames at a
  * fixed position; a clear camera scene). No motor exists anywhere in this run.
+ *
+ * GATE 3b (--completion): the same run, then the completion half instead of the obstacle
+ * phase. The Pi harness moves its stand-in GPS along the OFFER's own stopSequence[].path
+ * only while the simulated ESP32 applies forward output (at most the unit's commissioned
+ * maxSpeedMps), confirms custody at each stop through the Pi's existing confirmation
+ * handler IN-PROCESS (no HTTP server, nothing listening), and this side checks the
+ * backend: Leg transitions, CUSTODY, TASK_COMPLETE, VerificationEvidence SUFFICIENT,
+ * Leg SETTLED, Task COMPLETED, and the dashboard socket's TASK_UPDATED COMPLETED.
  */
 
 const path = require("path");
@@ -41,6 +49,10 @@ const ROBOT_ID = "robotx-pi-gate3";
 const SIGNING_KEY = "gate1-disposable-signing-key-" + "0".repeat(16);
 const ADMIN = { email: "gate1-admin@localhost", password: "Gate1-Disposable-Passw0rd!" };
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), "gate3-"));
+const COMPLETION = argv.includes("--completion");
+// The physical unit's commissioning specification (a harness declaration on a throwaway
+// database). Gate 3b's stand-in GPS never moves faster than its maxSpeedMps.
+const SPEC = { massKg: 5, maxSpeedMps: 1.2, normalSpeedMps: 1.0, batteryCapacityWh: 43, batteryReservePct: 20, payloadCapacityKg: 3, initialBatteryPct: 85 };
 
 process.env.DATABASE_URL = url;
 process.env.DATABASE_URL_LOCAL = url;
@@ -101,7 +113,7 @@ async function main() {
       lon: at.lon,
       name: "Gate 3 physical unit (real Pi agent, simulated ESP32)",
       chassisType: robotSpecification.CHASSIS_TYPE.ROVER,
-      specification: { massKg: 5, maxSpeedMps: 1.2, normalSpeedMps: 1.0, batteryCapacityWh: 43, batteryReservePct: 20, payloadCapacityKg: 3, initialBatteryPct: 85 },
+      specification: SPEC,
     },
     { robotCode: ROBOT_ID, simulated: false, simulationOwnerId: null },
   );
@@ -231,6 +243,7 @@ async function main() {
         GATE3_LON: String(at.lon),
         GATE3_REPORT: reportFile,
         GATE3_TIMEOUT_S: "200",
+        ...(COMPLETION ? { GATE3B: "1", GATE3B_FULL_SPEED_MPS: String(SPEC.maxSpeedMps) } : {}),
       },
     });
     child.stdout.on("data", (chunk) => {
@@ -241,7 +254,7 @@ async function main() {
       }
     });
     child.stderr.on("data", (chunk) => fs.writeSync(piLog, chunk));
-    const timer = setTimeout(() => child.kill(), 420_000);
+    const timer = setTimeout(() => child.kill(), COMPLETION ? 3_600_000 : 420_000);
     child.on("exit", (code) => {
       clearTimeout(timer);
       markReady(false);
@@ -262,6 +275,37 @@ async function main() {
   const watch = getPrismaForWatch();
   const watchAgent = await watch.agent.findUnique({ where: { agentId: ROBOT_ID } });
   const offered = async () => (await watch.outbox.count({ where: { agentId: watchAgent.id, command: "OFFER" } })) > 0;
+
+  /* 5c. Gate 3b observers: the dashboard socket, and the Leg/Task state as it changes */
+  const dashboardEvents = [];
+  const transitions = [];
+  let poller = null;
+  let dashboard = null;
+  if (COMPLETION) {
+    const { io: ioClient } = require(path.join(BACKEND, "node_modules/socket.io-client"));
+    dashboard = ioClient(BASE, { transports: ["websocket"], reconnection: false, extraHeaders: { origin: "http://localhost:5173", cookie } });
+    dashboard.onAny((event, payload) => {
+      if (/^TASK_/.test(event)) dashboardEvents.push({ at: new Date().toISOString(), event, taskId: payload && payload.taskId, robotId: payload && payload.robotId, status: payload && payload.status });
+    });
+    const seen = new Map();
+    poller = setInterval(async () => {
+      try {
+        const held = await watch.commitment.findMany({ where: { agentId: watchAgent.id }, select: { commitmentId: true, legId: true, releasedAt: true } });
+        for (const c of held) {
+          const leg = await watch.leg.findUnique({ where: { id: c.legId }, select: { legId: true, state: true, custodyState: true, mission: { select: { tasks: { select: { taskId: true, status: true } } } } } });
+          if (!leg) continue;
+          const tasks = (leg.mission && leg.mission.tasks) || [];
+          const key = `${leg.legId}`;
+          const now = { leg: leg.state, custody: leg.custodyState, task: tasks.map((t) => t.status).join(","), released: Boolean(c.releasedAt) };
+          if (JSON.stringify(seen.get(key)) !== JSON.stringify(now)) {
+            seen.set(key, now);
+            transitions.push({ at: new Date().toISOString(), legId: leg.legId, ...now });
+          }
+        }
+      } catch { /* observation only */ }
+    }, 1000);
+  }
+
   if (ready) {
     await sleep(12_000); // index sweep + probe window
     for (let i = 0; i < pairs.length && !(await offered()); i += 1) {
@@ -278,6 +322,9 @@ async function main() {
     }
   }
   const pi = await piExit;
+  if (COMPLETION) await sleep(3000); // the last poll and the settlement's dashboard event
+  if (poller) clearInterval(poller);
+  if (dashboard) dashboard.close();
   const piReport = fs.existsSync(reportFile) ? JSON.parse(fs.readFileSync(reportFile, "utf8")) : null;
 
   /* 6. what the database shows */
@@ -295,6 +342,28 @@ async function main() {
     outbox: outbox.map((row) => ({ ...row, fence: String(row.fence) })),
     legs,
   };
+
+  /* 6b. Gate 3b: what the backend concluded about the delivery the Pi completed */
+  let completion = null;
+  const offeredTaskId = piReport && piReport.completion && piReport.completion.offer_task_id;
+  if (COMPLETION && offeredTaskId) {
+    const task = await prisma2.task.findUnique({ where: { taskId: offeredTaskId }, select: { taskId: true, status: true, completedAt: true, robot: { select: { robotId: true } } } });
+    const leg = await prisma2.leg.findFirst({ where: { mission: { tasks: { some: { taskId: offeredTaskId } } } }, select: { id: true, legId: true, state: true, custodyState: true } });
+    const evidenceRows = leg ? await prisma2.verificationEvidence.findMany({ where: { legId: leg.id }, orderBy: { observedAt: "asc" } }) : [];
+    const commitment = leg ? await prisma2.commitment.findFirst({ where: { legId: leg.id, agentId: agentRow.id }, select: { commitmentId: true, releasedAt: true } }) : null;
+    completion = {
+      task,
+      leg: leg && { legId: leg.legId, state: leg.state, custodyState: leg.custodyState },
+      commitment,
+      verification: evidenceRows.map((row) => ({
+        outcome: row.outcome, requiredLevel: row.requiredLevel, achievedLevel: row.achievedLevel, arrivalDistanceM: row.arrivalDistanceM,
+        trackFixCount: row.trackFixCount, fixRatePerMinute: row.fixRatePerMinute, corridorFraction: row.corridorFraction,
+        maxGapSeconds: row.maxGapSeconds, maxImpliedSpeedMs: row.maxImpliedSpeedMs, securityEvent: row.securityEvent,
+      })),
+      legTransitions: transitions.filter((t) => leg && t.legId === leg.legId),
+      dashboardTaskEvents: dashboardEvents.filter((e) => e.taskId === offeredTaskId),
+    };
+  }
   await prisma2.$disconnect();
   stop();
   console.log(JSON.stringify({
@@ -304,6 +373,7 @@ async function main() {
     esp32Telemetry: piReport && piReport.esp32_telemetry_samples,
     esp32Counters: piReport && piReport.esp32_counters,
     piBackendEvents: piReport && piReport.backend_events,
+    ...(COMPLETION ? { piCompletion: piReport && piReport.completion, backendCompletion: completion } : {}),
     db,
     logs: SCRATCH,
   }, (k, v) => (typeof v === "bigint" ? String(v) : v), 2));
@@ -311,6 +381,22 @@ async function main() {
     db.outbox.some((row) => row.command === "OFFER" && row.state === "ACKED") &&
     db.legs.some((leg) => leg.state !== "QUEUED") &&
     Boolean(db.latestFix) && db.latestFix.provenance === "PHYSICAL" && db.latestFix.fixType === "3D";
+  if (COMPLETION) {
+    const seenLeg = new Set(((completion && completion.legTransitions) || []).map((t) => t.leg));
+    const checks = {
+      legPassedLoaded: seenLeg.has("LOADED") || seenLeg.has("EN_ROUTE_DROP"),
+      legSettled: Boolean(completion && completion.leg && completion.leg.state === "SETTLED"),
+      verificationSufficient: Boolean(completion && completion.verification.some((row) => row.outcome === "SUFFICIENT")),
+      commitmentReleased: Boolean(completion && completion.commitment && completion.commitment.releasedAt),
+      taskCompleted: Boolean(completion && completion.task && completion.task.status === "COMPLETED"),
+      dashboardCompleted: Boolean(completion && completion.dashboardTaskEvents.some((e) => e.status === "COMPLETED")),
+    };
+    log("completion (backend):", JSON.stringify(checks));
+    const pass = pi.status === 0 && backendOk && Object.values(checks).every(Boolean);
+    log(pass ? "PASS — Gate 3b: OFFER → real Pi agent → pickup → ACQUIRED → drop → RELEASED → TASK_COMPLETE → SUFFICIENT → SETTLED → COMPLETED"
+      : `FAIL — Gate 3b: pi exit ${pi.status}, backend checks ${backendOk}, completion ${JSON.stringify(checks)}`);
+    process.exit(pass ? 0 : 1);
+  }
   const pass = pi.status === 0 && backendOk;
   log(pass ? "PASS — signed OFFER → real Pi agent → DRIVE → ESP32 simulator → ACK/telemetry, safety gate held" : `FAIL — pi exit ${pi.status}, backend checks ${backendOk}`);
   process.exit(pass ? 0 : 1);

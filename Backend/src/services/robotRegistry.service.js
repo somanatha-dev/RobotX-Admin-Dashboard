@@ -37,6 +37,29 @@ const { safeJsonParse } = require("../utils/json");
 
 const REGISTRY_TTL = 30; // seconds
 
+/**
+ * F7-A — the PROBE proof's fields. They belong to `agentProbe.service`'s own key
+ * (`probe:{robotId}`) and are not registry state: every writer here reads the whole value and
+ * writes it back later, so carrying them would restore an older proof over a newer one.
+ * Dropped on every merge, so a value written before F7-A is not carried forward either.
+ */
+const PROBE_OWNED_FIELDS = Object.freeze(["lastProbeAckAt", "lastProbeSocketId", "linkQuality"]);
+
+/**
+ * The software stop latch (F7's input), for the same reason: it belongs to
+ * `stopLatchObservation.service`'s own key (`stopLatch:{robotId}`). Carried here, any writer's
+ * stale snapshot restored an older `engaged: false` over a newer `true` (2026-10-06 audit).
+ */
+const STOP_LATCH_OWNED_FIELDS = Object.freeze(["stopLatch"]);
+
+/** Every field another store owns. No registry write carries one. */
+const DEDICATED_FIELDS = Object.freeze([...PROBE_OWNED_FIELDS, ...STOP_LATCH_OWNED_FIELDS]);
+
+function withoutDedicatedFields(state) {
+  for (const field of DEDICATED_FIELDS) delete state[field];
+  return state;
+}
+
 /** @param {string} robotId */
 function registryKey(robotId) {
   return `registry:${robotId}`;
@@ -77,7 +100,7 @@ async function setRobotState(kv, robotId, update) {
     const key = registryKey(robotId);
     const raw = await kv.get(key);
     const existing = safeJsonParse(raw) || {};
-    const next = { ...existing, ...update, robotId, updatedAt: Date.now() };
+    const next = withoutDedicatedFields({ ...existing, ...update, robotId, updatedAt: Date.now() });
     await kv.set(key, JSON.stringify(next), { ex: REGISTRY_TTL });
   } catch {
     // ignore — Redis unavailable, live state degrades gracefully
@@ -132,7 +155,7 @@ async function mergeRobotState(kv, robotId, computeFn) {
 function buildMergedRegistryState(robotId, raw, computeFn) {
   const existing = safeJsonParse(raw) || {};
   const patch = (typeof computeFn === "function" ? computeFn(existing) : null) || {};
-  return { ...existing, ...patch, robotId, updatedAt: Date.now() };
+  return withoutDedicatedFields({ ...existing, ...patch, robotId, updatedAt: Date.now() });
 }
 
 /**
@@ -201,15 +224,30 @@ async function markOnline(kv, robotId, socket) {
 }
 
 /**
- * Mark robot offline on socket disconnect.
+ * Mark robot offline on socket disconnect — only on behalf of the socket the entry belongs to.
+ *
+ * Y1 — `markOnline` records the authenticated socket's id. A newer socket for the same robot
+ * overwrites it, and the older socket's late disconnect must not then mark the newer one's
+ * entry disconnected. An entry naming a different socket is left as it is; an entry naming
+ * none (expired, or written before any AUTH) is marked offline as before.
+ *
  * @param {object} kv
  * @param {string} robotId
+ * @param {string} socketId the disconnecting socket's id; without one nothing is written
+ * @returns {Promise<boolean>} whether the entry was marked offline
  */
-async function markOffline(kv, robotId) {
-  await setRobotState(kv, robotId, {
-    connected: false,
-    lastHeartbeat: Date.now(),
-  });
+async function markOffline(kv, robotId, socketId) {
+  if (!kv || !robotId || typeof socketId !== "string" || socketId === "") return false;
+  try {
+    const key = registryKey(robotId);
+    const existing = safeJsonParse(await kv.get(key)) || {};
+    if (existing.socketId && existing.socketId !== socketId) return false;
+    const next = withoutDedicatedFields({ ...existing, connected: false, lastHeartbeat: Date.now(), robotId, updatedAt: Date.now() });
+    await kv.set(key, JSON.stringify(next), { ex: REGISTRY_TTL });
+    return true;
+  } catch {
+    return false; // as setRobotState: Redis unavailable, live state degrades gracefully
+  }
 }
 
 /**
@@ -283,6 +321,8 @@ async function updateHealthStatus(kv, robotId, healthStatus) {
 
 module.exports = {
   REGISTRY_TTL,
+  PROBE_OWNED_FIELDS,
+  STOP_LATCH_OWNED_FIELDS,
   registryKey,
   getRobotState,
   getManyRobotStates,

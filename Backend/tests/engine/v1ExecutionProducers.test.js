@@ -250,8 +250,11 @@ describe("a completion verified before custody was released is settled at the re
     const tx = {
       $queryRawUnsafe: async () => [{ now: STORE }],
       commitment: { findUnique: async () => commitment },
-      leg: { findUnique: async () => leg },
+      // §2.8 — the Leg's Mission discharges Task T9, the one the evidence names (F2).
+      leg: { findUnique: async ({ select }) => (select && select.mission ? { mission: { tasks: [{ taskId: "T9" }] } } : leg) },
       payloadManifest: { findMany: async () => [] },
+      task: { updateMany: async () => ({ count: 1 }) },
+      robot: { update: async () => ({}), updateMany: async () => ({ count: 1 }) },
     };
     return {
       agent: { findUnique: async () => ({ id: "agent-row-1" }) },
@@ -265,7 +268,7 @@ describe("a completion verified before custody was released is settled at the re
     jest.spyOn(transitions, "apply").mockResolvedValue({ outcome: transitions.OUTCOME.APPLIED, from: "AT_DROP", to: "RELEASED" });
     const settle = jest.spyOn(settlement, "settle").mockResolvedValue({ outcome: "SETTLED" });
     const out = await legProgress.onCustodyReport({
-      prisma: prismaFor({ evidence: { evidenceId: "L9-c-9-1", outcome: "SUFFICIENT" } }),
+      prisma: prismaFor({ evidence: { evidenceId: "L9-c-9-1", outcome: "SUFFICIENT", taskId: "T9" } }),
       robotId: "SIM-1",
       report: { commitmentId: "c-9", fence: "4", kind: "RELEASED" },
       snapshot,

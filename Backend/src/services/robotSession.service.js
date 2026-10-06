@@ -108,6 +108,32 @@ async function validate(prisma, robotDbId, token, now = new Date()) {
 }
 
 /**
+ * R2 — the robot is still connected on the session it authenticated with. Slide the durable
+ * expiry forward, so a session in continuous use does not lapse 24 h after its last AUTH.
+ *
+ * Called from the heartbeat's throttled database flush with the hash the socket recorded at
+ * AUTH (the socket never holds the token itself). One conditional update: this robot, this
+ * hash, an expiry still in the future. It therefore never creates a row, never brings back an
+ * expired one, and never extends a token a later pairing has replaced. The KV `session:` key is
+ * deliberately not touched: once it lapses, AUTH's durable path reads this row.
+ *
+ * @param {object} prisma
+ * @param {string} robotDbId `Robot.id`
+ * @param {string} tokenHash `hashToken(token)` of the socket's bearer token
+ * @param {Date} [now]
+ * @returns {Promise<boolean>} whether the live session was extended
+ */
+async function renewLive(prisma, robotDbId, tokenHash, now = new Date()) {
+  if (typeof robotDbId !== "string" || robotDbId.length === 0) return false;
+  if (typeof tokenHash !== "string" || tokenHash.length === 0) return false;
+  const result = await prisma.robotSession.updateMany({
+    where: { robotDbId, tokenHash, expiresAt: { gt: now } },
+    data: { expiresAt: expiryFrom(now) },
+  });
+  return Boolean(result) && result.count === 1;
+}
+
+/**
  * The bearer scheme no longer applies to this robot (an mTLS binding replaced it).
  *
  * @param {object} prisma
@@ -117,4 +143,4 @@ async function revoke(prisma, robotDbId) {
   await prisma.robotSession.deleteMany({ where: { robotDbId } });
 }
 
-module.exports = { SESSION_TTL_SEC, hashToken, recordIssued, refresh, validate, revoke };
+module.exports = { SESSION_TTL_SEC, hashToken, recordIssued, refresh, validate, renewLive, revoke };

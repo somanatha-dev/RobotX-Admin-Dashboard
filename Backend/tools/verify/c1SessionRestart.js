@@ -9,7 +9,7 @@
  * Against a DISPOSABLE local database only (refused otherwise), with REDIS_ENABLED=false — the
  * deployment in which the KV is process memory and a session token used to die with the process
  * (LAN-3). The backend is the real `server.js`, started as a child process through the V1
- * launcher, killed, and started again on the same database: three processes in all. Nothing is
+ * launcher, killed, and started again on the same database: four processes in all. Nothing is
  * cleared in-process and nothing is mocked; the robot side is a Socket.IO client speaking the
  * Pi's AUTH contract (`AUTH {robotId, token}` / `AUTH {robotId, pairingCode}` → `AUTH_SUCCESS
  * {token}`, a refusal is a server disconnect).
@@ -24,8 +24,12 @@
  *   ── kill ──
  *   process 3  T is refused (the re-pairing revoked it, durably); T2 succeeds; wrong codes lock
  *              pairing and a correct fresh code is then refused; T2 still reconnects under the
- *              lockout (the lockout gates pairing only, as before); T2 refused once its durable
- *              expiry has passed
+ *              lockout (the lockout gates pairing only, as before); R2: with T2's socket open
+ *              and heartbeating, its durable row (clock-shifted to 20 s from lapsing) is slid a
+ *              full lifetime ahead
+ *   ── kill ──
+ *   process 4  R2: T2, whose original expiry passed while it was connected, reconnects through
+ *              the durable session; T2 refused once its durable expiry has passed
  *
  * When process 2 refuses T, the harness instead walks what the Pi then does (discard the token,
  * fall back to its configured — already consumed — pairing code) until the lockout, records it as
@@ -146,9 +150,13 @@ function auth(credential, { keepOpen = false } = {}) {
       resolve(result);
     };
     const timer = setTimeout(() => done({ ok: false, reason: "timeout" }), 8000);
+    let authFailed = null; // R1 — the explicit refusal, when the server sent one before disconnecting
     socket.on("connect", () => socket.emit("AUTH", credential));
     socket.on("AUTH_SUCCESS", (ack) => done({ ok: true, token: ack && ack.token, mode: ack && ack.session && ack.session.mode, socket }));
-    socket.on("disconnect", (reason) => done({ ok: false, reason }));
+    socket.on("AUTH_FAILED", (payload) => {
+      authFailed = payload;
+    });
+    socket.on("disconnect", (reason) => done({ ok: false, reason, authFailed }));
     socket.on("connect_error", (e) => done({ ok: false, reason: `connect_error ${e && e.message}` }));
   });
 }
@@ -216,6 +224,14 @@ async function main() {
   const second = await auth({ robotId: ROBOT_ID, token: T }, { keepOpen: true });
   const firstOutcome = await Promise.race([firstClosed, sleep(3000).then(() => "still-open")]);
   check("P1 duplicate AUTH with the same token: both admitted, the earlier socket replaced", first.ok && second.ok && firstOutcome === "io server disconnect", { first: first.ok, second: second.ok, firstOutcome });
+  // Y1 — the replaced socket's disconnect has now run server-side; it must not have taken the
+  // robot offline, because the row's socket is the second one.
+  await sleep(1000);
+  const afterReplacement = await prisma.robot.findUnique({ where: { robotId: ROBOT_ID }, select: { isOnline: true, status: true, socketId: true } });
+  check("P1 Y1: after the replaced socket disconnected, the robot is still online on the second socket", afterReplacement.isOnline === true && afterReplacement.status !== "OFFLINE" && afterReplacement.socketId === (second.socket && second.socket.id), {
+    row: afterReplacement,
+    secondSocket: second.socket && second.socket.id,
+  });
   if (second.socket) second.socket.close();
 
   const durable1 = await sessionRow(prisma, robotRow.id);
@@ -238,7 +254,7 @@ async function main() {
   ops = await operator();
 
   const afterRestart = await auth({ robotId: ROBOT_ID, token: T });
-  check("P2 reconnect with T after a process restart succeeds, same token, no pairing", afterRestart.ok && afterRestart.token === T, { ok: afterRestart.ok, reason: afterRestart.reason });
+  check("P2 reconnect with T after a process restart succeeds, same token, no pairing", afterRestart.ok && afterRestart.token === T, { ok: afterRestart.ok, reason: afterRestart.reason, authFailed: afterRestart.authFailed });
 
   if (!afterRestart.ok) {
     // What the Pi does next (backend_link.py: a refused token is discarded; the configured
@@ -265,6 +281,13 @@ async function main() {
   check("P2 a forged token for the paired robot is refused after restart", !forged.ok, forged.reason);
   const otherRobot = await auth({ robotId: OTHER_ROBOT_ID, token: T });
   check("P2 T presented as another robot is refused (identity-bound)", !otherRobot.ok, otherRobot.reason);
+  // R1 — over a real Socket.IO transport, the explicit refusal arrives before the server's
+  // disconnect, and carries the reason alone.
+  const exactlyInvalid = (r) => !r.ok && r.authFailed && JSON.stringify(r.authFailed) === JSON.stringify({ reason: "INVALID_CREDENTIAL" });
+  check("P2 R1: the forged token's refusal arrived as AUTH_FAILED {reason: INVALID_CREDENTIAL} before the disconnect", exactlyInvalid(forged), forged.authFailed);
+  check("P2 R1: T presented as another robot got the same AUTH_FAILED", exactlyInvalid(otherRobot), otherRobot.authFailed);
+  const unknownRobot = await auth({ robotId: "robotx-not-commissioned", token: T });
+  check("P2 R1: an uncommissioned robotId gets the identical AUTH_FAILED (no robot-id oracle)", exactlyInvalid(unknownRobot), unknownRobot.authFailed);
 
   const valids = [];
   for (let i = 0; i < 5; i += 1) valids.push((await auth({ robotId: ROBOT_ID, token: T })).ok);
@@ -299,13 +322,53 @@ async function main() {
   const underLockout = await auth({ robotId: ROBOT_ID, token: T2 });
   check("P3 a valid session still reconnects while pairing is locked (lockout gates pairing only, as before)", underLockout.ok && underLockout.token === T2, { ok: underLockout.ok, reason: underLockout.reason });
 
+  // R2 — a session in continuous use outlives the 24 h after its last AUTH. Clock-shifted rather
+  // than waited for: with T2's socket open, the durable row is put 20 s from lapsing — where it
+  // stands 23 h 59 min 40 s after the last AUTH — and the robot heartbeats at the Pi's 2 s cadence
+  // until well past that instant (at least two of the backend's 15 s heartbeat flushes).
+  const live = await auth({ robotId: ROBOT_ID, token: T2 }, { keepOpen: true });
+  check("P3 R2: T2 holds an open session", live.ok, live.reason);
+  const lapseAt = new Date(Date.now() + 20_000);
+  await prisma.robotSession.update({ where: { robotDbId: robotRow.id }, data: { expiresAt: lapseAt } });
+  if (live.ok) {
+    const beats = setInterval(() => live.socket.emit("HEARTBEAT", {}), 2000);
+    live.socket.emit("HEARTBEAT", {});
+    await sleep(35_000);
+    clearInterval(beats);
+  }
+  const renewed = await sessionRow(prisma, robotRow.id);
+  const renewedAt = renewed.row ? new Date(renewed.row.expiresAt).getTime() : 0;
+  check("P3 R2: while connected, the heartbeat slid the durable expiry a full lifetime ahead, past the instant it would have lapsed", Date.now() > lapseAt.getTime() && renewedAt > Date.now() + 86_400_000 - 60_000 && renewed.row.tokenHash === sha256(T2), {
+    originalExpiry: lapseAt.toISOString(),
+    now: new Date().toISOString(),
+    expiresAt: renewed.row && renewed.row.expiresAt,
+  });
+  if (live.socket) live.socket.close();
+  const log3 = server.logFile;
+  const killed3 = await killServer(server);
+  check("process 3 is dead and the port refuses connections", killed3.refused, killed3);
+
+  /* ── process 4 ─────────────────────────────────────────────────────────── */
+  server = await startServer();
+
+  const afterLapse = await auth({ robotId: ROBOT_ID, token: T2 });
+  check("P4 R2: after a restart, T2 — whose original expiry passed while it was connected — reconnects through the durable session", afterLapse.ok && afterLapse.token === T2, { ok: afterLapse.ok, reason: afterLapse.reason });
+  // The KV is this new process's memory and holds no session, so a token-only AUTH can only have
+  // been admitted by the durable record — whose `validate` slides the row's expiry once more.
+  const afterLapseRow = await sessionRow(prisma, robotRow.id);
+  const afterLapseAt = afterLapseRow.row ? new Date(afterLapseRow.row.expiresAt).getTime() : 0;
+  check("P4 R2: that reconnect was admitted by the durable record (validate slid the row again)", afterLapseAt > renewedAt, {
+    afterHeartbeats: renewed.row && renewed.row.expiresAt,
+    afterReconnect: afterLapseRow.row && afterLapseRow.row.expiresAt,
+  });
+
   await prisma.robotSession.update({ where: { robotDbId: robotRow.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
   const expired = await auth({ robotId: ROBOT_ID, token: T2 });
-  check("P3 T2 is refused once its durable expiry has passed", !expired.ok, expired.reason);
-  const log3 = server.logFile;
+  check("P4 T2 is refused once its durable expiry has passed", !expired.ok, expired.reason);
+  const log4 = server.logFile;
   await killServer(server);
 
-  for (const [n, f] of [[1, log1], [2, log2], [3, log3]]) log(`server ${n} AUTH log:\n  ` + authLogLines(f).join("\n  "));
+  for (const [n, f] of [[1, log1], [2, log2], [3, log3], [4, log4]]) log(`server ${n} AUTH log:\n  ` + authLogLines(f).join("\n  "));
   await prisma.$disconnect();
   return finish();
 }

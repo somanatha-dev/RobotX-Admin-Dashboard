@@ -343,6 +343,27 @@ const rerouteTask = asyncHandler(async (req, res) => {
     err.status = 400;
     throw err;
   }
+
+  // F3 — a task the assignment engine manages (it has a Leg) is not rerouted here. This
+  // service writes a fresh Mapbox (or straight-line) path over `taskPath:*`, resets
+  // `robotTaskState:*`, redraws the dashboard route and sends the robot `REROUTE_ALERT`, while
+  // the engine's PRICED_ROUTE and the OFFER it signed are unchanged — so the priced, driven and
+  // drawn routes part, and completion is graded against a corridor the robot was moved off.
+  // Refused and nothing written, as P1.4 refuses the legacy cancel. An unknown task falls
+  // through to the service's own 404, as before.
+  const task = await prisma.task.findUnique({ where: { taskId }, select: { id: true } });
+  const engineLeg = task
+    ? await prisma.leg.findFirst({ where: { mission: { tasks: { some: { id: task.id } } } }, select: { state: true } })
+    : null;
+  if (engineLeg) {
+    const message =
+      `Task ${taskId} is managed by the assignment engine (Leg ${engineLeg.state}); rerouting it is not ` +
+      "available in V1, and nothing was changed.";
+    // `message` is what the dashboard's request client shows the operator.
+    res.status(409).json({ ok: false, code: "ENGINE_REROUTE_UNAVAILABLE", error: message, message });
+    return;
+  }
+
   const result = await taskService.rerouteTask(prisma, taskId, { kv, io });
   res.json({ ok: true, ...result });
 });

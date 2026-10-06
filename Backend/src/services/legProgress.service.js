@@ -39,6 +39,8 @@ const legMachine = require("../engine/lifecycle/legMachine");
 const legEntryDeadline = require("../engine/cutover/legEntryDeadline");
 const clock = require("../engine/commitment/clock");
 const settlement = require("../engine/lifecycle/settlement");
+// C5 — the Task's completion, reached only once the Leg is settled.
+const taskCompletion = require("./taskCompletion.service");
 const { haversineMeters } = require("../utils/distance");
 
 const STATE = legMachine.LEG_STATE;
@@ -153,7 +155,7 @@ async function applyEvent(tx, { leg, event, context, data, snapshot, storeTime, 
  * @returns {Promise<object|null>} the transition outcome, or null when nothing applied
  */
 async function onPositionFix(input) {
-  const { prisma, agentRowId, snapshot, shardId } = input || {};
+  const { prisma, agentRowId, snapshot, shardId, io, kv } = input || {};
   if (!prisma || !agentRowId) return null;
 
   const commitment = await prisma.commitment.findFirst({
@@ -165,7 +167,7 @@ async function onPositionFix(input) {
   const advanced = await advanceOnFix({ prisma, agentRowId, snapshot, shardId, commitment });
   // An arrival the server just verified admits the custody report the agent already sent.
   if (advanced && advanced.outcome === transitions.OUTCOME.APPLIED && (advanced.to === STATE.AT_PICKUP || advanced.to === STATE.AT_DROP)) {
-    const custody = await applyHeldCustody({ prisma, commitmentId: commitment.commitmentId, snapshot, shardId });
+    const custody = await applyHeldCustody({ prisma, commitmentId: commitment.commitmentId, snapshot, shardId, io, kv });
     if (custody) return { ...advanced, custody };
   }
   return advanced;
@@ -232,7 +234,7 @@ async function advanceOnFix({ prisma, agentRowId, snapshot, shardId, commitment 
  * @returns {Promise<object>}
  */
 async function onCustodyReport(input) {
-  const { prisma, robotId, report, snapshot, shardId } = input || {};
+  const { prisma, robotId, report, snapshot, shardId, io, kv } = input || {};
   if (!report || typeof report.commitmentId !== "string") return { outcome: "IGNORED", reason: "UNSCOPED_REPORT" };
 
   const agent = await prisma.agent.findUnique({ where: { agentId: String(robotId) }, select: { id: true } });
@@ -246,20 +248,32 @@ async function onCustodyReport(input) {
   // one settlement attempt was refused and the Leg sat in RELEASED with its commitment live
   // (measured on the V1 10-robot run, 2026-09-23). Same evidence, same `settlement.settle`.
   if (outcome && outcome.outcome === transitions.OUTCOME.APPLIED && outcome.to === STATE.RELEASED) {
-    const settled = await settleIfVerified({ prisma, commitmentId: report.commitmentId });
-    if (settled) return { ...outcome, settlement: settled };
+    const settled = await settleIfVerified({ prisma, commitmentId: report.commitmentId, robotId });
+    if (settled) {
+      // C5 — the held TASK_COMPLETE completes here, once, after the commit.
+      await taskCompletion.publish({ io, kv, completion: settled.completion });
+      return { ...outcome, settlement: settled.settlement, ...(settled.completion ? { completion: settled.completion } : {}) };
+    }
   }
   return outcome;
 }
 
 /**
- * Settle a Leg whose completion was already verified SUFFICIENT for this commitment.
+ * Settle a Leg whose completion was already verified SUFFICIENT for this commitment — and, in
+ * the same transaction, complete the Task that claim named (C5).
  *
- * @param {object} input `{ prisma, commitmentId }`
- * @returns {Promise<object|null>} the settlement outcome, or null when there is no evidence
+ * The evidence row is the durable record of the verified `TASK_COMPLETE`: `dtaro.handler`
+ * writes it with the claim's `taskId` whatever settlement then answers. A claim held because
+ * custody was still HELD therefore completes here, at the release — through the same
+ * `taskCompletion` path `TASK_COMPLETE` itself uses. Without a verified claim naming a Task
+ * nothing is completed: a release is not a completion.
+ *
+ * @param {object} input `{ prisma, commitmentId, robotId }`
+ * @returns {Promise<{ settlement: object, completion: object|null }|null>} null when there is
+ *   no evidence
  */
 async function settleIfVerified(input) {
-  const { prisma, commitmentId } = input || {};
+  const { prisma, commitmentId, robotId } = input || {};
   const commitment = await prisma.commitment.findUnique({ where: { commitmentId } });
   if (!commitment || commitment.releasedAt) return null;
   // The evidence row names the commitment it graded (`dtaro.handler.verifyCompletionClaim`).
@@ -269,16 +283,31 @@ async function settleIfVerified(input) {
   });
   if (!evidence) return null;
   return prisma.$transaction(async (tx) => {
+    // F2 — the evidence must name this Leg's own Task (`taskCompletion.bindClaim`), checked
+    // before settling: evidence naming another Task, or none, would otherwise release this
+    // commitment and complete the wrong Task or leave the right one open. Not usable evidence,
+    // so the release stays a release and a correctly named TASK_COMPLETE settles the Leg.
+    const binding = await taskCompletion.bindClaim(tx, { legId: commitment.legId, claimedTaskId: evidence.taskId });
+    if (!binding.ok) return null;
     const leg = await tx.leg.findUnique({ where: { id: commitment.legId } });
     const live = await tx.commitment.findUnique({ where: { commitmentId } });
     const manifests = leg ? await tx.payloadManifest.findMany({ where: { legId: leg.id } }) : [];
-    return settlement.settle(tx, {
+    const settled = await settlement.settle(tx, {
       leg,
       commitment: live,
       verification: { ...evidence, outcome: evidence.outcome },
       manifests,
       storeTime: await clock.readStoreTime(tx),
     });
+    const completion =
+      taskCompletion.isSettled(settled) && robotId
+        ? await taskCompletion.recordInTx(tx, {
+            robotId: String(robotId),
+            taskId: binding.task.taskId,
+            settledNow: settled.outcome === settlement.OUTCOME.SETTLED,
+          })
+        : null;
+    return { settlement: settled, completion };
   });
 }
 
@@ -335,10 +364,10 @@ async function applyCustodyReport({ prisma, agent, robotId, report, snapshot, sh
  * @returns {Promise<object|null>}
  */
 async function applyHeldCustody(input) {
-  const { prisma, commitmentId, snapshot, shardId } = input || {};
+  const { prisma, commitmentId, snapshot, shardId, io, kv } = input || {};
   const held = heldCustody.get(commitmentId);
   if (!held) return null;
-  const outcome = await onCustodyReport({ prisma, robotId: held.robotId, report: held.report, snapshot, shardId });
+  const outcome = await onCustodyReport({ prisma, robotId: held.robotId, report: held.report, snapshot, shardId, io, kv });
   // Applied, or refused for a reason that waiting will not change: either way, not held again.
   if (!outcome || outcome.outcome !== "HELD_UNTIL_ARRIVAL") heldCustody.delete(commitmentId);
   return outcome;

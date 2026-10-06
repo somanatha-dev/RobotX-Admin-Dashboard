@@ -315,3 +315,95 @@ describe("B1 F/G — availability and capacity are enforced under the lock; an a
     await close();
   });
 });
+
+/**
+ * F5 — the commitment's `decisionRef` is the id of the DecisionRecord written for it.
+ *
+ * `decisionRecord.writeRound` keys each Leg's Tier A record `decisionIdFor(roundId, legId)` —
+ * `roundId:legId`, with the Leg named as the round's decisions name it, by its `Leg.id` row id —
+ * and I10 joins `Commitment.decisionRef` to that id by equality. The solve path wrote the bare
+ * `roundId`, so I10 reported every commitment DANGLING (0/18 resolved, measured on V1). The
+ * invariant suite never saw it: it seeds a well-formed reference. Here the reference is the one
+ * the real solve path hands `commit`, and the record id the one the real record builder makes.
+ */
+describe("F5 — the commitment's decisionRef is its DecisionRecord's id", () => {
+  const decisionRecord = require("../../src/engine/observability/decisionRecord");
+  const invariantChecker = require("../../src/engine/observability/invariantChecker");
+  const LEG_ROW = "leg-row-1";
+
+  /** The request the solve path hands `commitment.commit` for Leg 1, as a round would. */
+  async function committedRequest() {
+    const store = w.b1Store({ agents: 1 });
+    const { assembly, close } = await planned(store);
+    plantPriced(assembly);
+    const spy = jest.spyOn(commitModule, "commit");
+    await assembly.deps.commit({ legId: LEG_ROW, agentId: "agent-row-1" }, ROUND);
+    const request = spy.mock.calls[0][1];
+    spy.mockRestore();
+    await close();
+    return request;
+  }
+
+  /** The id `writeRound` gives this Leg's Tier A record — from the record builder itself. */
+  const recordIdFor = (roundId, legId) =>
+    decisionRecord.tierAInputFor({ round: { roundId, decisions: [{ legId }] }, decision: { legId }, context: {} }).identity.decisionId;
+
+  /** I10 over one commitment and the DecisionRecordA ids that exist. */
+  async function i10(decisionRef, recordIds) {
+    const NOW = Date.now();
+    const prisma = {
+      commitment: { findMany: async () => [{ commitmentId: "cmt-f5", decisionRef }] },
+      decisionRecordA: {
+        findFirst: async ({ where }) => (recordIds.includes(where.decisionId) ? { decisionId: where.decisionId } : null),
+      },
+    };
+    return invariantChecker.CHECKS.I10({ prisma }, { windowStartMs: NOW - 60_000, nowMs: NOW });
+  }
+
+  test("the reference is roundId:legId — the DecisionRecord's id — not the bare roundId", async () => {
+    const request = await committedRequest();
+
+    expect(request.decisionRef).toBe(`${ROUND.roundId}:${LEG_ROW}`);
+    expect(request.decisionRef).toBe(recordIdFor(ROUND.roundId, LEG_ROW));
+    expect(request.decisionRef).not.toBe(ROUND.roundId);
+    // The round itself is still named where it always was.
+    expect(request.decisionRoundId).toBe(ROUND.roundId);
+    expect(request.legId).toBe(LEG_ROW);
+  });
+
+  test("I10 finds the record the round writes for that commitment: no violation", async () => {
+    const request = await committedRequest();
+    const outcome = await i10(request.decisionRef, [recordIdFor(ROUND.roundId, LEG_ROW)]);
+
+    expect(outcome.status).toBe(invariantChecker.STATUS.ENFORCED);
+    expect(outcome.violationCount).toBe(0);
+  });
+
+  test.each([
+    ["the bare roundId (the pre-F5 value)", () => ROUND.roundId],
+    ["another Leg's record", () => `${ROUND.roundId}:leg-row-2`],
+    ["another round's record", () => `shard-b1:2:${LEG_ROW}`],
+  ])("NEGATIVE — a reference to %s is still DANGLING; I10 is not weakened", async (_name, wrong) => {
+    const outcome = await i10(wrong(), [recordIdFor(ROUND.roundId, LEG_ROW)]);
+
+    expect(outcome.status).toBe(invariantChecker.STATUS.VIOLATED);
+    expect(outcome.violations[0]).toMatchObject({ commitmentId: "cmt-f5", problem: "DANGLING_DECISION_REFERENCE" });
+  });
+
+  test("NEGATIVE — no reference at all is still NO_DECISION_REFERENCE", async () => {
+    const outcome = await i10(null, [recordIdFor(ROUND.roundId, LEG_ROW)]);
+    expect(outcome.violations[0]).toMatchObject({ problem: "NO_DECISION_REFERENCE" });
+  });
+
+  test("the DecisionRecord side is unchanged: same id format, one record per Leg per round", () => {
+    expect(decisionRecord.decisionIdFor("shard-b1:1", LEG_ROW)).toBe("shard-b1:1:leg-row-1");
+    const round = { roundId: ROUND.roundId, decisions: [{ legId: LEG_ROW }] };
+    const once = decisionRecord.assertEveryDecisionRecorded({ round, result: { written: [{ decisionId: recordIdFor(ROUND.roundId, LEG_ROW) }] } });
+    expect(once).toEqual({ ok: true, missing: [], duplicated: [] });
+    const twice = decisionRecord.assertEveryDecisionRecorded({
+      round,
+      result: { written: [{ decisionId: recordIdFor(ROUND.roundId, LEG_ROW) }, { decisionId: recordIdFor(ROUND.roundId, LEG_ROW) }] },
+    });
+    expect(twice.ok).toBe(false);
+  });
+});

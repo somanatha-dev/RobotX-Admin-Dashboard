@@ -99,6 +99,9 @@ const legEntryDeadline = require("../engine/cutover/legEntryDeadline");
 const planStateModel = require("../engine/shard/planState");
 const legMachine = require("../engine/lifecycle/legMachine");
 const { energyCoefficientsFrom, fleetBestCaseFrom } = require("../engine/domain/mappers/decisionInputs");
+// F5 — the id `decisionRecord.writeRound` gives each Leg's Tier A record; already loaded on this
+// path through `coordinator.worker.recordRound`.
+const { decisionIdFor } = require("../engine/observability/decisionRecord");
 
 /** @structural milliseconds per second — a unit conversion, not a threshold */
 const MS_PER_SECOND = 1000;
@@ -2659,7 +2662,10 @@ function commitFor(context, round) {
         decisionRoundId: roundResult.roundId,
         targetLegState: COMMITTED_LEG_STATE,
         planSnapshotRef: entry ? entry.plan.planId : null,
-        decisionRef: roundResult.roundId,
+        // F5 — the DecisionRecord this commitment's decision is recorded under: `roundId:legId`,
+        // the Leg named by its row id as the round's decisions name it. I10 joins on it by
+        // equality; the bare `roundId` matched no record (0/5 resolved, measured on V1).
+        decisionRef: decisionIdFor(roundResult.roundId, state.leg.legRowId),
         shardId: context.shardId,
         // §9.6 requirement 5 — the round's pinned view of the two rows the guards fence
         // against. Read from the snapshot the plan was built on, never re-read here: a

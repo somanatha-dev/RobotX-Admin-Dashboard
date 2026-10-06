@@ -93,7 +93,10 @@ function harness({
   prisma.agent.findUnique = fn(async () => ({ id: "agent-row-1", agentId: "RBT-1" }));
   prisma.commitment.findFirst = fn(async () => commitment);
   prisma.commitment.findUnique = fn(async () => commitment);
-  prisma.leg.findUnique = fn(async () => ({ id: "leg-1", legId: "LEG-1", purpose: "DELIVERY", version: 3 }));
+  // §2.8 — LEG-1's Mission discharges TSK-1, the Task every claim here names (F2's binding).
+  prisma.leg.findUnique = fn(async ({ select } = {}) =>
+    select && select.mission ? { mission: { tasks: [{ taskId: "TSK-1" }] } } : { id: "leg-1", legId: "LEG-1", purpose: "DELIVERY", version: 3 },
+  );
   prisma.stop.findMany = fn(async () => [{ sequence: 1, lat: drop.lat, lon: drop.lon }]);
   prisma.observation.findMany = fn(async () => fixes);
   prisma.outbox.findFirst = fn(async () => ({ payload: { stopSequence: [{ sequence: 1, path: corridor }] } }));

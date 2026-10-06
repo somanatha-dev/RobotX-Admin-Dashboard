@@ -26,7 +26,8 @@
  * A robot with no declaration gets none of these, and every predicate keeps denying by name.
  */
 
-const { getRobotState } = require("../robotRegistry.service");
+const { getProbeProofAtOrBefore } = require("../agentProbe.service");
+const { getStopLatchState } = require("../stopLatchObservation.service");
 const physicalPolicy = require("./physicalPolicy");
 
 /** The provenance stamped on a declared physical robot's facts. @structural */
@@ -66,11 +67,12 @@ function localisationFrom({ fix, policy, divergenceM }) {
 }
 
 /**
- * F7's input from the live stop-latch report, only under the SOFTWARE_STOP_LATCH policy.
+ * F7's input from the recorded stop-latch report (`stopLatchObservation.getStopLatchState`, already
+ * bound to the robot's current socket by the caller), only under the SOFTWARE_STOP_LATCH policy.
+ * Anything missing, malformed or after the decision time is no input — F7 then denies.
  */
-function emergencyStopFrom({ live, policy, asOfMs }) {
+function emergencyStopFrom({ latch, policy, asOfMs }) {
   if (!policy || policy.emergencyStop !== physicalPolicy.POLICY.SOFTWARE_STOP_LATCH) return undefined;
-  const latch = live && live.stopLatch;
   if (!latch || typeof latch.engaged !== "boolean" || !isNumber(latch.observedAtMs)) return undefined;
   if (isNumber(asOfMs) && latch.observedAtMs > asOfMs) return undefined;
   return {
@@ -113,13 +115,18 @@ async function controlFactsFor(input) {
     }
   }
 
-  const [zones, fix, live] = await Promise.all([
+  const [zones, fix, latchState, probe] = await Promise.all([
     regionId ? prisma.zone.findMany({ where: { regionId }, select: { id: true } }) : [],
     prisma.observation.findFirst({
       where: { agentId: agent.id, kind: "position", ...(asOf ? { observedAt: { lte: asOf } } : {}) },
       orderBy: { observedAt: "desc" },
     }),
-    kv ? getRobotState(kv, robot.robotId).catch(() => null) : null,
+    // F7: the stop latch's own key, never a registry field a stale whole-record write can restore.
+    kv ? getStopLatchState(kv, robot.robotId).catch(() => null) : null,
+    // F7-A: the measured link quality travels with the probe proof, in the probe's own key.
+    // F7-B: the one measured with the proof F14 reads for this decision — never after it, as
+    // for the fix and the stop latch.
+    kv ? getProbeProofAtOrBefore(kv, robot.robotId, isNumber(asOfMs) ? asOfMs : undefined).catch(() => null) : null,
   ]);
 
   const permissionSet = agent.agentClass && agent.agentClass.mobilityModel ? agent.agentClass.mobilityModel.permissionSet : null;
@@ -127,8 +134,10 @@ async function controlFactsFor(input) {
   const divergenceM = router && point ? router.mapMatchDivergenceM(point, permissionSet) : null;
 
   const fault = FAULT_BY_STATUS[robot.status];
-  const probed = live && isNumber(Number(live.lastProbeAckAt)) && live.lastProbeSocketId && live.lastProbeSocketId === robot.socketId;
-  const linkQuality = probed && isNumber(live.linkQuality) ? live.linkQuality : undefined;
+  // Only the robot's current socket speaks for its latch: a replaced socket's late report is no input.
+  const latch = latchState && latchState.socketId && latchState.socketId === robot.socketId ? latchState : null;
+  const probed = probe && isNumber(Number(probe.lastProbeAckAt)) && probe.lastProbeSocketId && probe.lastProbeSocketId === robot.socketId;
+  const linkQuality = probed && isNumber(probe.linkQuality) ? probe.linkQuality : undefined;
 
   const facts = {
     commissioning: { commissioned: true, recordId: `${physicalPolicy.PROVENANCE}:${robot.robotId}:${policy.declaredAt || "undated"}` },
@@ -139,7 +148,7 @@ async function controlFactsFor(input) {
     firmwareVersion: declared.control.firmwareVersion,
     firmwareVersionSource: "COMMISSIONING",
     calibrations: declared.control.calibrations.map((row) => ({ name: row.kind, validUntil: row.validUntil })),
-    emergencyStop: emergencyStopFrom({ live, policy, asOfMs }),
+    emergencyStop: emergencyStopFrom({ latch, policy, asOfMs }),
     faults: fault ? [{ ...fault, active: true, provenance: "PHYSICAL" }] : [],
     localisation: localisationFrom({ fix, policy, divergenceM }),
     advisories: [...declared.control.advisories],

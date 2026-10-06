@@ -275,13 +275,18 @@ describe("§3.4 — the REST contract change is additive", () => {
     expect(source).toMatch(/intake: admitted/);
   });
 
-  test("the socket path leads with `task_accepted` and keeps `task_assigned` as an echo", () => {
+  test("the legacy socket intake path is retired: REST is the only submission path", () => {
+    // The socket path (`assign_task` → `task_accepted` + the `task_assigned` echo) had no
+    // client and bypassed the REST rate limiter and manual-assignment gate, so it was
+    // removed rather than kept beside the §3.4 contract. Nothing on the socket side may
+    // reach intake or speak for it.
     const source = fs.readFileSync(path.join(BACKEND_ROOT, "src", "sockets", "socket.server.js"), "utf8");
-    expect(source).toMatch(/emit\("task_accepted"/);
-    expect(source).toMatch(/emit\("task_assigned"/);
-    // The honest event is emitted first. `task_assigned` for a Leg that has merely been
-    // queued is the conflation §3.4 forbids, and it survives only for compatibility.
-    expect(source.indexOf('emit("task_accepted"')).toBeLessThan(source.indexOf('emit("task_assigned"'));
+    expect(source).not.toContain('socket.on("assign_task"');
+    expect(source).not.toContain("taskService");
+    expect(source).not.toContain("assignTask(");
+    for (const event of ["task_accepted", "task_assigned", "task_error"]) expect(source).not.toContain(`emit("${event}"`);
+    const routes = fs.readFileSync(path.join(BACKEND_ROOT, "src", "routes", "tasks.routes.js"), "utf8");
+    expect(routes).toContain('router.post("/assign", assignLimiter, gateManualAssignment, tasksController.assignTask)');
   });
 });
 

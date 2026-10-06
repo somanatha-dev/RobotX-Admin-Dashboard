@@ -744,27 +744,62 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
       const lastDbFlush = lastDbFlushAt.get(robotId) || 0;
       const timeDue = nowMs - lastDbFlush >= DB_FLUSH_INTERVAL_MS;
 
+      let superseded = false;
       if (statusChanged || reconnected || batteryChanged || timeDue) {
         try {
-          await prisma.robot.update({
-            where: { robotId },
-            data: {
-              ...(typeof fullState.lat === "number" ? { lat: fullState.lat } : {}),
-              ...(typeof fullState.lon === "number" ? { lon: fullState.lon } : {}),
-              ...(typeof fullState.battery === "number" ? { battery: fullState.battery } : {}),
-              lastSeenAt: now,
-              isOnline: true,
-              ...statusUpdate,
-            },
-          });
-          lastDbFlushAt.set(robotId, nowMs);
-          robotStateCache.set(robotId, {
-            status: statusUpdate.status || existing.status,
+          const data = {
+            ...(typeof fullState.lat === "number" ? { lat: fullState.lat } : {}),
+            ...(typeof fullState.lon === "number" ? { lon: fullState.lon } : {}),
+            ...(typeof fullState.battery === "number" ? { battery: fullState.battery } : {}),
+            lastSeenAt: now,
             isOnline: true,
-            lat: typeof fullState.lat === "number" ? fullState.lat : existing.lat,
-            lon: typeof fullState.lon === "number" ? fullState.lon : existing.lon,
-            battery: typeof fullState.battery === "number" ? fullState.battery : existing.battery,
-          });
+            ...statusUpdate,
+          };
+          if (Object.prototype.hasOwnProperty.call(statusUpdate, "status")) {
+            // Stale-write guard. The status was validated above against `existing.status`, the
+            // cached value read at the top of this frame, and the frame has awaited since. A
+            // newer writer may have changed the row in between: ROBOT_FAULT's ERROR, the
+            // disconnect's OFFLINE, an operator's clear-fault. An unconditional write would put
+            // this frame's status over it; ERROR → ACTIVE erased a blocking fault and defeated
+            // §23.5 (reproduced: TELEMETRY then ROBOT_FAULT back-to-back). So the write applies
+            // only while the row still holds the status the transition was validated against
+            // (the same compare-and-set as `taskCompletion.recordInTx`). On no match nothing is
+            // written: the cache is dropped so the next frame reads the row and validates
+            // against it, and the flush is not recorded, so that frame flushes again.
+            const validatedFrom = existing.status;
+            const written = ROBOT_STATUS.has(validatedFrom)
+              ? await prisma.robot.updateMany({ where: { robotId, status: validatedFrom }, data })
+              : null;
+            if (!written || written.count !== 1) {
+              superseded = true;
+              robotStateCache.del(robotId);
+              // The row may be gone rather than changed (decommission mid-session), which the
+              // unconditional update reported as P2025: tell the dashboard the same way.
+              const row = await prisma.robot.findUnique({ where: { robotId }, select: { status: true } });
+              if (!row) {
+                io.to("dashboard").emit("robot_unregistered", { robotId });
+                return;
+              }
+              log.warn?.("Telemetry status not written: the robot's status changed after this frame validated it", {
+                robotId,
+                validatedFrom: validatedFrom ?? null,
+                attempted: statusUpdate.status,
+                current: row.status,
+              });
+            }
+          } else {
+            await prisma.robot.update({ where: { robotId }, data });
+          }
+          if (!superseded) {
+            lastDbFlushAt.set(robotId, nowMs);
+            robotStateCache.set(robotId, {
+              status: statusUpdate.status || existing.status,
+              isOnline: true,
+              lat: typeof fullState.lat === "number" ? fullState.lat : existing.lat,
+              lon: typeof fullState.lon === "number" ? fullState.lon : existing.lon,
+              battery: typeof fullState.battery === "number" ? fullState.battery : existing.battery,
+            });
+          }
         } catch (e) {
           if (e?.code === "P2025") {
             // Robot was deleted from DB while still connected (admin
@@ -867,7 +902,9 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
           try {
             const agentRow = await prisma.agent.findUnique({ where: { agentId: robotId }, select: { id: true } });
             if (agentRow) {
-              const advanced = await legProgress.onPositionFix({ prisma, agentRowId: agentRow.id, snapshot: configOf() });
+              // `io`/`kv`: a held custody release applied at this arrival can settle the Leg and
+              // complete its Task (C5).
+              const advanced = await legProgress.onPositionFix({ prisma, agentRowId: agentRow.id, snapshot: configOf(), io, kv });
               if (advanced && advanced.outcome) {
                 log.info?.("leg progress", { robotId, outcome: advanced.outcome, from: advanced.from, to: advanced.to, reason: advanced.reason || null, detail: advanced.detail || null });
               }
@@ -960,14 +997,12 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
       } catch { /* non-critical — same degrade-gracefully policy as before */ }
 
       // Gate 1 — the rover's software stop latch (F7 under the physical fleet declaration).
-      // After the pipelined registry write above, never before it: that write replaces the
-      // registry value with one merged from the read at the top of this handler, so a latch
-      // written earlier in the frame was overwritten every tick (measured live, 2026-10-03:
-      // every round refused the physical unit on F7). Only from an accepted frame. Contained:
-      // a failed write costs F7 a fresh reading, never the telemetry frame.
+      // Recorded to its own key (`stopLatch:{robotId}`), which no registry write touches, newest
+      // report first and bound to this socket (see `stopLatchObservation.service`). Only from an
+      // accepted frame. Contained: a failed write costs F7 a fresh reading, never the frame.
       if (!trustVerdict.refused) {
         try {
-          await stopLatchObservation.recordStopLatch({ prisma, kv, robotId, payload, snapshot: configOf() });
+          await stopLatchObservation.recordStopLatch({ prisma, kv, robotId, payload, snapshot: configOf(), socket });
         } catch (e) {
           log.warn?.("stop latch not recorded", { robotId, message: e?.message });
         }
@@ -1063,7 +1098,9 @@ async function writePositionObservation(input) {
       sequence: positionObservation.sequenceFrom(payload),
       // P2B-2 — §10.6's bound on the agent's clock, and the contract's optional fix block.
       maxClockSkewMs: positionObservation.maxClockSkewMsFrom(snapshot || null),
-      fix: payload && payload.position && typeof payload.position === "object" ? payload.position : null,
+      // C4 — passed as sent: a malformed block must reach the writer to be refused, not be
+      // mistaken for an absent one.
+      fix: payload && payload.position !== undefined ? payload.position : null,
     });
 
     if (lastPositionOutcome.get(robotId) !== result.outcome) {

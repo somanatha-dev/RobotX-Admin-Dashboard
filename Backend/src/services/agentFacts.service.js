@@ -28,6 +28,7 @@
 
 const logger = require("../config/logger");
 const { getRobotState } = require("./robotRegistry.service");
+const { getProbeProofAtOrBefore } = require("./agentProbe.service");
 const simulationPolicy = require("../simulation/simulationPolicy");
 const simulatedAgentState = require("../simulation/simulatedAgentState");
 
@@ -140,14 +141,20 @@ function createAgentFactsProvider(settings) {
     // P2B-2 — F14's proof: the server's own receipt time of a PROBE_RESULT
     // (`agentProbe.service`), admitted only while the socket that answered is still this
     // robot's socket. A reconnect therefore starts with no proof; nothing is defaulted.
+    // F7-A: the proof is the probe subsystem's own key, not a registry field.
+    // F7-B (H5): the newest proof at or before the decision time, so an answer recorded just
+    // after it does not hide the one that proved the link at it.
     let lastHeartbeatAckAt;
     if (kv) {
       try {
-        const live = await getRobotState(kv, robot.robotId);
+        const [live, probe] = await Promise.all([
+          getRobotState(kv, robot.robotId),
+          getProbeProofAtOrBefore(kv, robot.robotId, asOf ? asOf.getTime() : undefined),
+        ]);
         const beat = live && Number(live.lastHeartbeat);
         if (Number.isFinite(beat)) candidates.push(new Date(beat));
-        const probed = live && Number(live.lastProbeAckAt);
-        if (Number.isFinite(probed) && live.lastProbeSocketId && live.lastProbeSocketId === robot.socketId) {
+        const probed = probe && Number(probe.lastProbeAckAt);
+        if (Number.isFinite(probed) && probe.lastProbeSocketId && probe.lastProbeSocketId === robot.socketId) {
           const at = new Date(probed);
           if (notAfter(at)) lastHeartbeatAckAt = at;
         }
