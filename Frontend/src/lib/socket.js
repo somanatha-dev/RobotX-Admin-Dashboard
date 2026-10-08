@@ -124,6 +124,13 @@ export const DASHBOARD_EVENTS = Object.freeze({
 	 */
 	ROBOT_OFFLINE: "robot_offline",
 	ROBOT_ONLINE: "robot_online",
+	/**
+	 * A commissioned robot reached the server and was refused in the pairing branch (H4): a
+	 * wrong or expired code, or a stored token that is no longer valid (it falls through to
+	 * that branch and counts toward the same lockout). `{ robotId, failedAttempts, locked }` only; never a code. Not emitted for a
+	 * robotId that is not commissioned, so it reveals nothing the robot could not already see.
+	 */
+	ROBOT_PAIRING_REJECTED: "robot_pairing_rejected",
 	ALERT_CREATED: "ALERT_CREATED",
 	REROUTE_ALERT: "REROUTE_ALERT",
 });

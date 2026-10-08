@@ -14,8 +14,8 @@
  * AUTH's contract is unchanged. The Pi presents `{robotId, token}` and gets the same token
  * back in AUTH_SUCCESS. The KV entry is still written and still consulted first, exactly as
  * before. What is added is one `RobotSession` row per robot. It holds a SHA-256 of the token
- * and the same 24 h sliding expiry the KV key has. AUTH reads the row only when the KV has
- * **no** `session:` value at all.
+ * and the same sliding expiry the KV key has (`sessionTtlSec()`, H1). AUTH reads the row only
+ * when the KV has **no** `session:` value at all.
  *
  * The row's lifetime is the KV key's:
  *   - pairing  → `recordIssued` replaces it (the previous token is revoked durably as well)
@@ -30,9 +30,22 @@
  */
 
 const crypto = require("crypto");
+const robotSessionLifetime = require("../config/robotSessionLifetime");
 
-/** The session's sliding lifetime: the TTL the `session:` KV key has always carried. */
-const SESSION_TTL_SEC = 86400;
+/**
+ * H1 — the session's sliding lifetime, shared by the `session:` KV key and this row.
+ *
+ * Read from `ROBOT_SESSION_TTL_SEC` at call time (default 30 days, bounded 1 h – 90 days;
+ * `config/robotSessionLifetime.js`). It used to be a fixed 24 h. A robot powered off for longer
+ * than that was refused at its next boot and needed a new pairing code. The boot refuses an
+ * unusable value, so a throw here means the environment changed under a running process.
+ *
+ * @param {object} [env]
+ * @returns {number} seconds
+ */
+function sessionTtlSec(env = process.env) {
+  return robotSessionLifetime.resolve(env);
+}
 
 /**
  * @param {string} token
@@ -43,7 +56,7 @@ function hashToken(token) {
 }
 
 function expiryFrom(now) {
-  return new Date(now.getTime() + SESSION_TTL_SEC * 1000);
+  return new Date(now.getTime() + sessionTtlSec() * 1000);
 }
 
 /**
@@ -109,7 +122,7 @@ async function validate(prisma, robotDbId, token, now = new Date()) {
 
 /**
  * R2 — the robot is still connected on the session it authenticated with. Slide the durable
- * expiry forward, so a session in continuous use does not lapse 24 h after its last AUTH.
+ * expiry forward, so a session in continuous use does not lapse one lifetime after its last AUTH.
  *
  * Called from the heartbeat's throttled database flush with the hash the socket recorded at
  * AUTH (the socket never holds the token itself). One conditional update: this robot, this
@@ -143,4 +156,4 @@ async function revoke(prisma, robotDbId) {
   await prisma.robotSession.deleteMany({ where: { robotDbId } });
 }
 
-module.exports = { SESSION_TTL_SEC, hashToken, recordIssued, refresh, validate, renewLive, revoke };
+module.exports = { sessionTtlSec, hashToken, recordIssued, refresh, validate, renewLive, revoke };

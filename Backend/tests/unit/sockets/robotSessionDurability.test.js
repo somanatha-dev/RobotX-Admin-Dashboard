@@ -25,6 +25,9 @@ const { waitFor } = require("../../helpers/waitFor");
 
 const sha256 = (s) => crypto.createHash("sha256").update(String(s), "utf8").digest("hex");
 const ROBOTS = { R1: "row-R1", R2: "row-R2" };
+// H1 — the session lifetime is configurable (`ROBOT_SESSION_TTL_SEC`, default 30 days). These
+// tests assert the lifetime the service actually uses rather than the 24 h it used to be fixed at.
+const LIFETIME_MS = require("../../../src/config/robotSessionLifetime").DEFAULT_SEC * 1000;
 
 /** An in-memory `RobotSession` table with the semantics the service relies on. */
 function sessionStore() {
@@ -133,8 +136,8 @@ describe("C1 — robot sessions are durable across a backend restart", () => {
     expect(row.tokenHash).toBe(sha256(paired.token));
     expect(Object.values(row).map(String).some((v) => v.includes(paired.token))).toBe(false);
     const ttlMs = row.expiresAt.getTime() - Date.now();
-    expect(ttlMs).toBeGreaterThan(86_400_000 - 5_000);
-    expect(ttlMs).toBeLessThanOrEqual(86_400_000);
+    expect(ttlMs).toBeGreaterThan(LIFETIME_MS - 5_000);
+    expect(ttlMs).toBeLessThanOrEqual(LIFETIME_MS);
     expect(await p1.kv.get("pairing:R1")).toBeNull();
     expect(p1.authModes()).toEqual(["pairing"]);
   });
@@ -148,7 +151,7 @@ describe("C1 — robot sessions are durable across a backend restart", () => {
     const again = await p1.auth({ robotId: "R1", token });
     expect(again.ok).toBe(true);
     expect(again.token).toBe(token);
-    expect(world.store.rows.get("row-R1").expiresAt.getTime()).toBeGreaterThan(Date.now() + 86_400_000 - 5_000);
+    expect(world.store.rows.get("row-R1").expiresAt.getTime()).toBeGreaterThan(Date.now() + LIFETIME_MS - 5_000);
     expect(p1.authModes()).toEqual(["pairing", "session"]);
   });
 
@@ -372,7 +375,7 @@ describe("C1 — robotSession.service", () => {
  * an unexpired row. The KV `session:` key is not touched.
  */
 describe("R2 — a session in continuous use is renewed by the heartbeat flush", () => {
-  const DAY_MS = 86_400_000;
+  const DAY_MS = LIFETIME_MS; // one session lifetime (named before H1 made it configurable)
   const renewalCalls = (store) => store.updateMany.mock.calls.filter(([arg]) => arg?.where?.tokenHash && arg?.where?.expiresAt);
 
   test("A. the heartbeat flush moves an active session's expiry forward by the session lifetime", async () => {
@@ -515,6 +518,13 @@ describe("R2 — a session in continuous use is renewed by the heartbeat flush",
     ];
     const STEP_MS = 30 * 60_000; // one flushed heartbeat per half hour (the flush gate is 15 s)
     const HOURS = 25;
+    // H1 — this scenario is about one lifetime elapsing while the robot stays connected, so it
+    // pins the lifetime to the 24 h it was written for. The default is now 30 days.
+    const RUN_LIFETIME_MS = 86_400_000;
+    const ORIGINAL_TTL = process.env.ROBOT_SESSION_TTL_SEC;
+    beforeEach(() => {
+      process.env.ROBOT_SESSION_TTL_SEC = String(RUN_LIFETIME_MS / 1000);
+    });
 
     async function runConnected({ withRenewal }) {
       const t0 = Date.now();
@@ -532,7 +542,11 @@ describe("R2 — a session in continuous use is renewed by the heartbeat flush",
       return { world, p1, token, t0 };
     }
 
-    afterEach(() => jest.useRealTimers());
+    afterEach(() => {
+      jest.useRealTimers();
+      if (ORIGINAL_TTL === undefined) delete process.env.ROBOT_SESSION_TTL_SEC;
+      else process.env.ROBOT_SESSION_TTL_SEC = ORIGINAL_TTL;
+    });
 
     test("with heartbeats the session stays valid; reconnect and restart after 25 h succeed through RobotSession", async () => {
       const { world, p1, token, t0 } = await runConnected({ withRenewal: true });
@@ -541,7 +555,7 @@ describe("R2 — a session in continuous use is renewed by the heartbeat flush",
       // The KV key was never slid: it lapsed 24 h after the pairing, as before R2.
       expect(await p1.kv.get("session:R1")).toBeNull();
       // The durable row was: it is still live, a full lifetime ahead of the last flush.
-      expect(world.store.rows.get("row-R1").expiresAt.getTime()).toBeGreaterThan(Date.now() + DAY_MS - STEP_MS - 5_000);
+      expect(world.store.rows.get("row-R1").expiresAt.getTime()).toBeGreaterThan(Date.now() + RUN_LIFETIME_MS - STEP_MS - 5_000);
 
       const reconnect = await p1.auth({ robotId: "R1", token });
       expect(reconnect.ok).toBe(true);
@@ -653,7 +667,7 @@ describe("Y1 — a replaced socket's late disconnect leaves the robot online", (
     expect(b.socket.data).toMatchObject({ robotDbId: "row-R1", sessionTokenHash: sha256(a.token) });
     world.store.rows.get("row-R1").expiresAt = new Date(Date.now() + 60_000);
     await p1.heartbeat(b.socket);
-    expect(world.store.rows.get("row-R1").expiresAt.getTime()).toBeGreaterThan(Date.now() + 86_400_000 - 5_000);
+    expect(world.store.rows.get("row-R1").expiresAt.getTime()).toBeGreaterThan(Date.now() + LIFETIME_MS - 5_000);
   });
 
   test("A's disconnect after B fully replaced it is also a no-op", async () => {

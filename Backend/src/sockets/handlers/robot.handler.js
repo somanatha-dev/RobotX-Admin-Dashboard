@@ -493,6 +493,25 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
     return socket.disconnect(true);
   }
 
+  // H4 — tell the dashboard that a *commissioned* robot was refused in the pairing branch, so
+  // the Connect page can say so at once instead of waiting for the code to expire. Reached only
+  // after the Robot row was found: an unknown robotId is refused earlier with the same
+  // AUTH_FAILED and no event, so the dashboard learns nothing the robot could not already see.
+  // The payload is the count and the lock; never the code presented or the code stored.
+  async function announcePairingRejected(robotId, attempts, locked) {
+    try {
+      let failedAttempts = Number.isSafeInteger(attempts) ? attempts : null;
+      if (failedAttempts === null) {
+        const raw = await kv.get(`pairingAttempts:${robotId}`);
+        const parsedCount = Number.parseInt(String(raw ?? "0"), 10);
+        failedAttempts = Number.isFinite(parsedCount) ? parsedCount : 0;
+      }
+      io.to("dashboard").emit("robot_pairing_rejected", { robotId, failedAttempts, locked: Boolean(locked) });
+    } catch {
+      // the refusal itself is what matters; the announcement is best-effort
+    }
+  }
+
   async function clearPairingAttempts(robotId) {
     try {
       await kv.del(`pairingAttempts:${robotId}`);
@@ -649,7 +668,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
         nextToken = sessionToken;
         authMode = "session";
         // Refresh TTL on successful reconnect
-        await kv.set(`session:${robotId}`, nextToken, { ex: robotSession.SESSION_TTL_SEC });
+        await kv.set(`session:${robotId}`, nextToken, { ex: robotSession.sessionTtlSec() });
         // C1 — slide the durable expiry with it. Best-effort: the KV has already admitted
         // this token, and a failed refresh costs only restart survival, never admission.
         try {
@@ -697,6 +716,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
             robotId,
             socketId: socket.id,
           });
+          await announcePairingRejected(robotId, null, true);
           return refuseCredential(credentialCheck);
         }
 
@@ -706,6 +726,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
           if (attempts >= PAIRING_LOCKOUT_THRESHOLD) {
             log.warn("Pairing brute-force limit hit — robot locked out", { robotId, socketId: socket.id, attempts });
           }
+          await announcePairingRejected(robotId, attempts, attempts >= PAIRING_LOCKOUT_THRESHOLD);
           return refuseCredential(credentialCheck);
         }
         // After first successful pairing, mint a session token.
@@ -714,7 +735,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
         // pairing code is consumed, so the robot can retry with the same code. It also
         // replaces the previous token's record, which revokes that token across restarts.
         await robotSession.recordIssued(prisma, robot.id, nextToken);
-        await kv.set(`session:${robotId}`, nextToken, { ex: robotSession.SESSION_TTL_SEC });
+        await kv.set(`session:${robotId}`, nextToken, { ex: robotSession.sessionTtlSec() });
       }
 
       // Replace old connection (auto-reconnect safe).
@@ -763,10 +784,28 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
         disconnectSocket(previous);
       }
 
-      // delete pairing after success (if any)
-      if (storedCode) {
+      // H2 — the code is spent only by the login that used it. It used to be deleted after
+      // *any* successful AUTH while one was outstanding, so a robot reconnecting on its valid
+      // token silently burnt a code an operator had just issued for a re-pair.
+      if (authMode === "pairing") {
         await kv.del(`pairing:${robotId}`);
         await clearPairingAttempts(robotId);
+
+        // H5 — the enrollment is an audit fact, recorded on the Robot's own Event stream. It
+        // names the robot and the scheme. It never names the code (already deleted) or the
+        // token. Best-effort: the session is already issued and recorded durably, and a lost
+        // audit row must not turn a successful enrollment into a refusal.
+        try {
+          await prisma.event.create({
+            data: {
+              robotId: robot.id,
+              type: "INFO",
+              message: `Robot ${robotId} enrolled through pairing; a new session was issued and any previous session revoked`,
+            },
+          });
+        } catch (e) {
+          log.warn?.("enrollment audit event could not be recorded", { robotId, message: e?.message });
+        }
       }
 
       // PHASE 4 — §11.5's deduplication handshake, before AUTH_SUCCESS.

@@ -41,6 +41,10 @@ router.get("/state", robotsController.getRobotsState);
 router.get("/:robotId/history", robotsController.getRobotHistory);
 // New: secure pairing/commissioning flow (does not replace existing POST /).
 router.post("/commission", commissionLimiter, robotsController.commissionRobotWithPairing);
+// H3: where a robot's enrollment stands (pending code, lockout, enrolled, online). Read-only, and
+// it never returns the code. Polled by nothing: the Connect page reads it on load and on refresh,
+// and follows robot_online / robot_offline / robot_pairing_rejected after that.
+router.get("/:robotId/pairing", robotsController.getPairingStatus);
 // Admin override: clear a robot's pairing brute-force lockout (F32) before its TTL elapses.
 router.post("/:robotId/pairing/unlock", commandLimiter, quarantineOverride, robotsController.unlockPairing);
 // New: command API with ACK tracking (robot must be online to receive immediately).

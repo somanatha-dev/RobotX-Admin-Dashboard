@@ -88,6 +88,7 @@ const privacyKeys = require("./src/config/privacyKeys");
 const bootSecrets = require("./src/config/bootSecrets");
 const verificationThresholds = require("./src/config/verificationThresholds");
 const socketTiming = require("./src/config/socketTiming");
+const robotSessionLifetime = require("./src/config/robotSessionLifetime");
 // PHASE 15 remediation — the two halves of the cutover switch that had no production
 // producer: the pull that lets a published binding reach a running process (P15-R2), and
 // the publish that makes §22.4 item 4's automatic rollback take effect (P15-R1).
@@ -440,6 +441,18 @@ async function start() {
     throw error;
   }
   logger.info("Socket.IO heartbeat", { pingInterval: socketHeartbeat.pingInterval, pingTimeout: socketHeartbeat.pingTimeout });
+
+  // H1 — how long a paired robot's session survives unused (a Pi powered off). Read at every
+  // session write, so it is checked here once: a value the service would refuse at AUTH is
+  // refused before any robot can connect, rather than turning every pairing into a disconnect.
+  let robotSessionTtlSec;
+  try {
+    robotSessionTtlSec = robotSessionLifetime.resolve(process.env);
+  } catch (error) {
+    logger.error(`Refusing to start: ${error.message}`);
+    throw error;
+  }
+  logger.info("Robot session lifetime", { ttlSec: robotSessionTtlSec, ttlDays: Math.round((robotSessionTtlSec / 86_400) * 100) / 100 });
 
   const server = http.createServer(app);
   const io = new Server(server, {

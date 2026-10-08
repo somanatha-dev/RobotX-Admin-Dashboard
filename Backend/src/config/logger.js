@@ -62,7 +62,10 @@ const c = (() => {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const SENSITIVE = new Set(["password", "token", "secret", "authorization", "cookie", "pin"]);
+// Matched against the lower-cased key. H7 — `pairingCode` is a credential for its 300 s life:
+// whoever presents it with the robotId becomes that robot. Redacted wherever it appears (a
+// request body, a query string, log metadata), even though no request carries it today.
+const SENSITIVE = new Set(["password", "token", "secret", "authorization", "cookie", "pin", "pairingcode"]);
 
 function sanitise(obj, depth = 0) {
   if (!obj || typeof obj !== "object" || depth > 3) return obj;
@@ -121,9 +124,16 @@ const pinoBase = pino({
 });
 
 function pinoLog(level, module, msg, meta) {
-  const obj = module ? { module, ...(meta || {}) } : (meta || {});
-  if (meta instanceof Error) pinoBase[level]({ err: meta, module }, msg);
-  else pinoBase[level](obj, msg);
+  if (meta instanceof Error) {
+    pinoBase[level]({ err: meta, module }, msg);
+    return;
+  }
+  // H7 — the production path redacts with the same rule as the dev printer. It used to hand
+  // `meta` to pino as given, so a credential-named key was redacted in development and
+  // written out on Render.
+  const clean = meta && typeof meta === "object" ? sanitise(meta) : meta;
+  const obj = module ? { module, ...(clean || {}) } : (clean || {});
+  pinoBase[level](obj, msg);
 }
 
 // ─── Dev-path level gating ─────────────────────────────────────────────────
@@ -190,13 +200,19 @@ const METHOD_COLOR = {
   DELETE: c.bRed,
 };
 
+// H7 — the path without its query string. The query is printed on its own line, redacted; printed
+// inside the URL as well, a credential in it would reach the log however the query line treated it.
+function pathOnly(req) {
+  return String(req.originalUrl || req.url || "").split("?")[0];
+}
+
 rootLogger.http = function logRequest(req) {
   if (SKIP_PATHS.has(req.path)) return;
   const method = (METHOD_COLOR[req.method] || c.white)(pad(req.method, 6));
-  const url = c.bWhite(req.originalUrl || req.url);
+  const url = c.bWhite(pathOnly(req));
   const lines = [`${ts()} ${c.cyan("→")} ${method} ${url}`];
 
-  const q = req.query && Object.keys(req.query).length ? req.query : null;
+  const q = req.query && Object.keys(req.query).length ? sanitise(req.query) : null;
   const b = req.body  && Object.keys(req.body).length  ? sanitise(req.body) : null;
   if (q) lines.push(`  ${c.dim("query:")} ${truncate(JSON.stringify(q))}`);
   if (b) lines.push(`  ${c.dim("body: ")} ${truncate(JSON.stringify(b))}`);
@@ -210,7 +226,7 @@ rootLogger.httpEnd = function logResponse(req, res, ms) {
   const statusColor = code >= 500 ? c.bRed : code >= 400 ? c.bYellow : c.bGreen;
   const dur = code >= 400 ? c.bYellow(`${ms}ms`) : c.dim(`${ms}ms`);
   process.stdout.write(
-    `${ts()} ${c.cyan("←")} ${statusColor(String(code))} ${c.dim(req.method)} ${c.dim(req.originalUrl || req.url)}  ${dur}\n`
+    `${ts()} ${c.cyan("←")} ${statusColor(String(code))} ${c.dim(req.method)} ${c.dim(pathOnly(req))}  ${dur}\n`
   );
 };
 

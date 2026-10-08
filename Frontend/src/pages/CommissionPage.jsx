@@ -24,6 +24,7 @@ import {
 import { LocationCombobox } from '@/components/system/LocationCombobox.jsx';
 import { RequiredMark } from '@/components/system/RequiredMark.jsx';
 import { useAppActions, useAppState } from '@/context/appContext.js';
+import { connectPathFor } from '@/lib/robotEnrollment.js';
 import {
   CHASSIS_OPTIONS,
   INITIAL_BATTERY_FIELD,
@@ -57,9 +58,13 @@ export default function CommissionPage() {
     Object.fromEntries([...SPECIFICATION_FIELDS, INITIAL_BATTERY_FIELD].map((f) => [f.key, ''])),
   );
   const [formError, setFormError] = useState('');
+  // A unit with this identifier already exists: offer its Connect page instead of a second
+  // commissioning, which the backend would refuse anyway.
+  const [existingId, setExistingId] = useState('');
 
   const setSpecField = (key, value) => {
     setFormError('');
+    setExistingId('');
     setSpec((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -83,6 +88,7 @@ export default function CommissionPage() {
   const handleSubmit = (e) => {
     e.preventDefault();
     setFormError('');
+    setExistingId('');
 
     const robotId = String(formData.id || '').trim();
     const name = String(formData.name || '').trim();
@@ -98,10 +104,14 @@ export default function CommissionPage() {
       return;
     }
 
-    const alreadyExists = Array.isArray(robots) &&
-      robots.some((r) => String(r.robotId || '').trim().toLowerCase() === robotId.toLowerCase());
-    if (alreadyExists) {
-      setFormError(`Unit "${robotId}" is already commissioned. Choose a different identifier.`);
+    const existing = Array.isArray(robots)
+      ? robots.find((r) => String(r.robotId || '').trim().toLowerCase() === robotId.toLowerCase())
+      : null;
+    if (existing) {
+      setFormError(
+        `Unit "${existing.robotId}" is already commissioned. Choose a different identifier, or connect the existing unit.`,
+      );
+      setExistingId(existing.robotId);
       return;
     }
 
@@ -194,15 +204,21 @@ export default function CommissionPage() {
                     </Label>
                     <Input
                       id="unit-id"
+                      aria-describedby="unit-id-help"
                       type="text"
                       value={formData.id}
-                      onChange={(e) => setFormData({ ...formData, id: e.target.value })}
+                      onChange={(e) => {
+                        setExistingId('');
+                        setFormData({ ...formData, id: e.target.value });
+                      }}
                       placeholder="RBT-1234"
                       required
                       autoComplete="off"
                       className="font-mono font-semibold"
                     />
-                    <div className="mt-2 text-xs text-muted-foreground">Must be unique (e.g. RBT-1000).</div>
+                    <div id="unit-id-help" className="mt-2 text-xs text-muted-foreground">
+                      Must be unique. The Robot ID must exactly match the ID configured on the physical Pi.
+                    </div>
                   </div>
                 </div>
               </CardContent>
@@ -381,6 +397,13 @@ export default function CommissionPage() {
                 {formError ? (
                   <div className="mt-6 rounded-lg bg-destructive/10 text-destructive px-4 py-3 text-sm font-medium">
                     {formError}
+                    {existingId ? (
+                      <div className="mt-2">
+                        <Button type="button" size="sm" variant="outline" onClick={() => rrNavigate(connectPathFor(existingId))}>
+                          Connect {existingId}
+                        </Button>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </CardContent>
@@ -404,9 +427,9 @@ export default function CommissionPage() {
                 <div>
                   <div className="text-sm font-medium text-foreground">After authorization</div>
                   <ul className="mt-2 list-disc pl-5 space-y-2">
-                    <li>A unit profile is created (or updated if it already exists).</li>
+                    <li>A unit profile is created.</li>
                     <li>The selected zone becomes the unit’s initial assignment.</li>
-                    <li>You’ll be redirected to the Units list.</li>
+                    <li>You’ll go straight to connecting the robot: a one-time pairing code and a single command to run on its Pi.</li>
                   </ul>
                 </div>
 

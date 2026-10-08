@@ -3,6 +3,7 @@ export function getRouteTitle(pathname) {
 
   if (!p || p === '/') return 'Dashboard';
   if (p === '/login') return '';
+  if (/^\/robots\/[^/]+\/connect\/?$/.test(p)) return 'Connect Robot';
   if (p.startsWith('/robots/')) return 'Unit Details';
   if (p === '/robots') return 'Robots';
   if (p === '/map') return 'Map Control';

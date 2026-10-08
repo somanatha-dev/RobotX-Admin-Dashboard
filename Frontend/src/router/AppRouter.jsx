@@ -8,6 +8,7 @@ import LoginPage from '@/pages/LoginPage.jsx';
 import MapPage from '@/pages/MapPage.jsx';
 import ProfilePage from '@/pages/ProfilePage.jsx';
 import CommissionPage from '@/pages/CommissionPage.jsx';
+import ConnectRobotPage from '@/pages/ConnectRobotPage.jsx';
 import RobotDetailPage from '@/pages/RobotDetailPage.jsx';
 import RobotsPage from '@/pages/RobotsPage.jsx';
 import SimulatedRobotPage from '@/pages/SimulatedRobotPage.jsx';
@@ -55,6 +56,8 @@ export default function AppRouter() {
         <Route index element={<DashboardPage />} />
         <Route path="robots" element={<RobotsPage />} />
         <Route path="robots/:id" element={<RobotDetailPage />} />
+        {/* Enrollment of a physical unit's Pi: issue a one-time code, wait for the robot. */}
+        <Route path="robots/:id/connect" element={<ConnectRobotPage />} />
         <Route path="commission" element={<CommissionPage />} />
         {/* Its own route, not a mode of `commission`. Physical commissioning and
             simulated creation are separate product flows with separate endpoints, and

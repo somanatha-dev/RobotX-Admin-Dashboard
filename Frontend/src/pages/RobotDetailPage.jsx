@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Camera, Pencil, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Camera, CheckCircle2, KeyRound, Pencil, PlugZap, Trash2, X } from 'lucide-react';
 import { useAppActions, useAppState } from '@/context/appContext.js';
 import useRobotCommand from '@/hooks/useRobotCommand.js';
 import { RESUME_UNAVAILABLE_REASON, returnAvailability } from '@/lib/robotCommands.js';
@@ -13,6 +13,8 @@ import {
   runtimeStatusOf,
 } from '@/lib/simulationIdentity.js';
 import { normalizeStatus, isActive, isIdle } from '@/lib/robotStatus.js';
+import * as robotsApi from '@/lib/api/robots.js';
+import { connectActionFor, connectPathFor } from '@/lib/robotEnrollment.js';
 import {
   CHASSIS_LABEL,
   CHASSIS_OPTIONS,
@@ -50,6 +52,30 @@ export default function RobotDetailPage() {
   const [draft, setDraft] = useState(() => draftFrom(specification));
   const [saveError, setSaveError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+
+  // Enrollment, for a physical unit that is offline: "Connect" if it has never paired,
+  // "Re-pair" if it has. One read when the page opens or the unit goes offline. The
+  // pairing status never carries the code, and nothing here issues one: both buttons lead to
+  // the Connect page, where issuing a code is confirmed and step-up authorised.
+  const [pairingStatus, setPairingStatus] = useState(null);
+  const robotCode = robot?.robotId;
+  const needsPairingStatus = Boolean(robot) && !isSimulated(robot) && robot.isOnline !== true;
+  useEffect(() => {
+    if (!needsPairingStatus || !robotCode) return undefined;
+    let cancelled = false;
+    robotsApi
+      .getPairingStatus(robotCode)
+      .then((next) => {
+        if (!cancelled) setPairingStatus(next);
+      })
+      .catch(() => {
+        if (!cancelled) setPairingStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsPairingStatus, robotCode]);
+  const connectAction = connectActionFor(robot, pairingStatus);
 
   // Re-seed the draft when the stored specification changes underneath the form — an edit
   // made in another session, or the first load arriving after this page mounted. Skipped
@@ -175,6 +201,37 @@ export default function RobotDetailPage() {
           </button>
         </div>
       </div>
+
+      {connectAction ? (
+        <div
+          role="note"
+          data-connect-action={connectAction.kind}
+          className="mx-4 lg:mx-6 mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm"
+        >
+          <span className="text-slate-700">
+            {connectAction.kind === 'repair'
+              ? 'Offline. This robot is enrolled and reconnects by itself when its Pi is powered on and online. Re-pair only if it has lost its stored credential.'
+              : 'This physical robot has not connected yet. Pair its Pi to bring it online.'}
+          </span>
+          <button
+            type="button"
+            onClick={() => navigate(connectPathFor(robot.robotId))}
+            className="shrink-0 inline-flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-xs font-bold"
+          >
+            {connectAction.kind === 'repair' ? <KeyRound className="w-4 h-4" /> : <PlugZap className="w-4 h-4" />}
+            {connectAction.label}
+          </button>
+        </div>
+      ) : !isSimulated(robot) && robot.isOnline === true ? (
+        <div
+          role="note"
+          data-connect-action="connected"
+          className="mx-4 lg:mx-6 mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-xs font-medium text-emerald-900 flex items-center gap-2"
+        >
+          <CheckCircle2 className="w-4 h-4" /> Connected. Last seen{' '}
+          {robot.lastSeenAt ? new Date(robot.lastSeenAt).toLocaleString() : '—'}.
+        </div>
+      ) : null}
 
       {normalizeStatus(robot.status) === 'PAUSED' && (
         <div

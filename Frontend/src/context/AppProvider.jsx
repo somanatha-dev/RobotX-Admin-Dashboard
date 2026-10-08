@@ -33,6 +33,7 @@ import { SESSION_CHECK, sessionCheckOutcome, sessionRetryDelayMs } from '@/lib/s
 import { applyRobotOffline, applyRobotOnline, applyTaskUpdate, evictOnStandDown, evictOnTerminalUpdate, evictTerminalRoutes } from '@/lib/liveState.js';
 import { obstacleAlertFrom, rerouteAlertLogLine } from '@/lib/obstacleAlert.js';
 import { DUPLICATE_OUTCOME, newIdempotencyKey } from '@/lib/idempotency.js';
+import { applyPairingRejection, connectPathFor } from '@/lib/robotEnrollment.js';
 
 export default function AppProvider({ children }) {
   const rrNavigate = useNavigate();
@@ -89,6 +90,11 @@ export default function AppProvider({ children }) {
   // planned-route distance). A ref cannot drive a render; this can. The map keeps reading
   // the ref, unchanged.
   const [taskRoutes, setTaskRoutes] = useState({});
+  // H4 — the latest pairing refusal per robot, `{ failedAttempts, locked, atMs }`, from
+  // `robot_pairing_rejected`. The Connect page reads it to say "refused" at once instead of
+  // waiting for the code to expire. Never a code: the event carries none, and
+  // `applyPairingRejection` keeps only those three fields.
+  const [pairingRejections, setPairingRejections] = useState({});
   // Bumped when a robot refuses or defers an offer (see `reopensAssignment`): PENDING task
   // cards re-read their explanation at once instead of on the next 10 s poll.
   const [assignmentSignal, setAssignmentSignal] = useState(0);
@@ -484,7 +490,9 @@ export default function AppProvider({ children }) {
 
         await refreshDbState();
         addEvent(`Unit ${robotId} commissioned`, 'info');
-        navigate('/robots');
+        // Commissioning registers the unit; a physical unit is not done until its Pi has
+        // enrolled. Straight on to the Connect page, which issues the code and waits.
+        navigate(connectPathFor(robotId));
       });
     },
     [addEvent, navigate, refreshDbState, requestAuth]
@@ -905,6 +913,20 @@ export default function AppProvider({ children }) {
       });
     };
 
+    // H4 — a commissioned robot reached the server and was refused while pairing. The robot
+    // will not retry a refused code by itself, so the operator has to act: say so.
+    const onRobotPairingRejected = (data) => {
+      const robotId = String(data?.robotId || '').trim();
+      if (!robotId) return;
+      setPairingRejections((prev) => applyPairingRejection(prev, data, Date.now()));
+      addEvent(
+        data?.locked === true
+          ? `Pairing locked for ${robotId} after repeated refused attempts`
+          : `Robot ${robotId} was refused: its pairing code or stored credential was not accepted`,
+        'warning'
+      );
+    };
+
     // New PENDING task created — add to list immediately so spinner shows.
     const onTaskCreated = (data) => {
       const taskId = String(data?.taskId || '').trim();
@@ -1081,6 +1103,7 @@ export default function AppProvider({ children }) {
     socket.on(DASHBOARD_EVENTS.ROBOT_SPECIFICATION_UPDATED, onRobotSpecificationUpdated);
     socket.on(DASHBOARD_EVENTS.ROBOT_OFFLINE, onRobotOffline);
     socket.on(DASHBOARD_EVENTS.ROBOT_ONLINE, onRobotOnline);
+    socket.on(DASHBOARD_EVENTS.ROBOT_PAIRING_REJECTED, onRobotPairingRejected);
     socket.on(DASHBOARD_EVENTS.TASK_CREATED, onTaskCreated);
     socket.on(DASHBOARD_EVENTS.TASK_ACCEPTED, onTaskAccepted);
     socket.on(DASHBOARD_EVENTS.TASK_ERROR, onTaskError);
@@ -1096,6 +1119,7 @@ export default function AppProvider({ children }) {
       socket.off(DASHBOARD_EVENTS.ROBOT_SPECIFICATION_UPDATED, onRobotSpecificationUpdated);
       socket.off(DASHBOARD_EVENTS.ROBOT_OFFLINE, onRobotOffline);
       socket.off(DASHBOARD_EVENTS.ROBOT_ONLINE, onRobotOnline);
+      socket.off(DASHBOARD_EVENTS.ROBOT_PAIRING_REJECTED, onRobotPairingRejected);
       socket.off(DASHBOARD_EVENTS.TASK_CREATED, onTaskCreated);
       socket.off(DASHBOARD_EVENTS.TASK_ACCEPTED, onTaskAccepted);
       socket.off(DASHBOARD_EVENTS.TASK_ERROR, onTaskError);
@@ -1138,6 +1162,7 @@ export default function AppProvider({ children }) {
       taskPathCacheRef,
       taskRoutes,
       assignmentSignal,
+      pairingRejections,
     }),
     [
       effectiveRoute,
@@ -1158,6 +1183,7 @@ export default function AppProvider({ children }) {
       isCreatingTask,
       taskRoutes,
       assignmentSignal,
+      pairingRejections,
       // taskPathCacheRef is a ref — excluded from deps intentionally
       // (its identity is stable; contents change without re-render)
     ]

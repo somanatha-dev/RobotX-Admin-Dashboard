@@ -25,6 +25,11 @@ const override = require("../engine/security/override");
 // PHASE 14 remediation (P14-R3 / P14-R5) — one policy and one audit writer, shared with
 // the action-class middleware.
 const { policyFor, recordAuthorisation } = require("../middlewares/auth_middleware");
+// H6 — decommissioning closes the robot's live connection, if it has one.
+const { getRobotSocket, disconnectSocket } = require("../sockets/robotSockets");
+
+/** A pairing code's lifetime: single use, and unusable this long after it was issued. */
+const PAIRING_CODE_TTL_SEC = 300;
 
 async function writeRobotLiveState(kv, robot, { exSeconds = 15 } = {}) {
   if (!kv || !robot) return;
@@ -429,7 +434,29 @@ const commissionRobotWithPairing = asyncHandler(async (req, res) => {
   }
 
   const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
-  await kv.set(`pairing:${robotId}`, code, { ex: 300 });
+  await kv.set(`pairing:${robotId}`, code, { ex: PAIRING_CODE_TTL_SEC });
+
+  // H5 — issuing a pairing credential is a privileged act, so it is recorded on the Robot's
+  // Event stream: which robot, by whom and for how long. It never records the code itself. The
+  // code exists only in the KV and in this one response.
+  // Best-effort, like the Agent projection above: the code is already live, and failing the
+  // request now would leave the operator without the code a robot could already present.
+  try {
+    await prisma.event.create({
+      data: {
+        robotId: robot.id,
+        type: "INFO",
+        message:
+          `Pairing code issued for robot ${robotId}` +
+          (req.user?.id ? ` by ${req.user.id}` : "") +
+          ` (single use, expires in ${PAIRING_CODE_TTL_SEC} s; replaces any earlier unused code)`,
+      },
+    });
+  } catch (e) {
+    (req.app?.locals?.logger || console).warn(
+      `[commission] pairing-code audit event could not be recorded for ${robotId}: ${e?.message}`,
+    );
+  }
 
   // Ensure Redis live state exists for immediate UI visibility.
   try {
@@ -452,7 +479,68 @@ const commissionRobotWithPairing = asyncHandler(async (req, res) => {
   // configured unit as unconfigured; see `robotProjection.stripInternalFields`. What it
   // must still do is keep `simulationOwnerId` off the wire — this route can act on an
   // existing row, and an existing row may be a simulated one.
-  res.json({ ok: true, robot: robotProjection.stripInternalFields(robot), pairingCode: code, expiresIn: 300 });
+  res.json({ ok: true, robot: robotProjection.stripInternalFields(robot), pairingCode: code, expiresIn: PAIRING_CODE_TTL_SEC });
+});
+
+// GET /api/robots/:robotId/pairing
+//
+// H3 — where a robot's enrollment stands, for the Connect page to rebuild itself after a
+// refresh, a backend restart or a page left open. Read-only: it issues nothing, changes
+// nothing and **never returns the code**. Once `POST /commission` has answered, the code is
+// shown nowhere again, and a lost code is replaced, never recovered.
+//
+//   * `enrolled` — the robot holds an unexpired durable session (`RobotSession`): it has
+//     paired, and its stored token will authenticate it at its next boot. The row stores only
+//     a hash, and neither the hash nor the expiry leaves this handler.
+//   * `pairingPending` — an unused code is outstanding (`pairing:{robotId}`).
+//   * `failedAttempts` / `locked` — the F32 brute-force state (`pairingAttempts:` /
+//     `pairingLocked:`). A locked robot can be unlocked only through the quarantine override.
+const getPairingStatus = asyncHandler(async (req, res) => {
+  const prisma = getPrisma();
+  const kv = req.app?.locals?.kv;
+  const robotId = toStringOrNull(req.params?.robotId);
+
+  if (!robotId) {
+    const err = new Error("robotId is required");
+    err.status = 400;
+    throw err;
+  }
+  if (!kv) {
+    const err = new Error("KV store unavailable");
+    err.status = 503;
+    throw err;
+  }
+
+  const robot = await prisma.robot.findUnique({
+    where: { robotId },
+    select: { id: true, isOnline: true, lastSeenAt: true },
+  });
+  if (!robot) {
+    const err = new Error("Unknown robotId");
+    err.status = 404;
+    throw err;
+  }
+
+  const [session, storedCode, rawAttempts, lockFlag] = await Promise.all([
+    prisma.robotSession.findUnique({ where: { robotDbId: robot.id }, select: { expiresAt: true } }),
+    kv.get(`pairing:${robotId}`),
+    kv.get(`pairingAttempts:${robotId}`),
+    kv.get(`pairingLocked:${robotId}`),
+  ]);
+
+  const attempts = Number.parseInt(String(rawAttempts ?? "0"), 10);
+  const expiresAtMs = session?.expiresAt ? new Date(session.expiresAt).getTime() : NaN;
+
+  res.json({
+    ok: true,
+    robotId,
+    isOnline: robot.isOnline === true,
+    lastSeenAt: robot.lastSeenAt ? new Date(robot.lastSeenAt).toISOString() : null,
+    enrolled: Number.isFinite(expiresAtMs) && expiresAtMs > Date.now(),
+    pairingPending: storedCode !== null && storedCode !== undefined && String(storedCode) !== "",
+    failedAttempts: Number.isFinite(attempts) && attempts > 0 ? attempts : 0,
+    locked: Boolean(lockFlag),
+  });
 });
 
 // POST /api/robots/:robotId/pairing/unlock
@@ -656,6 +744,24 @@ const deleteRobot = asyncHandler(async (req, res) => {
     } catch {
       // ignore
     }
+
+    // H6 — the robot's credentials go with it. The `RobotSession` row already cascades with the
+    // Robot row, but the KV `session:` key is consulted *first* at AUTH. Left behind, a robotId
+    // re-commissioned within the session lifetime accepted the old unit's token, and an unused
+    // pairing code or a lockout carried over to the new unit. Each key is deleted on its own so
+    // one failure cannot keep the others alive.
+    for (const key of [
+      `session:${robotCode}`,
+      `pairing:${robotCode}`,
+      `pairingAttempts:${robotCode}`,
+      `pairingLocked:${robotCode}`,
+    ]) {
+      try {
+        await kv.del(key);
+      } catch {
+        // ignore — best-effort, like the live-state cleanup above
+      }
+    }
   }
 
   // Stop the running VirtualRobot instance so it doesn't keep emitting
@@ -668,6 +774,12 @@ const deleteRobot = asyncHandler(async (req, res) => {
       // non-fatal
     }
   }
+
+  // H6 — close the robot's live connection last, after its row and its session are gone, so a
+  // reconnect cannot authenticate: AUTH refuses an unknown robotId. The socket's own disconnect
+  // handler finds no row and writes nothing. A physical robot used to stay connected after it
+  // was decommissioned.
+  disconnectSocket(getRobotSocket(robotCode));
 
   res.json({ ok: true, robotId: robotCode });
 });
@@ -813,6 +925,7 @@ module.exports = {
   getRobotsState,
   getRobotHistory,
   commissionRobotWithPairing,
+  getPairingStatus,
   unlockPairing,
   sendRobotCommand,
   clearRobotFault,
