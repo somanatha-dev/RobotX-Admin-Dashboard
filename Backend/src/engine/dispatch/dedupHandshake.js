@@ -20,6 +20,12 @@
  * | Generation unchanged, marks *behind* the store | Commands lost in flight, not applied | Redeliver from the agent's high-water mark |
  * | **Generation advanced, or state absent** | **The dedup state was reset** | **Suppress redelivery entirely**; advance `authority_epoch`; reconcile physical and custody state; re-offer fresh work under new commitment ids and fences |
  *
+ * P7-D4 adds one observation to row 3: generation unchanged, but a live commitment above the
+ * agent's reported fence floor, whose OFFER this agent **acknowledged**, is missing from its
+ * marks (or below that OFFER's fence).
+ * The agent's own acknowledgement proves it applied the command, so the gap is a reset the
+ * generation failed to announce — see `classify`.
+ *
  * ── Why the third path reuses the agent-scope fence ─────────────────────────
  * > A dedup reset is exactly the condition the agent-scope fence was designed for: the
  * > question "which of my prior authorities does this agent still correctly honour?"
@@ -157,6 +163,9 @@ function normaliseMarks(marks) {
  * @param {object} input.reported from `parseReport`
  * @param {object|null} input.stored the `AgentDedupState` row, or null
  * @param {Array<object>} input.activeCommitments the agent's active commitments
+ * @param {Iterable<string>} [input.acknowledgedCommitmentIds] the active commitments whose
+ *   OFFER this agent acknowledged (Outbox `OFFER` rows in `ACKED`). Absent, no
+ *   acknowledgement evidence is used and the classification is exactly as before P7-D4.
  * @returns {object} the classification
  */
 function classify(input) {
@@ -195,6 +204,40 @@ function classify(input) {
     // direction: suppression costs one round of re-offering, admission costs a double
     // execution.
     return decision(DEDUP_PATH.SUPPRESS_AND_REFENCE, "DEDUP_STATE_GENERATION_WENT_BACKWARDS", {
+      custodyHold,
+      redeliver: [],
+    });
+  }
+
+  // P7-D4 — generation unchanged, but the agent's own acknowledgements contradict its marks.
+  //
+  // An acknowledged OFFER is evidence the agent produced, not the server: the ACK had to echo
+  // that OFFER's exact fence (`command.handler.acknowledgeOutboxRow`), and an agent applies a
+  // mission command only after recording its mark durably (`VirtualRobot
+  // ._applyMissionCommandExclusively`). An agent whose state is intact therefore reports a
+  // mark for every live commitment whose OFFER it acknowledged, at that OFFER's fence or
+  // above — marks are cleared only on a reset the server itself confirmed. Reporting none, or
+  // a lower one, is a state loss the generation failed to announce, not a command lost in
+  // flight. Row 2's redelivery rests on "the agent's dedup state is intact and will reject
+  // anything it has already applied", which is exactly what is false here, so this is row 3.
+  // A gap the agent never acknowledged still takes row 2 below, unchanged.
+  //
+  // Only commitments **above the agent's reported fence floor** count. Everything at or below
+  // the floor the agent rejects by §10.3.1's interaction rule, so it holds no authority there
+  // that could be double-executed — and after a reset this server confirmed, the agent has
+  // adopted a floor at the fence counter and legitimately discarded its marks while the old
+  // commitment is still live (a reset releases nothing; lease recovery does). Without this
+  // bound every later reconnect of that agent would read as another reset and advance its
+  // authority epoch again. A fresh process reports floor 0, so a genuine loss is still caught.
+  const acknowledged = new Set(settings.acknowledgedCommitmentIds || []);
+  const forgotten = active.filter((commitment) => {
+    if (!acknowledged.has(commitment.commitmentId)) return false;
+    if (BigInt(commitment.fence) <= reported.fenceFloor) return false;
+    const mark = reported.marks.get(commitment.commitmentId);
+    return !mark || mark.fence < BigInt(commitment.fence);
+  });
+  if (forgotten.length > 0) {
+    return decision(DEDUP_PATH.SUPPRESS_AND_REFENCE, "ACKNOWLEDGED_COMMITMENT_MISSING_FROM_MARKS", {
       custodyHold,
       redeliver: [],
     });
@@ -417,8 +460,99 @@ function agentAdmits(command, agentState) {
   return fencing.acceptsAgentCommand(command, state.highestSeenAuthority);
 }
 
+/**
+ * The mission commands after whose acknowledgement the agent no longer carries the work —
+ * the set whose ACK releases the legacy read model (`command.handler`). @structural
+ */
+const STAND_DOWN_COMMANDS = Object.freeze(["RECALL", "WITHDRAW"]);
+
+/**
+ * P7-D4 Part 2 — the stand-downs a **confirmed** reset has made permanently unacknowledgeable.
+ *
+ * A stand-down's ACK is the only thing that releases the legacy Task view of an assignment
+ * the engine has already withdrawn (`reassignment.withdrawIncumbent` releases the commitment
+ * and writes the RECALL in one transaction; the Task follows on the ACK). After this reset the
+ * agent adopts a fence floor at the agent's fence counter, so it refuses every stand-down at or
+ * below that floor, and the suppression just written means none is redelivered — that ACK can
+ * never arrive. This names those, so the read model can follow the authority without one.
+ *
+ * Read-only, and called inside the handshake's transaction, so the selection sees exactly the
+ * state the reset was confirmed against. It decides nothing about the authority — the commitment
+ * was already released and the Leg already frozen by the engine; nothing here writes either.
+ *
+ * Every condition must hold, and each is checked explicitly rather than inferred:
+ *  - the path is the confirmed reset (§11.5 row 3), and no live commitment of the agent is in
+ *    any custody state but `NONE` — with custody unresolved nothing is released, so the hold
+ *    is retained whole;
+ *  - every stand-down row for the commitment is unacknowledged and at or below the floor
+ *    (an ACKED one was released by the ACK path; one above the floor is not proven void);
+ *  - the commitment is this agent's, already **released**, with custody exactly `NONE`;
+ *  - its Leg's custody is exactly `NONE`; and
+ *  - this agent holds no live commitment on that Leg (a later grant of the same Leg to the same
+ *    agent owns the Task view, and the stale stand-down must not undo it).
+ *
+ * @param {object} tx a transaction client
+ * @param {{ agent: object, classification: object, fenceFloor: bigint }} input
+ * @returns {Promise<Array<{ commitmentId: string, legId: string, command: string }>>}
+ */
+async function standDownsVoidedByReset(tx, input) {
+  const settings = input || {};
+  const { agent, classification } = settings;
+  if (!agent || !classification || classification.path !== DEDUP_PATH.SUPPRESS_AND_REFENCE) return [];
+  if (classification.custodyReconciliationRequired) return [];
+  const floor = BigInt(settings.fenceFloor);
+  const NONE = custody.CUSTODY_STATES.NONE.name;
+
+  const rows = await tx.outbox.findMany({ where: { agentId: agent.id, command: { in: [...STAND_DOWN_COMMANDS] } } });
+  const byCommitment = new Map();
+  for (const row of rows) {
+    if (!row.commitmentId) continue;
+    if (!byCommitment.has(row.commitmentId)) byCommitment.set(row.commitmentId, []);
+    byCommitment.get(row.commitmentId).push(row);
+  }
+  const voidable = [...byCommitment.entries()].filter(([, standDowns]) =>
+    standDowns.every(
+      (row) =>
+        row.state !== outbox.OUTBOX_STATE.ACKED &&
+        row.fence !== null &&
+        row.fence !== undefined &&
+        BigInt(row.fence) <= floor,
+    ),
+  );
+  if (voidable.length === 0) return [];
+
+  const live = await tx.commitment.findMany({ where: { agentId: agent.id, releasedAt: null } });
+  // Stricter than `requiresCustodyReconciliation` (which counts only states holding goods):
+  // a live commitment in any custody state but NONE — PENDING_TRANSFER included — is
+  // unresolved custody, and the whole hold is retained.
+  if (live.some((commitment) => commitment.custodyState !== NONE)) return [];
+  const commitments = await tx.commitment.findMany({ where: { commitmentId: { in: voidable.map(([id]) => id) } } });
+  const liveLegs = new Set(live.map((commitment) => commitment.legId));
+  const released = commitments.filter(
+    (commitment) =>
+      commitment.agentId === agent.id &&
+      commitment.releasedAt !== null &&
+      commitment.releasedAt !== undefined &&
+      commitment.custodyState === NONE &&
+      !liveLegs.has(commitment.legId),
+  );
+  if (released.length === 0) return [];
+
+  const legs = await tx.leg.findMany({ where: { id: { in: released.map((commitment) => commitment.legId) } } });
+  const legCustody = new Map(legs.map((leg) => [leg.id, leg.custodyState]));
+  const commandOf = new Map(voidable.map(([id, standDowns]) => [id, standDowns[standDowns.length - 1].command]));
+
+  return released
+    .filter((commitment) => legCustody.get(commitment.legId) === NONE)
+    .map((commitment) =>
+      Object.freeze({ commitmentId: commitment.commitmentId, legId: commitment.legId, command: commandOf.get(commitment.commitmentId) }),
+    )
+    .sort((a, b) => (a.commitmentId < b.commitmentId ? -1 : a.commitmentId > b.commitmentId ? 1 : 0));
+}
+
 module.exports = {
   DEDUP_PATH,
+  STAND_DOWN_COMMANDS,
   parseReport,
   normaliseMarks,
   classify,
@@ -427,4 +561,5 @@ module.exports = {
   acknowledgement,
   isGenerationAdvance,
   agentAdmits,
+  standDownsVoidedByReset,
 };

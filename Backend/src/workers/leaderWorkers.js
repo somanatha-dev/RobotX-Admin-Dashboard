@@ -241,6 +241,56 @@ function parameter(values, name) {
  * Each takes `(context)` and returns `{ ok: true, handle }` or
  * `{ ok: false, refusal, blockedBy }`.
  */
+/**
+ * The coordinator's round settings resolved once at promotion, by setting → register name.
+ * One table for both the settings the round is handed and the record of how each was read
+ * (P7-D5 D2), so the two cannot drift. `timeBudgetMs` is resolved by
+ * `coordinatorSolvePath.contextFor` and recorded there.
+ * @structural setting name → register parameter name
+ */
+const ROUND_CONFIG_PARAMETERS = Object.freeze({
+  maxEvaluatedPerLeg: "candidate.max_evaluated",
+  maxColumnsPerRound: "plan.max_columns_per_round",
+  branchNodeBudget: "solve.branch_node_budget",
+  maxClockSkewMillis: "time.max_clock_skew",
+  storeRoundTripMillis: "time.store_round_trip",
+  windowMinMs: "solve.window_min",
+  windowMaxMs: "solve.window_max",
+  saturatedWindowMs: "solve.saturated_window",
+  maxLegsPerRound: "solve.max_legs_per_round",
+});
+
+/**
+ * P7-D5 D6 — the coordinator events that mean decision evidence was not retained: a Tier B
+ * record selected for a decision that was not written or not claimed, and a round snapshot
+ * recorded without a hash. Every coordinator event reaches `server.js`'s `record` as an
+ * info-level `engine.*` line; these two are raised to warn so a systematic loss is noticed.
+ * @structural
+ */
+const EVIDENCE_LOSS_EVENTS = Object.freeze(["coordinator.tier_b_write_failed", "coordinator.snapshot_unpinned"]);
+
+/**
+ * The coordinator's `record`, with the evidence-loss events sent to `logger.warn` under the
+ * same `engine.<event>` name `server.js` uses — instead of, not as well as, the info line.
+ * Every other event goes to `context.record` exactly as before; with no logger, `context.record`
+ * is returned unchanged.
+ *
+ * @param {object} context the composer context (`record`, `logger`)
+ * @returns {Function|undefined}
+ */
+function recordWithEvidenceLossAtWarn(context) {
+  const logger = context && context.logger && typeof context.logger.warn === "function" ? context.logger : null;
+  if (!logger) return context ? context.record : undefined;
+  const record = typeof context.record === "function" ? context.record : null;
+  return (event, detail) => {
+    if (EVIDENCE_LOSS_EVENTS.includes(event)) {
+      logger.warn(`engine.${event}`, detail);
+      return;
+    }
+    if (record) record(event, detail);
+  };
+}
+
 const COMPOSERS = Object.freeze({
   /**
    * §11.1 / §11.3 / §11.4 — claim outbox rows, deliver, record, escalate, expire.
@@ -380,6 +430,9 @@ const COMPOSERS = Object.freeze({
           assignmentDeadlineSeconds: finite(values, "sla.assignment_deadline"),
           unresponsiveStrikes: finite(values, "health.unresponsive_strikes"),
           energyDeviationTolerance: finite(values, "energy.deviation_tolerance"),
+          // P7-D2 — the orphan scan leaves a Leg whose reassignment chain exceeds this bound
+          // to its ESCALATE deadline instead of requeueing it (`reconciler.scanOrphanLegs`).
+          maxReassignmentsPerLeg: finite(values, "recover.max_reassignments_per_leg"),
           shardId: context.shardId,
         },
       ),
@@ -416,7 +469,12 @@ const COMPOSERS = Object.freeze({
    * did not supply a router, a calibration, or a region.
    */
   coordinator(context) {
-    const assembly = coordinatorSolvePath.create(context);
+    // P7-D5 D6 — the coordinator emits through `deps.record`, which the assembly takes from
+    // THIS context (`coordinatorSolvePath.create` → `enriched.record`), so the evidence-loss
+    // routing is applied here, before the assembly is built. Unchanged with no logger.
+    const record = recordWithEvidenceLossAtWarn(context);
+    // An absent context is passed through as it always was (`create` reports what is missing).
+    const assembly = coordinatorSolvePath.create(context && record !== context.record ? { ...context, record } : context);
 
     if (!assembly.ok) {
       return {
@@ -438,31 +496,49 @@ const COMPOSERS = Object.freeze({
     const enriched = assembly.context;
     const values = context.values;
 
+    // Resolved ONCE, at promotion, exactly as before. P7-D5 D2 records each one beside the
+    // round's pinned snapshot (`promotionConfigReads`), so a publish since promotion shows up as
+    // a named MISMATCH in the decision record instead of passing unseen.
+    const promoted = Object.fromEntries(
+      Object.entries(ROUND_CONFIG_PARAMETERS).map(([setting, name]) => [setting, finite(values, name)]),
+    );
+
     return {
       ok: true,
       satisfied: assembly.satisfied,
-      handle: coordinatorWorker.start(assembly.deps, {
+      // P7-D5 D3 — the process's ONE Tier B write budget (`server.js`), so the decision-record
+      // writer offers into the same instance the Tier B flusher drains. Absent, the worker's
+      // own fallback applies, exactly as before.
+      handle: coordinatorWorker.start(context.tierBBudget ? { ...assembly.deps, recordBudget: context.tierBBudget } : assembly.deps, {
         shardId: context.shardId,
         instanceId: context.instanceId,
         regionId: context.regionId,
-        config: {
-          maxEvaluatedPerLeg: finite(values, "candidate.max_evaluated"),
-          maxColumnsPerRound: finite(values, "plan.max_columns_per_round"),
-          branchNodeBudget: finite(values, "solve.branch_node_budget"),
-          timeBudgetMs: enriched.expansionWallClockBudgetMs,
-          maxClockSkewMillis: finite(values, "time.max_clock_skew"),
-          storeRoundTripMillis: finite(values, "time.store_round_trip"),
-          windowMinMs: finite(values, "solve.window_min"),
-          windowMaxMs: finite(values, "solve.window_max"),
-          saturatedWindowMs: finite(values, "solve.saturated_window"),
-          maxLegsPerRound: finite(values, "solve.max_legs_per_round"),
-        },
+        config: { ...promoted, timeBudgetMs: enriched.expansionWallClockBudgetMs },
+        promotionConfigReads: Object.entries(ROUND_CONFIG_PARAMETERS).map(([setting, name]) => ({
+          name,
+          used: promoted[setting],
+          via: "finite",
+        })),
         // §22.5's switches reach the round as data. None is thrown on by this composer:
         // `deferral` and the rest are register state, and the round reads `killSwitches`
         // for what it may do, never for what it must.
         killSwitches: context.killSwitches || {},
         tickMs: finite(values, "solve.window_min"),
-        record: context.record,
+        record,
+        // P7-D5 — what each round's decision record is pinned to. The accessor is the one the
+        // solve path reads configuration through (`coordinatorPipeline.snapshotFrom`), so the
+        // version and values recorded are the ones in force for the round, read per round
+        // rather than frozen at promotion (P15-R2's rule). The sampling settings come from the
+        // same object (`coordinator.worker.observabilityFrom`). `codeVersion` is resolved once
+        // at boot by the composition root (`config/codeVersion`); absent, rounds record that
+        // they ran unpinned rather than inventing one.
+        // P7-D5 D2 — the round's PINNED snapshot (`coordinatorSolvePath` pins it at
+        // `beginRound`, and planning reads only it), not the live accessor: what the record
+        // pins is what planning read. Live only before the first round boundary.
+        configSnapshot: () =>
+          (typeof assembly.deps.roundConfig === "function" ? assembly.deps.roundConfig() : null) ||
+          coordinatorPipeline.snapshotFrom(enriched),
+        codeVersion: typeof context.codeVersion === "string" && context.codeVersion !== "" ? context.codeVersion : null,
       }),
     };
   },
@@ -600,7 +676,16 @@ function productionExpiryHandlers(context, values) {
   // `QUEUED` deadline is armed for.
   const escalationLadder = ladder.create({
     prisma,
-    values,
+    // The resolved map, not `values` as passed. server.js passes a GETTER
+    // (`() => app.locals.config.values`, P15-R2) and every other read here unwraps it through
+    // `valuesOf` — but the ladder reads its eight published fractions itself, and a function
+    // has neither `.get` nor the parameter names as keys. So every rung read as unpublished,
+    // every QUEUED Leg's ladder answered UNDETERMINED:LADDER_NOT_PUBLISHED, and §17.4's only
+    // path to a decision (rungs 7–8, then §4.4's `ladder exhausted → FAILED`) was unreachable
+    // in production: a Leg no agent could ever serve stayed QUEUED and was re-priced every
+    // round (Phase 5: TSK-1791530708128-820, F19). Resolved once here, as the budget beside it
+    // is — a promotion composes against the version in force when leadership is acquired.
+    values: valuesOf(values),
     budgetSeconds: deadlineSecondsFrom(values, timers.ENTITY_TYPE.LEG, legMachine.LEG_STATE.QUEUED),
     regionId: context.regionId,
     escalationCapacity: finite(values, "ops.escalation_capacity"),

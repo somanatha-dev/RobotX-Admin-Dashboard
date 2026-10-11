@@ -34,6 +34,23 @@ const { RESERVATION_STATE, RELEASE_REASON, DEVELOPMENT_CHARGER } = devChargingSc
 const BENGALURU = { lat: 12.9716, lon: 77.5946 };
 const T0 = 1_700_000_000_000;
 
+/**
+ * P7-D3 Step 0 — the V1 demonstration depot row, in the shape `tools/demo/seedV1Demonstration.js`
+ * creates it (`rnsit-innovation-center`, `isDepot: true`, STANDARD, a FINE cell). The scheduler
+ * now reads this row and never writes it, so every store below starts with it, as a seeded
+ * deployment does.
+ */
+const DEPOT_ROW = Object.freeze({
+  id: "charger-depot",
+  chargerId: "V1DEMO-DEPOT-01",
+  regionId: "region-rnsit",
+  cellId: "8b6014510498fff",
+  chargerClass: "STANDARD",
+  isDepot: true,
+  latitude: 12.900729,
+  longitude: 77.517603,
+});
+
 /* ═══════════════════════════════════════════════════════════════════════════
    A working in-memory store
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -79,9 +96,9 @@ function ordered(rows, orderBy) {
   return sorted;
 }
 
-function createChargingStore() {
+function createChargingStore({ depot = true } = {}) {
   let sequence = 0;
-  const chargers = [];
+  const chargers = depot ? [{ ...DEPOT_ROW }] : [];
   const reservations = [];
   const projections = [];
   const agents = [];
@@ -187,30 +204,62 @@ function addAgent(store, agentRowId, robotId) {
    T1 — simulated charger provisioning
    ═══════════════════════════════════════════════════════════════════════════ */
 
-describe("T1 — the development charger is provisioned into the EXISTING schema", () => {
-  test("one Charger row, three plugs declared in the published projection", async () => {
+describe("T1 — the simulated fleet charges at the V1 depot, which the scheduler reads and never writes (P7-D3 Step 0)", () => {
+  test("the declared charger is the depot; three development plugs are published in the projection", async () => {
     const store = await provisionedStore();
 
+    expect(DEVELOPMENT_CHARGER.chargerId).toBe("V1DEMO-DEPOT-01");
     expect(store.prisma._chargers).toHaveLength(1);
-    const charger = store.prisma._chargers[0];
-    expect(charger.chargerId).toBe("DEV-SIM-RNSIT-MBA-01");
-    expect(charger.chargerClass).toBe("STANDARD");
+    expect(store.prisma._chargers[0]).toEqual(DEPOT_ROW); // unchanged, field for field
 
     // The plug count lives in the Scheduler's own published artefact, not in a column:
     // §14.5 makes the projection the statement of per-charger reservable capacity, and no
     // migration was added by this batch.
     const capacity = await devChargingScheduler.publishedCapacity({ prisma: store.prisma });
     expect(capacity).toMatchObject({ ok: true, plugCount: 3 });
+    expect(store.provisioned.chargerDbId).toBe(DEPOT_ROW.id);
   });
 
-  test("the charger is NOT a depot, so it cannot enter §14.5's E_return fallback set", async () => {
+  test("the projection's charger entry is the depot row's own identity, coordinate and isDepot", async () => {
     const store = await provisionedStore();
-    expect(store.prisma._chargers[0].isDepot).toBe(false);
+    const [entry] = store.prisma._projections[0].payload.chargers;
+    expect(entry).toMatchObject({
+      chargerId: "V1DEMO-DEPOT-01",
+      chargerClass: "STANDARD",
+      isDepot: true,
+      latitude: DEPOT_ROW.latitude,
+      longitude: DEPOT_ROW.longitude,
+      plugCount: 3,
+    });
+    expect(store.prisma._projections[0].payload.chargers).toHaveLength(1);
+  });
+
+  test.each([
+    ["absent", null, /is not declared in this deployment/],
+    ["not a depot", { isDepot: false }, /is not a depot/],
+    ["without a coordinate", { latitude: null }, /states no coordinate/],
+    ["without a cell", { cellId: null }, /states no cell/],
+    ["of an uncharacterised class", { chargerClass: "FAST" }, /charge curve is declared only for "STANDARD"/],
+  ])("a depot row %s is refused by name: nothing is written, nothing published, no plug granted", async (_label, change, reason) => {
+    const store = createChargingStore({ depot: change !== null });
+    if (change) Object.assign(store.prisma._chargers[0], change);
+    const before = JSON.parse(JSON.stringify(store.prisma._chargers));
+
+    const outcome = await devChargingScheduler.provision({ prisma: store.prisma }, { nowMs: T0 });
+
+    expect(outcome).toMatchObject({ ok: false, published: false, projectionVersion: null });
+    expect(outcome.problems.join(" ")).toMatch(reason);
+    expect(JSON.parse(JSON.stringify(store.prisma._chargers))).toEqual(before);
+    expect(store.prisma._projections).toHaveLength(0);
+    addAgent(store, "agent-1", "SIM-1");
+    const verdict = await devChargingScheduler.requestPlug(store, { agentRowId: "agent-1", targetSoc: 0.8, nowMs: T0 });
+    expect(verdict.ok).toBe(false);
+    expect(store.prisma._reservations).toHaveLength(0);
   });
 
   test("no rated power is asserted — a curve is not a nameplate", async () => {
     const store = await provisionedStore();
-    expect(store.prisma._chargers[0].ratedPowerW).toBeNull();
+    expect(DEVELOPMENT_CHARGER.ratedPowerW).toBeNull();
     expect(store.prisma._projections[0].payload.evidence.ratedPowerW).toBeNull();
   });
 
@@ -229,11 +278,10 @@ describe("T1 — the development charger is provisioned into the EXISTING schema
     expect(projection.payload.evidence.note).toMatch(/no production charger readiness|discharges no V1 stop condition/i);
   });
 
-  test("the coordinates are traceable to the adopted campus extract, and say they are not surveyed", async () => {
+  test("the location's provenance is the depot row's, and says it is not surveyed", async () => {
     const store = await provisionedStore();
-    expect(store.prisma._chargers[0].latitude).toBeCloseTo(12.9009017, 6);
-    expect(store.prisma._chargers[0].longitude).toBeCloseTo(77.519021, 6);
-    expect(DEVELOPMENT_CHARGER.locationProvenance).toMatch(/way\/204638943/);
+    expect(store.prisma._projections[0].payload.evidence.locationProvenance).toBe(DEVELOPMENT_CHARGER.locationProvenance);
+    expect(DEVELOPMENT_CHARGER.locationProvenance).toMatch(/seedV1Demonstration/);
     expect(DEVELOPMENT_CHARGER.locationProvenance).toMatch(/NOT a surveyed charger position/);
   });
 
@@ -461,7 +509,7 @@ describe("T4 — a retried request creates no second reservation", () => {
   });
 
   test("reservationId is deterministic, so the unique index is the durable backstop", () => {
-    expect(devChargingScheduler.reservationIdFor("agent-1", 0)).toBe("DEV-SIM-RNSIT-MBA-01:agent-1:0");
+    expect(devChargingScheduler.reservationIdFor("agent-1", 0)).toBe("V1DEMO-DEPOT-01:agent-1:0");
     expect(devChargingScheduler.reservationIdFor("agent-1", 0)).toBe(devChargingScheduler.reservationIdFor("agent-1", 0));
     // A genuinely NEW session after a completed one is a new id, not a collision.
     expect(devChargingScheduler.reservationIdFor("agent-1", 1)).not.toBe(devChargingScheduler.reservationIdFor("agent-1", 0));
@@ -477,8 +525,8 @@ describe("T4 — a retried request creates no second reservation", () => {
 
     expect(store.prisma._reservations).toHaveLength(2);
     expect(store.prisma._reservations.map((r) => r.reservationId)).toEqual([
-      "DEV-SIM-RNSIT-MBA-01:agent-1:0",
-      "DEV-SIM-RNSIT-MBA-01:agent-1:1",
+      "V1DEMO-DEPOT-01:agent-1:0",
+      "V1DEMO-DEPOT-01:agent-1:1",
     ]);
   });
 });
@@ -799,13 +847,16 @@ describe("T11 — a physical agent never receives simulated charging state", () 
     };
     walk(root);
 
-    // Exactly three readers: the scheduler's own driver (which holds the roster), the
-    // agent (for the release-reason vocabulary), and the status reader the engine's worker
-    // is composed with. No controller, no route, no socket handler.
+    // Exactly four readers: the scheduler's own driver (which holds the roster), the
+    // agent (for the release-reason vocabulary), the status reader the engine's worker
+    // is composed with, and — P7-D3 Step 1 — the charger route provider, which reads only
+    // `depotProblems` and is called only by the driver's charging client. No controller, no
+    // route, no socket handler.
     expect(hits.sort()).toEqual([
       "services/chargingStatus.service.js",
       "simulation/SimulationEngine.js",
       "simulation/VirtualRobot.js",
+      "simulation/chargerRoute.js",
     ]);
   });
 

@@ -303,6 +303,9 @@ function rejectionRows(summary) {
  * @param {number} [input.compactTopN] `observability.compact_top_n`
  * @returns {object} the frozen Tier A record
  */
+/** P7-D5 D4 — an explicit `null` ("not recorded") kept; an omitted list defaults to `[]`. */
+const listOrDefault = (value) => (value === null ? null : (value ?? []));
+
 function build(input) {
   const source = input || {};
   const identity = source.identity || {};
@@ -393,6 +396,16 @@ function build(input) {
       chosen: itemiseTerms(source.costTotals ? source.costTotals.chosen : null),
       runnerUp: itemiseTerms(source.costTotals ? source.costTotals.runnerUp : null),
       unit: "milli-CU",
+      // P7-D5 D4 — why a side is null (`decisionRecord.COST_TOTALS_NOT_RECORDED`), when the
+      // writer knows. Present only when supplied, so a record built without it is unchanged.
+      ...(source.costTotals && source.costTotals.notRecorded
+        ? {
+            notRecorded: {
+              chosen: source.costTotals.notRecorded.chosen ?? null,
+              runnerUp: source.costTotals.notRecorded.runnerUp ?? null,
+            },
+          }
+        : {}),
     },
 
     // "Counts by binding predicate across the whole candidate set — **the aggregate, not
@@ -486,10 +499,12 @@ function build(input) {
       // Only decision-specific degradations appear here. A shard-wide mode is recorded
       // once at the mode level (§18.5) and is referenced, not repeated — the same bound
       // `sampling.classifyExemption()` applies to the exemption list.
-      dependencies: source.degradation ? (source.degradation.dependencies ?? []) : [],
-      envelopeReductions: source.degradation ? (source.degradation.envelopeReductions ?? []) : [],
-      relaxations: source.degradation ? (source.degradation.relaxations ?? []) : [],
-      shardModes: source.degradation ? (source.degradation.shardModes ?? []) : [],
+      // P7-D5 D4 — an explicit `null` is "not recorded" and is kept; an omitted list keeps the
+      // `[]` default every existing caller relies on.
+      dependencies: source.degradation ? listOrDefault(source.degradation.dependencies) : [],
+      envelopeReductions: source.degradation ? listOrDefault(source.degradation.envelopeReductions) : [],
+      relaxations: source.degradation ? listOrDefault(source.degradation.relaxations) : [],
+      shardModes: source.degradation ? listOrDefault(source.degradation.shardModes) : [],
       // §22.5 rule 4 — "a thrown switch that is not recorded would silently break
       // replay determinism".
       killSwitches: source.degradation ? (source.degradation.killSwitches ?? null) : null,
@@ -499,7 +514,9 @@ function build(input) {
     // without a reason.
     deferral: source.deferral ?? null,
 
-    overrides: [...(source.overrides || [])],
+    // P7-D5 D4 — `null` when the writer had no producer of overrides ("not recorded");
+    // `[]` when it recorded none, or when omitted (the existing default).
+    overrides: source.overrides === null ? null : [...(source.overrides || [])],
 
     // §21.5 reads these back at settlement. Retained unconditionally, because a
     // prediction that is never compared to reality is a reassurance.
@@ -698,7 +715,9 @@ function fromRow(row) {
     searchAndSolveBounds: row.searchAndSolveBounds ?? null,
     degradation: row.degradation ?? null,
     deferral: row.deferral ?? null,
-    overrides: row.overrides ?? [],
+    // P7-D5 D4 — a stored `null` is "not recorded" and is read back as such; a row without
+    // the field at all keeps the `[]` it was always read as.
+    overrides: row.overrides === undefined ? [] : row.overrides,
     predictions: row.predictions ?? null,
   });
 }

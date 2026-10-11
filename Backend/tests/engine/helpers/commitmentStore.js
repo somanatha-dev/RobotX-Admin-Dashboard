@@ -14,6 +14,9 @@
  *   - `SELECT … FOR UPDATE` as a real mutex with a FIFO wait queue, so a second
  *     transaction genuinely blocks on the first;
  *   - `FOR SHARE` as a shared lock that conflicts with `FOR UPDATE` only;
+ *   - (P7-D4 Part 4) `FOR KEY SHARE` and `FOR NO KEY UPDATE` with PostgreSQL's conflict table,
+ *     and — only with `rowLocksOnWrite: true` — the row lock a plain UPDATE takes, so a write
+ *     waits behind a conflicting lock and then re-checks its `where` as READ COMMITTED does;
  *   - transaction-local write overlays applied atomically at commit and discarded on
  *     abort, so a guard failure leaves nothing behind;
  *   - the `Commitment_kind_hard_only` CHECK (invariant I18);
@@ -101,6 +104,26 @@ const TABLE_OF_SQL_NAME = Object.freeze({
   WorkQueue: "workQueue",
 });
 
+/**
+ * P7-D4 Part 4 — PostgreSQL's row-level lock modes and the pairs that conflict (the manual's
+ * "Conflicting Row-Level Locks" table). `exclusive` is `FOR UPDATE` and `shared` is `FOR SHARE`,
+ * the two modes modelled before; between themselves they conflict exactly as they did.
+ */
+const ROW_LOCK_CONFLICTS = Object.freeze({
+  keyShare: ["exclusive"],
+  shared: ["noKeyUpdate", "exclusive"],
+  noKeyUpdate: ["shared", "noKeyUpdate", "exclusive"],
+  exclusive: ["keyShare", "shared", "noKeyUpdate", "exclusive"],
+});
+
+/** The locking clause a statement ends with → its mode. Longest first: "FOR NO KEY UPDATE" ends in "UPDATE". */
+const LOCKING_CLAUSES = Object.freeze([
+  [/FOR NO KEY UPDATE\s*$/i, "noKeyUpdate"],
+  [/FOR KEY SHARE\s*$/i, "keyShare"],
+  [/FOR UPDATE\s*$/i, "exclusive"],
+  [/FOR SHARE\s*$/i, "shared"],
+]);
+
 function clone(row) {
   if (row === null || row === undefined) return row;
   const copy = {};
@@ -127,22 +150,33 @@ function createCommitmentStore(seed) {
   let storeTime = settings.now instanceof Date ? new Date(settings.now.getTime()) : new Date("2026-07-29T12:00:00.000Z");
   let nextTxId = 1;
 
-  /** lockKey → { exclusive: txId|null, shared: Set<txId>, queue: [] } */
+  /** lockKey → { holders: Map<txId, Set<mode>>, queue: [] } */
   const locks = new Map();
+
+  // P7-D4 Part 4 — off unless a test asks for it: every `update`/`updateMany`/`upsert` of an
+  // existing row first takes the row lock PostgreSQL's UPDATE takes (FOR NO KEY UPDATE), waits
+  // behind a conflicting holder, and re-evaluates its `where` against the row as committed once
+  // it has the lock (READ COMMITTED's re-check). Without it a plain write never blocks here.
+  const rowLocksOnWrite = settings.rowLocksOnWrite === true;
 
   const stats = { commits: 0, rollbacks: 0, lockWaits: 0, uniqueViolations: 0, triggerViolations: 0 };
 
   function lockEntry(key) {
-    if (!locks.has(key)) locks.set(key, { exclusive: null, shared: new Set(), queue: [] });
+    if (!locks.has(key)) locks.set(key, { holders: new Map(), queue: [] });
     return locks.get(key);
   }
 
   function canTake(entry, txId, mode) {
-    if (entry.exclusive !== null && entry.exclusive !== txId) return false;
-    if (mode === "exclusive") {
-      return [...entry.shared].every((holder) => holder === txId);
+    for (const [holder, modes] of entry.holders) {
+      if (holder === txId) continue;
+      for (const held of modes) if (ROW_LOCK_CONFLICTS[mode].includes(held)) return false;
     }
     return true;
+  }
+
+  function grant(entry, txId, mode) {
+    if (!entry.holders.has(txId)) entry.holders.set(txId, new Set());
+    entry.holders.get(txId).add(mode);
   }
 
   async function acquire(key, txId, mode) {
@@ -151,18 +185,15 @@ function createCommitmentStore(seed) {
       stats.lockWaits += 1;
       await new Promise((resolve) => entry.queue.push({ txId, mode, resolve }));
     }
-    if (mode === "exclusive") entry.exclusive = txId;
-    else entry.shared.add(txId);
+    grant(entry, txId, mode);
   }
 
   function releaseAll(txId) {
     for (const entry of locks.values()) {
-      if (entry.exclusive === txId) entry.exclusive = null;
-      entry.shared.delete(txId);
+      entry.holders.delete(txId);
       while (entry.queue.length > 0 && canTake(entry, entry.queue[0].txId, entry.queue[0].mode)) {
         const waiter = entry.queue.shift();
-        if (waiter.mode === "exclusive") entry.exclusive = waiter.txId;
-        else entry.shared.add(waiter.txId);
+        grant(entry, waiter.txId, waiter.mode);
         waiter.resolve();
       }
     }
@@ -741,6 +772,16 @@ function createCommitmentStore(seed) {
      */
     const touch = (row) => ({ ...row, updatedAt: now() });
 
+    // P7-D4 Part 4 — with `rowLocksOnWrite`, an UPDATE's own row lock and READ COMMITTED's
+    // re-check: lock every row the statement matched, then keep those that still match the row
+    // as committed once the lock is held. A row that only began to match is not picked up.
+    const lockForWrite = async (table, candidates, where) => {
+      if (!rowLocksOnWrite) return candidates;
+      const ids = candidates.map((row) => row.id).sort();
+      for (const id of ids) await acquire(`${table}:${id}`, txId, "noKeyUpdate");
+      return ids.map((id) => read(table, id)).filter((row) => row && matches(row, where));
+    };
+
     const modelClient = (table) => ({
       async findUnique({ where }) {
         return findFirst(table, where);
@@ -772,19 +813,25 @@ function createCommitmentStore(seed) {
         return clone(row);
       },
       async update({ where, data }) {
-        const existing = findFirst(table, where);
+        const found = findFirst(table, where);
+        const [existing] = found ? await lockForWrite(table, [found], where) : [];
         if (!existing) throw new Error(`no ${table} row matches ${JSON.stringify(where)}`);
         const row = clone(touch(applyData(existing, data)));
         overlay[table].set(existing.id, row);
         return clone(row);
       },
       async updateMany({ where, data }) {
-        const targets = rows(table).filter((row) => matches(row, where));
+        const targets = await lockForWrite(
+          table,
+          rows(table).filter((row) => matches(row, where)),
+          where,
+        );
         for (const target of targets) overlay[table].set(target.id, clone(touch(applyData(target, data))));
         return { count: targets.length };
       },
       async upsert({ where, create, update }) {
-        const existing = findFirst(table, where);
+        const found = findFirst(table, where);
+        const [existing] = found ? await lockForWrite(table, [found], where) : [];
         if (existing) {
           const row = clone(touch(applyData(existing, update)));
           overlay[table].set(existing.id, row);
@@ -803,8 +850,7 @@ function createCommitmentStore(seed) {
       async $queryRawUnsafe(sql, ...params) {
         if (/SELECT NOW\(\)/i.test(sql)) return [{ now: new Date(storeTime.getTime()) }];
 
-        const forUpdate = /FOR UPDATE\s*$/i.test(sql);
-        const forShare = /FOR SHARE\s*$/i.test(sql);
+        const clause = LOCKING_CLAUSES.find(([pattern]) => pattern.test(sql));
         const match = /FROM "(\w+)" WHERE "(\w+)" = \$1/i.exec(sql);
         if (!match) throw new Error(`the store model does not implement: ${sql}`);
 
@@ -815,8 +861,7 @@ function createCommitmentStore(seed) {
         const target = rows(table).find((row) => row[column] === value);
         if (!target) return [];
 
-        if (forUpdate) await acquire(`${table}:${target.id}`, txId, "exclusive");
-        else if (forShare) await acquire(`${table}:${target.id}`, txId, "shared");
+        if (clause) await acquire(`${table}:${target.id}`, txId, clause[1]);
 
         const fresh = rows(table).find((row) => row[column] === value);
         return fresh ? [clone(fresh)] : [];

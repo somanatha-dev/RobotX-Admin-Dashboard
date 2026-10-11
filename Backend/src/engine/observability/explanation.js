@@ -179,6 +179,35 @@ function solveProvenance(record) {
 }
 
 /**
+ * P7-D5 D4 — one side of Tier A's `costTotals` as a term map, or `null` when it was not
+ * recorded. A missing section, a `null` side, or a map with no milli-CU term are all "not
+ * recorded": none of them can be read as a breakdown, and an empty one summed to zero is the
+ * false "0 CU" this replaces.
+ *
+ * @param {object} record a Tier A record
+ * @param {"chosen"|"runnerUp"} side
+ * @returns {Record<string, string>|null}
+ */
+function recordedTerms(record, side) {
+  const terms = record && record.costTotals ? record.costTotals[side] : null;
+  if (!terms || typeof terms !== "object") return null;
+  return Object.values(terms).some((value) => typeof value === "string") ? terms : null;
+}
+
+/**
+ * P7-D5 D4 — why a side of `costTotals` is not recorded, when the writer said
+ * (`decisionRecord.COST_TOTALS_NOT_RECORDED`); otherwise `null`.
+ *
+ * @param {object} record
+ * @param {"chosen"|"runnerUp"} side
+ * @returns {string|null}
+ */
+function notRecordedReason(record, side) {
+  const notRecorded = record && record.costTotals ? record.costTotals.notRecorded : null;
+  return notRecorded && typeof notRecorded[side] === "string" ? notRecorded[side] : null;
+}
+
+/**
  * *Why this agent?* — the cost breakdown, the runner-up, the margin, and which terms
  * were decisive.
  *
@@ -192,20 +221,20 @@ function solveProvenance(record) {
 function whyThisAgent(record) {
   const outcome = record.outcome || {};
   const compact = record.runnerUpAndTopN || {};
-  const totals = record.costTotals || {};
   const runnerUp = compact.runnerUp || null;
 
-  const chosenTerms = totals.chosen || {};
-  const runnerUpTerms = totals.runnerUp || {};
+  // P7-D5 D4 — an unrecorded breakdown is stated as unrecorded, never as an empty one.
+  const chosenTerms = recordedTerms(record, "chosen");
+  const runnerUpTerms = recordedTerms(record, "runnerUp");
 
   const marginMilliCU = runnerUp && runnerUp.deltaMilliCU !== null && runnerUp.deltaMilliCU !== undefined
     ? BigInt(runnerUp.deltaMilliCU)
     : null;
 
   const decisive = [];
-  for (const term of Object.keys(chosenTerms).sort(compareStrings)) {
+  for (const term of Object.keys(chosenTerms || {}).sort(compareStrings)) {
     const mine = chosenTerms[term];
-    const theirs = runnerUpTerms[term];
+    const theirs = (runnerUpTerms || {})[term];
     if (typeof mine !== "string" || typeof theirs !== "string") continue;
     const advantage = BigInt(theirs) - BigInt(mine);
     if (marginMilliCU !== null && advantage >= marginMilliCU && advantage > 0n) {
@@ -216,11 +245,14 @@ function whyThisAgent(record) {
   return answerOf(QUERY.WHY_THIS_AGENT, SOURCE.TIER_A, {
     chosenAgentId: outcome.agentId ?? null,
     outcome: outcome.outcome ?? null,
+    // P7-D5 D4 — `null` (with `costBreakdownRecorded: false`) when the record holds no term
+    // map; decisive terms need both sides' terms, so they are `null` unless both were recorded.
     costBreakdown: chosenTerms,
+    costBreakdownRecorded: chosenTerms !== null,
     runnerUp,
     marginMilliCU: marginMilliCU === null ? null : marginMilliCU.toString(),
     marginCU: marginMilliCU === null ? null : toCU(marginMilliCU),
-    decisiveTerms: decisive.sort((a, b) => compareStrings(a.term, b.term)),
+    decisiveTerms: chosenTerms !== null && runnerUpTerms !== null ? decisive.sort((a, b) => compareStrings(a.term, b.term)) : null,
     // How much of this answer is proven, and by what. An operator disputing a margin is
     // entitled to know whether the allocation behind it was certified optimal or was the
     // best thing a §9.4 budget had found when the clock ran out — the two support very
@@ -475,9 +507,10 @@ function whyDistantAgent(input) {
  */
 function sensitivity(record) {
   const compact = record.runnerUpAndTopN || {};
-  const totals = record.costTotals || {};
   const runnerUp = compact.runnerUp || null;
-  const chosenTerms = totals.chosen || {};
+  // P7-D5 D4 — no recorded term map means no cost levers can be stated (`costLeversRecorded`).
+  const chosenTerms = recordedTerms(record, "chosen") || {};
+  const costLeversRecorded = recordedTerms(record, "chosen") !== null;
 
   const margin =
     runnerUp && runnerUp.deltaMilliCU !== null && runnerUp.deltaMilliCU !== undefined ? BigInt(runnerUp.deltaMilliCU) : null;
@@ -520,6 +553,7 @@ function sensitivity(record) {
     marginMilliCU: margin === null ? null : margin.toString(),
     marginCU: margin === null ? null : toCU(margin),
     costLevers: perTerm,
+    costLeversRecorded,
     feasibilityLevers,
     exact: true,
     why:
@@ -544,8 +578,30 @@ function sensitivity(record) {
 function whatDidItCost(input) {
   const source = input || {};
   const record = source.record;
-  const chosen = (record.costTotals || {}).chosen || {};
   const rate = Number.isFinite(source.cuPerCurrencyUnit) ? source.cuPerCurrencyUnit : null;
+  const agentId = record.outcome ? (record.outcome.agentId ?? null) : null;
+
+  // P7-D5 D4 — the record holds no breakdown for the chosen agent. Stated as not recorded,
+  // with the writer's reason, and NEVER summed to zero: this answer used to say "priced at
+  // 0 CU across 0 term(s)" for every decision whose breakdown was never captured.
+  const chosen = recordedTerms(record, "chosen");
+  if (chosen === null) {
+    const reason = notRecordedReason(record, "chosen");
+    return answerOf(QUERY.WHAT_DID_IT_COST, SOURCE.TIER_A, {
+      agentId,
+      recorded: false,
+      notRecordedReason: reason,
+      terms: [],
+      totalMilliCU: null,
+      totalCU: null,
+      totalCurrency: null,
+      cuPerCurrencyUnit: rate,
+      sentence:
+        agentId === null || reason === "NO_CHOSEN_AGENT"
+          ? "No agent was chosen, so this decision priced no assignment."
+          : "The cost breakdown was not recorded for this decision.",
+    });
+  }
 
   const terms = Object.keys(chosen)
     .sort(compareStrings)
@@ -567,7 +623,9 @@ function whatDidItCost(input) {
   const totalMilliCU = terms.reduce((sum, row) => sum + BigInt(row.milliCU), 0n);
 
   return answerOf(QUERY.WHAT_DID_IT_COST, SOURCE.TIER_A, {
-    agentId: record.outcome ? record.outcome.agentId : null,
+    agentId,
+    recorded: true,
+    notRecordedReason: null,
     terms,
     totalMilliCU: totalMilliCU.toString(),
     totalCU: toCU(totalMilliCU),
@@ -615,8 +673,14 @@ function whatHappened(input) {
     settlement,
     deltas,
     settled: settlement !== null,
+    // P7-D5 D4 — no producer records predictions yet; say so rather than offering them.
+    predictionsRecorded: predictions !== null,
     sentence:
-      settlement === null
+      predictions === null
+        ? settlement === null
+          ? "No predictions were recorded for this decision, and it has not settled yet."
+          : "The decision has settled; no predictions were recorded for it, so there is nothing to compare."
+        : settlement === null
         ? "This decision has not settled yet, so only the predictions are available."
         : deltas.length === 0
           ? "The decision has settled; no comparable predicted/realised pair was recorded."

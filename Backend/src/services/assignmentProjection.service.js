@@ -248,7 +248,14 @@ async function releaseRecalledAssignment(prisma, input) {
     return 1;
   });
 
-  return { released: count === 1, reason: count === 1 ? null : "TASK_NOT_HELD_BY_ROBOT", taskId: task.taskId };
+  return {
+    released: count === 1,
+    reason: count === 1 ? null : "TASK_NOT_HELD_BY_ROBOT",
+    taskId: task.taskId,
+    // The row keys, for a caller that records the release against both (P7-D4 Part 2's audit).
+    taskRowId: task.id,
+    robotRowId: robot.id,
+  };
 }
 
 /**

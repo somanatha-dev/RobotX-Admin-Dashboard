@@ -145,6 +145,8 @@ function createAgentFactsProvider(settings) {
     // F7-B (H5): the newest proof at or before the decision time, so an answer recorded just
     // after it does not hide the one that proved the link at it.
     let lastHeartbeatAckAt;
+    /** P7-D1 — set when the robot itself reports CHARGING; see the reservations below. */
+    let selfReportedChargingFrom = null;
     if (kv) {
       try {
         const [live, probe] = await Promise.all([
@@ -153,6 +155,13 @@ function createAgentFactsProvider(settings) {
         ]);
         const beat = live && Number(live.lastHeartbeat);
         if (Number.isFinite(beat)) candidates.push(new Date(beat));
+        // P7-D1 — the robot's own CHARGING report, read where it lives (the registry). Not
+        // stored as a status any more (it used to become PAUSED, a hold the robot could never
+        // clear), so it restricts here instead, for exactly as long as the robot says it.
+        if (live && String(live.status || "").toUpperCase() === "CHARGING") {
+          const reportedAt = Number(live.updatedAt);
+          selfReportedChargingFrom = Number.isFinite(reportedAt) && notAfter(new Date(reportedAt)) ? new Date(reportedAt) : new Date(0);
+        }
         const probed = probe && Number(probe.lastProbeAckAt);
         if (Number.isFinite(probed) && probe.lastProbeSocketId && probe.lastProbeSocketId === robot.socketId) {
           const at = new Date(probed);
@@ -196,12 +205,20 @@ function createAgentFactsProvider(settings) {
             },
           }
         : undefined,
-      reservations: reservations.map((row) => ({
-        subsystem: "CHARGING",
-        reservationId: row.reservationId,
-        from: row.reservedFrom,
-        until: row.reservedUntil,
-      })),
+      reservations: [
+        ...reservations.map((row) => ({
+          subsystem: "CHARGING",
+          reservationId: row.reservationId,
+          from: row.reservedFrom,
+          until: row.reservedUntil,
+        })),
+        // P7-D1 — a robot that says it is charging is occupied, reservation or not (§23.5: a
+        // self-report may restrict). Open-ended, so F18 denies any plan while the report stands;
+        // it disappears the moment the robot stops reporting CHARGING — nothing sticks.
+        ...(selfReportedChargingFrom
+          ? [{ subsystem: "CHARGING", reservationId: "SELF_REPORTED_CHARGING", from: selfReportedChargingFrom, until: null }]
+          : []),
+      ],
       // F4 — a single-tenant deployment's agents belong to its one tenant. A tenant stated
       // on the Agent row is never overridden.
       tenantId: agent.tenantId ?? tenantId ?? undefined,

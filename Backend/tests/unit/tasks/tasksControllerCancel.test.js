@@ -29,7 +29,7 @@ describe("tasks.controller — cancelTask (F27: cancel must stop the robot + cle
       task: { findUnique: jest.fn(), update: jest.fn() },
       // Legacy tasks: no engine Leg (P1.4 refuses cancel only for engine-managed tasks).
       leg: { findFirst: jest.fn().mockResolvedValue(null) },
-      robot: { findUnique: jest.fn(), update: jest.fn() },
+      robot: { findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
       $transaction: jest.fn(async (fn) => fn(prisma)),
     };
     getPrisma.mockReturnValue(prisma);
@@ -87,10 +87,15 @@ describe("tasks.controller — cancelTask (F27: cancel must stop the robot + cle
     cancelTask(req, res, jest.fn());
     await waitFor(() => res.json.mock.calls.length > 0);
 
-    // Robot released back to IDLE in the DB.
+    // Robot unbound, and released back to IDLE in the DB only from IDLE's own health tier
+    // (P7 A3 — a held or faulted robot keeps its status; see p7a3LegacyCancelGuard.test.js).
     expect(prisma.robot.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: "db-robot-1" }, data: { currentTaskId: null, status: "IDLE" } })
+      expect.objectContaining({ where: { id: "db-robot-1" }, data: { currentTaskId: null } })
     );
+    expect(prisma.robot.updateMany).toHaveBeenCalledWith({
+      where: { id: "db-robot-1", status: { in: ["IDLE", "ACTIVE"] } },
+      data: { status: "IDLE" },
+    });
 
     // The robot must be told to stop driving toward the cancelled task —
     // via its room, so this still works when another worker owns the socket.
@@ -122,5 +127,6 @@ describe("tasks.controller — cancelTask (F27: cancel must stop the robot + cle
     await waitFor(() => res.json.mock.calls.length > 0);
 
     expect(prisma.robot.update).not.toHaveBeenCalled();
+    expect(prisma.robot.updateMany).not.toHaveBeenCalled();
   });
 });

@@ -19,7 +19,7 @@ import { Badge } from '@/components/ui/badge.jsx';
 import { TaskRejectionPanel, useTaskRejection } from '@/features/tasks/taskRejection.js';
 import { taskPhase } from '@/features/tasks/taskLifecycle.js';
 import { plannedRouteMeters } from '@/features/tasks/taskRoute.js';
-import { cancellationFor } from '@/lib/taskCancellation.js';
+import { cancellationFor, isElevatedOperator } from '@/lib/taskCancellation.js';
 import { taskRobotCode } from '@/lib/liveState.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ const TONE_STYLE = Object.freeze({
 
 // ── TaskCard ─────────────────────────────────────────────────────────────────
 
-function TaskCard({ task, robot, route, assignmentSignal, onCancel }) {
+function TaskCard({ task, robot, route, assignmentSignal, onCancel, elevated, cancelPending }) {
   const status    = normalizeStatus(task.status);
   const isPending = status === 'PENDING';
   // The engine's latest round for this task, polled only while it is PENDING. One poll,
@@ -87,9 +87,9 @@ function TaskCard({ task, robot, route, assignmentSignal, onCancel }) {
   // What the card may truthfully say about where the task is (FE-05) — see taskLifecycle.js.
   const phase = taskPhase({ status, rejection, verification: task.verification });
   const isExecuting = phase.key === 'EXECUTING';
-  // Whether a cancel control is shown, and whether it can succeed. For an engine-managed
-  // task it cannot: the backend answers 409 and changes nothing (see taskCancellation.js).
-  const cancellation = cancellationFor(task);
+  // Whether a cancel control is shown, and whether pressing it sends a request. The page cannot
+  // prove eligibility (no Leg state in the list); the backend decides (see taskCancellation.js).
+  const cancellation = cancellationFor(task, { elevated });
 
   const taskId = task.taskId || task.id;
   // FS-04: the robot's code, read from one place (lib/liveState.js). Never `task.robotId`,
@@ -189,14 +189,27 @@ function TaskCard({ task, robot, route, assignmentSignal, onCancel }) {
       )}
 
       {/* ── Action ── */}
-      {cancellation.show && cancellation.available ? (
+      {cancellation.show && cancelPending ? (
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => onCancel(taskId)}
+          disabled
+          aria-busy="true"
+          data-cancel-state="pending"
+          className="w-full border border-destructive/20 text-destructive/70"
+        >
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          Cancelling…
+        </Button>
+      ) : cancellation.show && cancellation.available ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onCancel(task)}
+          data-cancel-state="available"
           className="w-full text-destructive hover:bg-destructive/10 border border-destructive/20"
         >
-          Cancel Task
+          Cancel Task…
         </Button>
       ) : cancellation.show ? (
         <div className="space-y-1" data-cancel-state="unavailable">
@@ -227,8 +240,10 @@ function TaskCard({ task, robot, route, assignmentSignal, onCancel }) {
 // ── TasksPage ─────────────────────────────────────────────────────────────────
 
 export default function TasksPage() {
-  const { tasks, robots, taskRoutes, assignmentSignal } = useAppState();
+  const { tasks, robots, taskRoutes, assignmentSignal, session, cancellingTaskIds } = useAppState();
   const { setIsCreatingTask, cancelTask } = useAppActions();
+  // A display rule only: the backend's role check is the authorisation (taskCancellation.js).
+  const elevated = isElevatedOperator(session);
 
   const totalTasks     = tasks.length;
   const activeTasks    = tasks.filter((t) => STATUS_ACTIVE.has(normalizeStatus(t.status))).length;
@@ -284,6 +299,8 @@ export default function TasksPage() {
                 route={taskRoutes?.[taskId] || null}
                 assignmentSignal={assignmentSignal}
                 onCancel={cancelTask}
+                elevated={elevated}
+                cancelPending={(cancellingTaskIds || []).includes(taskId)}
               />
             );
           })}

@@ -85,6 +85,13 @@ const EVENT = Object.freeze({
   VERIFICATION_COMPLETE: "VERIFICATION_COMPLETE",
   EVIDENCE_INSUFFICIENT: "EVIDENCE_INSUFFICIENT",
   CANCEL_REQUEST: "CANCEL_REQUEST",
+  /**
+   * §4.6-sourced. §4.6 step 3's first case — *"Custody NONE and no HARD commitment:
+   * `CANCELLED` immediately"* — names its consequence, and no §4.4 row performs it: §4.4's
+   * `cancel request → ABORTING` is the HARD-commitment case (recall at an advanced fence).
+   * See `SECTION_4_6_SOURCED`.
+   */
+  CANCELLATION_RESOLVED: "CANCELLATION_RESOLVED",
   LEASE_EXPIRY: "LEASE_EXPIRY",
   OBSTRUCTION_RECLASSIFIED_CRITICAL: "OBSTRUCTION_RECLASSIFIED_CRITICAL",
   CLEARED_BY_RESPONDERS: "CLEARED_BY_RESPONDERS",
@@ -126,6 +133,8 @@ const GUARD = Object.freeze({
   RELEASE_EVIDENCE: "RELEASE_EVIDENCE",
   EVIDENCE_SUFFICIENT: "EVIDENCE_SUFFICIENT",
   CANCEL_AUTHORISED_AND_NOT_CUSTODIAL: "CANCEL_AUTHORISED_AND_NOT_CUSTODIAL",
+  /** §4.6 step 3, first case: the flag is set, custody is NONE, and no HARD commitment exists. */
+  CANCEL_REQUESTED_NO_COMMITMENT_NO_CUSTODY: "CANCEL_REQUESTED_NO_COMMITMENT_NO_CUSTODY",
   CUSTODY_HELD: "CUSTODY_HELD",
   CORROBORATED_POSITION: "CORROBORATED_POSITION",
   CUSTODY_ACCOUNTED_FOR: "CUSTODY_ACCOUNTED_FOR",
@@ -164,6 +173,14 @@ const GUARD = Object.freeze({
  * @structural the provenance marker for §4.3-sourced rows
  */
 const SECTION_4_3_SOURCED = "§4.3";
+
+/**
+ * The marker on a row that §4.6 states in its own words and §4.4 does not contain — the same
+ * discipline as `SECTION_4_3_SOURCED`, kept separate so that list and its pinned count are
+ * unchanged. §4.6 step 3: *"Custody NONE and no HARD commitment: `CANCELLED` immediately."*
+ * @structural the provenance marker for §4.6-sourced rows
+ */
+const SECTION_4_6_SOURCED = "§4.6";
 
 const S = legMachine.LEG_STATE;
 
@@ -215,6 +232,28 @@ const TRANSITIONS = Object.freeze([
     scope: WRITE_SCOPE.LEG_ONLY,
     guards: [],
     effects: ["TASK_FAILED", "OPERATOR_NOTIFICATION"],
+  },
+  {
+    // §4.6-sourced — step 3's first case. From `QUEUED`: a queued Leg has no commitment
+    // and no fence (§4.4's third scope note), so nothing has been said to any agent and there
+    // is nothing to recall. Reached only after step 1's flag (`cancelRequestedAt`) is written,
+    // which is what makes an in-flight round's conditional write fail (§4.6 rule 2).
+    //
+    // P7-D4 Part 3 — and from `REASSIGNING`, the state §4.7 freezes an exhausted chain in "for
+    // operator decision". There the incumbent was told — but §4.7 step 2 already advanced the
+    // commitment's fence, wrote the RECALL and released the commitment in one transaction
+    // ("the fence advance does not wait for the agent to respond"), so step 3's own condition,
+    // custody NONE and **no HARD commitment**, is exactly true; the guard re-checks it. Which
+    // REASSIGNING Legs an operator may resolve this way (chain exhausted, nothing in flight,
+    // no unresolved custody on any incumbent) is `cancellation.cancelExhaustedReassigningLeg`'s
+    // decision, not this row's.
+    from: [S.QUEUED, S.REASSIGNING],
+    event: EVENT.CANCELLATION_RESOLVED,
+    to: S.CANCELLED,
+    scope: WRITE_SCOPE.LEG_ONLY,
+    guards: [GUARD.CANCEL_REQUESTED_NO_COMMITMENT_NO_CUSTODY],
+    effects: ["TASK_CANCELLED", "CANCELLATION_AUDIT"],
+    source: SECTION_4_6_SOURCED,
   },
   {
     from: S.DEFERRED,
@@ -606,6 +645,18 @@ const GUARD_EVALUATORS = Object.freeze({
       ? pass()
       : fail("CUSTODY_NOT_NONE", `custody is ${String(context.leg && context.leg.custodyState)}`),
 
+  // Every half is evidence the caller supplies or the row carries; absence fails (§4.1 rule 3).
+  [GUARD.CANCEL_REQUESTED_NO_COMMITMENT_NO_CUSTODY]: (context) => {
+    const leg = context.leg;
+    if (!leg || leg.cancelRequestedAt === null || leg.cancelRequestedAt === undefined) {
+      return fail("CANCELLATION_NOT_REQUESTED", "§4.6 step 1's flag must be written before step 3 resolves it");
+    }
+    if (leg.custodyState !== "NONE") {
+      return fail("CUSTODY_NOT_NONE", `custody is ${String(leg.custodyState)}; §4.6 step 3 routes it to ABORTING`);
+    }
+    return required(context, "noHardCommitment", "HARD_COMMITMENT_EXISTS");
+  },
+
   [GUARD.CUSTODY_HELD]: (context) =>
     context.leg && context.leg.custodyState === "HELD"
       ? pass()
@@ -803,7 +854,9 @@ async function apply(tx, input) {
   // or a custodial recovery, and it is checked here rather than added to every row —
   // "Expressing it through the first-class `purpose` attribute rather than through an
   // ad-hoc flag is what keeps it consistent across every call site".
-  if (source.event !== EVENT.CANCEL_REQUEST) {
+  // `CANCELLATION_RESOLVED` is the cancellation's own resolution: the flag is its
+  // precondition (its guard requires it), not a reason to refuse it.
+  if (source.event !== EVENT.CANCEL_REQUEST && source.event !== EVENT.CANCELLATION_RESOLVED) {
     const cancel = cancellationGuard(leg);
     if (!cancel.ok) {
       return {
@@ -975,7 +1028,12 @@ function statesWhoseExpiryHasNoDedicatedRow() {
   const wildcardOnly = [];
   for (const state of Object.values(legMachine.LEG_STATE)) {
     if (!legMachine.requiresTimer(state)) continue;
-    const dedicated = TRANSITIONS.some((row) => row.from !== ANY_NON_TERMINAL && matchesSource(row.from, state));
+    // A cancellation's resolution is an operator's action, not an expiry's consequence — the
+    // same reason the `CANCEL_REQUEST` wildcard is not counted. P7-D4 Part 3 gave REASSIGNING
+    // that row; its deadline still escalates in place.
+    const dedicated = TRANSITIONS.some(
+      (row) => row.from !== ANY_NON_TERMINAL && row.event !== EVENT.CANCELLATION_RESOLVED && matchesSource(row.from, state),
+    );
     if (!dedicated) wildcardOnly.push(state);
   }
   return wildcardOnly.sort();
@@ -986,6 +1044,7 @@ module.exports = {
   WRITE_SCOPE,
   GUARD,
   SECTION_4_3_SOURCED,
+  SECTION_4_6_SOURCED,
   sectionFourThreeSourcedRows,
   statesWhoseExpiryHasNoDedicatedRow,
   GUARD_EVALUATORS,

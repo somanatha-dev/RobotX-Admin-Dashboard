@@ -283,12 +283,51 @@ function isLaterReason(reason) {
 }
 
 /**
+ * P7-D5 D3 — `createBudget`'s options, by the register parameter each is read from.
+ * @structural option name → register parameter name
+ */
+const BUDGET_PARAMETERS = Object.freeze({
+  writeBudgetPerMinute: "observability.tier_b_write_budget",
+  reservoirSize: "observability.tier_b_reservoir_size",
+});
+
+/** The only options `createBudget` accepts. @structural */
+const BUDGET_OPTION_KEYS = Object.freeze(Object.keys(BUDGET_PARAMETERS));
+
+/**
+ * `createBudget`'s options from a resolved configuration (`snapshot.values`). A parameter that
+ * does not resolve to a finite number is left out, and `createBudget` then takes it as 0 —
+ * the fail-safe direction: fewer Tier B writes, every shed one counted.
+ *
+ * @param {Map<string, *>|null|undefined} values
+ * @returns {{ writeBudgetPerMinute?: number, reservoirSize?: number }}
+ */
+function budgetConfigFrom(values) {
+  const out = {};
+  for (const [option, name] of Object.entries(BUDGET_PARAMETERS)) {
+    const value = values && typeof values.get === "function" ? values.get(name) : undefined;
+    if (Number.isFinite(value)) out[option] = value;
+  }
+  return out;
+}
+
+/**
  * Create the per-shard write budget with its bottom-k reservoir.
  *
  * The budget is held in coordinator memory and rolled per window, the same placement
  * §7.7's rejection aggregator uses and for the same reason: a synchronous durable write
  * to decide whether to make a durable write is a round-trip on the round's critical
  * path to answer a question about volume.
+ *
+ * ── Ownership and configuration (P7-D5 D3) ─────────────────────────────────
+ * ONE budget per process: the composition root (`server.js`) creates it and hands the same
+ * instance to the coordinator's decision-record writer (which offers into it) and to the Tier B
+ * flusher (`workers/tierB.worker`, which drains its reservoir and records its shedding). Two
+ * instances would let the writer shed against one while the flusher reports the other.
+ * Its two settings are FIXED for the life of the instance — read once, at creation. A later
+ * publish of either parameter takes effect at the next process start, not mid-window: changing
+ * a per-minute bound inside the minute it counts would make the bound neither the old one nor
+ * the new one.
  *
  * @param {object} config
  * @param {number} config.writeBudgetPerMinute `observability.tier_b_write_budget`
@@ -297,6 +336,16 @@ function isLaterReason(reason) {
  */
 function createBudget(config) {
   const settings = config || {};
+  // P7-D5 D3 — an option this constructor does not read is refused, never ignored. The
+  // composition root passed `perShardBudget` for months: it was silently dropped, the budget
+  // was built at 0/0, and nothing said so.
+  const unknown = Object.keys(settings).filter((key) => !BUDGET_OPTION_KEYS.includes(key));
+  if (unknown.length > 0) {
+    throw new TypeError(
+      `createBudget does not accept ${unknown.map((key) => `"${key}"`).join(", ")}; its options are ` +
+        `${BUDGET_OPTION_KEYS.join(", ")} (use budgetConfigFrom(values) to read them from the register)`,
+    );
+  }
   const writeBudget = Number.isFinite(settings.writeBudgetPerMinute) ? settings.writeBudgetPerMinute : 0;
   const reservoirSize = Number.isFinite(settings.reservoirSize) ? settings.reservoirSize : 0;
 
@@ -518,6 +567,9 @@ module.exports = {
   isSampled,
   classifyExemption,
   isLaterReason,
+  BUDGET_PARAMETERS,
+  BUDGET_OPTION_KEYS,
+  budgetConfigFrom,
   createBudget,
   reproducibility,
 };

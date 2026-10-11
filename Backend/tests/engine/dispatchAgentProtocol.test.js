@@ -184,51 +184,78 @@ function agentEnvelope(overrides) {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 describe("durable deduplication state (§11.5)", () => {
+  /** The wall clock the generation is seeded from (P7-D4), pinned so the test is exact. */
+  const BOOT_MS = 1_791_600_000_000;
+  const pinClock = (ms) => jest.spyOn(Date, "now").mockReturnValue(ms);
+  afterEach(() => jest.restoreAllMocks());
+
   test("a first load creates the state and advances the generation", async () => {
+    pinClock(BOOT_MS);
     const flash = makeFlash();
     const agent = makeAgent(flash, makeSocket());
 
     await agent.loadDedupState();
 
-    expect(agent.dedup.dedupStateGeneration).toBe(1n);
+    // P7-D4: seeded from the wall clock — past every generation an earlier process reported.
+    expect(agent.dedup.dedupStateGeneration).toBe(BigInt(BOOT_MS));
     expect(flash.values.has(`vr:dedup:${ROBOT_ID}`)).toBe(true);
   });
 
   test("a reload from intact flash does NOT advance the generation — a reconnect is not a reset", async () => {
+    pinClock(BOOT_MS);
     const flash = makeFlash();
     const first = makeAgent(flash, makeSocket());
     await first.loadDedupState();
 
+    // Later, a new process over the same intact flash: the stored generation is loaded as is,
+    // however far the clock has moved.
+    pinClock(BOOT_MS + 3_600_000);
     const second = makeAgent(flash, makeSocket());
     await second.loadDedupState();
 
-    expect(second.dedup.dedupStateGeneration).toBe(1n);
+    expect(second.dedup.dedupStateGeneration).toBe(first.dedup.dedupStateGeneration);
   });
 
-  test("a wiped flash advances the generation — this is the only signal a reset produces", async () => {
+  test("a wiped flash reports a STRICTLY HIGHER generation — this is the only signal a reset produces", async () => {
+    // P7-D4. This test used to assert the rebooted generation was 1n — the SAME as before the
+    // wipe — with a comment that "the server is what detects the discrepancy". It cannot: the
+    // server compares generations, so an unchanged one reads as a reconnect (measured on LOCAL:
+    // every simulated agent stored generation 1, authority epoch 0, through every restart).
+    pinClock(BOOT_MS);
     const flash = makeFlash();
     const first = makeAgent(flash, makeSocket());
     await first.loadDedupState();
-    expect(first.dedup.dedupStateGeneration).toBe(1n);
+    await first._onMissionCommand("OFFER", missionEnvelope({ commitmentId: "C1", fence: 5n, sequence: 0 }));
+    expect(first.dedup.highWaterMarks.has("C1")).toBe(true);
 
     flash.wipe();
+    pinClock(BOOT_MS + 2_000); // a reboot takes time; a fresh process holds no previous generation
     const rebooted = makeAgent(flash, makeSocket());
-    // Firmware persists the generation across the wipe in a separate region in a real
-    // device; the simulator models the conservative case where it does not, and the
-    // *server* is what detects the discrepancy. Either way the generation moves.
     await rebooted.loadDedupState();
-    expect(rebooted.dedup.dedupStateGeneration).toBe(1n);
+
+    expect(rebooted.dedup.dedupStateGeneration > first.dedup.dedupStateGeneration).toBe(true);
     expect(rebooted.dedup.highWaterMarks.size).toBe(0);
+    // No history is fabricated: the rebooted agent asserts nothing about C1.
+    expect(rebooted.dedupReport().highWaterMarks).toEqual({});
+  });
+
+  test("nextDedupGeneration: strictly increasing within one process, seeded past earlier processes", () => {
+    const next = VirtualRobot.nextDedupGeneration;
+    expect(next(0n, BOOT_MS)).toBe(BigInt(BOOT_MS)); // fresh process
+    expect(next(BigInt(BOOT_MS), BOOT_MS)).toBe(BigInt(BOOT_MS) + 1n); // same millisecond, same process
+    expect(next(BigInt(BOOT_MS) + 10n, BOOT_MS)).toBe(BigInt(BOOT_MS) + 11n); // clock behind the counter
+    expect(next(5n, Number.NaN)).toBe(6n); // no clock reading: the counter alone
   });
 
   test("a corrupt record is treated exactly as an absent one", async () => {
+    pinClock(BOOT_MS);
     const flash = makeFlash();
     await flash.set(`vr:dedup:${ROBOT_ID}`, "{not json");
     const agent = makeAgent(flash, makeSocket());
 
     await agent.loadDedupState();
 
-    expect(agent.dedup.dedupStateGeneration).toBe(1n);
+    expect(agent.dedup.dedupStateGeneration).toBe(BigInt(BOOT_MS));
     expect(agent.dedup.highWaterMarks.size).toBe(0);
   });
 
@@ -265,13 +292,14 @@ describe("durable deduplication state (§11.5)", () => {
   });
 
   test("the AUTH report carries §11.5's four elements", async () => {
+    pinClock(BOOT_MS);
     const flash = makeFlash();
     const agent = makeAgent(flash, makeSocket());
     await agent.loadDedupState();
     agent.dedup.highWaterMarks.set("C1", { fence: 5n, sequence: 2 });
 
     const report = agent.dedupReport();
-    expect(report).toMatchObject({ dedupStateGeneration: "1", authorityEpoch: "0", fenceFloor: "0" });
+    expect(report).toMatchObject({ dedupStateGeneration: String(BOOT_MS), authorityEpoch: "0", fenceFloor: "0" });
     expect(report.highWaterMarks).toEqual({ C1: { fence: "5", sequence: 2 } });
     // The server can parse exactly what the agent produces — the two halves of the
     // handshake share one definition rather than two.
@@ -1331,7 +1359,10 @@ describe("chaos (§24.5): a power cycle wipes the dedup state (invariant I21)", 
         {
           id: "dedup-1",
           agentId: fixture.agent.id,
-          dedupStateGeneration: 1n,
+          // What the server recorded at this agent's previous handshake — the generation the
+          // agent itself reported (`dedupHandshake.apply` stores it). Was the literal 1n, which
+          // only matched while every generation was 1 (P7-D4).
+          dedupStateGeneration: agent.dedup.dedupStateGeneration,
           authorityEpoch: 7n,
           fenceFloor: 41n,
           reportedAt: fixture.now,
@@ -1344,6 +1375,9 @@ describe("chaos (§24.5): a power cycle wipes the dedup state (invariant I21)", 
       reported: reported.value,
       stored: store.rows("agentDedupState")[0],
       activeCommitments: store.rows("commitment"),
+      // The agent applied C1's OFFER and still reports it: acknowledgement evidence must not
+      // turn an intact reconnect into a reset.
+      acknowledgedCommitmentIds: ["C1"],
     });
 
     expect(classification.path).toBe(dedupHandshake.DEDUP_PATH.RESUME);

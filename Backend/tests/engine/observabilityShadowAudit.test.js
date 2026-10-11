@@ -469,7 +469,10 @@ describe("workers/tierB.worker — the reservoir flush and the counted shedding"
     expect(prisma.__tables.tierBRecords).toHaveLength(0);
     // §21.2: "discarded; reconstructible by replay **while the input snapshots survive**".
     expect(prisma.__tables.snapshots).toHaveLength(1);
-    // The row keeps why a Tier B was written and loses the claim that one still exists.
-    expect(prisma.__tables.decisionRecords[0]).toMatchObject({ tierBWritten: false, tierBReason: "SAMPLED" });
+    // P7-D5 D1 — Tier A is untouched: it records that a Tier B WAS written, and the database
+    // refuses to un-set that (`20260818120000_decision_record_immutability_scope`). That it is
+    // no longer retained is the missing `DecisionRecordB` row. (This test used to expect
+    // `tierBWritten: false`, which only the trigger-less double could produce.)
+    expect(prisma.__tables.decisionRecords[0]).toMatchObject({ tierBWritten: true, tierBReason: "SAMPLED" });
   });
 });

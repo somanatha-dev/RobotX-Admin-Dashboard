@@ -29,6 +29,8 @@ const agentProbe = require("./src/services/agentProbe.service");
 const { scheduleRestartRedispatch } = require("./src/services/legacyTaskRedispatch.service");
 const { ensureAdminUser } = require("./src/services/adminBootstrap.service");
 const configService = require("./src/engine/config/service");
+// P7-D5 — the `codeVersion` pin every round snapshot needs (§9.6, §21.2). Resolved once, below.
+const { resolveCodeVersion } = require("./src/config/codeVersion");
 // PHASE 13 — §19.3's single writer.
 const election = require("./src/engine/shard/election");
 const shardSupervisor = require("./src/workers/shardSupervisor.worker");
@@ -136,9 +138,11 @@ function startScheduledWorkers(context) {
   const parameter = (name) => (values && typeof values.get === "function" ? values.get(name) : undefined);
 
   const registry = sli.createRegistry();
-  const budget = sampling.createBudget({
-    perShardBudget: values && values.get ? values.get("observability.tier_b_write_budget") : undefined,
-  });
+  // P7-D5 D3 — the process's ONE Tier B write budget, created in the engine block and handed
+  // to the coordinator as well, so this flusher drains the instance the writer offers into.
+  // The fallback is keyed as `createBudget` reads it; it used to pass `perShardBudget`, which
+  // was silently ignored and built the budget at 0/0.
+  const budget = context.tierBBudget || sampling.createBudget(sampling.budgetConfigFrom(values));
   // §7.7's aggregator: the one the coordinator's feasibility gate folds into (passed in by
   // the engine block, which also hands it to `leaderWorkers.create`), so the flusher below
   // drains what the rounds recorded. A fresh one here would be drained forever empty.
@@ -768,6 +772,11 @@ async function start() {
   // feasibility gate (LEADER_ONLY), drained to `RejectionAggregate` by the flusher
   // (SCHEDULED). The two are composed in different places, so it is created once here.
   const rejectionAggregator = rejectionTelemetry.createAggregator();
+  // P7-D5 D3 — and one Tier B write budget, for the same reason: the coordinator's
+  // decision-record writer (LEADER_ONLY) offers into it and the Tier B flusher (SCHEDULED)
+  // drains its reservoir and records its shedding. Settings read once, from the boot
+  // configuration, and fixed for the process's life (`sampling.createBudget`).
+  const tierBBudget = sampling.createBudget(sampling.budgetConfigFrom(app.locals.config && app.locals.config.values));
   if (engineEnabled) {
     try {
       const store = election.postgresLeadershipStore(prisma, {
@@ -865,11 +874,25 @@ async function start() {
         );
       }
 
+      // P7-D5 — this process's code identity, pinned into every round's decision record.
+      // Resolved once, here: it names the code this process loaded, and a later re-read of the
+      // files on disk would name different code. Absent, rounds record that they ran unpinned.
+      const codeIdentity = resolveCodeVersion();
+      if (codeIdentity.codeVersion) {
+        logger.info("Decision records pin this code version", { codeVersion: codeIdentity.codeVersion, source: codeIdentity.source });
+      } else {
+        logger.warn("No code version could be resolved; round snapshots will be recorded unpinned (no hash)", {
+          problems: codeIdentity.problems,
+        });
+      }
+
       leaderLifecycle = leaderWorkers.create({
         prisma,
         // §7.7 — the process's rejection aggregator. The coordinator's gate folds into it;
         // the rejection-aggregation flusher (`startScheduledWorkers`) drains the same one.
         rejectionAggregator,
+        // P7-D5 D3 — likewise the Tier B write budget: the writer offers, the flusher drains.
+        tierBBudget,
         kv,
         io,
         // PHASE 15 remediation (P15-R2) — an accessor, not the boot snapshot's map.
@@ -897,6 +920,7 @@ async function start() {
         // An accessor rather than the object, for P15-R2's reason exactly: `create()` runs
         // once at boot and the composers run on every promotion.
         snapshot: () => app.locals.config,
+        codeVersion: codeIdentity.codeVersion,
         shardId,
         regionId,
         instanceId: `${process.env.HOSTNAME || host}:${process.pid}`,
@@ -999,6 +1023,8 @@ async function start() {
                 assignmentDeadlineSeconds: finite("sla.assignment_deadline"),
                 unresponsiveStrikes: finite("health.unresponsive_strikes"),
                 energyDeviationTolerance: finite("energy.deviation_tolerance"),
+                // P7-D2 — an exhausted reassignment chain is held for an operator, not requeued.
+                maxReassignmentsPerLeg: finite("recover.max_reassignments_per_leg"),
                 ...sweepConfig,
               },
             ),
@@ -1211,6 +1237,7 @@ async function start() {
     engineWorkers = startScheduledWorkers({
       prisma,
       rejectionAggregator,
+      tierBBudget,
       kv,
       config: app.locals.config,
       // PHASE 15 remediation (P15-R2) — the current version, for the readers that must
@@ -1329,6 +1356,14 @@ async function start() {
       // ordinary outcome for several robots docking at once, and the scheduler must be
       // able to tell one apart from a real error without importing a database module.
       isSerializationFailure,
+      // P7-D3 Step 1 — the declaration the route to the charger is built over, read per
+      // request from the configuration in force: the same expression the V1 composition's
+      // router reads (`v1DemonstrationComposition.lazyRouter`). Absent, routes are refused
+      // by name and no robot charges — none charges in place.
+      deliveryDomainFor: () => {
+        const pinned = app.locals.config;
+        return (pinned && (pinned.deliveryDomain || (pinned.spatial && pinned.spatial.deliveryDomain))) || null;
+      },
     });
     app.locals.virtualSimulator = virtualSimulator;
 

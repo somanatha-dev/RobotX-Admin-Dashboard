@@ -29,6 +29,9 @@
  *      Which is why this worker expires Tier B and never touches `InputSnapshot`: the
  *      snapshot is what makes the discarded record recoverable, and a worker that
  *      expired both would turn a designed degradation into a permanent loss.
+ *      It never touches `DecisionRecordA` either (P7-D5 D1): `tierBWritten` records that a
+ *      Tier B record WAS written, and the database refuses to un-set it. Whether one is
+ *      still retained is the `DecisionRecordB` row's existence — see `expireTierB`.
  *
  * ── Built, tested, and not started ─────────────────────────────────────────
  * Nothing in `server.js` calls `start()`. Phase 15 owns production scheduling — the same
@@ -112,33 +115,58 @@ async function flushReservoir(deps, drained, context) {
 }
 
 /**
- * Expire Tier B records past their retention. Never touches `InputSnapshot`.
+ * Expire Tier B records past their retention. Never touches `InputSnapshot`, and never
+ * touches `DecisionRecordA`.
+ *
+ * ── P7-D5 D1: the retention invariant ──────────────────────────────────────
+ * Tier A's `tierBWritten` / `tierBReason` say that a Tier B record WAS written, and why.
+ * They are history, and `20260818120000_decision_record_immutability_scope` makes them
+ * so: `tierBWritten` may go false → true and never back. Whether a Tier B record is still
+ * RETAINED is the existence of its `DecisionRecordB` row, which is what every reader
+ * already asks (`explain.controller` reports `tierBRetained: Boolean(row.tierB)`,
+ * `replayDecision` reads `row.tierB`). So, for every decision:
+ *
+ *   tierBWritten = false             → never written (not sampled, shed, or the write failed)
+ *   tierBWritten = true,  row exists → written and retained
+ *   tierBWritten = true,  no row     → written, no longer retained; reconstructible by
+ *                                      replay while the input snapshot survives (§21.2)
+ *
+ * This used to also run a Tier A `updateMany` un-setting `tierBWritten` after the delete,
+ * as a separate statement. On PostgreSQL the trigger refuses that UPDATE, so each pass deleted
+ * up to a batch of Tier B rows and then threw — leaving exactly the state it meant to
+ * prevent, with no way to retry it. The delete is now the whole transition: one
+ * statement, so a batch is removed entirely or not at all, and a failure leaves every
+ * row as it was. A repeated pass finds nothing left that is due.
+ *
+ * The delete re-applies the retention test rather than trusting the rows selected a
+ * moment earlier, so it can only ever remove a record that is due when it runs.
  *
  * @param {object} deps `{ prisma }`
  * @param {object} input `{ nowMs, batch }`
- * @returns {Promise<{ expired: number }>}
+ * @returns {Promise<{ expired: number, selected: number, note?: string }>} `expired` is the
+ *   number of rows the delete removed; it is below `selected` only when another writer
+ *   removed some of them first
  */
 async function expireTierB(deps, input) {
   const source = input || {};
+  const cutoff = new Date(source.nowMs);
   const due = await deps.prisma.decisionRecordB.findMany({
-    where: { retainUntil: { lt: new Date(source.nowMs) } },
+    where: { retainUntil: { lt: cutoff } },
     select: { id: true, decisionId: true },
     take: Number.isFinite(source.batch) ? source.batch : EXPIRY_BATCH,
   });
 
-  if (due.length === 0) return { expired: 0 };
+  if (due.length === 0) return { expired: 0, selected: 0 };
 
-  await deps.prisma.decisionRecordB.deleteMany({ where: { id: { in: due.map((row) => row.id) } } });
-
-  // The Tier A row keeps its `tierBReason` — it says why a record *was* written — and
-  // loses the claim that one still exists. A record that still advertised a Tier B it
-  // no longer has would make the Explanation API promise a read it cannot serve.
-  await deps.prisma.decisionRecordA.updateMany({
-    where: { decisionId: { in: due.map((row) => row.decisionId) } },
-    data: { tierBWritten: false },
+  const deleted = await deps.prisma.decisionRecordB.deleteMany({
+    where: { id: { in: due.map((row) => row.id) }, retainUntil: { lt: cutoff } },
   });
 
-  return { expired: due.length, note: "reconstructible by replay while the input snapshots survive (§21.2)" };
+  return {
+    expired: deleted.count,
+    selected: due.length,
+    note: "Tier A is unchanged: it records that Tier B was written; reconstructible by replay while the input snapshots survive (§21.2)",
+  };
 }
 
 /**

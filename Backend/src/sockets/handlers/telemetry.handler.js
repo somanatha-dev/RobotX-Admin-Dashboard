@@ -6,6 +6,7 @@ const { registryKey, buildMergedRegistryState, REGISTRY_TTL: REGISTRY_TTL_SEC } 
 const { getZoneForCoordinates, applyZoneChangeSideEffects } = require("../../services/zoneManager.service");
 const { haversineMeters } = require("../../utils/distance");
 const robotStateCache = require("../../cache/robotStateCache");
+const robotStatusPrecedence = require("../../services/robotStatusPrecedence");
 // PHASE 5 (§12.3) — progress supervision. The handler *feeds* it; it does not act on it.
 const progress = require("../../engine/supervision/progress");
 // PHASE 14 (§23.5) — agent reports are untrusted input, validated before use.
@@ -279,14 +280,10 @@ const lastDbFlushAt = new Map();
 const TELEMETRY_LOG_SAMPLE_MS = Number(process.env.TELEMETRY_LOG_SAMPLE_MS || 10_000);
 const lastTelemetryLogAt = new Map();
 
-function mapIncomingStatusToDb(status) {
-  // RETURNING is displayed as ACTIVE in the DB (robot is in transit).
-  if (status === "RETURNING") return "ACTIVE";
-  // CHARGING is not in the Prisma enum — store as PAUSED (robot is stationary).
-  // The raw "CHARGING" value is preserved in Redis and broadcast to the dashboard.
-  if (status === "CHARGING") return "PAUSED";
-  return status;
-}
+// RETURNING → ACTIVE; CHARGING → nothing (`null`: no status is written — P7-D1, charging is
+// the reservation's occupancy, not an operator hold). Defined in `robotStatusPrecedence`, which
+// ranks a report for display by the same stored status this writes.
+const mapIncomingStatusToDb = robotStatusPrecedence.toPersistedStatus;
 
 
 // Pure — builds the value to SET under snapshotState:{robotId}. Split from
@@ -661,7 +658,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
                 ? existing.battery
                 : null,
         // Use the RAW incoming status (e.g. "CHARGING") for Redis + socket broadcast.
-        // statusDb (e.g. "PAUSED") is used only for the DB write below.
+        // statusDb (null for CHARGING, which is not stored) is used only for the DB write.
         status:
           statusRaw ||
           (typeof prevState?.status === "string" ? prevState.status : null) ||
@@ -1030,7 +1027,18 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
       // at fleet scale, flagged in docs/history/legacy-system-reference.md
       // §16. Scoped to the dashboard
       // room, which only browser dashboard clients join.
-      io.to("dashboard").emit("robot:update", fullState);
+      //
+      // `status` follows §23.5's asymmetric rule against the server's status after this frame
+      // (the cache a successful flush just refreshed, else the row this frame validated
+      // against): the dashboard applies it as written, so a robot the server holds PAUSED or
+      // ERROR is not shown IDLE because it still reports IDLE. Same rule as
+      // `GET /api/robots/state` (`robotStatusPrecedence`). The raw report is `reportedStatus`.
+      const serverStatus = (robotStateCache.get(robotId) || existing).status;
+      io.to("dashboard").emit("robot:update", {
+        ...fullState,
+        status: robotStatusPrecedence.displayedStatus(serverStatus, fullState.status),
+        reportedStatus: fullState.status,
+      });
 
       // PHASE 5 (§12.3) — feed progress supervision.
       //

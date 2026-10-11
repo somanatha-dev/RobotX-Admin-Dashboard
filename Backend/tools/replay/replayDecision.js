@@ -81,6 +81,92 @@ const erasure = require("../../src/engine/privacy/erasure");
 const BACKEND_ROOT = path.resolve(__dirname, "..", "..");
 const DEFAULT_CORPUS = path.join("tests", "fixtures", "replayCorpus");
 
+/* ── P7-D5 D5 — what a replay result is allowed to claim ─────────────────────
+ *
+ * A replay used to report `ok: true` whenever it found nothing to compare, so a decision
+ * with no Tier B — about 99 % of them at the default sample rate — "passed" a check that
+ * never ran. And an unpinned snapshot (stored hash `""`, `decisionRecord.snapshotRow`)
+ * read as `snapshotIntact: false` exactly as a tampered one does. Each fact is now named,
+ * and `ok` is `true` only for a verification that actually happened. */
+
+/** The pinned input snapshot, as replay finds it. */
+const SNAPSHOT_STATE = Object.freeze({
+  /** The stored hash recomputes from the stored body. */
+  INTACT: "INTACT",
+  /** No hash was ever recorded: the round ran unpinned (`coordinator.snapshot_unpinned`). Not tampering. */
+  UNPINNED: "UNPINNED",
+  /** A hash was recorded and the stored body no longer produces it. */
+  HASH_MISMATCH: "HASH_MISMATCH",
+});
+
+/**
+ * The decision's Tier B, as replay finds it. `tierBWritten` is history — a Tier B WAS
+ * written — and retention is the row's existence (`tierB.worker.expireTierB`, P7-D5 D1).
+ * An absent row of a written Tier B is expired or otherwise missing; it is never evidence
+ * of tampering.
+ */
+const TIER_B_STATE = Object.freeze({
+  RETAINED: "RETAINED",
+  WRITTEN_NOT_RETAINED: "WRITTEN_NOT_RETAINED",
+  NEVER_WRITTEN: "NEVER_WRITTEN",
+});
+
+/** The verdict, and `ok`'s value for each: true / false / null (nothing established either way). */
+const REPLAY_STATUS = Object.freeze({
+  /** Stored Tier B equals the reconstruction from complete replay inputs, against an intact snapshot. */
+  VERIFIED: "VERIFIED",
+  /** Stored Tier B was compared and differs from the reconstruction. */
+  DIVERGENT: "DIVERGENT",
+  /** The snapshot's recorded hash does not recompute. */
+  SNAPSHOT_HASH_MISMATCH: "SNAPSHOT_HASH_MISMATCH",
+  /** Nothing contradicts the record, and nothing was verified — see `reasons`. */
+  UNVERIFIED: "UNVERIFIED",
+});
+
+/** Why a result is not `VERIFIED` (also carried, as caveats, beside the other verdicts). */
+const UNVERIFIED_REASON = Object.freeze({
+  SNAPSHOT_UNPINNED: "SNAPSHOT_UNPINNED",
+  TIER_B_WRITTEN_NOT_RETAINED: "TIER_B_WRITTEN_NOT_RETAINED",
+  TIER_B_NEVER_WRITTEN: "TIER_B_NEVER_WRITTEN",
+  REPLAY_INPUTS_INCOMPLETE: "REPLAY_INPUTS_INCOMPLETE",
+  /**
+   * P7-D5 D2 — the snapshot does not show that the round read only the configuration it pins:
+   * its `configEvidence` says MISMATCH or INCOMPLETE, or it carries none (written before D2,
+   * or by a composition with no evidence provider). The pinned values are then not proven to
+   * be the ones the decision used.
+   */
+  CONFIG_EVIDENCE_NOT_CONSISTENT: "CONFIG_EVIDENCE_NOT_CONSISTENT",
+});
+
+/** P7-D5 D2 — the evidence state a snapshot without `configEvidence` is read as. */
+const CONFIG_EVIDENCE_NOT_RECORDED = "NOT_RECORDED";
+
+const SUPPLIED = "SUPPLIED";
+const NOT_SUPPLIED = "NOT_SUPPLIED";
+
+/**
+ * Classify a rebuilt snapshot. A missing or empty hash is UNPINNED, never a mismatch: the
+ * writer stores `""` precisely when it refused to invent a hash.
+ *
+ * @param {object} snapshot
+ * @returns {string} a `SNAPSHOT_STATE`
+ */
+function snapshotStateOf(snapshot) {
+  if (!snapshot || typeof snapshot.hash !== "string" || snapshot.hash === "") return SNAPSHOT_STATE.UNPINNED;
+  return snapshotModel.isIntact(snapshot) ? SNAPSHOT_STATE.INTACT : SNAPSHOT_STATE.HASH_MISMATCH;
+}
+
+/**
+ * Classify a Tier A row's Tier B.
+ *
+ * @param {object} row a `DecisionRecordA` row with `tierB` included
+ * @returns {string} a `TIER_B_STATE`
+ */
+function tierBStateOf(row) {
+  if (row && row.tierB) return TIER_B_STATE.RETAINED;
+  return row && row.tierBWritten === true ? TIER_B_STATE.WRITTEN_NOT_RETAINED : TIER_B_STATE.NEVER_WRITTEN;
+}
+
 /**
  * Rebuild one decision's Tier B from a round result. Pure.
  *
@@ -124,7 +210,7 @@ async function replayRound(deps, input) {
     );
   }
 
-  const intact = snapshotModel.isIntact(snapshot);
+  const snapshotState = snapshotStateOf(snapshot);
 
   const result = await deps.round.plan(
     {
@@ -148,7 +234,8 @@ async function replayRound(deps, input) {
     },
   );
 
-  return { ok: true, snapshotIntact: intact, result };
+  // `ok` here says only that the L4 half ran; what it proves is `replayDecision`'s verdict.
+  return { ok: true, snapshotIntact: snapshotState === SNAPSHOT_STATE.INTACT, snapshotState, result };
 }
 
 /**
@@ -165,9 +252,20 @@ function reconstructionEquivalence(input) {
 /**
  * Replay one stored decision from the durable record.
  *
+ * P7-D5 D5 — the result states what was established, never more:
+ *   · `status` — `VERIFIED` (`ok: true`): an intact snapshot, a retained Tier B, complete
+ *     replay inputs, and a byte-identical reconstruction. `DIVERGENT` /
+ *     `SNAPSHOT_HASH_MISMATCH` (`ok: false`): a problem was found. `UNVERIFIED`
+ *     (`ok: null`): nothing contradicts the record and nothing was verified; `reasons` says
+ *     why (unpinned snapshot, Tier B not retained or never written, incomplete inputs).
+ *   · `snapshotState`, `tierBState`, `replayInputs` — each fact on its own.
+ *   · `reproducibility` — whether a complete deterministic replay was possible at all.
+ * The early refusals are unchanged: `NO_SUCH_DECISION`, `SHADOW_RECORD`, `SNAPSHOT_EXPIRED`
+ * (`ok: false`, `reason`).
+ *
  * @param {object} deps `{ prisma, ...replayRound deps }`
  * @param {string} decisionId
- * @param {object} [options] `{ legsFor, configFor }`
+ * @param {object} [options] `{ legsFor, configFor, candidatesFor, columnsFor, prunedFor }`
  * @returns {Promise<object>}
  */
 async function replayDecision(deps, decisionId, options) {
@@ -201,23 +299,42 @@ async function replayDecision(deps, decisionId, options) {
 
   const record = tierA.fromRow(row);
 
+  // What the caller supplied. The snapshot pins configuration, code and switches; the Legs,
+  // the round configuration, the planning seams (agent state, chargers, routing) and the
+  // Tier B reconstruction come from the caller and are not pinned (P7-D5 D5).
+  const legs = typeof settings.legsFor === "function" ? await settings.legsFor(row) : [];
+  const config = typeof settings.configFor === "function" ? await settings.configFor(row) : {};
+  const replayInputs = {
+    legs: Array.isArray(legs) && legs.length > 0 ? SUPPLIED : NOT_SUPPLIED,
+    config: typeof settings.configFor === "function" ? SUPPLIED : NOT_SUPPLIED,
+    planningSeams: typeof deps.expandCandidates === "function" && typeof deps.pricedCandidateFor === "function" ? SUPPLIED : NOT_SUPPLIED,
+    candidates: typeof settings.candidatesFor === "function" ? SUPPLIED : NOT_SUPPLIED,
+  };
+  const inputsComplete = Object.values(replayInputs).every((value) => value === SUPPLIED);
+
+  const snapshot = {
+    roundId: row.inputSnapshot.roundId,
+    decisionTime: row.inputSnapshot.decisionTime instanceof Date
+      ? row.inputSnapshot.decisionTime.getTime()
+      : row.inputSnapshot.decisionTime,
+    configVersion: row.inputSnapshot.configVersion,
+    codeVersion: row.inputSnapshot.codeVersion,
+    killSwitchState: row.inputSnapshot.killSwitchState,
+    activeRegime: row.inputSnapshot.activeRegime,
+    hash: row.inputSnapshot.hash,
+    seed: row.inputSnapshot.seed,
+    // P7-D5 — `captureSnapshot` hashes the resolved values, and `snapshotRow` stores them in
+    // their own column, not in `pins`. Without this the rebuilt body lacks a hashed key and a
+    // genuinely intact snapshot reads as tampered.
+    resolvedValues: row.inputSnapshot.resolvedValues ?? null,
+    ...(row.inputSnapshot.pins || {}),
+  };
+
   const replayed = await replayRound(deps, {
-    snapshot: {
-      roundId: row.inputSnapshot.roundId,
-      decisionTime: row.inputSnapshot.decisionTime instanceof Date
-        ? row.inputSnapshot.decisionTime.getTime()
-        : row.inputSnapshot.decisionTime,
-      configVersion: row.inputSnapshot.configVersion,
-      codeVersion: row.inputSnapshot.codeVersion,
-      killSwitchState: row.inputSnapshot.killSwitchState,
-      activeRegime: row.inputSnapshot.activeRegime,
-      hash: row.inputSnapshot.hash,
-      seed: row.inputSnapshot.seed,
-      ...(row.inputSnapshot.pins || {}),
-    },
+    snapshot,
     shardId: row.shardId,
-    legs: typeof settings.legsFor === "function" ? await settings.legsFor(row) : [],
-    config: typeof settings.configFor === "function" ? await settings.configFor(row) : {},
+    legs,
+    config,
   });
 
   const reconstructed = reconstructTierB({
@@ -235,12 +352,60 @@ async function replayDecision(deps, decisionId, options) {
   // one the original run produced.
   const resample = sampling.reproducibility(row.decisionId, row.samplingRate);
 
+  const snapshotState = replayed.snapshotState;
+  const tierBState = tierBStateOf(row);
+
+  // Caveats on any verdict, and the whole reason for UNVERIFIED.
+  const reasons = [];
+  if (snapshotState === SNAPSHOT_STATE.UNPINNED) reasons.push(UNVERIFIED_REASON.SNAPSHOT_UNPINNED);
+  if (tierBState === TIER_B_STATE.WRITTEN_NOT_RETAINED) reasons.push(UNVERIFIED_REASON.TIER_B_WRITTEN_NOT_RETAINED);
+  if (tierBState === TIER_B_STATE.NEVER_WRITTEN) reasons.push(UNVERIFIED_REASON.TIER_B_NEVER_WRITTEN);
+  if (!inputsComplete) reasons.push(UNVERIFIED_REASON.REPLAY_INPUTS_INCOMPLETE);
+  // P7-D5 D2 — read from the hashed body (`pins.configEvidence`), so it is as trustworthy as
+  // the snapshot state says; on a HASH_MISMATCH that verdict already takes precedence.
+  const configEvidence = snapshot.configEvidence && typeof snapshot.configEvidence === "object" ? snapshot.configEvidence : null;
+  const configEvidenceState = configEvidence && typeof configEvidence.state === "string" ? configEvidence.state : CONFIG_EVIDENCE_NOT_RECORDED;
+  if (configEvidenceState !== "CONSISTENT") reasons.push(UNVERIFIED_REASON.CONFIG_EVIDENCE_NOT_CONSISTENT);
+
+  // Precedence: a snapshot that does not recompute discredits everything built on it; then a
+  // comparison that failed; VERIFIED only with nothing left to qualify it. A divergence is
+  // reported even when inputs were incomplete — a false alarm is the safe error here.
+  let status;
+  if (snapshotState === SNAPSHOT_STATE.HASH_MISMATCH) status = REPLAY_STATUS.SNAPSHOT_HASH_MISMATCH;
+  else if (equivalence !== null && !equivalence.ok) status = REPLAY_STATUS.DIVERGENT;
+  else if (reasons.length === 0 && equivalence !== null && equivalence.ok) status = REPLAY_STATUS.VERIFIED;
+  else status = REPLAY_STATUS.UNVERIFIED;
+
+  // §9.6's deterministic replay needs every version pinned AND the inputs bound to them. The
+  // deferred pins (agent state, prices, forecast, charger projection, models) have no producer
+  // yet, so a verified configuration hash never implies this.
+  const pinCheck = snapshotModel.assertReplayable(snapshot);
+
   return {
-    ok: equivalence === null ? true : equivalence.ok,
+    // true: VERIFIED. false: a problem was established. null: nothing was established.
+    ok: status === REPLAY_STATUS.VERIFIED ? true : status === REPLAY_STATUS.UNVERIFIED ? null : false,
+    status,
+    reasons,
     decisionId: row.decisionId,
     tierAPresent: true,
+    // Retained now — the row exists. `tierBWritten` is history, carried as stored.
     tierBPresent: stored !== null,
+    tierBWritten: row.tierBWritten === true,
+    tierBState,
     snapshotIntact: replayed.snapshotIntact,
+    snapshotState,
+    configEvidenceState,
+    configMismatches: configEvidence && Array.isArray(configEvidence.mismatches) ? configEvidence.mismatches : [],
+    replayInputs,
+    reproducibility: {
+      completeDeterministicReplay:
+        snapshotState === SNAPSHOT_STATE.INTACT && pinCheck.ok && inputsComplete && configEvidenceState === "CONSISTENT",
+      allVersionsPinned: pinCheck.ok,
+      missingPins: pinCheck.missing,
+      note:
+        "a verified snapshot hash pins configuration, code and kill switches only; agent state, charger state and " +
+        "routing reach the replay through caller-supplied inputs and are not pinned",
+    },
     equivalence,
     samplingReproducible: resample.ok,
     samplingDrawMatches: row.samplingDraw === null || row.samplingDraw === undefined ? null : resample.draw === row.samplingDraw,
@@ -303,6 +468,10 @@ async function replaySample(deps, input) {
     replayed: results.length,
     divergent: divergent.length,
     unreplayable: unreplayable.length,
+    // P7-D5 D5 — what the sample actually established, so an all-unverified run cannot read as clean.
+    verified: results.filter((row) => row.status === REPLAY_STATUS.VERIFIED).length,
+    unverified: results.filter((row) => row.status === REPLAY_STATUS.UNVERIFIED).length,
+    snapshotHashMismatch: results.filter((row) => row.status === REPLAY_STATUS.SNAPSHOT_HASH_MISMATCH).length,
     // §24.3 — "Divergence indicates non-determinism … and is a release blocker."
     releaseBlocking: divergent.length > 0,
     divergences: divergent.map((row) => ({ decisionId: row.decisionId, equivalence: row.equivalence })),
@@ -542,6 +711,12 @@ if (require.main === module) {
 
 module.exports = {
   DEFAULT_CORPUS,
+  SNAPSHOT_STATE,
+  TIER_B_STATE,
+  REPLAY_STATUS,
+  UNVERIFIED_REASON,
+  snapshotStateOf,
+  tierBStateOf,
   reconstructTierB,
   replayRound,
   reconstructionEquivalence,

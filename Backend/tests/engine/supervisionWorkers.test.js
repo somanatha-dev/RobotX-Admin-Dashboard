@@ -640,8 +640,12 @@ describe("§4.7 — reassignment", () => {
       reassignment.reassign(tx, { leg, agent, commitment, legCommitments: exhausted, storeTime: store.now(), ...config }),
     );
 
-    expect(result).toMatchObject({ outcome: reassignment.OUTCOME.SUSPENDED, taskState: "SUSPENDED" });
-    expect(store.rows("outbox")).toHaveLength(0);
+    expect(result).toMatchObject({ outcome: reassignment.OUTCOME.SUSPENDED, taskState: "SUSPENDED", requeued: false });
+    // P7-D2: suspension still withdraws the incumbent by §4.7 steps 1–3 — the Leg is frozen
+    // in REASSIGNING and the one RECALL is written — but nothing requeues it (step 4).
+    // This assertion used to be `outbox` empty, which pinned the livelock (nothing written).
+    expect(store.rows("leg").find((row) => row.id === fixtures.LEG_ROW_ID).state).toBe("REASSIGNING");
+    expect(store.rows("outbox").map((row) => row.command)).toEqual(["RECALL"]);
   });
 
   test("the aging credit measures from the grant, not from the Leg's creation", () => {

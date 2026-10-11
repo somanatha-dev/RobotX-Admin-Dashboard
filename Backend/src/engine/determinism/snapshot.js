@@ -123,6 +123,18 @@ function deepFreeze(value) {
 }
 
 /**
+ * P7-D5 D7 — is this an identity-evidence value `captureSnapshot` may hash? Only a plain object:
+ * `undefined`, `null` and any other value mean "no evidence", and the key is then left out of
+ * the hashed body altogether.
+ *
+ * @param {*} value
+ * @returns {boolean}
+ */
+function isEvidence(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
  * Capture an immutable, content-addressed snapshot of a round's inputs.
  *
  * @param {object} inputs
@@ -143,6 +155,12 @@ function deepFreeze(value) {
  * @param {object} [inputs.modelVersions]
  * @param {object} [inputs.resolvedValues] the config values the round actually used —
  *   §21.2 requires the decision record to store these, not merely the version
+ * @param {object} [inputs.configEvidence] P7-D5 D2 — the round's configuration-consistency
+ *   evidence; hashed only when supplied
+ * @param {object} [inputs.codeIdentity] P7-D5 D7 — what `codeVersion` is and covers
+ *   (`config/codeVersion.describeCodeVersion`); hashed only when supplied as an object
+ * @param {object} [inputs.registerIdentity] P7-D5 D7 — the parameter register's digest in force
+ *   and at publish, and whether they agree; hashed only when supplied as an object
  * @returns {object} frozen snapshot carrying `hash` and `seed`
  */
 function captureSnapshot(inputs) {
@@ -176,6 +194,15 @@ function captureSnapshot(inputs) {
       inputs.chargerProjectionPublishedAt === undefined ? null : inputs.chargerProjectionPublishedAt,
     modelVersions: inputs.modelVersions ? { ...inputs.modelVersions } : null,
     resolvedValues: inputs.resolvedValues ? { ...inputs.resolvedValues } : null,
+    // P7-D5 D2 — whether the round read only this configuration (`coordinatorSolvePath`'s
+    // `configEvidenceFor`). Hashed when supplied and absent otherwise, so every snapshot
+    // captured without it keeps the exact body, and hash, it always had.
+    ...(inputs.configEvidence === undefined ? {} : { configEvidence: inputs.configEvidence }),
+    // P7-D5 D7 — forensic identity evidence, hashed only when supplied. An absent key is left
+    // out of the body entirely — never written as `null` — so every snapshot captured without it
+    // keeps the exact body, and hash, it always had.
+    ...(isEvidence(inputs.codeIdentity) ? { codeIdentity: { ...inputs.codeIdentity } } : {}),
+    ...(isEvidence(inputs.registerIdentity) ? { registerIdentity: { ...inputs.registerIdentity } } : {}),
   };
 
   const seed = deriveSeed(body.roundId);

@@ -1,0 +1,2854 @@
+{
+ "provenance": "Read-only export of the canonical LOCAL robotx database (127.0.0.1:5433), 2026-10-09 ~18:15Z, Phase 7 investigation. Rows are copied verbatim (Robot: operational columns only; no user, credential or session data). ConfigVersion v1 payload is the pinned published configuration (ConfigActiveVersion.version=1).",
+ "configVersion": {
+  "version": 1,
+  "publishedAt": "2026-10-02T11:32:09.000Z",
+  "payload": {
+   "shards": null,
+   "values": {
+    "capacity": 1,
+    "lease.duration": 60,
+    "churn.base_cost": null,
+    "cost.failure.cu": 3600,
+    "energy.f_derate": 1,
+    "fairness.weight": 1,
+    "config.cache_ttl": 3600,
+    "cost.lambda_time": 1,
+    "fairness.horizon": 7,
+    "link.min_quality": null,
+    "preempt.min_gain": null,
+    "shard.max_agents": 20000,
+    "shard.min_agents": 1000,
+    "solve.window_max": 3000,
+    "solve.window_min": 500,
+    "fleet.agent_count": 5000,
+    "solve.time_budget": 2000,
+    "connectivity.grace": 20,
+    "dispatch.offer_ttl": 20,
+    "energy.kappa_bounds": {
+     "max": 2,
+     "min": 0.5
+    },
+    "execute.start_grace": 60,
+    "killswitch.chaining": true,
+    "killswitch.deferral": true,
+    "perf.intake_ack_p99": 50,
+    "time.max_clock_skew": 500,
+    "health.required_tier": null,
+    "plan.max_bundle_size": 4,
+    "recover.abort_budget": 300,
+    "shard.lease_duration": 5,
+    "supervise.stall_time": 90,
+    "verify.track_max_gap": 120,
+    "agent.dedup_retention": 1800,
+    "cost.energy.cu_per_wh": 0.5,
+    "degraded.max_duration": 900,
+    "dispatch.nack_cooloff": 120,
+    "dispatch.retry_window": 10,
+    "execute.eta_tolerance": 1.3,
+    "killswitch.preemption": true,
+    "payload.safety_factor": 0.9,
+    "recover.resume_window": 180,
+    "release.soak_duration": 72,
+    "verify.arrival_radius": 15,
+    "cost.lambda_time_floor": 0.2,
+    "cost.wear.cu_per_metre": 0.02,
+    "cutover.engine_enabled": false,
+    "shard.renewal_interval": 1500,
+    "solve.saturated_window": 10000,
+    "candidate.max_evaluated": 200,
+    "churn.notification_cost": null,
+    "cost.energy_consequence": {
+     "T1": 300,
+     "T2": 1800,
+     "T3": 7200
+    },
+    "cost.sla.breach_penalty": 1800,
+    "degraded.reserve_factor": 1,
+    "energy.kappa_ewma_alpha": 0.2,
+    "energy.reserve_floor_wh": null,
+    "killswitch.local_search": true,
+    "ops.escalation_capacity": null,
+    "plan.commitment_horizon": 1800,
+    "plan.service_time_prior": 60,
+    "recover.reassign_budget": 300,
+    "security.elevated_roles": [
+     "SUPER_ADMIN"
+    ],
+    "sim.max_optimistic_bias": 0.05,
+    "sla.assignment_deadline": 3600,
+    "solve.fast_path_classes": [
+     "critical"
+    ],
+    "stop.service_time_limit": 600,
+    "supervise.max_timer_lag": 10,
+    "assign.max_deferral_time": null,
+    "churn.per_second_elapsed": null,
+    "churn.wasted_travel_cost": null,
+    "cost.uncertainty_penalty": null,
+    "energy.model_residual_cv": null,
+    "intake.validation_budget": 30,
+    "invariant.check_interval": 60,
+    "killswitch.batch_solving": true,
+    "killswitch.churn_pricing": true,
+    "perf.intake_to_offer_p99": 2000,
+    "perf.tier_a_record_bytes": 2048,
+    "security.session_max_age": 86400,
+    "solve.branch_node_budget": 5000,
+    "solve.improvement_budget": 50,
+    "solve.max_legs_per_round": 500,
+    "verify.evidence_deadline": 300,
+    "candidate.target_feasible": 12,
+    "commit.hardening_deadline": 30,
+    "cost.aging.max_multiplier": 8,
+    "cost.cu_per_currency_unit": 1,
+    "energy.target_soc_max_age": 300,
+    "energy.variance_inflation": {
+     "weather": 1.15,
+     "route_novelty": 1.25,
+     "forecast_horizon": 1.1
+    },
+    "payload.packing_cache_ttl": 3600,
+    "perf.round_wall_clock_p99": 250,
+    "plan.max_exhaustive_stops": 8,
+    "policy.max_burn_in_credit": 120,
+    "recover.incumbent_cooloff": 300,
+    "reliability.halflife_days": 30,
+    "route.cell_pair_cache_ttl": 900,
+    "route.degraded_max_radius": null,
+    "route.intra_cell_offset_m": 250,
+    "verify.track_min_fix_rate": 2,
+    "cost.aging.growth_exponent": 1.5,
+    "cost.reference_agent_class": null,
+    "cost.sla.lateness_exponent": 2,
+    "cutover.observation_window": 3600,
+    "defer.wasted_round_penalty": null,
+    "degraded.max_mission_scope": "LOCAL",
+    "energy.deviation_tolerance": 0.15,
+    "energy.target_soc_fallback": 0.8,
+    "fairness.idle_alert_period": 24,
+    "payload.packing_efficiency": 0.75,
+    "plan.max_columns_per_round": 2000,
+    "plan.service_time_prior_cv": 0.5,
+    "privacy.identity_retention": 14,
+    "cost.aging.reference_period": 900,
+    "cost.sla.cu_per_second_late": 1,
+    "degraded.max_last_known_age": 60,
+    "dispatch.max_delivery_delay": 300,
+    "dispatch.systemic_threshold": 0.2,
+    "energy.contingency_quantile": 0.99,
+    "health.unresponsive_strikes": 3,
+    "localisation.min_confidence": null,
+    "observability.compact_top_n": 5,
+    "payload.packing_node_budget": 5000,
+    "perf.commit_transaction_p99": 20,
+    "perf.cost_per_candidate_p99": 100,
+    "policy.max_pilot_adjustment": 120,
+    "preempt.allowed_class_pairs": null,
+    "cost.policy.max_total_credit": 900,
+    "energy.shortfall_probability": {
+     "T1": 0.01,
+     "T2": 0.00001,
+     "T3": 1.095890410958904e-7
+    },
+    "killswitch.multi_leg_columns": true,
+    "observability.full_retention": 30,
+    "ops.suspension_review_period": 3600,
+    "perf.commit_transaction_mean": 5,
+    "perf.commit_transaction_p999": 100,
+    "route.cell_pair_min_hit_rate": 0.95,
+    "route.charger_reachability_k": 5,
+    "security.attestation_max_age": 2592000,
+    "shard.migration_min_interval": 2000,
+    "solve.batch_growth_threshold": 10,
+    "candidate.max_expansion_tiers": 5,
+    "commit.max_serial_utilisation": 0.25,
+    "energy.operational_reserve_wh": 0,
+    "fleet.missions_per_agent_year": 7300,
+    "invariant.monotonicity_window": 300,
+    "map.obstruction_class_max_age": 300,
+    "perf.agent_loss_detection_p99": 15000,
+    "perf.decision_to_dispatch_p99": 100,
+    "plan.max_heuristic_insertions": 32,
+    "route.degraded_reserve_factor": 1.1,
+    "security.override_rate_window": 604800,
+    "shard.commit_txn_service_time": 5,
+    "shard.store_round_trip_budget": 500,
+    "solve.max_window_sla_fraction": 0.05,
+    "connectivity.max_heartbeat_age": 10,
+    "cost.opportunity.value_horizon": 3600,
+    "cost.sla.upstream_slack_weight": 0.15,
+    "feasibility.negative_cache_ttl": {
+     "NONE": 10,
+     "AGENT": 300,
+     "CLASS": 60
+    },
+    "lifecycle.cu_per_braking_event": 0.2,
+    "observability.tier_b_retention": 30,
+    "perf.decision_to_dispatch_p999": 1000,
+    "perf.reconciler_full_sweep_p99": 60000,
+    "policy.max_operator_adjustment": 300,
+    "preempt.max_per_agent_per_hour": 2,
+    "preempt.victim_immunity_period": 600,
+    "security.energy_rate_tolerance": 1.5,
+    "cutover.shadow_agreement_window": 14,
+    "killswitch.reposition_injection": true,
+    "lifecycle.cu_per_actuator_cycle": {
+     "DOOR": 0.5,
+     "LIFT": 2,
+     "LATCH": 0.1
+    },
+    "lifecycle.cu_per_gradient_metre": 0.06,
+    "policy.max_zone_affinity_credit": 60,
+    "shard.txn_per_mission_lifecycle": 2.05,
+    "assign.max_consecutive_deferrals": 5,
+    "candidate.finishing_soon_horizon": 300,
+    "cost.staleness.cu_per_second_age": 0.05,
+    "cutover.guardrail_check_interval": 30,
+    "energy.max_combined_conservatism": 1.6,
+    "killswitch.opportunity_cost_term": true,
+    "observability.tier_b_sample_rate": 0.01,
+    "ops.escalation_saturation_period": 600,
+    "ops.external_escalation_contacts": null,
+    "perf.approach_routing_matrix_p99": 20,
+    "candidate.max_radius_by_sla_class": 700,
+    "candidate.optimality_tolerance_cu": 25,
+    "energy.charger_projection_max_age": 120,
+    "killswitch.cross_region_candidacy": true,
+    "killswitch.duty_cycle_regulariser": true,
+    "legacy.liveness.offline_cutoff_ms": 30000,
+    "observability.tier_b_write_budget": 5000,
+    "ops.stranded_safe_response_target": 4,
+    "perf.lease_expiry_to_recovery_p99": 30000,
+    "policy.max_dedicated_fleet_credit": 300,
+    "recover.max_reassignments_per_leg": 3,
+    "reliability.max_intervention_rate": {
+     "DELIVERY": 0.1
+    },
+    "shard.mission_rate_per_agent_hour": 4,
+    "cost.opportunity.lambda_zone_prior": null,
+    "cost.opportunity.max_terminal_gain": null,
+    "energy.charger_availability_margin": 1.15,
+    "energy.event_budget_per_fleet_year": {
+     "T1": 365000,
+     "T2": 365,
+     "T3": 4
+    },
+    "energy.uncalibrated_reserve_factor": 1.25,
+    "legacy.dtaro.battery_threshold_pct": 20,
+    "perf.charger_reachability_miss_p99": 2,
+    "verify.track_min_corridor_fraction": 0.85,
+    "agent.autonomous_continuation_limit": 900,
+    "connectivity.max_deadzone_extension": 300,
+    "failure.poison_quarantine_threshold": 3,
+    "killswitch.reliability_based_gating": true,
+    "ladder.step_1_widen_radius_fraction": 0.25,
+    "ladder.step_5_cross_region_fraction": 0.8,
+    "legacy.liveness.offline_sweep_batch": 500,
+    "observability.tier_b_reservoir_size": 100,
+    "solve.max_generation_gap_regression": 0,
+    "cost.battery.cu_per_equivalent_cycle": 900,
+    "energy.combined_nominal_conservatism": 1.4375,
+    "ladder.step_3_relax_class_p_fraction": 0.55,
+    "legacy.liveness.db_flush_interval_ms": 15000,
+    "localisation.max_odometry_divergence": 5,
+    "observability.calibration_bias_alarm": 0.2,
+    "ops.escalation_contact_review_period": 7776000,
+    "perf.charger_reachability_cached_p99": 10,
+    "plan.max_admissible_mission_duration": 600,
+    "plan.service_time_shrinkage_strength": 20,
+    "energy.charge_curve_integration_steps": 64,
+    "energy.combined_degraded_conservatism": 1.58125,
+    "observability.calibration_min_samples": 30,
+    "observability.calibration_tier_window": {
+     "T1": 604800,
+     "T2": 7862400,
+     "T3": 31557600
+    },
+    "payload.mass_discrepancy_tolerance_kg": 0.5,
+    "perf.candidate_generation_per_leg_p99": 5,
+    "lifecycle.cu_per_thermal_stress_second": 0.01,
+    "observability.input_snapshot_retention": 30,
+    "cost.opportunity.price_snapshot_max_age": 300,
+    "ladder.step_7_human_dispatcher_fraction": 0.9,
+    "ops.emergency_services_hazard_threshold": null,
+    "route.charger_reachability_min_hit_rate": 0.9,
+    "security.certificate_rotation_lead_time": 604800,
+    "security.second_approver_action_classes": [
+     "QUARANTINE_OVERRIDE",
+     "SAFETY_CONFIG_CHANGE"
+    ],
+    "ladder.step_4_permit_preemption_fraction": 0.7,
+    "ops.stranded_obstructing_response_target": 10,
+    "ops.stranded_restrictive_response_target": 45,
+    "route.declared_travel_sd_buffer_multiple": 1,
+    "security.position_plausibility_tolerance": 1.2,
+    "shard.locality_max_round_time_divergence": 0.1,
+    "ladder.step_2_admit_wait_classes_fraction": 0.4,
+    "ladder.step_6_manufacture_supply_fraction": 0.85,
+    "legacy.liveness.offline_sweep_interval_ms": 10000,
+    "perf.feasibility_per_candidate_cached_p99": 50,
+    "route.campus_operational_buffer_s_per_100m": 15,
+    "ladder.step_8_alternative_modality_fraction": 1,
+    "legacy.dtaro.charging_interrupt_battery_pct": 30,
+    "feasibility.systemic_indeterminacy_threshold": 0.3,
+    "crossregion.downstream_binding_eta_confidence": 0.8,
+    "security.override_rate_threshold_per_operator": 20,
+    "security.override_rate_threshold_per_predicate": 50,
+    "release.locality_indistinguishability_tolerance": 0.05,
+    "security.certificate_revocation_recheck_interval": 900,
+    "security.implausible_report_quarantine_threshold": 3
+   },
+   "regimes": [],
+   "spatial": {
+    "cells": [
+     {
+      "cellId": "8b6014510480fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014510482fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014510483fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014510486fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014510489fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451048afff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451048bfff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451048efff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014510490fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014510491fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014510492fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014510493fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014510494fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014510495fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014510496fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014510498fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014510499fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451049afff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451049bfff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451049cfff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451049dfff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451049efff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b60145104b1fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b60145104b3fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b60145104c2fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b60145104d0fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b60145104d1fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b60145104d2fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b60145104d3fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b60145104d4fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b60145104d5fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b60145104d6fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b60145104f2fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b60145104f3fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512841fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512844fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512845fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512849fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451284cfff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451284dfff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512860fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512861fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512862fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512863fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512864fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512865fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512866fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512868fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512869fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451286afff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451286bfff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451286cfff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451286dfff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b601451286efff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512875fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512b20fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512b24fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512b25fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512b26fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512b30fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512b32fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512b34fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512b35fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     },
+     {
+      "cellId": "8b6014512b36fff",
+      "zoneId": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+      "resolution": "FINE"
+     }
+    ],
+    "sites": [],
+    "zones": [
+     {
+      "id": "rnsit-z1",
+      "regionId": "d7534ec6-0840-4a36-b691-42584daed00f"
+     }
+    ],
+    "regions": [
+     {
+      "id": "d7534ec6-0840-4a36-b691-42584daed00f"
+     }
+    ],
+    "version": 1
+   },
+   "bindings": [
+    {
+     "key": "",
+     "name": "plan.service_time_prior",
+     "level": "global",
+     "value": 60
+    },
+    {
+     "key": "",
+     "name": "cost.energy.cu_per_wh",
+     "level": "global",
+     "value": 0.5
+    },
+    {
+     "key": "",
+     "name": "cost.wear.cu_per_metre",
+     "level": "global",
+     "value": 0.02
+    },
+    {
+     "key": "",
+     "name": "cost.failure.cu",
+     "level": "global",
+     "value": 3600
+    },
+    {
+     "key": "",
+     "name": "cost.staleness.cu_per_second_age",
+     "level": "global",
+     "value": 0.05
+    },
+    {
+     "key": "",
+     "name": "cost.energy_consequence",
+     "level": "global",
+     "value": {
+      "T1": 300,
+      "T2": 1800,
+      "T3": 7200
+     }
+    },
+    {
+     "key": "",
+     "name": "cost.sla.cu_per_second_late",
+     "level": "global",
+     "value": 1
+    },
+    {
+     "key": "",
+     "name": "cost.sla.breach_penalty",
+     "level": "global",
+     "value": 1800
+    },
+    {
+     "key": "",
+     "name": "lifecycle.cu_per_actuator_cycle",
+     "level": "global",
+     "value": {
+      "DOOR": 0.5,
+      "LIFT": 2,
+      "LATCH": 0.1
+     }
+    },
+    {
+     "key": "",
+     "name": "lifecycle.cu_per_braking_event",
+     "level": "global",
+     "value": 0.2
+    },
+    {
+     "key": "",
+     "name": "lifecycle.cu_per_gradient_metre",
+     "level": "global",
+     "value": 0.06
+    },
+    {
+     "key": "",
+     "name": "lifecycle.cu_per_thermal_stress_second",
+     "level": "global",
+     "value": 0.01
+    },
+    {
+     "key": "",
+     "name": "cost.battery.cu_per_equivalent_cycle",
+     "level": "global",
+     "value": 900
+    },
+    {
+     "key": "",
+     "name": "route.degraded_reserve_factor",
+     "level": "global",
+     "value": 1.1
+    },
+    {
+     "key": "",
+     "name": "candidate.max_radius_by_sla_class",
+     "level": "global",
+     "value": 700
+    },
+    {
+     "key": "",
+     "name": "plan.commitment_horizon",
+     "level": "global",
+     "value": 1800
+    },
+    {
+     "key": "",
+     "name": "solve.time_budget",
+     "level": "global",
+     "value": 2000
+    },
+    {
+     "key": "",
+     "name": "cost.opportunity.value_horizon",
+     "level": "global",
+     "value": 3600
+    },
+    {
+     "key": "",
+     "name": "sla.assignment_deadline",
+     "level": "global",
+     "value": 3600
+    },
+    {
+     "key": "",
+     "name": "reliability.max_intervention_rate",
+     "level": "global",
+     "value": {
+      "DELIVERY": 0.1
+     }
+    },
+    {
+     "key": "d7534ec6-0840-4a36-b691-42584daed00f",
+     "name": "cutover.engine_enabled",
+     "level": "region",
+     "value": true
+    }
+   ],
+   "activeRegime": null,
+   "derivedValues": {
+    "energy.contingency_quantile": 0.99,
+    "cost.policy.max_total_credit": 900,
+    "energy.shortfall_probability": {
+     "T1": 0.01,
+     "T2": 0.00001,
+     "T3": 1.095890410958904e-7
+    },
+    "energy.combined_nominal_conservatism": 1.4375,
+    "energy.combined_degraded_conservatism": 1.58125
+   },
+   "deliveryDomain": {
+    "crs": "EPSG:4326",
+    "kind": "CAMPUS",
+    "name": "RNSIT Campus",
+    "version": "way/1120154292",
+    "boundary": {
+     "type": "Polygon",
+     "coordinates": [
+      [
+       [
+        77.5187278,
+        12.8996306
+       ],
+       [
+        77.5188634,
+        12.8995965
+       ],
+       [
+        77.5190055,
+        12.9002031
+       ],
+       [
+        77.5197566,
+        12.9022816
+       ],
+       [
+        77.5189935,
+        12.9024215
+       ],
+       [
+        77.5190015,
+        12.9024816
+       ],
+       [
+        77.518398,
+        12.9025796
+       ],
+       [
+        77.5175585,
+        12.9025509
+       ],
+       [
+        77.5170891,
+        12.9025365
+       ],
+       [
+        77.5170676,
+        12.9020254
+       ],
+       [
+        77.5167149,
+        12.9010515
+       ],
+       [
+        77.5162806,
+        12.9000909
+       ],
+       [
+        77.5156838,
+        12.9002873
+       ],
+       [
+        77.515575,
+        12.9000645
+       ],
+       [
+        77.515009,
+        12.8991128
+       ],
+       [
+        77.516385,
+        12.8988932
+       ],
+       [
+        77.5165634,
+        12.9000566
+       ],
+       [
+        77.5170747,
+        12.8999947
+       ],
+       [
+        77.5187278,
+        12.8996306
+       ]
+      ]
+     ]
+    },
+    "regionId": "rnsit-campus",
+    "versionDate": "2026-08-30"
+   },
+   "registerDigest": "c18d102ab8b202904f3fbfb51025ba75bd22a8eeee8203e67311454b807801ab",
+   "killSwitchState": {
+    "chaining": true,
+    "deferral": true,
+    "preemption": true,
+    "local_search": true,
+    "batch_solving": true,
+    "churn_pricing": true,
+    "multi_leg_columns": true,
+    "reposition_injection": true,
+    "opportunity_cost_term": true,
+    "cross_region_candidacy": true,
+    "duty_cycle_regulariser": true,
+    "reliability_based_gating": true
+   },
+   "killSwitchStatus": "TIER_ONE_BASELINE"
+  }
+ },
+ "rows": {
+  "Agent": [
+   {
+    "id": "12df5f06-a63f-5558-8586-cb9e7edfed21",
+    "agentId": "SIM-1ABF21512BE5",
+    "robotDbId": "6196117b-067a-4e4b-8353-53f5e22d4bd6",
+    "fleetId": null,
+    "tenantId": null,
+    "agentClassId": "078de8e0-8c8f-498d-97d4-47651deba216",
+    "regionId": null,
+    "homeDepotId": null,
+    "lifecycleState": "ACTIVE",
+    "authorityEpoch": 0,
+    "fenceCounter": 5,
+    "capacityOverride": null,
+    "createdAt": "2026-10-01T03:33:21.915",
+    "updatedAt": "2026-10-02T16:48:28.741"
+   },
+   {
+    "id": "a88acd41-eee0-5e8e-a95e-aaa6550207d6",
+    "agentId": "SIM-CFE1E46B2002",
+    "robotDbId": "4fca3151-a640-43c4-9091-1230f369ed90",
+    "fleetId": null,
+    "tenantId": null,
+    "agentClassId": "f7ca57ac-01db-4c5f-8855-4b1527cfa487",
+    "regionId": null,
+    "homeDepotId": null,
+    "lifecycleState": "ACTIVE",
+    "authorityEpoch": 0,
+    "fenceCounter": 9,
+    "capacityOverride": null,
+    "createdAt": "2026-10-02T16:36:41.637",
+    "updatedAt": "2026-10-02T17:24:46.051"
+   },
+   {
+    "id": "adbafb24-7137-5f15-b32e-6b471829f87d",
+    "agentId": "SIM-0A8C043FFE67",
+    "robotDbId": "e22b8c9f-a5fc-43bc-b703-fc3482b2e52a",
+    "fleetId": null,
+    "tenantId": null,
+    "agentClassId": "34b1a065-be7a-4e42-9ce2-bc5453ace08e",
+    "regionId": null,
+    "homeDepotId": null,
+    "lifecycleState": "ACTIVE",
+    "authorityEpoch": 0,
+    "fenceCounter": 3,
+    "capacityOverride": null,
+    "createdAt": "2026-10-06T07:25:12",
+    "updatedAt": "2026-10-09T07:21:56.03"
+   },
+   {
+    "id": "b2b69fe8-30c0-59e2-83d9-d03e6c2f0bb1",
+    "agentId": "SIM-9F6F88D84EBD",
+    "robotDbId": "31d45af6-e797-493a-aeee-7605ec1a7546",
+    "fleetId": null,
+    "tenantId": null,
+    "agentClassId": "1011eaef-2391-4dd1-9b7a-d6cb2316b4bd",
+    "regionId": null,
+    "homeDepotId": null,
+    "lifecycleState": "ACTIVE",
+    "authorityEpoch": 0,
+    "fenceCounter": 1,
+    "capacityOverride": null,
+    "createdAt": "2026-10-09T13:44:06.276",
+    "updatedAt": "2026-10-09T13:44:13.948"
+   }
+  ],
+  "Robot": [
+   {
+    "id": "4fca3151-a640-43c4-9091-1230f369ed90",
+    "robotId": "SIM-CFE1E46B2002",
+    "locationId": "bc72b3b8-5ced-4f58-9209-37a46a6f72d4",
+    "campusId": null,
+    "status": "PAUSED",
+    "battery": 64.3,
+    "isOnline": true,
+    "lastSeenAt": "2026-10-09T18:10:17.932",
+    "lat": 12.900411,
+    "lon": 77.518715,
+    "speed": 0,
+    "currentTaskId": "a5a864dc-3e7e-4f24-a448-c216b38acf17",
+    "createdAt": "2026-10-02T16:36:41.571",
+    "utilization": 0,
+    "zoneId": "091e77e1-de82-4a70-ba12-7df88f016c31",
+    "name": null,
+    "massKg": 2,
+    "batteryReservePct": 15,
+    "simulated": true,
+    "statusBeforeOffline": null
+   },
+   {
+    "id": "6196117b-067a-4e4b-8353-53f5e22d4bd6",
+    "robotId": "SIM-1ABF21512BE5",
+    "locationId": "85ab39a5-6bf0-4a63-a7b8-ea6125495604",
+    "campusId": null,
+    "status": "PAUSED",
+    "battery": 38.3,
+    "isOnline": true,
+    "lastSeenAt": "2026-10-09T18:10:17.933",
+    "lat": 12.900817,
+    "lon": 77.518043,
+    "speed": 0,
+    "currentTaskId": "ac795041-6867-4db8-a293-d45c04fab7e7",
+    "createdAt": "2026-10-01T03:33:20.816",
+    "utilization": 0,
+    "zoneId": "6b1a96b7-781f-4e2e-9d2a-cd97e8469371",
+    "name": "dfgh",
+    "massKg": 2,
+    "batteryReservePct": 15,
+    "simulated": true,
+    "statusBeforeOffline": null
+   },
+   {
+    "id": "e22b8c9f-a5fc-43bc-b703-fc3482b2e52a",
+    "robotId": "SIM-0A8C043FFE67",
+    "locationId": "88d5adc9-64ef-4969-a290-d097d19b6347",
+    "campusId": null,
+    "status": "PAUSED",
+    "battery": 31.3,
+    "isOnline": true,
+    "lastSeenAt": "2026-10-09T18:10:17.936",
+    "lat": 12.901151,
+    "lon": 77.517575,
+    "speed": 0,
+    "currentTaskId": null,
+    "createdAt": "2026-10-06T07:25:11.212",
+    "utilization": 0,
+    "zoneId": "6b1a96b7-781f-4e2e-9d2a-cd97e8469371",
+    "name": null,
+    "massKg": 45,
+    "batteryReservePct": 15,
+    "simulated": true,
+    "statusBeforeOffline": null
+   },
+   {
+    "id": "31d45af6-e797-493a-aeee-7605ec1a7546",
+    "robotId": "SIM-9F6F88D84EBD",
+    "locationId": "88d5adc9-64ef-4969-a290-d097d19b6347",
+    "campusId": null,
+    "status": "IDLE",
+    "battery": 16.7,
+    "isOnline": true,
+    "lastSeenAt": "2026-10-09T18:10:17.94",
+    "lat": 12.900817,
+    "lon": 77.518043,
+    "speed": 0,
+    "currentTaskId": null,
+    "createdAt": "2026-10-09T13:44:06.245",
+    "utilization": 0,
+    "zoneId": "6b1a96b7-781f-4e2e-9d2a-cd97e8469371",
+    "name": "LOCAL-PHASE2-SIM-1",
+    "massKg": 45,
+    "batteryReservePct": 15,
+    "simulated": true,
+    "statusBeforeOffline": null
+   }
+  ],
+  "AgentClass": [
+   {
+    "id": "078de8e0-8c8f-498d-97d4-47651deba216",
+    "classId": "AC-SIM-1ABF21512BE5",
+    "name": "Ground rover — SIM-1ABF21512BE5",
+    "hardwareRevision": "virtual",
+    "firmwareVersionSet": {
+     "DELIVERY": [
+      "virtual-robot/v1-simulation"
+     ]
+    },
+    "mobilityModelId": "eae80101-4d6a-4b88-af34-b9a3e686c30d",
+    "energyModelId": "9729fe85-b3b3-4fff-bca9-5f17f096086b",
+    "containerModelId": "dbdc5ee9-0a69-42ef-b667-c3b2b96dfcd6",
+    "capabilityBundleId": "c54e9ee9-14dc-4a83-9659-fc2d765592a5",
+    "createdAt": "2026-10-01T03:33:21.789",
+    "updatedAt": "2026-10-01T03:33:23.564",
+    "chassisType": "ROVER"
+   },
+   {
+    "id": "f7ca57ac-01db-4c5f-8855-4b1527cfa487",
+    "classId": "AC-SIM-CFE1E46B2002",
+    "name": "Ground rover — SIM-CFE1E46B2002",
+    "hardwareRevision": "virtual",
+    "firmwareVersionSet": {
+     "DELIVERY": [
+      "virtual-robot/v1-simulation"
+     ]
+    },
+    "mobilityModelId": "3c2fbb47-e336-4f73-989c-45a748b791ae",
+    "energyModelId": "7e623814-e7b5-4d3d-8b5e-a2a86ccfe8e3",
+    "containerModelId": "d7c1f22c-debe-4632-ab78-2c5f444eb3c2",
+    "capabilityBundleId": "1458d646-7fc8-49ed-a051-531de51bb7f5",
+    "createdAt": "2026-10-02T16:36:41.634",
+    "updatedAt": "2026-10-02T16:36:41.747",
+    "chassisType": "ROVER"
+   },
+   {
+    "id": "34b1a065-be7a-4e42-9ce2-bc5453ace08e",
+    "classId": "AC-SIM-0A8C043FFE67",
+    "name": "Ground rover — SIM-0A8C043FFE67",
+    "hardwareRevision": "virtual",
+    "firmwareVersionSet": {
+     "DELIVERY": [
+      "virtual-robot/v1-simulation"
+     ]
+    },
+    "mobilityModelId": "72df4826-b05e-4ae5-9af2-c71e14b70c76",
+    "energyModelId": "cd807ea9-7578-4e07-9ca0-61d3b58b3d9b",
+    "containerModelId": "686df684-1d57-48b0-942b-d27a98de5ad3",
+    "capabilityBundleId": "1b3bb835-3034-4a49-9d03-8f1e1b29de46",
+    "createdAt": "2026-10-06T07:25:11.896",
+    "updatedAt": "2026-10-06T07:25:12.143",
+    "chassisType": "ROVER"
+   },
+   {
+    "id": "1011eaef-2391-4dd1-9b7a-d6cb2316b4bd",
+    "classId": "AC-SIM-9F6F88D84EBD",
+    "name": "Ground rover — SIM-9F6F88D84EBD",
+    "hardwareRevision": "virtual",
+    "firmwareVersionSet": {
+     "DELIVERY": [
+      "virtual-robot/v1-simulation"
+     ]
+    },
+    "mobilityModelId": "340eecd7-af6e-4a7a-a847-518f12db270e",
+    "energyModelId": "967fe35f-60d2-47ed-b353-bb690ea6bb91",
+    "containerModelId": "44a4de50-7b5e-4583-819c-ff9c9dbedfc5",
+    "capabilityBundleId": "2d888be9-276b-4890-aeda-015241335d74",
+    "createdAt": "2026-10-09T13:44:06.271",
+    "updatedAt": "2026-10-09T13:44:06.331",
+    "chassisType": "ROVER"
+   }
+  ],
+  "MobilityModel": [
+   {
+    "id": "eae80101-4d6a-4b88-af34-b9a3e686c30d",
+    "modelId": "MOB-SIM-1ABF21512BE5",
+    "name": "Ground rover — SIM-1ABF21512BE5",
+    "traversalDomain": "SIDEWALK_GRAPH",
+    "permissionSet": {
+     "roadClasses": [
+      "footway",
+      "path",
+      "service"
+     ],
+     "stairCapable": false,
+     "surfaceClasses": [
+      "SIMULATED_PLANAR"
+     ]
+    },
+    "speedModel": {
+     "nominalSpeedMps": 1.5
+    },
+    "kinematicLimits": {
+     "maxSpeedMps": 2.5
+    },
+    "envelopeConstraints": {
+     "environmental": {
+      "ambientC": {
+       "max": 45,
+       "min": -10,
+       "unit": "DEGREES_CELSIUS"
+      }
+     }
+    },
+    "dimensionalFootprint": null,
+    "createdAt": "2026-10-01T03:33:21.019",
+    "updatedAt": "2026-10-01T03:33:23.188"
+   },
+   {
+    "id": "3c2fbb47-e336-4f73-989c-45a748b791ae",
+    "modelId": "MOB-SIM-CFE1E46B2002",
+    "name": "Ground rover — SIM-CFE1E46B2002",
+    "traversalDomain": "SIDEWALK_GRAPH",
+    "permissionSet": {
+     "roadClasses": [
+      "footway",
+      "path",
+      "service"
+     ],
+     "stairCapable": false,
+     "surfaceClasses": [
+      "SIMULATED_PLANAR"
+     ]
+    },
+    "speedModel": {
+     "nominalSpeedMps": 1.4
+    },
+    "kinematicLimits": {
+     "maxSpeedMps": 2.5
+    },
+    "envelopeConstraints": {
+     "environmental": {
+      "ambientC": {
+       "max": 45,
+       "min": -10,
+       "unit": "DEGREES_CELSIUS"
+      }
+     }
+    },
+    "dimensionalFootprint": null,
+    "createdAt": "2026-10-02T16:36:41.575",
+    "updatedAt": "2026-10-02T16:36:41.736"
+   },
+   {
+    "id": "72df4826-b05e-4ae5-9af2-c71e14b70c76",
+    "modelId": "MOB-SIM-0A8C043FFE67",
+    "name": "Ground rover — SIM-0A8C043FFE67",
+    "traversalDomain": "SIDEWALK_GRAPH",
+    "permissionSet": {
+     "roadClasses": [
+      "footway",
+      "path",
+      "service"
+     ],
+     "stairCapable": false,
+     "surfaceClasses": [
+      "SIMULATED_PLANAR"
+     ]
+    },
+    "speedModel": {
+     "nominalSpeedMps": 1.4
+    },
+    "kinematicLimits": {
+     "maxSpeedMps": 2.5
+    },
+    "envelopeConstraints": {
+     "environmental": {
+      "ambientC": {
+       "max": 45,
+       "min": -10,
+       "unit": "DEGREES_CELSIUS"
+      }
+     }
+    },
+    "dimensionalFootprint": null,
+    "createdAt": "2026-10-06T07:25:11.293",
+    "updatedAt": "2026-10-06T07:25:12.125"
+   },
+   {
+    "id": "340eecd7-af6e-4a7a-a847-518f12db270e",
+    "modelId": "MOB-SIM-9F6F88D84EBD",
+    "name": "Ground rover — SIM-9F6F88D84EBD",
+    "traversalDomain": "SIDEWALK_GRAPH",
+    "permissionSet": {
+     "roadClasses": [
+      "footway",
+      "path",
+      "service"
+     ],
+     "stairCapable": false,
+     "surfaceClasses": [
+      "SIMULATED_PLANAR"
+     ]
+    },
+    "speedModel": {
+     "nominalSpeedMps": 1.5
+    },
+    "kinematicLimits": {
+     "maxSpeedMps": 2
+    },
+    "envelopeConstraints": {
+     "environmental": {
+      "ambientC": {
+       "max": 45,
+       "min": -10,
+       "unit": "DEGREES_CELSIUS"
+      }
+     }
+    },
+    "dimensionalFootprint": null,
+    "createdAt": "2026-10-09T13:44:06.249",
+    "updatedAt": "2026-10-09T13:44:06.316"
+   }
+  ],
+  "EnergyModel": [
+   {
+    "id": "9729fe85-b3b3-4fff-bca9-5f17f096086b",
+    "modelId": "ENG-SIM-1ABF21512BE5",
+    "name": "Ground rover pack — SIM-1ABF21512BE5",
+    "packNominalWh": 465,
+    "chemistry": "LFP",
+    "consumptionCoefficients": null,
+    "thermalDeratingCurve": [
+     {
+      "x": -10,
+      "y": 1
+     },
+     {
+      "x": 45,
+      "y": 1
+     }
+    ],
+    "chargePowerCurve": {
+     "byChargerClass": {
+      "STANDARD": {
+       "socCurve": [
+        {
+         "x": 0,
+         "y": 2000
+        },
+        {
+         "x": 0.8,
+         "y": 2000
+        },
+        {
+         "x": 0.9,
+         "y": 900
+        },
+        {
+         "x": 0.95,
+         "y": 400
+        },
+        {
+         "x": 1,
+         "y": 120
+        }
+       ]
+      }
+     },
+     "temperatureDerating": [
+      {
+       "x": -10,
+       "y": 0.35
+      },
+      {
+       "x": 0,
+       "y": 0.6
+      },
+      {
+       "x": 15,
+       "y": 1
+      },
+      {
+       "x": 35,
+       "y": 1
+      },
+      {
+       "x": 45,
+       "y": 0.7
+      }
+     ]
+    },
+    "createdAt": "2026-10-01T03:33:21.149",
+    "updatedAt": "2026-10-01T03:33:22.939"
+   },
+   {
+    "id": "7e623814-e7b5-4d3d-8b5e-a2a86ccfe8e3",
+    "modelId": "ENG-SIM-CFE1E46B2002",
+    "name": "Ground rover pack — SIM-CFE1E46B2002",
+    "packNominalWh": 500,
+    "chemistry": "LFP",
+    "consumptionCoefficients": null,
+    "thermalDeratingCurve": [
+     {
+      "x": -10,
+      "y": 1
+     },
+     {
+      "x": 45,
+      "y": 1
+     }
+    ],
+    "chargePowerCurve": {
+     "byChargerClass": {
+      "STANDARD": {
+       "socCurve": [
+        {
+         "x": 0,
+         "y": 2000
+        },
+        {
+         "x": 0.8,
+         "y": 2000
+        },
+        {
+         "x": 0.9,
+         "y": 900
+        },
+        {
+         "x": 0.95,
+         "y": 400
+        },
+        {
+         "x": 1,
+         "y": 120
+        }
+       ]
+      }
+     },
+     "temperatureDerating": [
+      {
+       "x": -10,
+       "y": 0.35
+      },
+      {
+       "x": 0,
+       "y": 0.6
+      },
+      {
+       "x": 15,
+       "y": 1
+      },
+      {
+       "x": 35,
+       "y": 1
+      },
+      {
+       "x": 45,
+       "y": 0.7
+      }
+     ]
+    },
+    "createdAt": "2026-10-02T16:36:41.578",
+    "updatedAt": "2026-10-02T16:36:41.73"
+   },
+   {
+    "id": "cd807ea9-7578-4e07-9ca0-61d3b58b3d9b",
+    "modelId": "ENG-SIM-0A8C043FFE67",
+    "name": "Ground rover pack — SIM-0A8C043FFE67",
+    "packNominalWh": 500,
+    "chemistry": "LFP",
+    "consumptionCoefficients": null,
+    "thermalDeratingCurve": [
+     {
+      "x": -10,
+      "y": 1
+     },
+     {
+      "x": 45,
+      "y": 1
+     }
+    ],
+    "chargePowerCurve": {
+     "byChargerClass": {
+      "STANDARD": {
+       "socCurve": [
+        {
+         "x": 0,
+         "y": 2000
+        },
+        {
+         "x": 0.8,
+         "y": 2000
+        },
+        {
+         "x": 0.9,
+         "y": 900
+        },
+        {
+         "x": 0.95,
+         "y": 400
+        },
+        {
+         "x": 1,
+         "y": 120
+        }
+       ]
+      }
+     },
+     "temperatureDerating": [
+      {
+       "x": -10,
+       "y": 0.35
+      },
+      {
+       "x": 0,
+       "y": 0.6
+      },
+      {
+       "x": 15,
+       "y": 1
+      },
+      {
+       "x": 35,
+       "y": 1
+      },
+      {
+       "x": 45,
+       "y": 0.7
+      }
+     ]
+    },
+    "createdAt": "2026-10-06T07:25:11.302",
+    "updatedAt": "2026-10-06T07:25:12.116"
+   },
+   {
+    "id": "967fe35f-60d2-47ed-b353-bb690ea6bb91",
+    "modelId": "ENG-SIM-9F6F88D84EBD",
+    "name": "Ground rover pack — SIM-9F6F88D84EBD",
+    "packNominalWh": 500,
+    "chemistry": "LFP",
+    "consumptionCoefficients": null,
+    "thermalDeratingCurve": [
+     {
+      "x": -10,
+      "y": 1
+     },
+     {
+      "x": 45,
+      "y": 1
+     }
+    ],
+    "chargePowerCurve": {
+     "byChargerClass": {
+      "STANDARD": {
+       "socCurve": [
+        {
+         "x": 0,
+         "y": 2000
+        },
+        {
+         "x": 0.8,
+         "y": 2000
+        },
+        {
+         "x": 0.9,
+         "y": 900
+        },
+        {
+         "x": 0.95,
+         "y": 400
+        },
+        {
+         "x": 1,
+         "y": 120
+        }
+       ]
+      }
+     },
+     "temperatureDerating": [
+      {
+       "x": -10,
+       "y": 0.35
+      },
+      {
+       "x": 0,
+       "y": 0.6
+      },
+      {
+       "x": 15,
+       "y": 1
+      },
+      {
+       "x": 35,
+       "y": 1
+      },
+      {
+       "x": 45,
+       "y": 0.7
+      }
+     ]
+    },
+    "createdAt": "2026-10-09T13:44:06.253",
+    "updatedAt": "2026-10-09T13:44:06.308"
+   }
+  ],
+  "EnergyModelParams": [
+   {
+    "id": "cc2a4c16-f779-4f93-afd0-3001298eaf9b",
+    "agentClassId": "078de8e0-8c8f-498d-97d4-47651deba216",
+    "modelVersion": 1,
+    "betaDist": 0,
+    "betaMass": 0,
+    "betaClimb": 0,
+    "betaRegen": 0,
+    "betaMoveTime": 0.0825375,
+    "betaStopStart": 0,
+    "betaDwell": 0.0825375,
+    "betaAux": 0.0206925,
+    "etaRegen": 0,
+    "betaThermal": {
+     "packCurve": [
+      {
+       "x": -50,
+       "y": 0
+      },
+      {
+       "x": 100,
+       "y": 0
+      }
+     ],
+     "ambientCurve": [
+      {
+       "x": -50,
+       "y": 0
+      },
+      {
+       "x": 100,
+       "y": 0
+      }
+     ]
+    },
+    "betaPayloadThermal": {},
+    "stressCurves": {
+     "dod": [
+      {
+       "x": 0,
+       "y": 1
+      },
+      {
+       "x": 1,
+       "y": 1
+      }
+     ],
+     "cRate": [
+      {
+       "x": 0,
+       "y": 1
+      },
+      {
+       "x": 10,
+       "y": 1
+      }
+     ],
+     "tempC": [
+      {
+       "x": -50,
+       "y": 1
+      },
+      {
+       "x": 100,
+       "y": 1
+      }
+     ],
+     "socMid": [
+      {
+       "x": 0,
+       "y": 1
+      },
+      {
+       "x": 1,
+       "y": 1
+      }
+     ],
+     "calendarAgeing": [
+      {
+       "x": 0,
+       "y": 0
+      },
+      {
+       "x": 1,
+       "y": 0
+      }
+     ]
+    },
+    "residualCv": 0.1,
+    "fittedAt": null,
+    "createdAt": "2026-10-01T03:33:22.438",
+    "updatedAt": "2026-10-01T03:33:22.808"
+   },
+   {
+    "id": "5eaf8579-83a8-454d-97e4-d2dd0b67cdab",
+    "agentClassId": "f7ca57ac-01db-4c5f-8855-4b1527cfa487",
+    "modelVersion": 1,
+    "betaDist": 0,
+    "betaMass": 0,
+    "betaClimb": 0,
+    "betaRegen": 0,
+    "betaMoveTime": 0.08875,
+    "betaStopStart": 0,
+    "betaDwell": 0.08875,
+    "betaAux": 0.02225,
+    "etaRegen": 0,
+    "betaThermal": {
+     "packCurve": [
+      {
+       "x": -50,
+       "y": 0
+      },
+      {
+       "x": 100,
+       "y": 0
+      }
+     ],
+     "ambientCurve": [
+      {
+       "x": -50,
+       "y": 0
+      },
+      {
+       "x": 100,
+       "y": 0
+      }
+     ]
+    },
+    "betaPayloadThermal": {},
+    "stressCurves": {
+     "dod": [
+      {
+       "x": 0,
+       "y": 1
+      },
+      {
+       "x": 1,
+       "y": 1
+      }
+     ],
+     "cRate": [
+      {
+       "x": 0,
+       "y": 1
+      },
+      {
+       "x": 10,
+       "y": 1
+      }
+     ],
+     "tempC": [
+      {
+       "x": -50,
+       "y": 1
+      },
+      {
+       "x": 100,
+       "y": 1
+      }
+     ],
+     "socMid": [
+      {
+       "x": 0,
+       "y": 1
+      },
+      {
+       "x": 1,
+       "y": 1
+      }
+     ],
+     "calendarAgeing": [
+      {
+       "x": 0,
+       "y": 0
+      },
+      {
+       "x": 1,
+       "y": 0
+      }
+     ]
+    },
+    "residualCv": 0.1,
+    "fittedAt": null,
+    "createdAt": "2026-10-02T16:36:41.65",
+    "updatedAt": "2026-10-02T16:36:41.659"
+   },
+   {
+    "id": "bb18cbae-8903-4426-bf1b-d934bb76c68a",
+    "agentClassId": "34b1a065-be7a-4e42-9ce2-bc5453ace08e",
+    "modelVersion": 1,
+    "betaDist": 0,
+    "betaMass": 0,
+    "betaClimb": 0,
+    "betaRegen": 0,
+    "betaMoveTime": 0.08875,
+    "betaStopStart": 0,
+    "betaDwell": 0.08875,
+    "betaAux": 0.02225,
+    "etaRegen": 0,
+    "betaThermal": {
+     "packCurve": [
+      {
+       "x": -50,
+       "y": 0
+      },
+      {
+       "x": 100,
+       "y": 0
+      }
+     ],
+     "ambientCurve": [
+      {
+       "x": -50,
+       "y": 0
+      },
+      {
+       "x": 100,
+       "y": 0
+      }
+     ]
+    },
+    "betaPayloadThermal": {},
+    "stressCurves": {
+     "dod": [
+      {
+       "x": 0,
+       "y": 1
+      },
+      {
+       "x": 1,
+       "y": 1
+      }
+     ],
+     "cRate": [
+      {
+       "x": 0,
+       "y": 1
+      },
+      {
+       "x": 10,
+       "y": 1
+      }
+     ],
+     "tempC": [
+      {
+       "x": -50,
+       "y": 1
+      },
+      {
+       "x": 100,
+       "y": 1
+      }
+     ],
+     "socMid": [
+      {
+       "x": 0,
+       "y": 1
+      },
+      {
+       "x": 1,
+       "y": 1
+      }
+     ],
+     "calendarAgeing": [
+      {
+       "x": 0,
+       "y": 0
+      },
+      {
+       "x": 1,
+       "y": 0
+      }
+     ]
+    },
+    "residualCv": 0.1,
+    "fittedAt": null,
+    "createdAt": "2026-10-06T07:25:12.033",
+    "updatedAt": "2026-10-06T07:25:12.11"
+   },
+   {
+    "id": "563a2c94-49bd-46d9-bfe5-a9d7d9ae1c9f",
+    "agentClassId": "1011eaef-2391-4dd1-9b7a-d6cb2316b4bd",
+    "modelVersion": 1,
+    "betaDist": 0,
+    "betaMass": 0,
+    "betaClimb": 0,
+    "betaRegen": 0,
+    "betaMoveTime": 0.08875,
+    "betaStopStart": 0,
+    "betaDwell": 0.08875,
+    "betaAux": 0.02225,
+    "etaRegen": 0,
+    "betaThermal": {
+     "packCurve": [
+      {
+       "x": -50,
+       "y": 0
+      },
+      {
+       "x": 100,
+       "y": 0
+      }
+     ],
+     "ambientCurve": [
+      {
+       "x": -50,
+       "y": 0
+      },
+      {
+       "x": 100,
+       "y": 0
+      }
+     ]
+    },
+    "betaPayloadThermal": {},
+    "stressCurves": {
+     "dod": [
+      {
+       "x": 0,
+       "y": 1
+      },
+      {
+       "x": 1,
+       "y": 1
+      }
+     ],
+     "cRate": [
+      {
+       "x": 0,
+       "y": 1
+      },
+      {
+       "x": 10,
+       "y": 1
+      }
+     ],
+     "tempC": [
+      {
+       "x": -50,
+       "y": 1
+      },
+      {
+       "x": 100,
+       "y": 1
+      }
+     ],
+     "socMid": [
+      {
+       "x": 0,
+       "y": 1
+      },
+      {
+       "x": 1,
+       "y": 1
+      }
+     ],
+     "calendarAgeing": [
+      {
+       "x": 0,
+       "y": 0
+      },
+      {
+       "x": 1,
+       "y": 0
+      }
+     ]
+    },
+    "residualCv": 0.1,
+    "fittedAt": null,
+    "createdAt": "2026-10-09T13:44:06.293",
+    "updatedAt": "2026-10-09T13:44:06.303"
+   }
+  ],
+  "ContainerModel": [
+   {
+    "id": "dbdc5ee9-0a69-42ef-b667-c3b2b96dfcd6",
+    "modelId": "CTR-SIM-1ABF21512BE5",
+    "name": "Ground rover container — SIM-1ABF21512BE5",
+    "totalMassLimitKg": 5,
+    "totalVolumeLitres": 30,
+    "axleMassDistribution": null,
+    "cogEnvelope": {
+     "lateralMm": [
+      -150,
+      150
+     ],
+     "provenance": "V1_DEMONSTRATION",
+     "emptyVehicle": {
+      "massKg": 2,
+      "lateralMm": 0,
+      "longitudinalMm": 0
+     },
+     "longitudinalMm": [
+      -200,
+      200
+     ],
+     "compartmentCentroids": {
+      "7378baa5-9353-4597-9b76-69764160f8a1": {
+       "lateralMm": 0,
+       "longitudinalMm": 0
+      }
+     }
+    },
+    "accessConstraints": null,
+    "loadingInterface": "HUMAN_HANDOVER",
+    "cleanlinessClass": "GENERAL",
+    "createdAt": "2026-10-01T03:33:21.282",
+    "updatedAt": "2026-10-01T03:33:23.444"
+   },
+   {
+    "id": "d7c1f22c-debe-4632-ab78-2c5f444eb3c2",
+    "modelId": "CTR-SIM-CFE1E46B2002",
+    "name": "Ground rover container — SIM-CFE1E46B2002",
+    "totalMassLimitKg": 15,
+    "totalVolumeLitres": 30,
+    "axleMassDistribution": null,
+    "cogEnvelope": {
+     "lateralMm": [
+      -150,
+      150
+     ],
+     "provenance": "V1_DEMONSTRATION",
+     "emptyVehicle": {
+      "massKg": 2,
+      "lateralMm": 0,
+      "longitudinalMm": 0
+     },
+     "longitudinalMm": [
+      -200,
+      200
+     ],
+     "compartmentCentroids": {
+      "bd13184b-ffa8-4290-97ff-bb8990aa0435": {
+       "lateralMm": 0,
+       "longitudinalMm": 0
+      }
+     }
+    },
+    "accessConstraints": null,
+    "loadingInterface": "HUMAN_HANDOVER",
+    "cleanlinessClass": "GENERAL",
+    "createdAt": "2026-10-02T16:36:41.582",
+    "updatedAt": "2026-10-02T16:36:41.743"
+   },
+   {
+    "id": "686df684-1d57-48b0-942b-d27a98de5ad3",
+    "modelId": "CTR-SIM-0A8C043FFE67",
+    "name": "Ground rover container — SIM-0A8C043FFE67",
+    "totalMassLimitKg": 20,
+    "totalVolumeLitres": 30,
+    "axleMassDistribution": null,
+    "cogEnvelope": {
+     "lateralMm": [
+      -150,
+      150
+     ],
+     "provenance": "V1_DEMONSTRATION",
+     "emptyVehicle": {
+      "massKg": 45,
+      "lateralMm": 0,
+      "longitudinalMm": 0
+     },
+     "longitudinalMm": [
+      -200,
+      200
+     ],
+     "compartmentCentroids": {
+      "612efb43-3d25-4898-b40c-d6078a73e079": {
+       "lateralMm": 0,
+       "longitudinalMm": 0
+      }
+     }
+    },
+    "accessConstraints": null,
+    "loadingInterface": "HUMAN_HANDOVER",
+    "cleanlinessClass": "GENERAL",
+    "createdAt": "2026-10-06T07:25:11.31",
+    "updatedAt": "2026-10-06T07:25:12.138"
+   },
+   {
+    "id": "44a4de50-7b5e-4583-819c-ff9c9dbedfc5",
+    "modelId": "CTR-SIM-9F6F88D84EBD",
+    "name": "Ground rover container — SIM-9F6F88D84EBD",
+    "totalMassLimitKg": 10,
+    "totalVolumeLitres": 30,
+    "axleMassDistribution": null,
+    "cogEnvelope": {
+     "lateralMm": [
+      -150,
+      150
+     ],
+     "provenance": "V1_DEMONSTRATION",
+     "emptyVehicle": {
+      "massKg": 45,
+      "lateralMm": 0,
+      "longitudinalMm": 0
+     },
+     "longitudinalMm": [
+      -200,
+      200
+     ],
+     "compartmentCentroids": {
+      "e437ef5f-73a2-4f5d-a0e7-691705947a34": {
+       "lateralMm": 0,
+       "longitudinalMm": 0
+      }
+     }
+    },
+    "accessConstraints": null,
+    "loadingInterface": "HUMAN_HANDOVER",
+    "cleanlinessClass": "GENERAL",
+    "createdAt": "2026-10-09T13:44:06.257",
+    "updatedAt": "2026-10-09T13:44:06.327"
+   }
+  ],
+  "Compartment": [
+   {
+    "id": "7378baa5-9353-4597-9b76-69764160f8a1",
+    "containerModelId": "dbdc5ee9-0a69-42ef-b667-c3b2b96dfcd6",
+    "ordinal": 1,
+    "internalLengthMm": 400,
+    "internalWidthMm": 300,
+    "internalHeightMm": 250,
+    "apertureWidthMm": 300,
+    "apertureHeightMm": 250,
+    "maxMassKg": 5,
+    "thermalClass": null,
+    "activeThermal": false,
+    "lockClass": null,
+    "tamperSensing": false,
+    "accessSide": null,
+    "createdAt": "2026-10-01T03:33:23.317"
+   },
+   {
+    "id": "bd13184b-ffa8-4290-97ff-bb8990aa0435",
+    "containerModelId": "d7c1f22c-debe-4632-ab78-2c5f444eb3c2",
+    "ordinal": 1,
+    "internalLengthMm": 400,
+    "internalWidthMm": 300,
+    "internalHeightMm": 250,
+    "apertureWidthMm": 300,
+    "apertureHeightMm": 250,
+    "maxMassKg": 15,
+    "thermalClass": null,
+    "activeThermal": false,
+    "lockClass": null,
+    "tamperSensing": false,
+    "accessSide": null,
+    "createdAt": "2026-10-02T16:36:41.74"
+   },
+   {
+    "id": "612efb43-3d25-4898-b40c-d6078a73e079",
+    "containerModelId": "686df684-1d57-48b0-942b-d27a98de5ad3",
+    "ordinal": 1,
+    "internalLengthMm": 400,
+    "internalWidthMm": 300,
+    "internalHeightMm": 250,
+    "apertureWidthMm": 300,
+    "apertureHeightMm": 250,
+    "maxMassKg": 20,
+    "thermalClass": null,
+    "activeThermal": false,
+    "lockClass": null,
+    "tamperSensing": false,
+    "accessSide": null,
+    "createdAt": "2026-10-06T07:25:12.131"
+   },
+   {
+    "id": "e437ef5f-73a2-4f5d-a0e7-691705947a34",
+    "containerModelId": "44a4de50-7b5e-4583-819c-ff9c9dbedfc5",
+    "ordinal": 1,
+    "internalLengthMm": 400,
+    "internalWidthMm": 300,
+    "internalHeightMm": 250,
+    "apertureWidthMm": 300,
+    "apertureHeightMm": 250,
+    "maxMassKg": 10,
+    "thermalClass": null,
+    "activeThermal": false,
+    "lockClass": null,
+    "tamperSensing": false,
+    "accessSide": null,
+    "createdAt": "2026-10-09T13:44:06.32"
+   }
+  ],
+  "CapabilityBundle": [
+   {
+    "id": "c54e9ee9-14dc-4a83-9659-fc2d765592a5",
+    "bundleId": "CAP-SIM-1ABF21512BE5",
+    "name": "Ground rover capabilities — SIM-1ABF21512BE5",
+    "createdAt": "2026-10-01T03:33:21.413",
+    "updatedAt": "2026-10-01T03:33:21.413"
+   },
+   {
+    "id": "1458d646-7fc8-49ed-a051-531de51bb7f5",
+    "bundleId": "CAP-SIM-CFE1E46B2002",
+    "name": "Ground rover capabilities — SIM-CFE1E46B2002",
+    "createdAt": "2026-10-02T16:36:41.586",
+    "updatedAt": "2026-10-02T16:36:41.586"
+   },
+   {
+    "id": "1b3bb835-3034-4a49-9d03-8f1e1b29de46",
+    "bundleId": "CAP-SIM-0A8C043FFE67",
+    "name": "Ground rover capabilities — SIM-0A8C043FFE67",
+    "createdAt": "2026-10-06T07:25:11.393",
+    "updatedAt": "2026-10-06T07:25:11.393"
+   },
+   {
+    "id": "2d888be9-276b-4890-aeda-015241335d74",
+    "bundleId": "CAP-SIM-9F6F88D84EBD",
+    "name": "Ground rover capabilities — SIM-9F6F88D84EBD",
+    "createdAt": "2026-10-09T13:44:06.261",
+    "updatedAt": "2026-10-09T13:44:06.261"
+   }
+  ],
+  "Capability": [
+   {
+    "id": "87aacb1f-4275-4b0f-af82-f1eebfd2c4de",
+    "bundleId": "c54e9ee9-14dc-4a83-9659-fc2d765592a5",
+    "name": "chassis_type",
+    "kind": "ENUMERATED",
+    "value": "ROVER",
+    "unit": null,
+    "issuer": null,
+    "validFrom": null,
+    "validUntil": null,
+    "source": "COMMISSIONING_RECORD",
+    "createdAt": "2026-10-01T03:33:21.658"
+   },
+   {
+    "id": "6b40a234-757a-45c2-ae6f-33bae9f011ba",
+    "bundleId": "c54e9ee9-14dc-4a83-9659-fc2d765592a5",
+    "name": "custody_transfer_capable",
+    "kind": "BOOLEAN",
+    "value": false,
+    "unit": null,
+    "issuer": null,
+    "validFrom": null,
+    "validUntil": null,
+    "source": "COMMISSIONING_RECORD",
+    "createdAt": "2026-10-01T03:33:21.658"
+   },
+   {
+    "id": "8931b51b-31d4-47bd-bc92-e573183e7b76",
+    "bundleId": "c54e9ee9-14dc-4a83-9659-fc2d765592a5",
+    "name": "max_payload_mass",
+    "kind": "QUANTITATIVE",
+    "value": 5,
+    "unit": "kg",
+    "issuer": null,
+    "validFrom": null,
+    "validUntil": null,
+    "source": "COMMISSIONING_RECORD",
+    "createdAt": "2026-10-01T03:33:21.658"
+   },
+   {
+    "id": "5272dd20-dff8-4108-862b-d744b241fc2f",
+    "bundleId": "1458d646-7fc8-49ed-a051-531de51bb7f5",
+    "name": "chassis_type",
+    "kind": "ENUMERATED",
+    "value": "ROVER",
+    "unit": null,
+    "issuer": null,
+    "validFrom": null,
+    "validUntil": null,
+    "source": "COMMISSIONING_RECORD",
+    "createdAt": "2026-10-02T16:36:41.629"
+   },
+   {
+    "id": "1adaaabd-9370-423c-af14-cc2349bb0dce",
+    "bundleId": "1458d646-7fc8-49ed-a051-531de51bb7f5",
+    "name": "custody_transfer_capable",
+    "kind": "BOOLEAN",
+    "value": false,
+    "unit": null,
+    "issuer": null,
+    "validFrom": null,
+    "validUntil": null,
+    "source": "COMMISSIONING_RECORD",
+    "createdAt": "2026-10-02T16:36:41.629"
+   },
+   {
+    "id": "38ac8f1a-50cd-41d2-bd05-0dfd58b11733",
+    "bundleId": "1458d646-7fc8-49ed-a051-531de51bb7f5",
+    "name": "max_payload_mass",
+    "kind": "QUANTITATIVE",
+    "value": 15,
+    "unit": "kg",
+    "issuer": null,
+    "validFrom": null,
+    "validUntil": null,
+    "source": "COMMISSIONING_RECORD",
+    "createdAt": "2026-10-02T16:36:41.629"
+   },
+   {
+    "id": "dfb4cf43-a23a-4394-9eaa-c2d232303360",
+    "bundleId": "1b3bb835-3034-4a49-9d03-8f1e1b29de46",
+    "name": "chassis_type",
+    "kind": "ENUMERATED",
+    "value": "ROVER",
+    "unit": null,
+    "issuer": null,
+    "validFrom": null,
+    "validUntil": null,
+    "source": "COMMISSIONING_RECORD",
+    "createdAt": "2026-10-06T07:25:11.602"
+   },
+   {
+    "id": "804d3540-b6a9-4ee0-9509-a14d663f07f7",
+    "bundleId": "1b3bb835-3034-4a49-9d03-8f1e1b29de46",
+    "name": "custody_transfer_capable",
+    "kind": "BOOLEAN",
+    "value": false,
+    "unit": null,
+    "issuer": null,
+    "validFrom": null,
+    "validUntil": null,
+    "source": "COMMISSIONING_RECORD",
+    "createdAt": "2026-10-06T07:25:11.602"
+   },
+   {
+    "id": "aafbc23d-797d-4605-8934-e7fcffbd03ca",
+    "bundleId": "1b3bb835-3034-4a49-9d03-8f1e1b29de46",
+    "name": "max_payload_mass",
+    "kind": "QUANTITATIVE",
+    "value": 20,
+    "unit": "kg",
+    "issuer": null,
+    "validFrom": null,
+    "validUntil": null,
+    "source": "COMMISSIONING_RECORD",
+    "createdAt": "2026-10-06T07:25:11.602"
+   },
+   {
+    "id": "e678cbbb-9731-4c8d-89f3-ce8cd5c429d1",
+    "bundleId": "2d888be9-276b-4890-aeda-015241335d74",
+    "name": "chassis_type",
+    "kind": "ENUMERATED",
+    "value": "ROVER",
+    "unit": null,
+    "issuer": null,
+    "validFrom": null,
+    "validUntil": null,
+    "source": "COMMISSIONING_RECORD",
+    "createdAt": "2026-10-09T13:44:06.267"
+   },
+   {
+    "id": "068714da-6a27-4a2a-a29a-a277ba965a5a",
+    "bundleId": "2d888be9-276b-4890-aeda-015241335d74",
+    "name": "custody_transfer_capable",
+    "kind": "BOOLEAN",
+    "value": false,
+    "unit": null,
+    "issuer": null,
+    "validFrom": null,
+    "validUntil": null,
+    "source": "COMMISSIONING_RECORD",
+    "createdAt": "2026-10-09T13:44:06.267"
+   },
+   {
+    "id": "650d6f91-e9ff-4b53-938b-00f9181a471f",
+    "bundleId": "2d888be9-276b-4890-aeda-015241335d74",
+    "name": "max_payload_mass",
+    "kind": "QUANTITATIVE",
+    "value": 10,
+    "unit": "kg",
+    "issuer": null,
+    "validFrom": null,
+    "validUntil": null,
+    "source": "COMMISSIONING_RECORD",
+    "createdAt": "2026-10-09T13:44:06.267"
+   }
+  ],
+  "Shard": [
+   {
+    "id": "13ae6125-d49a-4ce6-bbbc-c6fcbc6bd009",
+    "shardId": "rnsit-shard",
+    "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+    "state": "ACTIVE",
+    "drainingSince": null,
+    "agentCount": 0,
+    "bindingBound": "SERIAL_COMMIT",
+    "sizingDetail": {
+     "why": "only SERIAL_COMMIT could be evaluated; it binds by default and the other is unevaluated, not satisfied",
+     "bounds": {
+      "SERIAL_COMMIT": {
+       "bound": "SERIAL_COMMIT",
+       "inputs": {
+        "agents": 0,
+        "maxSerialUtilisation": 0.25,
+        "commitTxnServiceTimeMs": 5,
+        "txnPerMissionLifecycle": 2.05,
+        "missionRatePerAgentHour": 4
+       },
+       "sentence": "bound 2 holds: N·r·k_txn·t_txn = 0.00 ≤ ρ_max·3600 = 900.00. At r = 4 this shard admits about 21951 agents and holds 0, leaving 21951.",
+       "evaluated": true,
+       "satisfied": true,
+       "budgetUsed": 0,
+       "demandSeconds": 0,
+       "headroomAgents": 21951,
+       "capacitySeconds": 900,
+       "admissibleAgents": 21951,
+       "realisedUtilisation": 0
+      },
+      "ROUND_WALL_CLOCK": {
+       "bound": "ROUND_WALL_CLOCK",
+       "reason": "NO_MEASUREMENT",
+       "budgetMs": 250,
+       "sentence": "bound 1 is unevaluated: §3.5 makes it a measured bound, and this shard has no observed round wall-clock. Reporting it as satisfied would be reporting a measurement nobody took.",
+       "evaluated": false,
+       "satisfied": null
+      }
+     },
+     "sentence": "shard sizing holds; SERIAL_COMMIT is the binding bound. only SERIAL_COMMIT could be evaluated; it binds by default and the other is unevaluated, not satisfied.",
+     "satisfied": true,
+     "rebalanceIndicated": false
+    },
+    "sizingCheckedAt": "2026-10-09T18:10:22.08",
+    "lastLeadershipChangeAt": "2026-10-09T17:44:03.67",
+    "lastFailoverAt": "2026-10-09T17:44:03.67",
+    "lastFailoverReconstructedLegs": 0,
+    "lastFailoverRecoveredCommitments": 2,
+    "roundsResumableAt": "2026-10-09T17:44:03.67",
+    "createdAt": "2026-10-02T11:32:08.472",
+    "updatedAt": "2026-10-09T18:10:22.104"
+   }
+  ],
+  "Region": [
+   {
+    "id": "d7534ec6-0840-4a36-b691-42584daed00f",
+    "regionId": "rnsit",
+    "name": "RNSIT",
+    "description": null,
+    "createdAt": "2026-10-02T11:32:07.889",
+    "updatedAt": "2026-10-02T11:32:07.889"
+   }
+  ],
+  "Zone": [
+   {
+    "id": "419845c6-41f1-4e47-87e7-5c64d2cf36ff",
+    "name": "RNS Institute of Technology Zone-NW",
+    "minLat": 12.9023,
+    "maxLat": 12.9123,
+    "minLon": 77.5086,
+    "maxLon": 77.5186,
+    "createdAt": "2026-05-18T17:09:44.604",
+    "regionId": null
+   },
+   {
+    "id": "b9835a8c-5f83-4eae-aa6f-afb8cdddc86a",
+    "name": "RNS Institute of Technology Zone-NE",
+    "minLat": 12.9023,
+    "maxLat": 12.9123,
+    "minLon": 77.5186,
+    "maxLon": 77.52860000000001,
+    "createdAt": "2026-05-18T17:09:45.11",
+    "regionId": null
+   },
+   {
+    "id": "6b1a96b7-781f-4e2e-9d2a-cd97e8469371",
+    "name": "RNS Institute of Technology Zone-SW",
+    "minLat": 12.8923,
+    "maxLat": 12.9023,
+    "minLon": 77.5086,
+    "maxLon": 77.5186,
+    "createdAt": "2026-05-18T17:09:45.43",
+    "regionId": null
+   },
+   {
+    "id": "091e77e1-de82-4a70-ba12-7df88f016c31",
+    "name": "RNS Institute of Technology Zone-SE",
+    "minLat": 12.8923,
+    "maxLat": 12.9023,
+    "minLon": 77.5186,
+    "maxLon": 77.52860000000001,
+    "createdAt": "2026-05-18T17:09:45.751",
+    "regionId": null
+   },
+   {
+    "id": "rnsit-z1",
+    "name": "RNSIT Zone 1",
+    "minLat": 12.8988932,
+    "maxLat": 12.9025796,
+    "minLon": 77.515009,
+    "maxLon": 77.5197566,
+    "createdAt": "2026-10-02T11:32:08.078",
+    "regionId": "d7534ec6-0840-4a36-b691-42584daed00f"
+   }
+  ],
+  "Charger": [
+   {
+    "id": "ef60f649-53bb-447d-803a-aa398e3e1b4c",
+    "chargerId": "V1DEMO-DEPOT-01",
+    "siteId": null,
+    "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+    "cellId": "8b6014510498fff",
+    "chargerClass": "STANDARD",
+    "ratedPowerW": null,
+    "connector": null,
+    "latitude": 12.900729,
+    "longitude": 77.517603,
+    "isDepot": true,
+    "createdAt": "2026-10-02T11:32:08.601",
+    "updatedAt": "2026-10-02T11:32:08.601"
+   },
+   {
+    "id": "b2255c88-0ca8-4d98-93d7-d3f2bbe49174",
+    "chargerId": "DEV-SIM-RNSIT-MBA-01",
+    "siteId": null,
+    "regionId": null,
+    "cellId": "8b6014510496fff",
+    "chargerClass": "STANDARD",
+    "ratedPowerW": null,
+    "connector": null,
+    "latitude": 12.9009017,
+    "longitude": 77.519021,
+    "isDepot": false,
+    "createdAt": "2026-10-01T03:26:46.508",
+    "updatedAt": "2026-10-09T17:44:02.183"
+   }
+  ],
+  "ChargerAvailabilityProjection": [
+   {
+    "id": "d4bc6914-55c0-47c8-b86c-4f13e0d2618f",
+    "version": 1,
+    "publishedAt": "2026-10-01T03:26:46.502",
+    "publishedBy": "development-simulation-charging-scheduler",
+    "horizonEnd": "2026-10-01T05:37:54.502",
+    "regionId": null,
+    "payload": {
+     "chargers": [
+      {
+       "cellId": null,
+       "isDepot": false,
+       "latitude": 12.9009017,
+       "chargerId": "DEV-SIM-RNSIT-MBA-01",
+       "intervals": [
+        {
+         "state": "RESERVABLE",
+         "fromMs": 1790825206502,
+         "untilMs": 1790833074502
+        }
+       ],
+       "longitude": 77.519021,
+       "plugCount": 3,
+       "chargerClass": "STANDARD"
+      }
+     ],
+     "evidence": {
+      "kind": "DEVELOPMENT_SIMULATION",
+      "note": "Development simulation configuration. No charger described here is installed, powered, metered or surveyed. This projection establishes no production charger readiness and discharges no V1 stop condition (S-3 … S-7) and no Safety obligation.",
+      "ratedPowerW": null,
+      "ratedPowerNote": "no nameplate rating has been supplied by the owner; charge power is the declared P_charge(SoC) curve and is a modelling input, not an equipment specification",
+      "locationProvenance": "centroid of OSM way/204638943 (RNSIT MBA block) in rnsit-campus-osm.geojson — NOT a surveyed charger position",
+      "physicalChargerEvidence": false
+     },
+     "publisher": "development-simulation-charging-scheduler"
+    },
+    "createdAt": "2026-10-01T03:26:47.91"
+   }
+  ],
+  "PayloadSpec": [
+   {
+    "id": "86d06946-b00a-4c3a-abb0-827bdc1dfd5a",
+    "specId": "PLD-TSK-1790958521622-254",
+    "massKg": 1.01,
+    "massToleranceKg": 0.5,
+    "lengthMm": null,
+    "widthMm": null,
+    "heightMm": null,
+    "shapeClass": null,
+    "volumeLitres": null,
+    "orientationConstraints": null,
+    "stackable": true,
+    "loadBearingLimitKg": null,
+    "fragilityClass": null,
+    "thermalMinC": null,
+    "thermalMaxC": null,
+    "thermalMaxExcursionSeconds": null,
+    "securityClass": null,
+    "hazardClasses": null,
+    "segregationRules": null,
+    "declaredValue": null,
+    "regulatoryClass": null,
+    "itemCount": null,
+    "divisible": false,
+    "createdAt": "2026-10-02T16:28:41.633",
+    "updatedAt": "2026-10-02T16:28:41.633"
+   },
+   {
+    "id": "e0a60fb1-05ef-40a5-89dd-4ef1e3fc495d",
+    "specId": "PLD-TSK-1790960698218-551",
+    "massKg": 2,
+    "massToleranceKg": 2,
+    "lengthMm": null,
+    "widthMm": null,
+    "heightMm": null,
+    "shapeClass": null,
+    "volumeLitres": null,
+    "orientationConstraints": null,
+    "stackable": true,
+    "loadBearingLimitKg": null,
+    "fragilityClass": null,
+    "thermalMinC": null,
+    "thermalMaxC": null,
+    "thermalMaxExcursionSeconds": null,
+    "securityClass": null,
+    "hazardClasses": null,
+    "segregationRules": null,
+    "declaredValue": null,
+    "regulatoryClass": null,
+    "itemCount": null,
+    "divisible": false,
+    "createdAt": "2026-10-02T17:04:58.224",
+    "updatedAt": "2026-10-02T17:04:58.224"
+   },
+   {
+    "id": "0d9673d9-fd61-4b8a-a3ed-ca42b85ec682",
+    "specId": "PLD-TSK-1791271440399-549",
+    "massKg": 2,
+    "massToleranceKg": 1,
+    "lengthMm": null,
+    "widthMm": null,
+    "heightMm": null,
+    "shapeClass": null,
+    "volumeLitres": null,
+    "orientationConstraints": null,
+    "stackable": true,
+    "loadBearingLimitKg": null,
+    "fragilityClass": null,
+    "thermalMinC": null,
+    "thermalMaxC": null,
+    "thermalMaxExcursionSeconds": null,
+    "securityClass": null,
+    "hazardClasses": null,
+    "segregationRules": null,
+    "declaredValue": null,
+    "regulatoryClass": null,
+    "itemCount": null,
+    "divisible": false,
+    "createdAt": "2026-10-06T07:24:00.409",
+    "updatedAt": "2026-10-06T07:24:00.409"
+   },
+   {
+    "id": "a4cc491d-308f-427b-a6eb-8c7e6050b30a",
+    "specId": "PLD-TSK-1791529606636-176",
+    "massKg": 2,
+    "massToleranceKg": 2,
+    "lengthMm": null,
+    "widthMm": null,
+    "heightMm": null,
+    "shapeClass": null,
+    "volumeLitres": null,
+    "orientationConstraints": null,
+    "stackable": true,
+    "loadBearingLimitKg": null,
+    "fragilityClass": null,
+    "thermalMinC": null,
+    "thermalMaxC": null,
+    "thermalMaxExcursionSeconds": null,
+    "securityClass": null,
+    "hazardClasses": null,
+    "segregationRules": null,
+    "declaredValue": null,
+    "regulatoryClass": null,
+    "itemCount": null,
+    "divisible": false,
+    "createdAt": "2026-10-09T07:06:46.744",
+    "updatedAt": "2026-10-09T07:06:46.744"
+   },
+   {
+    "id": "d5cd00fe-00a7-4379-8976-2f0274482c2f",
+    "specId": "PLD-TSK-1791530510135-582",
+    "massKg": 2,
+    "massToleranceKg": 2,
+    "lengthMm": null,
+    "widthMm": null,
+    "heightMm": null,
+    "shapeClass": null,
+    "volumeLitres": null,
+    "orientationConstraints": null,
+    "stackable": true,
+    "loadBearingLimitKg": null,
+    "fragilityClass": null,
+    "thermalMinC": null,
+    "thermalMaxC": null,
+    "thermalMaxExcursionSeconds": null,
+    "securityClass": null,
+    "hazardClasses": null,
+    "segregationRules": null,
+    "declaredValue": null,
+    "regulatoryClass": null,
+    "itemCount": null,
+    "divisible": false,
+    "createdAt": "2026-10-09T07:21:50.228",
+    "updatedAt": "2026-10-09T07:21:50.228"
+   },
+   {
+    "id": "ccfea8e1-95e7-414e-84cd-950056630812",
+    "specId": "PLD-TSK-1791530708128-820",
+    "massKg": 2,
+    "massToleranceKg": 2,
+    "lengthMm": null,
+    "widthMm": null,
+    "heightMm": null,
+    "shapeClass": null,
+    "volumeLitres": null,
+    "orientationConstraints": null,
+    "stackable": true,
+    "loadBearingLimitKg": null,
+    "fragilityClass": null,
+    "thermalMinC": null,
+    "thermalMaxC": null,
+    "thermalMaxExcursionSeconds": null,
+    "securityClass": null,
+    "hazardClasses": null,
+    "segregationRules": null,
+    "declaredValue": null,
+    "regulatoryClass": null,
+    "itemCount": null,
+    "divisible": false,
+    "createdAt": "2026-10-09T07:25:08.137",
+    "updatedAt": "2026-10-09T07:25:08.137"
+   }
+  ],
+  "Leg": [
+   {
+    "id": "f7db6e93-c341-5745-9439-7affb48e4f1f",
+    "legId": "LEG-TSK-1791553228180-816",
+    "missionId": "440775e2-2efc-538d-af83-5df9b5dc48e4",
+    "sequence": 0,
+    "purpose": "PRIMARY",
+    "state": "SETTLED",
+    "custodyState": "RELEASED",
+    "version": 9,
+    "cancelRequestedAt": null,
+    "cancelReason": null,
+    "obstructionClass": null,
+    "startNotBefore": null,
+    "slaDeadline": "2026-10-09T14:40:28.186",
+    "createdAt": "2026-10-09T13:40:28.212",
+    "updatedAt": "2026-10-09T13:51:35.977"
+   }
+  ],
+  "Stop": [
+   {
+    "id": "ed574a50-1b82-58d1-9dd0-14e87520855c",
+    "stopId": "STP-TSK-1791553228180-816-P",
+    "legId": "f7db6e93-c341-5745-9439-7affb48e4f1f",
+    "sequence": 0,
+    "stopType": "PICKUP",
+    "label": "Canara Bank",
+    "lat": 12.9022871,
+    "lon": 77.5185188,
+    "siteId": null,
+    "serviceTimeModelRef": null,
+    "windowStart": null,
+    "windowEnd": null,
+    "accessConstraints": null,
+    "payloadDelta": null,
+    "createdAt": "2026-10-09T13:40:28.241",
+    "updatedAt": "2026-10-09T13:40:28.264",
+    "identityKey": "sk_stop_c83128790e5d025ba7be3655ecdb0633",
+    "fineCell": "8b6014512845fff",
+    "zoneId": null,
+    "geofenceResult": "INSIDE",
+    "accessWindowClass": null,
+    "serviceTimeCohort": null,
+    "routingNodeId": null
+   },
+   {
+    "id": "5a4abf87-b6e4-5a67-abbc-be8e10cc6c95",
+    "stopId": "STP-TSK-1791553228180-816-D",
+    "legId": "f7db6e93-c341-5745-9439-7affb48e4f1f",
+    "sequence": 1,
+    "stopType": "DROP",
+    "label": "RNSIT Food Court",
+    "lat": 12.900817,
+    "lon": 77.518043,
+    "siteId": null,
+    "serviceTimeModelRef": null,
+    "windowStart": null,
+    "windowEnd": null,
+    "accessConstraints": null,
+    "payloadDelta": null,
+    "createdAt": "2026-10-09T13:40:28.249",
+    "updatedAt": "2026-10-09T13:40:28.273",
+    "identityKey": "sk_stop_a2a3b33d4588d1aef5a465b8c3073a22",
+    "fineCell": "8b601451049efff",
+    "zoneId": null,
+    "geofenceResult": "INSIDE",
+    "accessWindowClass": null,
+    "serviceTimeCohort": null,
+    "routingNodeId": null
+   }
+  ],
+  "Mission": [
+   {
+    "id": "440775e2-2efc-538d-af83-5df9b5dc48e4",
+    "missionId": "MSN-TSK-1791553228180-816",
+    "regionId": "d7534ec6-0840-4a36-b691-42584daed00f",
+    "createdAt": "2026-10-09T13:40:28.197",
+    "updatedAt": "2026-10-09T13:40:28.197"
+   }
+  ],
+  "MissionToTask": [
+   {
+    "A": "440775e2-2efc-538d-af83-5df9b5dc48e4",
+    "B": "7120aff2-eb53-4426-83b0-136cdaa7336a"
+   }
+  ],
+  "Task": [
+   {
+    "id": "7120aff2-eb53-4426-83b0-136cdaa7336a",
+    "taskId": "TSK-1791553228180-816",
+    "robotId": "31d45af6-e797-493a-aeee-7605ec1a7546",
+    "pickup": "Canara Bank",
+    "pickupLat": 12.9022871,
+    "pickupLon": 77.5185188,
+    "drop": "RNSIT Food Court",
+    "dropLat": 12.900817,
+    "dropLon": 77.518043,
+    "status": "COMPLETED",
+    "createdAt": "2026-10-09T13:40:28.188",
+    "tenantId": null,
+    "slaClass": null,
+    "businessPriority": null,
+    "requirements": null,
+    "windowStart": null,
+    "windowEnd": null,
+    "payloadSpecId": null,
+    "version": 0
+   }
+  ]
+ }
+}

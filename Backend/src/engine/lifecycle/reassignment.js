@@ -121,6 +121,25 @@ function assessChainBound(input) {
 }
 
 /**
+ * Has this Leg's chain been **withdrawn past** its bound — the state `reassign` leaves an
+ * exhausted Leg in, awaiting an operator?
+ *
+ * Derived from the same commitment history as `assessChainBound`, never stored. A permitted
+ * reassignment releases a commitment only while `chainLength < max`, so afterwards the count
+ * is at most `max`; the exhausted path releases one more, so afterwards it is `max + 1` or
+ * greater. "Strictly greater" therefore separates the two without a second source of truth —
+ * which is what lets the orphan scan requeue the first and leave the second to `ESCALATE`.
+ *
+ * @param {Array<object>} commitments every commitment ever created for this Leg
+ * @param {number} maxReassignmentsPerLeg `recover.max_reassignments_per_leg`
+ * @returns {boolean}
+ */
+function chainExceedsBound(commitments, maxReassignmentsPerLeg) {
+  if (!Number.isInteger(maxReassignmentsPerLeg) || maxReassignmentsPerLeg < 0) return false;
+  return chainLength(commitments) > maxReassignmentsPerLeg;
+}
+
+/**
  * Execute §4.7's custody-`NONE` protocol, steps 1 to 4, in **one** transaction.
  *
  * Steps 1 and 2 cannot be separate transactions and the specification says why: a fence
@@ -178,6 +197,22 @@ async function reassign(tx, input) {
     // §4.7 — "on exhaustion the Leg goes to `SUSPENDED` for operator decision". The Leg
     // machine has no SUSPENDED state (that is the Task's, §4.2), so the Leg is frozen in
     // REASSIGNING and the *Task* is suspended, which is what the caller is told.
+    //
+    // P7-D2 (2026-10-10). This branch used to return here having written nothing: the Leg
+    // stayed in its execution state with a live commitment whose lease had lapsed, so every
+    // reconciler sweep chose REASSIGN again and was refused again — for a week on LOCAL. The
+    // freeze the comment above promises is now performed, by the same steps 1–3 as the
+    // ordinary path: the incumbent's authority is withdrawn exactly as for a reassignment
+    // (fence advance, RECALL and release in one transaction, which §4.7 makes safe without
+    // the agent's answer). Step 4 is what exhaustion replaces: the Leg is NOT requeued.
+    // REASSIGNING's own deadline (`recover.reassign_budget` → ESCALATE) is armed instead, and
+    // `reconciler.scanOrphanLegs` leaves a Leg whose chain exceeds the bound to that timer.
+    const withdrawn = await withdrawIncumbent(tx, source, {
+      reason: "REASSIGNMENT_CHAIN_EXHAUSTED",
+      timerPayload: { chainExhausted: true, chainLength: bound.chainLength, awaiting: "OPERATOR_DECISION" },
+    });
+    if (!withdrawn.ok) return { outcome: OUTCOME.LOST_RACE, reason: "LEG_VERSION_MOVED", detail: null };
+
     return {
       outcome: OUTCOME.SUSPENDED,
       reason: bound.reason,
@@ -186,8 +221,73 @@ async function reassign(tx, input) {
         "livelock that consumes fleet capacity while completing nothing (§4.7).",
       chainLength: bound.chainLength,
       taskState: "SUSPENDED",
+      legId: leg.id,
+      legState: legMachine.LEG_STATE.REASSIGNING,
+      awaiting: "OPERATOR_DECISION",
+      requeued: false,
+      recallFence: withdrawn.recallFence,
+      recallOutboxId: withdrawn.recallOutboxId,
+      releasedCommitmentId: commitment.commitmentId,
+      reliabilitySignal: {
+        agentId: agent.id,
+        commitmentId: commitment.commitmentId,
+        trigger: source.trigger || TRIGGER.OPERATOR_ACTION,
+        observedAt: storeTime,
+      },
+      authorityEpochTouched: false,
     };
   }
+
+  const withdrawn = await withdrawIncumbent(tx, source, { reason: "REASSIGNMENT", timerPayload: {} });
+  if (!withdrawn.ok) return { outcome: OUTCOME.LOST_RACE, reason: "LEG_VERSION_MOVED", detail: null };
+  const { recallFence, recallOutboxId } = withdrawn;
+
+  return {
+    outcome: OUTCOME.REASSIGNED,
+    reason: null,
+    recallFence,
+    recallOutboxId,
+    releasedCommitmentId: commitment.commitmentId,
+    legState: legMachine.LEG_STATE.REASSIGNING,
+    chainLength: bound.chainLength + 1,
+    // Step 3's second half — "mark the incumbent ineligible for this Leg for
+    // `recover.incumbent_cooloff` to prevent ping-pong". Returned as an absolute instant
+    // for the availability index (Phase 9) and the round (Phase 10) to honour; writing it
+    // somewhere neither of them reads would be a record nobody honours.
+    excludeIncumbentUntil: clock.deadlineFrom(storeTime, source.incumbentCooloffSeconds),
+    // Step 4 — "an aging credit equal to the time already lost, so the Leg is not
+    // penalised for the incumbent's failure". Priced by §8.7's aging term (Phase 8);
+    // measured here, because this is where "the time already lost" is known.
+    agingCreditSeconds: agingCreditSeconds(commitment, storeTime),
+    // Step 5 — cause and the reliability signal attributed to the incumbent (§16.3).
+    reliabilitySignal: {
+      agentId: agent.id,
+      commitmentId: commitment.commitmentId,
+      trigger: source.trigger || TRIGGER.OPERATOR_ACTION,
+      observedAt: storeTime,
+    },
+    // I19, asserted rather than assumed: this path never touches the agent scope.
+    authorityEpochTouched: false,
+  };
+}
+
+/**
+ * §4.7's custody-`NONE` steps 1–3, and the REASSIGNING deadline §4.5 attaches to step 1 — the
+ * withdrawal of the incumbent's authority, shared by the ordinary path and the exhausted one.
+ *
+ * Written once so the two cannot drift: the Leg freeze (conditional on its version), the
+ * advance of **this commitment's** fence, the signed RECALL at the new fence, the release, the
+ * I6 high-water mark, the cancellation of the old state's timers and the REASSIGNING timer —
+ * all in the caller's transaction, in this order, exactly as `reassign` wrote them inline.
+ *
+ * @param {object} tx
+ * @param {object} source `reassign`'s input
+ * @param {{ reason: string, timerPayload: object }} options the RECALL's default reason, and
+ *   what the REASSIGNING timer's payload adds to `{ trigger, supersededCommitment }`
+ * @returns {Promise<{ ok: false } | { ok: true, recallFence: bigint, recallOutboxId: string }>}
+ */
+async function withdrawIncumbent(tx, source, options) {
+  const { leg, agent, commitment, storeTime } = source;
 
   // Step 1 — freeze the Leg. Conditional on its version (§4.1 rule 2), so a round that
   // was mid-decision loses rather than overwriting the freeze.
@@ -196,7 +296,7 @@ async function reassign(tx, input) {
     data: { state: legMachine.LEG_STATE.REASSIGNING, version: leg.version + 1 },
   });
   if (frozen.count !== 1) {
-    return { outcome: OUTCOME.LOST_RACE, reason: "LEG_VERSION_MOVED", detail: null };
+    return { ok: false };
   }
 
   // Step 2 — advance **this commitment's** fence and write the RECALL at the new fence.
@@ -212,7 +312,7 @@ async function reassign(tx, input) {
     commitmentId: commitment.commitmentId,
     supersedesFence: String(BigInt(commitment.fence)),
     trigger: source.trigger || TRIGGER.OPERATOR_ACTION,
-    reason: source.reason || "REASSIGNMENT",
+    reason: source.reason || options.reason,
   };
 
   const allocated = await sequence.allocate(tx, { command: "RECALL", commitmentId: commitment.commitmentId });
@@ -288,37 +388,11 @@ async function reassign(tx, input) {
     dueAt: timers.deadlineFrom(storeTime, source.reassignBudgetSeconds),
     armedSeconds: source.reassignBudgetSeconds,
     handler: legMachine.deadlineFor(legMachine.LEG_STATE.REASSIGNING).onExpiry,
-    payload: { trigger: source.trigger, supersededCommitment: commitment.commitmentId },
+    payload: { trigger: source.trigger, supersededCommitment: commitment.commitmentId, ...options.timerPayload },
     shardId: source.shardId,
   });
 
-  return {
-    outcome: OUTCOME.REASSIGNED,
-    reason: null,
-    recallFence,
-    recallOutboxId: recallRow.id,
-    releasedCommitmentId: commitment.commitmentId,
-    legState: legMachine.LEG_STATE.REASSIGNING,
-    chainLength: bound.chainLength + 1,
-    // Step 3's second half — "mark the incumbent ineligible for this Leg for
-    // `recover.incumbent_cooloff` to prevent ping-pong". Returned as an absolute instant
-    // for the availability index (Phase 9) and the round (Phase 10) to honour; writing it
-    // somewhere neither of them reads would be a record nobody honours.
-    excludeIncumbentUntil: clock.deadlineFrom(storeTime, source.incumbentCooloffSeconds),
-    // Step 4 — "an aging credit equal to the time already lost, so the Leg is not
-    // penalised for the incumbent's failure". Priced by §8.7's aging term (Phase 8);
-    // measured here, because this is where "the time already lost" is known.
-    agingCreditSeconds: agingCreditSeconds(commitment, storeTime),
-    // Step 5 — cause and the reliability signal attributed to the incumbent (§16.3).
-    reliabilitySignal: {
-      agentId: agent.id,
-      commitmentId: commitment.commitmentId,
-      trigger: source.trigger || TRIGGER.OPERATOR_ACTION,
-      observedAt: storeTime,
-    },
-    // I19, asserted rather than assumed: this path never touches the agent scope.
-    authorityEpochTouched: false,
-  };
+  return { ok: true, recallFence, recallOutboxId: recallRow.id };
 }
 
 /**
@@ -400,6 +474,7 @@ module.exports = {
   TRIGGER,
   chainLength,
   assessChainBound,
+  chainExceedsBound,
   reassign,
   agingCreditSeconds,
   transferMissionSpecification,

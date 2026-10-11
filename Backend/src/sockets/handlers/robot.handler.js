@@ -153,6 +153,9 @@ const AUTH_FAILURE_REASON = Object.freeze({ INVALID_CREDENTIAL: "INVALID_CREDENT
 // creates the projection, and inventing one here would be a second backfill.
 const clockModule = require("../../engine/commitment/clock");
 const dedupHandshake = require("../../engine/dispatch/dedupHandshake");
+const outbox = require("../../engine/dispatch/outbox");
+// P7-D4 Part 2 — the one release of the legacy Task view after a stand-down (ACK or confirmed reset).
+const { publishStandDown } = require("./command.handler");
 
 // PHASE 14 — §23.2's mutual TLS, certificate-bound sessions, and capability attestation.
 const sessionBinding = require("../../engine/security/sessionBinding");
@@ -357,9 +360,11 @@ function rejectCapabilityClaims(payload, robotId, log) {
  * @param {*} reportedDedupState
  * @param {object} log
  * @param {{ allowed: boolean, refusal: string|null, shardId: string|null }} gate
+ * @param {{ io?: object, kv?: object }} [readModel] where a confirmed reset's Task-view release
+ *   is published (P7-D4 Part 2); AUTH passes its own `{ io, kv }`
  * @returns {Promise<object|null>}
  */
-async function runDedupHandshake(prisma, robotId, reportedDedupState, log, gate) {
+async function runDedupHandshake(prisma, robotId, reportedDedupState, log, gate, readModel) {
   if (!gate || gate.allowed !== true) {
     if (reportedDedupState !== undefined && reportedDedupState !== null) {
       log.info?.("AUTH dedup handshake skipped — the engine is not the decision path for this agent's shard", {
@@ -388,11 +393,26 @@ async function runDedupHandshake(prisma, robotId, reportedDedupState, log, gate)
       const activeCommitments = await tx.commitment.findMany({
         where: { agentId: agent.id, releasedAt: null },
       });
+      // P7-D4 — which of those this agent itself acknowledged the OFFER for. Read here, in the
+      // handshake's own transaction, beside the commitments it qualifies; `classify` stays pure.
+      const acknowledgedOffers =
+        activeCommitments.length === 0
+          ? []
+          : await tx.outbox.findMany({
+              where: {
+                agentId: agent.id,
+                command: "OFFER",
+                state: outbox.OUTBOX_STATE.ACKED,
+                commitmentId: { in: activeCommitments.map((commitment) => commitment.commitmentId) },
+              },
+              select: { commitmentId: true },
+            });
 
       const classification = dedupHandshake.classify({
         reported: parsed.value,
         stored,
         activeCommitments,
+        acknowledgedCommitmentIds: acknowledgedOffers.map((row) => row.commitmentId),
       });
 
       const result = await dedupHandshake.apply(tx, {
@@ -402,7 +422,15 @@ async function runDedupHandshake(prisma, robotId, reportedDedupState, log, gate)
         storeTime,
       });
 
-      return { result, classification };
+      // P7-D4 Part 2 — on a confirmed reset only, the stand-downs it has made unacknowledgeable,
+      // selected against the state the reset was confirmed on. Read-only; empty on every other path.
+      const voidedStandDowns = await dedupHandshake.standDownsVoidedByReset(tx, {
+        agent,
+        classification,
+        fenceFloor: result.fenceFloor,
+      });
+
+      return { result, classification, voidedStandDowns };
     });
 
     if (dedupHandshake.isGenerationAdvance(applied.classification)) {
@@ -416,10 +444,61 @@ async function runDedupHandshake(prisma, robotId, reportedDedupState, log, gate)
       });
     }
 
-    return dedupHandshake.acknowledgement(applied.result);
+    const ack = dedupHandshake.acknowledgement(applied.result);
+    await releaseVoidedStandDowns(prisma, robotId, applied, log, readModel);
+    return ack;
   } catch (e) {
     log.error("AUTH dedup handshake failed", { robotId, message: e?.message });
     return { path: null, error: "HANDSHAKE_FAILED" };
+  }
+}
+
+/**
+ * P7-D4 Part 2 — after a confirmed reset has **committed**, release the legacy Task view of
+ * each stand-down it made unacknowledgeable, through the one release the ACK path uses
+ * (`command.handler.publishStandDown`).
+ *
+ * Outside the handshake's transaction and never able to fail it, by the projection's own
+ * rule 4: the reset — suppression, epoch advance, fence floor — is the authority, and the
+ * agent must receive its acknowledgement whatever happens here. A failure is a stale screen
+ * that the next confirmed reset retries; the release is conditional on the Task still naming
+ * this robot, so a retry, or a second reset, moves nothing twice and emits nothing twice.
+ *
+ * @param {object} prisma
+ * @param {string} robotId
+ * @param {{ classification: object, voidedStandDowns: object[] }} applied
+ * @param {object} log
+ * @param {{ io?: object, kv?: object }|undefined} readModel the AUTH caller's `{ io, kv }`
+ */
+async function releaseVoidedStandDowns(prisma, robotId, applied, log, readModel) {
+  const voided = applied.voidedStandDowns || [];
+  if (voided.length === 0) return;
+  if (!readModel || !readModel.io) {
+    log.warn?.("stand-downs voided by a dedup reset left unreleased — no read-model sink", {
+      robotId,
+      commitments: voided.map((entry) => entry.commitmentId),
+    });
+    return;
+  }
+  for (const entry of voided) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await publishStandDown({
+        prisma,
+        kv: readModel.kv,
+        io: readModel.io,
+        log,
+        robotId,
+        commitmentId: entry.commitmentId,
+        cause: { kind: "DEDUP_RESET", reason: applied.classification.reason, command: entry.command },
+      });
+    } catch (e) {
+      log.warn?.("stand-down voided by a dedup reset not released", {
+        robotId,
+        commitmentId: entry.commitmentId,
+        message: e?.message,
+      });
+    }
   }
 }
 
@@ -821,6 +900,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
         auth.dedupState,
         log,
         agentGate.assess({ socket, snapshot: configOf(), nowMs: Date.now() }),
+        { io, kv },
       );
 
       // PHASE 14 — the session's own description travels with the admission. An agent
@@ -1181,4 +1261,6 @@ module.exports = {
   markRobotOffline,
   // R1 — the `AUTH_FAILED` wire reason.
   AUTH_FAILURE_REASON,
+  // Exported for the P7-D4 tests (§11.5 reset detection); AUTH remains its only caller.
+  runDedupHandshake,
 };

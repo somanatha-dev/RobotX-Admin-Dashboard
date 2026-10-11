@@ -54,6 +54,7 @@
 const custody = require("../domain/custody");
 const legMachine = require("../lifecycle/legMachine");
 const purpose = require("../domain/purpose");
+const reassignment = require("../lifecycle/reassignment");
 const settlement = require("../lifecycle/settlement");
 const supervisionLeases = require("./leases");
 const taskMachine = require("../lifecycle/taskMachine");
@@ -157,6 +158,7 @@ async function scanOrphanLegs(deps, config, storeTime) {
 
   const counts = { [ORPHAN_KIND.EXPECTED_POST_FAILOVER]: 0, [ORPHAN_KIND.DEFECT]: 0 };
   const repairs = [];
+  const heldForOperator = [];
 
   for (const leg of legs) {
     // A Leg in QUEUED or DEFERRED has no commitment by definition (§2.6: nothing has been
@@ -166,6 +168,20 @@ async function scanOrphanLegs(deps, config, storeTime) {
 
     const active = await deps.prisma.commitment.count({ where: { legId: leg.id, releasedAt: null } });
     if (active > 0) continue;
+
+    // §4.7 — "on exhaustion the Leg goes to SUSPENDED for operator decision". An exhausted
+    // chain leaves the Leg in REASSIGNING with no live commitment and REASSIGNING's ESCALATE
+    // deadline armed (`reassignment.reassign`). It is held for a person, not orphaned:
+    // requeueing it here is exactly the automatic re-dispatch the bound exists to stop
+    // (P7-D2). The discriminator is derived from the commitment history, as the bound itself
+    // is; with the bound unresolved the Leg is treated as before.
+    if (leg.state === legMachine.LEG_STATE.REASSIGNING && Number.isInteger(config.maxReassignmentsPerLeg)) {
+      const history = await deps.prisma.commitment.findMany({ where: { legId: leg.id } });
+      if (reassignment.chainExceedsBound(history, config.maxReassignmentsPerLeg)) {
+        heldForOperator.push(leg.id);
+        continue;
+      }
+    }
 
     const kind =
       leg.state === legMachine.LEG_STATE.PLANNED ? ORPHAN_KIND.EXPECTED_POST_FAILOVER : ORPHAN_KIND.DEFECT;
@@ -228,7 +244,7 @@ async function scanOrphanLegs(deps, config, storeTime) {
     repairs.push({ legId: leg.id, kind, escalated: escalate });
   }
 
-  return { category: DIVERGENCE.ORPHAN_LEG, repaired: repairs.length, counts, repairs };
+  return { category: DIVERGENCE.ORPHAN_LEG, repaired: repairs.length, counts, repairs, heldForOperator };
 }
 
 /**

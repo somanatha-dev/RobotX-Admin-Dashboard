@@ -4,6 +4,7 @@ const { z } = require("zod");
 
 const clockModule = require("../../engine/commitment/clock");
 const outbox = require("../../engine/dispatch/outbox");
+const dedupHandshake = require("../../engine/dispatch/dedupHandshake");
 const { FENCE_SCOPE } = require("../../engine/domain/agent");
 // PHASE 15 remediation (D-6) — both halves of the cutover switch, from the one module that
 // owns the question. Settling an outbox row is an engine write.
@@ -129,7 +130,7 @@ async function acknowledgeOutboxRow(prisma, robotId, data) {
  * still the one it is on.
  * @structural
  */
-const STAND_DOWN_COMMANDS = new Set(["RECALL", "WITHDRAW"]);
+const STAND_DOWN_COMMANDS = new Set(dedupHandshake.STAND_DOWN_COMMANDS);
 
 /**
  * After an acknowledged stand-down, release the legacy read model and tell the dashboard.
@@ -138,8 +139,19 @@ const STAND_DOWN_COMMANDS = new Set(["RECALL", "WITHDRAW"]);
  * `TASK_UPDATED` was the only event that clears a route, and nothing emitted it for a recall.
  * Best effort: the engine's authority is already settled, so a failure here is a stale
  * screen, never a lost command.
+ *
+ * P7-D4 Part 2 — also the one release for a stand-down a **confirmed dedup reset** made
+ * unacknowledgeable (`dedupHandshake.standDownsVoidedByReset`). That caller passes `cause`; the
+ * read-model transition, its conditions and the dashboard event are the same, because what
+ * the server now knows is the same — the unit no longer carries the work — and the event
+ * keeps `action: "RECALLED"`, which is what the dashboard clears a unit's route on. With a
+ * cause the event names it and an audit `Event` row records it, since no ACK exists to
+ * explain the release. Without one, nothing differs from the acknowledged path.
+ *
+ * @param {object} input
+ * @param {{ kind: string, reason?: string|null, command?: string|null }} [input.cause]
  */
-async function publishStandDown({ prisma, kv, io, log, robotId, commitmentId }) {
+async function publishStandDown({ prisma, kv, io, log, robotId, commitmentId, cause }) {
   const released = await assignmentProjection.releaseRecalledAssignment(prisma, { commitmentId, robotCode: robotId });
   if (!released.released) return released;
   try {
@@ -154,9 +166,36 @@ async function publishStandDown({ prisma, kv, io, log, robotId, commitmentId }) 
     releasedRobotId: robotId,
     status: assignmentProjection.RELEASED_STATUS,
     action: "RECALLED",
+    ...(cause ? { cause: cause.kind } : {}),
     timestamp: Date.now(),
   });
-  log.info("assignment released after an acknowledged stand-down", { robotId, commitmentId, taskId: released.taskId });
+  if (!cause) {
+    log.info("assignment released after an acknowledged stand-down", { robotId, commitmentId, taskId: released.taskId });
+    return released;
+  }
+  log.warn("assignment released without a stand-down ACK — the unit's dedup state was reset", {
+    robotId,
+    commitmentId,
+    taskId: released.taskId,
+    cause: cause.kind,
+    resetReason: cause.reason ?? null,
+    command: cause.command ?? null,
+  });
+  try {
+    await prisma.event.create({
+      data: {
+        robotId: released.robotRowId,
+        taskId: released.taskRowId,
+        type: "WARNING",
+        message:
+          `Task ${released.taskId} released from ${robotId} without an ACK: its ${cause.command || "stand-down"} for ` +
+          `commitment ${commitmentId} can no longer be acknowledged after the unit's confirmed dedup reset ` +
+          `(${cause.reason || cause.kind}). The engine had already withdrawn the commitment; the Leg is unchanged.`,
+      },
+    });
+  } catch (e) {
+    log.warn("reset release audit event could not be recorded", { robotId, commitmentId, message: e?.message });
+  }
   return released;
 }
 

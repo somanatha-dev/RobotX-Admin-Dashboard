@@ -82,9 +82,6 @@
  */
 
 const chargeCurve = require("../engine/energy/chargeCurve");
-// §20.3 item 3's spatial identity for the declared charger. Used only to derive the H3
-// cell the row's own declared coordinate falls in — see `DEVELOPMENT_CHARGER_CELL_ID`.
-const cells = require("../engine/spatial/cells");
 const {
   CHARGE_POWER_CURVE,
   CHARGE_CHARGER_CLASS,
@@ -93,48 +90,56 @@ const {
 } = require("./constants");
 
 /**
- * The owner's development declaration, as one frozen record.
+ * The development declaration for the simulated fleet's ONE charger, as a frozen record.
  *
- * ── Every field's provenance, because none of it is measured ────────────────
- *   * `chargerId` / `name` — reserved development identifiers. The `DEV-SIM-` prefix is
- *     not a discriminator the code branches on; it is a label so that a human reading a
- *     `Charger` table can tell at a glance that this row is not an installed asset. The
- *     structural statement that it is development configuration is
- *     `ChargerAvailabilityProjection.publishedBy`, below.
- *   * `latitude` / `longitude` — the **centroid of OSM `way/204638943`** ("RNSIT MBA
- *     block") in `rnsit-campus-osm.geojson`, the extract the owner adopted unmodified
- *     (RD-2026-08-30-01). It is a derivation from an adopted document, traceable to a way
- *     id, and it is **not a surveyed charger position**. The owner said "near MBA Block";
- *     nobody has said *where* near, and this module does not invent a bay.
- *   * `plugCount` — the owner's development decision: three simultaneous plugs.
- *   * `chargerClass` — `STANDARD`, because that is the only class
- *     `simulation/constants.CHARGE_POWER_CURVE` characterises and the class the simulated
- *     agent already charges on. Naming a class with no curve would make
- *     `chargeCurve.chargePowerW` refuse, which is its stated behaviour for "a class nobody
- *     has characterised".
- *   * `ratedPowerW` — **deliberately null.** The curve declares power as a function of
- *     SoC; a nameplate rating is a separate measured fact about installed hardware and
- *     nobody has supplied one. Writing the curve's 2000 W plateau here would turn a
- *     modelling assumption into an equipment specification.
- *   * `isDepot` — **false.** §14.5 makes depots "the fixed infrastructure whose
- *     availability does not depend on any round's output" and `eReturn` falls back to
- *     them. A development row marked `isDepot` would enter that fallback set, which is a
- *     production seam this batch must not feed.
+ * ── P7-D3 Step 0 (owner decision, 2026-10-10): the depot IS the simulated fleet's charger ──
+ * Until this decision the scheduler declared its own charger, `DEV-SIM-RNSIT-MBA-01`
+ * (centroid of OSM way/204638943, `isDepot: false`), while the V1 demonstration seeds a
+ * depot, `V1DEMO-DEPOT-01` (`isDepot: true`, no plugs, no reservations). §14.5's
+ * `E_return` therefore priced every return to the depot — the only admissible target under
+ * the DEPOT_ONLY fallback, and not even covered by this scheduler's projection under the
+ * pinned basis — while the simulator reserved the other charger. The owner chose Option B
+ * of the P7-D3 audit: one charger, the depot, shared by the engine and the simulator.
+ *
+ * ── What this record declares, and what it deliberately does not ──────────
+ *   * `chargerId` — the depot's business id, the same one `tools/demo/seedV1Demonstration.js`
+ *     and `tools/deploy/bootstrapV1Environment.js` create. The ROW is theirs: this module
+ *     reads it and never creates or writes it (`provision`), so the depot's region, cell,
+ *     coordinate and `isDepot` are exactly what the seed declared. No location is stated
+ *     here at all.
+ *   * `plugCount` — the owner's development decision: three simultaneous plugs. It is a
+ *     simulation capacity, published only in this scheduler's own projection, and asserts
+ *     nothing about installed hardware.
+ *   * `chargerClass` — `STANDARD`, the only class `simulation/constants.CHARGE_POWER_CURVE`
+ *     characterises. `provision` refuses a depot row of any other class rather than
+ *     charging on a curve nobody declared for it.
+ *   * `ratedPowerW` — **deliberately null.** A nameplate rating is a measured fact about
+ *     installed hardware and nobody has supplied one.
+ *   * Nothing here says the depot is physically installed, powered, metered, surveyed or
+ *     commissioned; the projection's `evidence` block says the opposite, in the durable row.
  *
  * @structural the owner's development charger declaration, not a tunable
  */
 const DEVELOPMENT_CHARGER = Object.freeze({
-  chargerId: "DEV-SIM-RNSIT-MBA-01",
-  name: "Development simulation charger — near MBA Block, RNSIT",
+  chargerId: "V1DEMO-DEPOT-01",
+  name: "V1 demonstration depot — the simulated fleet's development charger",
   chargerClass: CHARGE_CHARGER_CLASS,
   plugCount: 3,
-  latitude: 12.9009017,
-  longitude: 77.519021,
   ratedPowerW: null,
-  isDepot: false,
   locationProvenance:
-    "centroid of OSM way/204638943 (RNSIT MBA block) in rnsit-campus-osm.geojson — NOT a surveyed charger position",
+    "the V1 demonstration depot row's own coordinate (tools/demo/seedV1Demonstration.js, " +
+    "tools/deploy/bootstrapV1Environment.js) — NOT a surveyed charger position",
 });
+
+/**
+ * Chargers this scheduler declared before the P7-D3 Step 0 decision. Reservations still live
+ * at one of them are released as `CHARGER_SUPERSEDED` (`reconcile`, `requestPlug`): left
+ * alone, the agent-wide "already holds a live reservation" check would keep returning the old
+ * charger, and no pass scoped to the declared charger would ever expire it. The rows
+ * themselves are left in place — deleting a charger is not this module's to do.
+ * @structural the superseded development estate, by business id
+ */
+const SUPERSEDED_CHARGER_IDS = Object.freeze(["DEV-SIM-RNSIT-MBA-01"]);
 
 /**
  * The value written to `ChargerAvailabilityProjection.publishedBy`.
@@ -146,41 +151,6 @@ const DEVELOPMENT_CHARGER = Object.freeze({
  *
  * @structural the publisher's own identity, not a tunable
  */
-/**
- * The H3 fine cell the declared charger's own coordinate falls in (§20.3 item 3).
- *
- * ── Why this exists ────────────────────────────────────────────────────────
- * `Charger.cellId` was never written, so the row this module provisions carried a
- * latitude and a longitude and **no cell**. `workers/coordinatorSolvePath.chargerCandidatesFor`
- * skips exactly that row — *"charger … states no cell and cannot be routed to (§20.3 item 3)"* —
- * because the routing seam is keyed on cell pairs and a charger with no cell cannot be
- * routed to. The consequence was not a missing charging option: with no admissible
- * charger, `eReturn` resolves no return leg, `reserves.compose` refuses, `plan.energy`
- * comes out `null`, and **F34 and F35 deny for every agent**. So the development estate
- * was published, declared, and invisible to the one consumer that needed it.
- *
- * ── Why deriving it invents nothing ────────────────────────────────────────
- * The cell is a **pure function of the coordinate this module already declares**, taken
- * with `spatial/cells.cellForPoint` — the same function `Stop.fineCell` and
- * `AgentCellPosition.fineCellId` are derived with, so the charger lands in the same index
- * the expansion searches rather than in a second notion of "where". No position is
- * asserted: the coordinate's provenance is unchanged and still says what it is (the
- * centroid of OSM `way/204638943`, **not** a surveyed charger bay).
- *
- * `isDepot` stays `false` and is deliberately untouched. §14.5 makes depots the fixed
- * infrastructure `eReturn` falls back to, and a development row must not enter that
- * fallback set; this charger is admissible only while this module's own
- * `ChargerAvailabilityProjection` is pinned and fresh, which is the honest scope for a
- * development estate.
- *
- * @structural the declared charger's spatial identity, derived from its own coordinate
- */
-const DEVELOPMENT_CHARGER_CELL_ID = cells.cellForPoint(
-  DEVELOPMENT_CHARGER.latitude,
-  DEVELOPMENT_CHARGER.longitude,
-  cells.RESOLUTION.FINE,
-);
-
 const PUBLISHER = "development-simulation-charging-scheduler";
 
 /**
@@ -214,6 +184,31 @@ const RELEASE_REASON = Object.freeze({
   AGENT_RELEASED: "AGENT_RELEASED",
   STALE_EXPIRED: "STALE_EXPIRED",
   DEREGISTERED: "DEREGISTERED",
+  /** P7-D3 Step 0 — held at a charger this scheduler no longer declares (`SUPERSEDED_CHARGER_IDS`). */
+  CHARGER_SUPERSEDED: "CHARGER_SUPERSEDED",
+});
+
+/**
+ * P7-D3 Step 2 — why a restarted agent may not adopt the live reservation it finds
+ * (`reservationForRecovery`). Every one is a refusal: the agent charges on nothing, drives to
+ * nothing, and the row is left for the pass that owns it (`reconcile` expires and supersedes).
+ * @structural the recovery refusals, not tunables
+ */
+const RECOVERY_REFUSAL = Object.freeze({
+  /** The window has closed (`reservedUntil` is not after now); `reconcile` releases it. */
+  EXPIRED: "EXPIRED",
+  /** At a charger in `SUPERSEDED_CHARGER_IDS`; `reconcile` and `requestPlug` release it. */
+  SUPERSEDED_CHARGER: "SUPERSEDED_CHARGER",
+  /** At no charger, or one this scheduler neither declares nor supersedes. Not this module's to release. */
+  FOREIGN_CHARGER: "FOREIGN_CHARGER",
+  /** The declared depot row is absent or fails `depotProblems`. */
+  CHARGER_UNUSABLE: "CHARGER_UNUSABLE",
+  /** More than one live row for the agent — never chosen between. */
+  MULTIPLE_LIVE: "MULTIPLE_LIVE",
+  /** The row's window or target is not a value this scheduler writes. */
+  MALFORMED: "MALFORMED",
+  /** The reservation or charger could not be read. */
+  UNREADABLE: "UNREADABLE",
 });
 
 /**
@@ -361,11 +356,50 @@ function reservationIdFor(agentRowId, ordinal) {
 }
 
 /**
- * Create or update the development charger row, and publish the projection that declares
- * its plug capacity.
+ * Why the depot row cannot be charged at, or `[]` when it can.
  *
- * Idempotent by `chargerId`. Running it twice changes no charger field and publishes a
- * second projection **only** when the declared estate has actually changed — the
+ * Each condition is one the engine or the simulator depends on: the engine's DEPOT_ONLY
+ * `E_return` admits only `isDepot` rows (so a non-depot would not be the engine's target),
+ * `chargerCandidatesFor` routes only to a row with a cell, P7-C1 prices the return to the
+ * row's own coordinate, and the charge curve is declared only for `STANDARD`.
+ *
+ * @param {object|null} charger the `Charger` row, or null
+ * @returns {string[]}
+ */
+function depotProblems(charger) {
+  const id = DEVELOPMENT_CHARGER.chargerId;
+  if (!charger) {
+    return [
+      `charger "${id}" is not declared in this deployment. It is the V1 demonstration depot, created by ` +
+        "tools/demo/seedV1Demonstration.js or tools/deploy/bootstrapV1Environment.js; this scheduler reads it " +
+        "and never creates it, so no plug is granted until it exists",
+    ];
+  }
+  const problems = [];
+  if (charger.isDepot !== true) {
+    problems.push(`charger "${id}" is not a depot, so the engine's DEPOT_ONLY return target would not be the charger the simulator reserves`);
+  }
+  if (!isNumber(charger.latitude) || !isNumber(charger.longitude)) {
+    problems.push(`charger "${id}" states no coordinate, and this scheduler does not invent one`);
+  }
+  if (typeof charger.cellId !== "string" || charger.cellId === "") {
+    problems.push(`charger "${id}" states no cell, so the engine cannot route a return to it (§20.3 item 3)`);
+  }
+  if (charger.chargerClass !== DEVELOPMENT_CHARGER.chargerClass) {
+    problems.push(
+      `charger "${id}" is class "${String(charger.chargerClass)}", but the simulator's charge curve is declared only for ` +
+        `"${DEVELOPMENT_CHARGER.chargerClass}"`,
+    );
+  }
+  return problems;
+}
+
+/**
+ * Read the depot row, and publish the projection that declares its development plug capacity.
+ *
+ * P7-D3 Step 0: the row is the V1 seed's and is never created or written here (see
+ * `DEVELOPMENT_CHARGER`). Running this twice publishes a second projection **only** when the
+ * declared estate has actually changed — the
  * projection table is documented as insert-only and immutable ("rows are inserted, never
  * updated"), so republishing an identical payload on every boot would be version churn
  * that makes the version meaningless as a cache key (§20.3 item 3).
@@ -397,29 +431,17 @@ async function provision(deps, input) {
     };
   }
 
-  const charger = await prisma.charger.upsert({
-    where: { chargerId: DEVELOPMENT_CHARGER.chargerId },
-    create: {
-      chargerId: DEVELOPMENT_CHARGER.chargerId,
-      chargerClass: DEVELOPMENT_CHARGER.chargerClass,
-      ratedPowerW: DEVELOPMENT_CHARGER.ratedPowerW,
-      latitude: DEVELOPMENT_CHARGER.latitude,
-      longitude: DEVELOPMENT_CHARGER.longitude,
-      // §20.3 item 3 — derived from the two columns beside it, never asserted separately.
-      cellId: DEVELOPMENT_CHARGER_CELL_ID,
-      isDepot: DEVELOPMENT_CHARGER.isDepot,
-    },
-    update: {
-      chargerClass: DEVELOPMENT_CHARGER.chargerClass,
-      ratedPowerW: DEVELOPMENT_CHARGER.ratedPowerW,
-      latitude: DEVELOPMENT_CHARGER.latitude,
-      longitude: DEVELOPMENT_CHARGER.longitude,
-      cellId: DEVELOPMENT_CHARGER_CELL_ID,
-      isDepot: DEVELOPMENT_CHARGER.isDepot,
-    },
-  });
+  // P7-D3 Step 0 — the depot row is the V1 seed's, read and never written. A depot that is
+  // absent, not a depot, unplaced or of an uncharacterised class is refused by name, and no
+  // projection is published, so no plug is granted: the scheduler must not invent a charger,
+  // a coordinate or a cell, and must not charge at a row the engine would not return to.
+  const charger = await prisma.charger.findUnique({ where: { chargerId: DEVELOPMENT_CHARGER.chargerId } });
+  const unusable = depotProblems(charger);
+  if (unusable.length > 0) {
+    return { ok: false, chargerDbId: charger ? charger.id : null, projectionVersion: null, published: false, problems: unusable };
+  }
 
-  const payload = projectionPayload({ nowMs, horizonSeconds: horizon.seconds });
+  const payload = projectionPayload({ nowMs, horizonSeconds: horizon.seconds, charger });
 
   const latest = await prisma.chargerAvailabilityProjection.findFirst({
     where: { publishedBy: PUBLISHER },
@@ -488,7 +510,11 @@ function estateOf(payload) {
  * not. A reader who finds this projection in a database months from now should not have
  * to locate this file to learn that.
  *
- * @param {{ nowMs: number, horizonSeconds: number }} input
+ * P7-D3 Step 0: the charger entry's identity, coordinate and `isDepot` are the depot row's
+ * own (`input.charger`), so the projection cannot disagree with the row the engine reads;
+ * only the development plug count and the reservable window are this scheduler's.
+ *
+ * @param {{ nowMs: number, horizonSeconds: number, charger: object }} input
  * @returns {object}
  */
 function projectionPayload(input) {
@@ -510,12 +536,12 @@ function projectionPayload(input) {
     },
     chargers: [
       {
-        chargerId: DEVELOPMENT_CHARGER.chargerId,
-        chargerClass: DEVELOPMENT_CHARGER.chargerClass,
+        chargerId: input.charger.chargerId,
+        chargerClass: input.charger.chargerClass,
         cellId: null,
-        isDepot: DEVELOPMENT_CHARGER.isDepot,
-        latitude: DEVELOPMENT_CHARGER.latitude,
-        longitude: DEVELOPMENT_CHARGER.longitude,
+        isDepot: input.charger.isDepot === true,
+        latitude: input.charger.latitude,
+        longitude: input.charger.longitude,
         plugCount: DEVELOPMENT_CHARGER.plugCount,
         intervals: [{ fromMs: input.nowMs, untilMs, state: "RESERVABLE" }],
       },
@@ -560,6 +586,44 @@ async function publishedCapacity(deps) {
 }
 
 /**
+ * P7-D3 Step 0 — release the live reservations held at a superseded charger
+ * (`SUPERSEDED_CHARGER_IDS`), optionally for one agent only.
+ *
+ * Each row is released by a conditional write on its own id and a live state, so two passes
+ * racing over the same row release it once. The window is closed at the release instant, and
+ * never at or before `reservedFrom` (the table's CHECK). The superseded charger rows are not
+ * touched.
+ *
+ * @param {object} tx a transaction client
+ * @param {{ agentId?: string }} scope
+ * @param {number} nowMs
+ * @returns {Promise<number>} how many reservations were released
+ */
+async function releaseSupersededReservations(tx, scope, nowMs) {
+  const retired = await tx.charger.findMany({ where: { chargerId: { in: [...SUPERSEDED_CHARGER_IDS] } } });
+  if (!Array.isArray(retired) || retired.length === 0) return 0;
+
+  const live = await tx.chargerReservation.findMany({
+    where: { ...(scope || {}), chargerDbId: { in: retired.map((row) => row.id) }, state: { in: LIVE_STATES } },
+  });
+  let released = 0;
+  for (const row of live) {
+    const fromMs = row.reservedFrom instanceof Date ? row.reservedFrom.getTime() : Date.parse(row.reservedFrom);
+    // eslint-disable-next-line no-await-in-loop
+    const result = await tx.chargerReservation.updateMany({
+      where: { id: row.id, state: { in: LIVE_STATES } },
+      data: {
+        state: RESERVATION_STATE.RELEASED,
+        externalId: RELEASE_REASON.CHARGER_SUPERSEDED,
+        reservedUntil: new Date(Math.max(nowMs, (isNumber(fromMs) ? fromMs : nowMs) + 1)),
+      },
+    });
+    released += result && isNumber(result.count) ? result.count : 0;
+  }
+  return released;
+}
+
+/**
  * The agent's live reservation, if it holds one. `null` is a definite "holds none" — the
  * caller must have established that the agent is in scope before reading this as "not
  * charging".
@@ -572,6 +636,102 @@ async function liveReservationFor(deps, agentRowId) {
   return deps.prisma.chargerReservation.findFirst({
     where: { agentId: agentRowId, state: { in: LIVE_STATES } },
     orderBy: [{ reservedFrom: "asc" }, { reservationId: "asc" }],
+  });
+}
+
+/**
+ * P7-D3 Step 2 — the live reservation a restarted agent may adopt, or why it may not.
+ *
+ * ── The defect ──────────────────────────────────────────────────────────────
+ * A simulator restart rebuilds every agent IDLE, with no charging state. The reservation row
+ * survives, and the engine keeps excluding the agent (F18 denies against its window), but an agent
+ * above the critical level never asked for a plug again, so it neither drove to the charger nor
+ * charged: it was stranded until the window expired (D3-3).
+ *
+ * ── What this is ────────────────────────────────────────────────────────────
+ * A **read**: it writes nothing, takes no lock and grants nothing, so calling it any number of
+ * times cannot create, extend, reorder or release a reservation. The agent's queue position, the
+ * plug count and the window stay exactly what `requestPlug`/`promote` made them.
+ *
+ * ADOPTABLE only when ALL hold:
+ *   · exactly one live (QUEUED or ACTIVE) row for the agent;
+ *   · it is at the declared charger, and that row passes `depotProblems`;
+ *   · its window is still open (`reservedUntil` after `nowMs`) and starts before it ends;
+ *   · its `targetSoc` is null or a fraction in (0, 1].
+ * Anything else is REFUSED by name (`RECOVERY_REFUSAL`) and the row is left alone: `reconcile`
+ * expires a closed window and releases a superseded charger's rows; a foreign charger's row is not
+ * this module's to release.
+ *
+ * @param {object} deps `{ prisma }`
+ * @param {{ agentRowId: string, nowMs: number }} input
+ * @returns {Promise<{ verdict: "NONE" }
+ *   | { verdict: "ADOPTABLE", reservation: { reservationId: string, state: string, targetSoc: number|null,
+ *       reservedFromMs: number, reservedUntilMs: number }, charger: { chargerId: string, lat: number, lon: number } }
+ *   | { verdict: "REFUSED", refusal: string, reservationId: string|null, problems: string[] }>}
+ */
+async function reservationForRecovery(deps, input) {
+  const source = input || {};
+  const refuse = (refusal, problem, reservationId = null) =>
+    Object.freeze({ verdict: "REFUSED", refusal, reservationId, problems: [problem] });
+  if (!deps || !deps.prisma || typeof source.agentRowId !== "string" || source.agentRowId === "" || !isNumber(source.nowMs)) {
+    return refuse(RECOVERY_REFUSAL.UNREADABLE, "prisma, agentRowId and nowMs are required");
+  }
+
+  let live;
+  let depot;
+  try {
+    live = await deps.prisma.chargerReservation.findMany({
+      where: { agentId: source.agentRowId, state: { in: LIVE_STATES } },
+      orderBy: [{ reservedFrom: "asc" }, { reservationId: "asc" }],
+    });
+    depot = await deps.prisma.charger.findUnique({ where: { chargerId: DEVELOPMENT_CHARGER.chargerId } });
+  } catch (error) {
+    return refuse(RECOVERY_REFUSAL.UNREADABLE, `the reservation could not be read: ${error && error.message}`);
+  }
+
+  if (!Array.isArray(live) || live.length === 0) return Object.freeze({ verdict: "NONE" });
+  if (live.length > 1) {
+    return refuse(RECOVERY_REFUSAL.MULTIPLE_LIVE, `the agent holds ${live.length} live reservations (${live.map((row) => row.reservationId).join(", ")})`);
+  }
+  const row = live[0];
+
+  const unusable = depotProblems(depot);
+  if (unusable.length > 0) return refuse(RECOVERY_REFUSAL.CHARGER_UNUSABLE, unusable.join("; "), row.reservationId);
+
+  if (row.chargerDbId !== depot.id) {
+    let held = null;
+    try {
+      held = row.chargerDbId ? await deps.prisma.charger.findUnique({ where: { id: row.chargerDbId } }) : null;
+    } catch (error) {
+      return refuse(RECOVERY_REFUSAL.UNREADABLE, `the reserved charger could not be read: ${error && error.message}`, row.reservationId);
+    }
+    if (held && SUPERSEDED_CHARGER_IDS.includes(held.chargerId)) {
+      return refuse(RECOVERY_REFUSAL.SUPERSEDED_CHARGER, `reserved at the superseded charger "${held.chargerId}"`, row.reservationId);
+    }
+    return refuse(
+      RECOVERY_REFUSAL.FOREIGN_CHARGER,
+      `reserved at ${held ? `charger "${held.chargerId}"` : "no charger (chargerDbId is unset or names no row)"}, which this scheduler does not declare`,
+      row.reservationId,
+    );
+  }
+
+  const fromMs = row.reservedFrom instanceof Date ? row.reservedFrom.getTime() : NaN;
+  const untilMs = row.reservedUntil instanceof Date ? row.reservedUntil.getTime() : NaN;
+  if (!isNumber(fromMs) || !isNumber(untilMs) || !(untilMs > fromMs)) {
+    return refuse(RECOVERY_REFUSAL.MALFORMED, "the reservation's window is not a closed interval", row.reservationId);
+  }
+  if (!(untilMs > source.nowMs)) {
+    return refuse(RECOVERY_REFUSAL.EXPIRED, `the reservation's window closed at ${new Date(untilMs).toISOString()}`, row.reservationId);
+  }
+  const targetSoc = row.targetSoc === null || row.targetSoc === undefined ? null : row.targetSoc;
+  if (targetSoc !== null && !(isNumber(targetSoc) && targetSoc > 0 && targetSoc <= 1)) {
+    return refuse(RECOVERY_REFUSAL.MALFORMED, `the reservation's targetSoc ${String(targetSoc)} is not a fraction in (0, 1]`, row.reservationId);
+  }
+
+  return Object.freeze({
+    verdict: "ADOPTABLE",
+    reservation: Object.freeze({ reservationId: row.reservationId, state: row.state, targetSoc, reservedFromMs: fromMs, reservedUntilMs: untilMs }),
+    charger: Object.freeze({ chargerId: depot.chargerId, lat: depot.latitude, lon: depot.longitude }),
   });
 }
 
@@ -648,10 +808,34 @@ async function requestPlug(deps, input) {
     }
     await selectForUpdate(tx, "Charger", "id", charger.id);
 
-    const existing = await tx.chargerReservation.findFirst({
+    // P7-D3 Step 0 — a live reservation at a superseded charger is released first. Otherwise
+    // the agent-wide check below would return it as this agent's plug, and the agent would
+    // keep "holding" the old charger.
+    await releaseSupersededReservations(tx, { agentId: source.agentRowId }, source.nowMs);
+
+    const held = await tx.chargerReservation.findMany({
       where: { agentId: source.agentRowId, state: { in: LIVE_STATES } },
       orderBy: [{ reservedFrom: "asc" }, { reservationId: "asc" }],
     });
+    // P7-D3 Step 2 — a live reservation at any other charger (one whose row was deleted, so
+    // `chargerDbId` is null, or one this scheduler neither declares nor supersedes) is not this
+    // agent's plug here. It used to be returned as "existing", so the agent drove to the depot and
+    // drew current there without occupying a depot plug. It is neither adopted nor joined by a
+    // second reservation; it is not this module's to release.
+    const elsewhere = held.filter((row) => row.chargerDbId !== charger.id);
+    if (elsewhere.length > 0) {
+      return {
+        ok: false,
+        created: false,
+        reservation: null,
+        problems: [
+          `the agent holds a live reservation (${elsewhere.map((row) => row.reservationId).join(", ")}) at a charger ` +
+            `this scheduler does not declare; it is not adopted as a plug at ${DEVELOPMENT_CHARGER.chargerId}, and no ` +
+            "second reservation is granted beside it",
+        ],
+      };
+    }
+    const existing = held[0] || null;
     if (existing) {
       return { ok: true, created: false, reservation: existing, problems: [] };
     }
@@ -857,13 +1041,26 @@ async function release(deps, input) {
  * window is the worst-case full charge at the coldest declared temperature, so expiring
  * against it cannot evict a session that is still legitimately running.
  *
+ * P7-D3 Step 0 adds one pass, run first and independently of the depot's presence: live
+ * reservations at a superseded charger are released (`CHARGER_SUPERSEDED`). A process that
+ * booted on the old estate left them, and no pass scoped to the declared charger would ever
+ * expire them.
+ *
  * @param {object} deps `{ prisma, runSerializable, selectForUpdate }`
  * @param {{ nowMs: number }} input
- * @returns {Promise<{ ok: boolean, expired: number, promoted: string[], problems: string[] }>}
+ * @returns {Promise<{ ok: boolean, expired: number, superseded: number, promoted: string[], problems: string[] }>}
  */
 async function reconcile(deps, input) {
   const nowMs = input && input.nowMs;
-  if (!isNumber(nowMs)) return { ok: false, expired: 0, promoted: [], problems: ["nowMs is required"] };
+  if (!isNumber(nowMs)) return { ok: false, expired: 0, superseded: 0, promoted: [], problems: ["nowMs is required"] };
+
+  const supersededOutcome = await serialized(
+    deps,
+    (tx) => releaseSupersededReservations(tx, {}, nowMs),
+    { ok: false, expired: 0, superseded: 0, promoted: [] },
+  );
+  if (supersededOutcome && supersededOutcome.retryable === true) return { ...supersededOutcome, ok: false };
+  const superseded = typeof supersededOutcome === "number" ? supersededOutcome : 0;
 
   const expiryOutcome = await serialized(deps, async (tx) => {
     const charger = await tx.charger.findUnique({ where: { chargerId: DEVELOPMENT_CHARGER.chargerId } });
@@ -879,7 +1076,7 @@ async function reconcile(deps, input) {
       data: { state: RESERVATION_STATE.RELEASED, externalId: RELEASE_REASON.STALE_EXPIRED },
     });
     return result.count;
-  }, { ok: false, expired: 0, promoted: [] });
+  }, { ok: false, expired: 0, superseded, promoted: [] });
 
   if (expiryOutcome && expiryOutcome.retryable === true) return { ...expiryOutcome, ok: false };
 
@@ -887,6 +1084,7 @@ async function reconcile(deps, input) {
   return {
     ok: true,
     expired: typeof expiryOutcome === "number" ? expiryOutcome : 0,
+    superseded,
     promoted: filled.promoted || [],
     problems: filled.problems || [],
   };
@@ -928,17 +1126,20 @@ async function status(deps) {
 
 module.exports = {
   DEVELOPMENT_CHARGER,
-  DEVELOPMENT_CHARGER_CELL_ID,
+  SUPERSEDED_CHARGER_IDS,
   PUBLISHER,
   RESERVATION_STATE,
   LIVE_STATES,
   RELEASE_REASON,
+  RECOVERY_REFUSAL,
   sessionHorizonSeconds,
   reservationIdFor,
+  depotProblems,
   projectionPayload,
   provision,
   publishedCapacity,
   liveReservationFor,
+  reservationForRecovery,
   requestPlug,
   promote,
   release,

@@ -7,12 +7,15 @@ const robotSpecification = require("../services/robotSpecification");
 // and the two facts they could drift on are the two this step is about (does the payload
 // say the unit is simulated, and does it leak who owns it).
 const robotProjection = require("../services/robotProjection");
+const robotStatusPrecedence = require("../services/robotStatusPrecedence");
 const { toStringOrNull } = require("../utils/parse");
 const crypto = require("crypto");
 const { dispatchCommand } = require("../services/commandDispatcher.service");
 const { getRobotState, updateHealthStatus } = require("../services/robotRegistry.service");
 const { z } = require("zod");
 const robotStateCache = require("../cache/robotStateCache");
+// P7-D1 — the operator-hold write reports its own failure (the STOP itself is never held up).
+const logger = require("../config/logger");
 // STEP 5 — the position-Observation writer keeps two per-process facts about each robot
 // (its resolved Agent.id and its telemetry ordering high-water mark). Decommissioning is
 // the one event that invalidates both.
@@ -235,7 +238,10 @@ const listRobots = asyncHandler(async (req, res) => {
       ...(typeof live.lon === "number" ? { lon: live.lon } : {}),
       ...(typeof live.speed === "number" ? { speed: live.speed } : {}),
       ...(typeof live.battery === "number" ? { battery: live.battery } : {}),
-      ...(typeof live.status === "string" ? { status: live.status } : {}),
+      // A live report may restrict or refresh the persisted status, never show the robot
+      // fitter than the row: PAUSED/ERROR stay PAUSED/ERROR under a stale IDLE (§23.5's
+      // asymmetric rule, `robotStatusPrecedence`). The raw report stays in `live.status`.
+      status: robotStatusPrecedence.displayedStatus(r.status, live.status),
       live,
     });
   });
@@ -293,7 +299,10 @@ const getRobotsState = asyncHandler(async (req, res) => {
       ...(typeof live.lon === "number" ? { lon: live.lon } : {}),
       ...(typeof live.speed === "number" ? { speed: live.speed } : {}),
       ...(typeof live.battery === "number" ? { battery: live.battery } : {}),
-      ...(typeof live.status === "string" ? { status: live.status } : {}),
+      // A live report may restrict or refresh the persisted status, never show the robot
+      // fitter than the row: PAUSED/ERROR stay PAUSED/ERROR under a stale IDLE (§23.5's
+      // asymmetric rule, `robotStatusPrecedence`). The raw report stays in `live.status`.
+      status: robotStatusPrecedence.displayedStatus(r.status, live.status),
       // keep lastSeenAt as DB value; live.lastSeenAt is informational
       live,
     };
@@ -659,6 +668,62 @@ const clearRobotFault = asyncHandler(async (req, res) => {
 
   const live = await getRobotState(kv, robotCode);
   const dbStatus = String(robot.status || "");
+
+  // ── P7-D1 — lifting an operator hold (PAUSED) ─────────────────────────────────
+  // PAUSED is an F3 hold: an operator STOP/PAUSE (held server-side at the command) or the
+  // unit's own stop report. The robot's own IDLE/ACTIVE never lifts it (§23.5); this route
+  // does, behind the same QUARANTINE_OVERRIDE gate the fault path uses (elevated role,
+  // recorded reason, distinct second approver, both audit records — enforced before this
+  // handler runs). The operator's attestation is not the only evidence: the unit must be
+  // connected now, and must itself report that it is running again (the RESUME reached it).
+  // Anything unknown refuses, and nothing is written.
+  if (dbStatus === "PAUSED") {
+    const refuse = (refusal, detail) => res.status(409).json({ ok: false, error: "Conflict", refusal, detail });
+    if (!live) {
+      return refuse("LIVE_STATE_UNKNOWN", "the unit's live state cannot be read, so it cannot be shown to be running again");
+    }
+    if (live.connected !== true) {
+      return refuse("UNIT_NOT_CONNECTED", "the unit has no live connection to this server, so it cannot be shown to be running again");
+    }
+    const reported = String(live.status || "").toUpperCase();
+    if (!RUNNING_REPORTS.includes(reported)) {
+      return refuse(
+        "UNIT_STILL_STOPPED",
+        `the unit itself reports ${reported || "no status"}; send RESUME and wait for it to report ${RUNNING_REPORTS.join(" or ")} before lifting the hold`,
+      );
+    }
+
+    const heldNext = robot.currentTaskId ? "ACTIVE" : "IDLE";
+    // Conditional on the hold still being there: a fault or a disconnect written meanwhile is
+    // never overwritten.
+    const lifted = await prisma.robot.updateMany({ where: { robotId: robotCode, status: "PAUSED" }, data: { status: heldNext } });
+    if (!lifted || lifted.count !== 1) {
+      return refuse("HOLD_CHANGED", "the robot's status changed while this request was being decided; nothing was written");
+    }
+    robotStateCache.set(robotCode, { status: heldNext });
+
+    try {
+      const reason = req.override?.request?.reason || null;
+      const actor = req.override?.request?.actorId || req.user?.id || null;
+      await prisma.event.create({
+        data: {
+          robotId: robot.id,
+          type: "INFO",
+          message:
+            `Operator hold cleared via recovery workflow (status PAUSED -> ${heldNext})` +
+            (actor ? ` by ${actor}` : "") +
+            (reason ? `: ${reason}` : ""),
+        },
+      });
+    } catch {
+      // ignore event log failure, as the fault path does
+    }
+
+    io?.to("dashboard")?.emit("ROBOT_UPDATED", { robotId: robotCode, status: heldNext, timestamp: Date.now() });
+    res.json({ ok: true, robotId: robotCode, status: heldNext });
+    return;
+  }
+
   const inFault = dbStatus === "ERROR" || live?.healthStatus === "FAULT";
 
   if (!inFault) {
@@ -841,6 +906,14 @@ const sendRobotCommand = asyncHandler(async (req, res) => {
     },
   });
 
+  // P7-D1 — an operator STOP/PAUSE is held at the SERVER, before the command is dispatched.
+  // Until now the hold existed only if the robot reported PAUSED afterwards: a simulated robot
+  // charging kept reporting CHARGING and then IDLE, and the Pi reports STOP as IDLE. A hold is
+  // a restriction, so any operator may place one; lifting it is `clear-fault`'s, behind the
+  // QUARANTINE_OVERRIDE gate. Fail-safe in the order that matters: a hold that cannot be
+  // written never delays or prevents the STOP itself, and the failure is reported.
+  const operatorHold = type === "STOP" || type === "PAUSE" ? await placeOperatorHold(prisma, robotCode) : null;
+
   async function getRetryCount(commandId) {
     if (!kv) return 0;
     try {
@@ -895,8 +968,56 @@ const sendRobotCommand = asyncHandler(async (req, res) => {
   if (kv) await setRetryCount(command.id, 0);
   scheduleReliabilityCheck({ attempt: 0 });
 
-  res.json({ ok: true, command, delivered: Boolean(delivery?.dispatched) });
+  res.json({ ok: true, command, delivered: Boolean(delivery?.dispatched), ...(operatorHold ? { operatorHold } : {}) });
 });
+
+/**
+ * P7-D1 — what the unit itself must report before its hold may be lifted: running again.
+ * @structural
+ */
+const RUNNING_REPORTS = Object.freeze(["IDLE", "ACTIVE"]);
+
+/**
+ * P7-D1 — the statuses an operator hold replaces: the ones at or above PAUSED's tier. ERROR and
+ * OFFLINE are already more restrictive and are left alone, as is an existing PAUSED.
+ * @structural
+ */
+const HOLDABLE_STATUSES = Object.freeze(["IDLE", "ACTIVE", "ISSUES"]);
+
+/**
+ * P7-D1 — hold a robot PAUSED at the server: an operator STOP/PAUSE.
+ *
+ * Two conditional writes, each matching only the state it is about, so a concurrent fault or
+ * disconnect is never overwritten:
+ *   · a running robot (IDLE / ACTIVE / ISSUES) → PAUSED;
+ *   · an OFFLINE robot whose remembered status was a running one (or none) → it comes back
+ *     PAUSED (`robot.handler.markRobotOnline` restores `statusBeforeOffline`).
+ *
+ * @param {object} prisma
+ * @param {string} robotId the business id
+ * @returns {Promise<{ placed: boolean, problem?: string }>}
+ */
+async function placeOperatorHold(prisma, robotId) {
+  try {
+    await prisma.robot.updateMany({
+      where: { robotId, status: { in: [...HOLDABLE_STATUSES] } },
+      data: { status: "PAUSED" },
+    });
+    await prisma.robot.updateMany({
+      where: {
+        robotId,
+        status: "OFFLINE",
+        OR: [{ statusBeforeOffline: null }, { statusBeforeOffline: { in: [...HOLDABLE_STATUSES] } }],
+      },
+      data: { statusBeforeOffline: "PAUSED" },
+    });
+    robotStateCache.del(robotId);
+    return { placed: true };
+  } catch (error) {
+    logger.error("Operator hold could not be written; the command is still dispatched", { robotId, message: error?.message });
+    return { placed: false, problem: error?.message || String(error) };
+  }
+}
 
 // GATE 1 (2026-10-03) — POST /api/robots/:robotId/soc-declaration { socPct }.
 // Owner decision: the physical rover has no battery ADC, so an operator declares its state of

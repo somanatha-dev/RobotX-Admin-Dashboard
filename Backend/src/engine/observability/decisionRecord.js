@@ -322,6 +322,136 @@ function truncationGapOf(partition) {
  *   overrides, predictions, compactTopN, omega }`
  * @returns {object} the `tierA.build()` input
  */
+/**
+ * P7-D5 D4 — why one side of Tier A's `costTotals` holds no term map. Stored beside the
+ * (null) map so a reader can tell "there was nothing to price" from "it was not recorded".
+ * @structural
+ */
+const COST_TOTALS_NOT_RECORDED = Object.freeze({
+  /** No agent was chosen for this Leg, so there is no chosen breakdown to state. */
+  NO_CHOSEN_AGENT: "NO_CHOSEN_AGENT",
+  /** No second priced candidate existed, so there is no runner-up. */
+  NO_RUNNER_UP: "NO_RUNNER_UP",
+  /** The round's evidence holds no γ breakdown for this agent. */
+  NO_BREAKDOWN: "NO_BREAKDOWN",
+  /** The breakdown lacks a term map, the churn or γ, or holds a value that is not integer milli-CU. */
+  BREAKDOWN_INCOMPLETE: "BREAKDOWN_INCOMPLETE",
+  /** The per-term map does not sum exactly to the γ the record states. */
+  DOES_NOT_RECONCILE: "DOES_NOT_RECONCILE",
+});
+
+/** The churn term's name in the itemised map — §8's `C_churn`, which `plan/column` prices separately. */
+const CHURN_TERM = "C_churn";
+
+/** An integer milli-CU quantity as BigInt, from a bigint or a decimal string; otherwise null. */
+function exactMilli(value) {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "string" && /^-?\d+$/.test(value)) return BigInt(value);
+  return null;
+}
+
+/**
+ * One candidate's §8 cost terms, itemised so that they sum EXACTLY to its γ.
+ *
+ * `plan/column` prices a pairing as γ = (Φ(plan(c)) − Φ(plan₀)) + C_churn, and Φ is the sum of
+ * its own per-term map (`cost/phi`). So each term's contribution to γ is its candidate value
+ * minus its base value, plus churn as its own term — a decomposition of the number the solver
+ * compared, computed from values the round already produced, never from a re-pricing. A term
+ * missing from one side contributes 0 on that side, which is exact (Φ sums only the terms it
+ * has). Any other gap, or a sum that does not equal γ, yields NO map and a reason: a partial or
+ * normalised breakdown would be a cost the record never computed.
+ *
+ * @param {object|null} breakdown `plan/column`'s γ breakdown, as the Tier B input carries it
+ * @param {bigint|null} statedGamma the γ the decision record states for this candidate, if any
+ * @returns {{ terms: Record<string, bigint>|null, reason: string|null }}
+ */
+function costTermsFrom(breakdown, statedGamma) {
+  if (!breakdown || typeof breakdown !== "object") return { terms: null, reason: COST_TOTALS_NOT_RECORDED.NO_BREAKDOWN };
+  const incomplete = { terms: null, reason: COST_TOTALS_NOT_RECORDED.BREAKDOWN_INCOMPLETE };
+
+  const gamma = exactMilli(breakdown.gammaMilliCU);
+  const churn = exactMilli(breakdown.churnMilliCU);
+  const candidateTerms = breakdown.candidateTerms;
+  if (gamma === null || churn === null || !candidateTerms || typeof candidateTerms !== "object") return incomplete;
+  // An absent base map is exact only when the base plan's Φ is itself zero.
+  let baseTerms = breakdown.baseTerms;
+  if (!baseTerms || typeof baseTerms !== "object") {
+    if (exactMilli(breakdown.phiBaseMilliCU) !== 0n) return incomplete;
+    baseTerms = {};
+  }
+  if (Object.prototype.hasOwnProperty.call(candidateTerms, CHURN_TERM) || Object.prototype.hasOwnProperty.call(baseTerms, CHURN_TERM)) {
+    return incomplete; // churn would be counted twice
+  }
+
+  const terms = {};
+  for (const name of [...new Set([...Object.keys(candidateTerms), ...Object.keys(baseTerms)])].sort()) {
+    const candidate = Object.prototype.hasOwnProperty.call(candidateTerms, name) ? exactMilli(candidateTerms[name]) : 0n;
+    const base = Object.prototype.hasOwnProperty.call(baseTerms, name) ? exactMilli(baseTerms[name]) : 0n;
+    if (candidate === null || base === null) return incomplete;
+    terms[name] = candidate - base;
+  }
+  terms[CHURN_TERM] = churn;
+
+  const sum = Object.values(terms).reduce((total, value) => total + value, 0n);
+  if (sum !== gamma || (statedGamma !== null && statedGamma !== undefined && statedGamma !== gamma)) {
+    return { terms: null, reason: COST_TOTALS_NOT_RECORDED.DOES_NOT_RECONCILE };
+  }
+  return { terms, reason: null };
+}
+
+/**
+ * P7-D5 D4 — Tier A's `costTotals` (§21.2: "every term of §8 itemised for the chosen candidate
+ * and the runner-up"), from the γ breakdowns this round already computed for every priced
+ * candidate (`coordinatorSolvePath.tierBInputFor`'s candidates, built for every Leg whether or
+ * not its Tier B is sampled). The runner-up is chosen by `tierA.compactTopN` — the same choice
+ * the record's own `runnerUpAndTopN` makes — so the two can never name different agents.
+ *
+ * @param {object} input
+ * @param {object[]} input.candidates the Tier A candidate summaries
+ * @param {object[]|null} input.tierBCandidates the round's Tier B input candidates (with `breakdown`)
+ * @param {string|null} input.chosenAgentId the decision's agent
+ * @param {number} [input.compactTopN]
+ * @returns {{ chosen: object|null, runnerUp: object|null, notRecorded: { chosen: string|null, runnerUp: string|null } }}
+ */
+function costTotalsFrom(input) {
+  const source = input || {};
+  const candidates = source.candidates || [];
+  const evidence = new Map((source.tierBCandidates || []).map((row) => [String(row.agentId), row]));
+  const statedGammaOf = (agentId) => {
+    const row = candidates.find((entry) => String(entry.agentId) === String(agentId));
+    return row && typeof row.gammaMilliCU === "bigint" ? row.gammaMilliCU : null;
+  };
+  const side = (agentId, absentReason) => {
+    if (agentId === null || agentId === undefined) return { terms: null, reason: absentReason };
+    const row = evidence.get(String(agentId));
+    return costTermsFrom(row ? row.breakdown : null, statedGammaOf(agentId));
+  };
+
+  const chosenAgentId = source.chosenAgentId === undefined ? null : source.chosenAgentId;
+  const compact = tierA.compactTopN({ candidates, chosenAgentId, topN: source.compactTopN });
+  const chosen = side(chosenAgentId, COST_TOTALS_NOT_RECORDED.NO_CHOSEN_AGENT);
+  const runnerUp = side(compact.runnerUp ? compact.runnerUp.agentId : null, COST_TOTALS_NOT_RECORDED.NO_RUNNER_UP);
+  return {
+    chosen: chosen.terms,
+    runnerUp: runnerUp.terms,
+    notRecorded: { chosen: chosen.reason, runnerUp: runnerUp.reason },
+  };
+}
+
+/**
+ * P7-D5 D6 — the step of a Tier B write that failed, carried on each `tierBFailures` entry.
+ * @structural
+ */
+const TIER_B_WRITE_STAGE = Object.freeze({
+  /** `DecisionRecordB.create` failed: no Tier B row was written by this attempt. */
+  CREATE: "CREATE",
+  /** The row was created, then the Tier A claim (`tierBWritten: true`) failed or matched ≠ 1 row. */
+  CLAIM: "CLAIM",
+});
+
+/** P7-D5 D4 — a list a producer supplied, or null: "not recorded" is not "none". */
+const recordedList = (value) => (Array.isArray(value) ? value : null);
+
 function tierAInputFor(input) {
   const source = input || {};
   const round = source.round || {};
@@ -387,7 +517,19 @@ function tierAInputFor(input) {
     },
 
     candidates: context.candidates || [],
-    costTotals: context.costTotals || null,
+    // P7-D5 D4 — from the γ breakdowns this round already computed, when the composition does
+    // not supply the totals itself. With no Tier B input there is nothing to itemise from, and
+    // the section stays as it always was (both sides null, no reason).
+    costTotals:
+      context.costTotals ||
+      (context.tierBInput && Array.isArray(context.tierBInput.candidates)
+        ? costTotalsFrom({
+            candidates: context.candidates || [],
+            tierBCandidates: context.tierBInput.candidates,
+            chosenAgentId: decision.agentId ?? null,
+            compactTopN: context.compactTopN,
+          })
+        : null),
     rejectionSummary: context.rejectionSummary || [],
 
     searchAndSolveBounds: {
@@ -423,13 +565,17 @@ function tierAInputFor(input) {
       truncatedBy: decision.truncatedBy ?? null,
     },
 
+    // P7-D5 D4 — a list no producer supplied is recorded as `null` ("not recorded"), never as
+    // `[]` ("none"): nothing in the round composes decision-specific degradations yet, and an
+    // empty list would assert that this decision was not degraded. The switch state IS
+    // recorded (the round's pinned switches), so it is kept.
     degradation: {
-      dependencies: (context.degradation && context.degradation.dependencies) || [],
-      envelopeReductions: (context.degradation && context.degradation.envelopeReductions) || [],
-      relaxations: (context.degradation && context.degradation.relaxations) || [],
+      dependencies: recordedList(context.degradation && context.degradation.dependencies),
+      envelopeReductions: recordedList(context.degradation && context.degradation.envelopeReductions),
+      relaxations: recordedList(context.degradation && context.degradation.relaxations),
       // Shard-wide modes are named, never expanded per decision (§21.2's bounded
       // exemption list, §18.5's mode-level record).
-      shardModes: (context.degradation && context.degradation.shardModes) || [],
+      shardModes: recordedList(context.degradation && context.degradation.shardModes),
       killSwitches: (context.degradation && context.degradation.killSwitches) ?? pins.killSwitchState ?? null,
     },
 
@@ -448,7 +594,8 @@ function tierAInputFor(input) {
           }
         : null,
 
-    overrides: context.overrides || [],
+    // P7-D5 D4 — likewise: no producer of operator overrides is composed, so `null`, not `[]`.
+    overrides: recordedList(context.overrides),
     predictions: context.predictions || null,
     compactTopN: context.compactTopN,
   };
@@ -547,6 +694,7 @@ async function writeRound(deps, input) {
   /* ── 2. One Tier A per Leg, whatever the outcome ─────────────────────────── */
   const written = [];
   const oversize = [];
+  const tierBFailures = [];
 
   const shadowLabel = context.shadowLabel ?? null;
 
@@ -607,11 +755,14 @@ async function writeRound(deps, input) {
       inputSnapshotId: storedSnapshot ? storedSnapshot.id : null,
       fullRetentionUntil: retention.tierAUntil,
       sizeBytes: sized.bytes,
-      tierBWritten: selection.record !== null,
-      // The schema CHECK requires a reason whenever `tierBWritten` is true. Passing the
-      // verdict through means the constraint is satisfied by the same value the
-      // sampler decided on, never by a label chosen at the write site.
-      tierBReason: selection.record !== null ? selection.verdict.writtenBecause : null,
+      // P7-D5 — written `false` and set `true` only once the Tier B row exists (below). The
+      // row used to be created already claiming a Tier B that had not been written, so a
+      // failed Tier B insert left Tier A asserting evidence that did not exist, and the throw
+      // abandoned every later Leg's Tier A. `tierBWritten` may go false → true and never back
+      // (`20260818120000_decision_record_immutability_scope`), which is this order exactly —
+      // the same one `workers/tierB.worker.js` uses for the reservoir.
+      tierBWritten: false,
+      tierBReason: null,
       samplingDraw: selection.verdict.draw,
       samplingRate: selection.verdict.sampleRate,
       shadowLabel,
@@ -622,6 +773,7 @@ async function writeRound(deps, input) {
     // eslint-disable-next-line no-await-in-loop
     await deps.prisma.decisionRecordA.create({ data: row });
 
+    let tierBWritten = false;
     if (selection.record !== null) {
       const tierBRow = tierB.toRow(selection.record, {
         writtenBecause: selection.verdict.writtenBecause,
@@ -636,8 +788,47 @@ async function writeRound(deps, input) {
 
       surrogateKeys.assertNonIdentifying(tierBRow, `DecisionRecordB ${record.identity.decisionId}`);
 
-      // eslint-disable-next-line no-await-in-loop
-      await deps.prisma.decisionRecordB.create({ data: tierBRow });
+      // Tier B is the one record that may legitimately not be written (header): a failure
+      // degrades this decision's explanation to RECONSTRUCTED and is reported, but it never
+      // costs a later Leg its Tier A and never leaves Tier A claiming what is not there.
+      // P7-D5 D6 — which step failed, and whether a Tier B row may exist without its Tier A
+      // claim (an orphan). Never repaired here: an orphan under-claims, which is the safe
+      // direction, and D1's retention expires it like any other Tier B row.
+      let stage = TIER_B_WRITE_STAGE.CREATE;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await deps.prisma.decisionRecordB.create({ data: tierBRow });
+        stage = TIER_B_WRITE_STAGE.CLAIM;
+        // The schema CHECK requires a reason whenever `tierBWritten` is true. Passing the
+        // verdict through means the constraint is satisfied by the same value the sampler
+        // decided on, never by a label chosen at the write site.
+        // eslint-disable-next-line no-await-in-loop
+        const claimed = await deps.prisma.decisionRecordA.updateMany({
+          where: { decisionId: record.identity.decisionId, tierBWritten: false },
+          data: { tierBWritten: true, tierBReason: selection.verdict.writtenBecause },
+        });
+        // P7-D5 D6 — the claim is the evidence that Tier A now says so. Exactly one row, or the
+        // database does not say what this writer would otherwise report.
+        const count = claimed && Number.isInteger(claimed.count) ? claimed.count : null;
+        if (count === 1) {
+          tierBWritten = true;
+        } else {
+          tierBFailures.push({
+            decisionId: record.identity.decisionId,
+            stage: TIER_B_WRITE_STAGE.CLAIM,
+            tierBRowMayExist: true,
+            message: `the Tier A claim updated ${count === null ? "an unknown number of" : count} row(s), not exactly 1`,
+          });
+        }
+      } catch (error) {
+        tierBFailures.push({
+          decisionId: record.identity.decisionId,
+          stage,
+          // A CREATE failure leaves no row we wrote; a CLAIM failure follows a successful create.
+          tierBRowMayExist: stage === TIER_B_WRITE_STAGE.CLAIM,
+          message: error && error.message ? error.message : String(error),
+        });
+      }
     }
 
     written.push({
@@ -646,7 +837,7 @@ async function writeRound(deps, input) {
       sizeBytes: sized.bytes,
       withinSizeLimit: sized.withinLimit,
       tierB: selection.verdict.verdict,
-      tierBWritten: selection.record !== null,
+      tierBWritten,
       exemptionReasons: exemption.reasons,
       shardWideRefused: exemption.shardWideRefused,
     });
@@ -659,6 +850,7 @@ async function writeRound(deps, input) {
     tierBCount: written.filter((row) => row.tierBWritten).length,
     shedCount: written.filter((row) => row.tierB === sampling.VERDICT.SHED).length,
     oversize,
+    tierBFailures,
     retentionProblems: retention.problems,
     written,
   });
@@ -709,6 +901,10 @@ module.exports = {
   snapshotRow,
   partitionFor,
   truncationGapOf,
+  COST_TOTALS_NOT_RECORDED,
+  TIER_B_WRITE_STAGE,
+  costTermsFrom,
+  costTotalsFrom,
   tierAInputFor,
   selectTierB,
   writeRound,

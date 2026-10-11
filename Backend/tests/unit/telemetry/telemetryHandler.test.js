@@ -124,7 +124,7 @@ describe("telemetry.handler — TELEMETRY (real-time pipeline)", () => {
     expect(data.status).toBeUndefined();
   });
 
-  test("CHARGING is preserved as the raw registry status but stored as PAUSED in Postgres", async () => {
+  test("CHARGING is preserved as the raw registry status and NOT stored in Postgres (P7-D1)", async () => {
     socket.data.isAuthed = true;
     socket.data.robotId = "R1";
     prisma.robot.findUnique.mockResolvedValue(existingRobot({ status: "IDLE" }));
@@ -136,10 +136,12 @@ describe("telemetry.handler — TELEMETRY (real-time pipeline)", () => {
     const registry = await getRobotState(kv, "R1");
     expect(registry.status).toBe("CHARGING");
 
-    await waitFor(() => prisma.robot.updateMany.mock.calls.length > 0);
-    const [{ where, data }] = prisma.robot.updateMany.mock.calls[0];
-    expect(data.status).toBe("PAUSED");
-    expect(where).toEqual({ robotId: "R1", status: "IDLE" });
+    // P7-D1 — CHARGING used to be stored as PAUSED, an operator hold the robot could then never
+    // clear. The first-tick flush still runs, and carries no status at all.
+    await waitFor(() => prisma.robot.update.mock.calls.length > 0);
+    const [{ data }] = prisma.robot.update.mock.calls[0];
+    expect(data.status).toBeUndefined();
+    expect(prisma.robot.updateMany).not.toHaveBeenCalled();
   });
 
   test("broadcasts robot:update ONLY to the dashboard room, never globally", async () => {

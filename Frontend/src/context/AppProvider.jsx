@@ -25,7 +25,7 @@ import {
   connectDashboardSocket,
   disconnectDashboardSocket,
 } from '@/lib/socket.js';
-import { ENGINE_CANCELLATION_REASON, isEngineCancellationRefusal } from '@/lib/taskCancellation.js';
+import { cancellationWarning, createSingleFlight, runTaskCancellation } from '@/lib/taskCancellation.js';
 import { STOP_ALL_WARNING, summariseStopAll } from '@/lib/robotCommands.js';
 import { reopensAssignment } from '@/features/tasks/taskLifecycle.js';
 import { CONNECTION, connectionStateOf } from '@/lib/connectionState.js';
@@ -106,6 +106,11 @@ export default function AppProvider({ children }) {
 
   const [authRequest, setAuthRequest] = useState(null); // { intent, action, isDestructive, warning }
   const [isCreatingTask, setIsCreatingTask] = useState(false);
+
+  // P7-D4 Part 5 — task ids whose cancel request has not settled. One request per task at a
+  // time (lib/taskCancellation.createSingleFlight); the card shows it pending.
+  const [cancellingTaskIds, setCancellingTaskIds] = useState([]);
+  const [cancellationFlight] = useState(() => createSingleFlight(setCancellingTaskIds));
 
   // An outcome the operator must see even with the audit log switched off — for example
   // the backend refusing a cancel, or how many units a fleet-wide STOP actually reached.
@@ -660,40 +665,32 @@ export default function AppProvider({ children }) {
     [addEvent, navigate, refreshDbState, requestAuth, showNotice]
   );
 
+  // P7-D4 Part 5 — the backend decides (lib/taskCancellation.js). The dialog states what the act
+  // is before the step-up challenge; after it, exactly one request is sent and its answer shown.
+  // The action never throws: a refusal and an ambiguous failure both close the dialog with a
+  // notice, so neither is re-submitted from it, and no task status is written here — only the
+  // list the backend returns afterwards.
   const cancelTask = useCallback(
-    (id) => {
+    (task) => {
+      const id = task?.taskId || task?.id;
+      if (!id || cancellationFlight.has(id)) return;
       requestAuth(
         `CANCEL TASK ${id}`,
-        async () => {
-          try {
-            await tasksApi.cancelTask(id);
-          } catch (err) {
-            // The backend's answer for an engine-managed task (P1.4): 409, nothing changed.
-            // It is not an authorisation failure — the PIN was accepted — so the dialog
-            // closes (this action resolves) and the refusal is shown as what it is. No
-            // "cancelled" event, no local status change.
-            if (isEngineCancellationRefusal(err)) {
-              showNotice({
-                kind: 'warning',
-                title: `Task ${id} was not cancelled`,
-                message: err.message || ENGINE_CANCELLATION_REASON,
-              });
-              try {
-                await refreshDbState();
-              } catch {
-                // the notice already says nothing changed
-              }
-              return;
-            }
-            throw err;
-          }
-          await refreshDbState();
-          addEvent(`Task ${id} cancelled`, 'warning');
-        },
-        true
+        () =>
+          cancellationFlight.run(id, () =>
+            runTaskCancellation({
+              taskId: id,
+              cancel: tasksApi.cancelTask,
+              refresh: refreshDbState,
+              notify: showNotice,
+              record: addEvent,
+            })
+          ),
+        true,
+        { warning: cancellationWarning(task) }
       );
     },
-    [addEvent, refreshDbState, requestAuth, showNotice]
+    [addEvent, cancellationFlight, refreshDbState, requestAuth, showNotice]
   );
 
   const effectiveRoute = session.isAuthenticated ? '/' : '/login';
@@ -1163,6 +1160,7 @@ export default function AppProvider({ children }) {
       taskRoutes,
       assignmentSignal,
       pairingRejections,
+      cancellingTaskIds,
     }),
     [
       effectiveRoute,
@@ -1184,6 +1182,7 @@ export default function AppProvider({ children }) {
       taskRoutes,
       assignmentSignal,
       pairingRejections,
+      cancellingTaskIds,
       // taskPathCacheRef is a ref — excluded from deps intentionally
       // (its identity is stable; contents change without re-render)
     ]

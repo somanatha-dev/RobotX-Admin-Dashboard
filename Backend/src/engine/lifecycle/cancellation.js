@@ -44,7 +44,10 @@ const custody = require("../domain/custody");
 const legMachine = require("./legMachine");
 const purpose = require("../domain/purpose");
 const taskMachine = require("./taskMachine");
+const transitions = require("./transitions");
 const timers = require("../supervision/timers");
+const outbox = require("../dispatch/outbox");
+const reassignment = require("./reassignment");
 
 /** §4.6 step 3's three cases. @structural the enumerated cancellation resolutions */
 const RESOLUTION = Object.freeze({
@@ -153,6 +156,229 @@ function resolutionFor(leg, hasHardCommitment) {
   if (custody.holdsGoods(leg.custodyState)) return RESOLUTION.RECOVERY_LEG_REQUIRED;
   if (hasHardCommitment) return RESOLUTION.RECALL_THEN_CANCEL;
   return RESOLUTION.CANCELLED_IMMEDIATELY;
+}
+
+/**
+ * §4.6 steps 1 and 3 for the one case with nothing to wait for: a `QUEUED` Leg with custody
+ * NONE and no HARD commitment — *"`CANCELLED` immediately"*.
+ *
+ * Two conditional writes, in the caller's transaction:
+ *   1. `requestCancellation` — the flag and the version increment (step 1), CAS on the version
+ *      the caller read;
+ *   2. `transitions.apply(CANCELLATION_RESOLVED)` — `QUEUED → CANCELLED` (step 3), CAS on the
+ *      version step 1 installed, with the row's guard re-checking flag, custody and the
+ *      commitment evidence, and the QUEUED deadline's timers cancelled on exit (§4.5).
+ *
+ * Step 1's rule — the request "does not attempt to reach a terminal state directly" — exists
+ * so that a round mid-flight loses its conditional write rather than overwriting the request.
+ * That holds here: every write is a CAS on the Leg's version, so a round that read the Leg
+ * before this transaction fails its write after it, and one that wrote first makes this one
+ * fail. What step 1 must never become is a direct jump past the protocol; the resolution is
+ * still the §4.6 row, guarded, and it is taken only when there is no agent to recall.
+ *
+ * Anything other than this case is refused with nothing written — the caller's transaction
+ * rolls back — so a Leg is never left flagged-but-unresolved by this path.
+ *
+ * @param {object} tx
+ * @param {object} input
+ * @param {object} input.leg the Leg row as read inside `tx`
+ * @param {Date} input.storeTime
+ * @param {boolean} input.authorised §4.6 step 5's scope check
+ * @param {boolean} input.noHardCommitment counted inside `tx`: no unreleased commitment for the Leg
+ * @param {string} [input.reason]
+ * @returns {Promise<{ outcome: string, reason: string|null, detail?: string|null, version?: number }>}
+ */
+async function cancelQueuedLeg(tx, input) {
+  const source = input || {};
+  const leg = source.leg;
+  if (!leg) return { outcome: OUTCOME.REFUSED, reason: "NO_LEG", detail: null };
+  if (leg.state !== legMachine.LEG_STATE.QUEUED) {
+    return { outcome: OUTCOME.REFUSED, reason: "LEG_NOT_QUEUED", detail: `the Leg is ${leg.state}` };
+  }
+  if (source.noHardCommitment !== true) {
+    return { outcome: OUTCOME.REFUSED, reason: "HARD_COMMITMENT_EXISTS", detail: "RECALL_THEN_CANCEL is not this path" };
+  }
+  if (custody.holdsGoods(leg.custodyState)) {
+    return { outcome: OUTCOME.REFUSED, reason: "CUSTODY_HELD", detail: "RECOVERY_LEG_REQUIRED is not this path" };
+  }
+
+  const requested = await requestCancellation(tx, {
+    leg,
+    storeTime: source.storeTime,
+    authorised: source.authorised,
+    reason: source.reason,
+    hasHardCommitment: false,
+  });
+  if (requested.outcome !== OUTCOME.REQUESTED) return requested;
+
+  const resolved = await transitions.apply(tx, {
+    leg: { ...leg, version: requested.version, cancelRequestedAt: source.storeTime },
+    event: transitions.EVENT.CANCELLATION_RESOLVED,
+    storeTime: source.storeTime,
+    context: { noHardCommitment: true },
+  });
+  if (resolved.outcome === transitions.OUTCOME.LOST_RACE) {
+    return { outcome: OUTCOME.LOST_RACE, reason: resolved.reason, detail: resolved.detail };
+  }
+  if (resolved.outcome !== transitions.OUTCOME.APPLIED) {
+    return { outcome: OUTCOME.REFUSED, reason: resolved.reason, detail: resolved.detail };
+  }
+  return {
+    outcome: OUTCOME.RESOLVED,
+    reason: null,
+    resolution: RESOLUTION.CANCELLED_IMMEDIATELY,
+    from: resolved.from,
+    to: resolved.to,
+    version: resolved.version,
+    timersCancelled: resolved.timersCancelled,
+  };
+}
+
+/**
+ * P7-D4 Part 3 — the operator's exit from an exhausted reassignment chain: §4.6 step 3's first
+ * case — *"Custody NONE and no HARD commitment: `CANCELLED` immediately"* — for a Leg §4.7
+ * froze in `REASSIGNING` *"for operator decision"*.
+ *
+ * Before this, nothing could leave that state: the chain bound refuses another reassignment,
+ * the orphan scan leaves the Leg to its `ESCALATE` timer, and the timer escalates in place
+ * every `recover.reassign_budget` — for ever. The Task stayed `ASSIGNED` to a unit that
+ * carried nothing (P7-D2, LOCAL).
+ *
+ * The same two conditional writes as `cancelQueuedLeg` — step 1's flag, then the §4.6-sourced
+ * row `REASSIGNING → CANCELLED`, both CAS on the Leg's version, timers cancelled on exit — and
+ * nothing is written unless **every** precondition is proven from rows read in `tx`. Each is
+ * refused by name; unknown or missing custody is not `NONE` (§4.1 rule 3):
+ *
+ *  - `NOT_AUTHORISED` — §4.6 step 5's scope check was not passed;
+ *  - `LEG_NOT_REASSIGNING`;
+ *  - `CHAIN_BOUND_UNRESOLVED` — `recover.max_reassignments_per_leg` is not a non-negative integer;
+ *  - `CUSTODY_NOT_NONE` — the Leg's custody is not exactly `NONE`;
+ *  - `LIVE_COMMITMENT_EXISTS` — any unreleased commitment on the Leg (a newer grant included);
+ *  - `CHAIN_NOT_EXHAUSTED` — `reassignment.chainExceedsBound` is false: an ordinary
+ *    REASSIGNING Leg is the orphan scan's to requeue, not an operator's to cancel;
+ *  - `COMMITMENT_CUSTODY_NOT_NONE` — any commitment ever made for the Leg in another state;
+ *  - `AGENT_CUSTODY_UNRESOLVED` — any incumbent of the Leg holds a live commitment whose custody,
+ *    or whose Leg's custody, is not exactly `NONE` (the robot the Task view is released from must
+ *    not be one with goods unaccounted for). Read under row locks held to commit (P7-D4 Part 4):
+ *    the Leg's own values are guarded by its version CAS, these are not;
+ *  - `COMMAND_IN_FLIGHT` — an outbox row for any of the Leg's commitments is still outstanding
+ *    (a RECALL being delivered): wait for it to settle, fail or expire.
+ *
+ * @param {object} tx
+ * @param {object} input
+ * @param {object} input.leg the Leg row as read inside `tx`
+ * @param {Date} input.storeTime
+ * @param {boolean} input.authorised §4.6 step 5's scope check
+ * @param {number} input.maxReassignmentsPerLeg `recover.max_reassignments_per_leg`
+ * @param {string} [input.reason]
+ * @returns {Promise<object>}
+ */
+async function cancelExhaustedReassigningLeg(tx, input) {
+  const source = input || {};
+  const leg = source.leg;
+  const NONE = custody.CUSTODY_STATES.NONE.name;
+  const refuse = (reason, detail) => ({ outcome: OUTCOME.REFUSED, reason, detail: detail || null });
+
+  if (!leg) return refuse("NO_LEG");
+  if (source.authorised !== true) {
+    return refuse("NOT_AUTHORISED", "§4.6 step 5 — authority is checked against the requester's scope, rate-limited, and audited (§23.6)");
+  }
+  if (leg.state !== legMachine.LEG_STATE.REASSIGNING) return refuse("LEG_NOT_REASSIGNING", `the Leg is ${leg.state}`);
+  const max = source.maxReassignmentsPerLeg;
+  if (!Number.isInteger(max) || max < 0) {
+    return refuse("CHAIN_BOUND_UNRESOLVED", `recover.max_reassignments_per_leg resolved to ${String(max)}`);
+  }
+  if (leg.custodyState !== NONE) {
+    return refuse("CUSTODY_NOT_NONE", `the Leg's custody is ${String(leg.custodyState)}; only NONE resolves immediately (§4.6 step 3)`);
+  }
+
+  const legCommitments = await tx.commitment.findMany({ where: { legId: leg.id } });
+  const live = legCommitments.filter((c) => c.releasedAt === null || c.releasedAt === undefined);
+  if (live.length > 0) {
+    return refuse("LIVE_COMMITMENT_EXISTS", `commitment(s) ${live.map((c) => c.commitmentId).join(", ")} still hold this Leg`);
+  }
+  if (!reassignment.chainExceedsBound(legCommitments, max)) {
+    return refuse(
+      "CHAIN_NOT_EXHAUSTED",
+      `${reassignment.chainLength(legCommitments)} reassignment(s) against a bound of ${max}; the Leg is not awaiting an operator`,
+    );
+  }
+  const custodial = legCommitments.filter((c) => c.custodyState !== NONE);
+  if (custodial.length > 0) {
+    return refuse("COMMITMENT_CUSTODY_NOT_NONE", custodial.map((c) => `${c.commitmentId}=${String(c.custodyState)}`).join(", "));
+  }
+  // P7-D4 Part 4 — the incumbents' other live work is on other Legs, which this Leg's version
+  // CAS does not cover, so it is read under row locks held to commit:
+  //  - each incumbent's Agent row FOR KEY SHARE, which conflicts only with FOR UPDATE — the lock
+  //    `commit()` takes before it grants (§10.3.2 step 1) — so no new live commitment can appear,
+  //    while the agent's ordinary writes (fence, heartbeat) are not blocked;
+  //  - each of those commitments' Legs FOR SHARE, which an UPDATE of that Leg — a custody
+  //    transition — must wait behind.
+  // The Leg is the custody of record: `Commitment.custodyState` is written at grant and at
+  // settlement only. Both must be exactly NONE; a Leg that cannot be read is not NONE (§4.1
+  // rule 3). Order: Agent before Leg, ids ascending — the commit path's order (`commit.lockRows`).
+  const incumbents = [...new Set(legCommitments.map((c) => c.agentId))].sort();
+  for (const agentId of incumbents) {
+    // eslint-disable-next-line no-await-in-loop
+    await tx.$queryRawUnsafe('SELECT "id" FROM "Agent" WHERE "id" = $1 FOR KEY SHARE', agentId);
+  }
+  const incumbentLive = incumbents.length === 0 ? [] : await tx.commitment.findMany({ where: { agentId: { in: incumbents }, releasedAt: null } });
+  const legCustody = new Map();
+  for (const legId of [...new Set(incumbentLive.map((c) => c.legId))].sort()) {
+    // eslint-disable-next-line no-await-in-loop
+    const rows = await tx.$queryRawUnsafe('SELECT "id", "custodyState" FROM "Leg" WHERE "id" = $1 FOR SHARE', legId);
+    if (Array.isArray(rows) && rows.length > 0) legCustody.set(legId, rows[0].custodyState);
+  }
+  const holding = incumbentLive.filter((c) => c.custodyState !== NONE || legCustody.get(c.legId) !== NONE);
+  if (holding.length > 0) {
+    return refuse(
+      "AGENT_CUSTODY_UNRESOLVED",
+      holding
+        .map((c) => `${c.commitmentId}=${String(c.custodyState)} (Leg ${c.legId}=${legCustody.has(c.legId) ? String(legCustody.get(c.legId)) : "UNREADABLE"})`)
+        .join(", "),
+    );
+  }
+  const ids = legCommitments.map((c) => c.commitmentId);
+  const inFlight =
+    ids.length === 0
+      ? []
+      : await tx.outbox.findMany({ where: { commitmentId: { in: ids }, state: { in: [...outbox.OUTSTANDING_STATES] } } });
+  if (inFlight.length > 0) {
+    return refuse("COMMAND_IN_FLIGHT", inFlight.map((row) => `${row.command}:${row.state}`).join(", "));
+  }
+
+  const requested = await requestCancellation(tx, {
+    leg,
+    storeTime: source.storeTime,
+    authorised: true,
+    reason: source.reason,
+    hasHardCommitment: false,
+  });
+  if (requested.outcome !== OUTCOME.REQUESTED) return requested;
+
+  const resolved = await transitions.apply(tx, {
+    leg: { ...leg, version: requested.version, cancelRequestedAt: source.storeTime },
+    event: transitions.EVENT.CANCELLATION_RESOLVED,
+    storeTime: source.storeTime,
+    context: { noHardCommitment: true },
+  });
+  if (resolved.outcome === transitions.OUTCOME.LOST_RACE) {
+    return { outcome: OUTCOME.LOST_RACE, reason: resolved.reason, detail: resolved.detail };
+  }
+  if (resolved.outcome !== transitions.OUTCOME.APPLIED) {
+    return { outcome: OUTCOME.REFUSED, reason: resolved.reason, detail: resolved.detail };
+  }
+  return {
+    outcome: OUTCOME.RESOLVED,
+    reason: null,
+    resolution: RESOLUTION.CANCELLED_IMMEDIATELY,
+    exit: "EXHAUSTED_REASSIGNMENT",
+    chainLength: reassignment.chainLength(legCommitments),
+    from: resolved.from,
+    to: resolved.to,
+    version: resolved.version,
+    timersCancelled: resolved.timersCancelled,
+  };
 }
 
 /**
@@ -348,6 +574,8 @@ module.exports = {
   OUTCOME,
   EXECUTION_STATES,
   requestCancellation,
+  cancelQueuedLeg,
+  cancelExhaustedReassigningLeg,
   resolutionFor,
   spawnRecoveryLeg,
   assessTaskTermination,

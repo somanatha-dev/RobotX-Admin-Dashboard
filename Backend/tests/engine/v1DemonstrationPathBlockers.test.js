@@ -282,46 +282,60 @@ describe("indexMaintainer.start — a cold index is repopulated from the durable
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   3. The development charger carries the cell §20.3 item 3 requires.
+   3. The simulated fleet's charger can be routed to — and it is the depot (P7-D3 Step 0).
    ═══════════════════════════════════════════════════════════════════════════ */
 
 describe("devChargingScheduler — the declared charger can be routed to", () => {
-  test("the cell is derived from the charger's own declared coordinate", () => {
-    expect(devChargingScheduler.DEVELOPMENT_CHARGER_CELL_ID).toBe(
-      cells.cellForPoint(
-        devChargingScheduler.DEVELOPMENT_CHARGER.latitude,
-        devChargingScheduler.DEVELOPMENT_CHARGER.longitude,
-        cells.RESOLUTION.FINE,
-      ),
-    );
-  });
+  // Before P7-D3 Step 0 the scheduler upserted its own row and had to derive the cell
+  // `chargerCandidatesFor` requires from its declared coordinate. It now charges at the V1
+  // depot, whose row (cell included) the seed writes; the scheduler reads it, never writes it,
+  // and refuses one that states no cell.
+  const depot = {
+    id: "charger-row-1",
+    chargerId: "V1DEMO-DEPOT-01",
+    cellId: cells.cellForPoint(12.900729, 77.517603, cells.RESOLUTION.FINE),
+    chargerClass: "STANDARD",
+    isDepot: true,
+    latitude: 12.900729,
+    longitude: 77.517603,
+  };
 
-  test("provision writes that cell on both create and update", async () => {
+  function prismaWith(row) {
     const writes = [];
-    const prisma = {
+    return {
+      writes,
       charger: {
-        upsert: async (args) => {
-          writes.push(args);
-          return { id: "charger-row-1", chargerId: args.where.chargerId };
-        },
+        findUnique: async ({ where }) => (row && where.chargerId === row.chargerId ? { ...row } : null),
+        upsert: async (args) => { writes.push(args); return null; },
+        update: async (args) => { writes.push(args); return null; },
+        create: async (args) => { writes.push(args); return null; },
       },
       chargerAvailabilityProjection: {
         findFirst: async () => null,
         create: async (args) => ({ version: 1, ...args.data }),
       },
     };
+  }
 
+  test("provision reads the depot row and writes no Charger field", async () => {
+    const prisma = prismaWith(depot);
     const outcome = await devChargingScheduler.provision({ prisma }, { nowMs: Date.parse("2026-09-20T04:00:00.000Z") });
 
-    expect(outcome.ok).toBe(true);
-    expect(writes).toHaveLength(1);
-    // The defect: `cellId` appeared in neither branch, so the row was declared, published,
-    // and skipped by `chargerCandidatesFor` for stating no cell.
-    expect(writes[0].create.cellId).toBe(devChargingScheduler.DEVELOPMENT_CHARGER_CELL_ID);
-    expect(writes[0].update.cellId).toBe(devChargingScheduler.DEVELOPMENT_CHARGER_CELL_ID);
+    expect(outcome).toMatchObject({ ok: true, chargerDbId: "charger-row-1", published: true });
+    expect(prisma.writes).toEqual([]);
   });
 
-  test("isDepot stays false — a development row must not enter §14.5's depot fallback", () => {
-    expect(devChargingScheduler.DEVELOPMENT_CHARGER.isDepot).toBe(false);
+  test("a depot row that states no cell is refused — it could not be routed to", async () => {
+    const prisma = prismaWith({ ...depot, cellId: null });
+    const outcome = await devChargingScheduler.provision({ prisma }, { nowMs: Date.parse("2026-09-20T04:00:00.000Z") });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.problems.join(" ")).toMatch(/states no cell/);
+  });
+
+  test("the declared charger is a depot, so the engine's DEPOT_ONLY return target and the simulator's charger are one row", () => {
+    expect(devChargingScheduler.DEVELOPMENT_CHARGER.chargerId).toBe("V1DEMO-DEPOT-01");
+    expect(devChargingScheduler.depotProblems(depot)).toEqual([]);
+    expect(devChargingScheduler.depotProblems({ ...depot, isDepot: false }).join(" ")).toMatch(/is not a depot/);
   });
 });

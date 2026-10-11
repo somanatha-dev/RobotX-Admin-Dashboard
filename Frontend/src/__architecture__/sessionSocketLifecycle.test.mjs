@@ -6,7 +6,10 @@
  *        stay dead behind a signed-in dashboard until a reload.
  * FE-02  logout closes the socket; a logged-out page used to keep receiving telemetry.
  * FE-03  Cancel is not offered as something that can succeed for an engine-managed task,
- *        and the backend's 409 is recognised by its code.
+ *        and the backend's 409 is recognised by its code. (P7-D4 Part 5: the backend now
+ *        cancels a queued or exhausted-REASSIGNING task, so an elevated operator is offered a
+ *        guarded attempt — `operatorCancellation.test.mjs`. What stays pinned here: nobody else
+ *        is, a terminal task never is, and a refusal is never reported as a success.)
  * FE-04  RESUME is not sent, STOP/PAUSE warn that they are one-way, and the fleet-wide
  *        STOP writes no robot status of its own.
  *
@@ -100,12 +103,12 @@ test('FE-02 a 401 from the backend signs the page out through the same path', ()
 
 // ── FE-03: cancellation ──────────────────────────────────────────────────────
 
-test('FE-03 an engine-managed task offers no cancel that can succeed; terminal tasks offer none', async () => {
+test('FE-03 without an elevated role no cancel can be sent; terminal tasks offer none', async () => {
   const m = await import(pathToFileURL(path.join(SRC, 'lib/taskCancellation.js')).href);
   for (const status of ['PENDING', 'ASSIGNED', 'IN_PROGRESS', 'VERIFYING']) {
     const c = m.cancellationFor({ status });
     assert.deepEqual([c.show, c.available], [true, false], status);
-    assert.match(c.reason, /not available in V1/);
+    assert.equal(c.reason, m.NOT_ELEVATED_REASON);
   }
   for (const status of ['COMPLETED', 'FAILED', 'CANCELLED', 'REJECTED']) {
     assert.equal(m.cancellationFor({ status }).show, false, status);
@@ -135,20 +138,38 @@ test('FE-03 the backend 409 is recognised by status AND code, via httpClient', a
   assert.equal(m.isEngineCancellationRefusal(Object.assign(new Error('x'), { status: 401, code: null })), false);
 });
 
-test('FE-03 the card and the provider: disabled control, and a 409 closes the dialog without a success', () => {
+test('FE-03 the card and the provider: the rule decides the control, and a 409 closes the dialog without a success', async () => {
   const page = code(read('pages/TasksPage.jsx'));
-  assert.match(page, /const cancellation = cancellationFor\(task\);/);
+  assert.match(page, /const cancellation = cancellationFor\(task, \{ elevated \}\);/);
   assert.match(page, /cancellation\.show && cancellation\.available \? \(/);
   assert.doesNotMatch(page, /canCancel/);
 
   const src = code(read('context/AppProvider.jsx'));
   const cancel = src.match(/const cancelTask = useCallback\(([\s\S]*?)\n {2}\);/);
   assert.ok(cancel);
-  const refusal = cancel[1].match(/if \(isEngineCancellationRefusal\(err\)\) \{([\s\S]*?)return;\s*\}/);
-  assert.ok(refusal, 'the refusal branch returns (so the dialog closes)');
-  assert.match(refusal[1], /showNotice\(/);
-  assert.doesNotMatch(refusal[1], /addEvent\(`Task \$\{id\} cancelled`/, 'no success message on a refusal');
-  assert.doesNotMatch(refusal[1], /setTasks\(/, 'no fabricated task state');
+  assert.match(cancel[1], /runTaskCancellation\(/);
+  assert.doesNotMatch(cancel[1], /setTasks\(/, 'no fabricated task state');
+
+  // The 409 resolves (so the dialog closes) with a notice, and no "cancelled" event.
+  const m = await import(pathToFileURL(path.join(SRC, 'lib/taskCancellation.js')).href);
+  const notices = [];
+  const events = [];
+  const out = await m.runTaskCancellation({
+    taskId: 'T',
+    cancel: async () => {
+      throw Object.assign(new Error('Task T is managed by the assignment engine; nothing was changed.'), {
+        status: 409,
+        code: 'ENGINE_CANCELLATION_UNAVAILABLE',
+      });
+    },
+    refresh: async () => {},
+    notify: (n) => notices.push(n),
+    record: (msg) => events.push(msg),
+  });
+  assert.equal(out.outcome, 'REFUSED');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].kind, 'warning');
+  assert.deepEqual(events, [], 'no success message on a refusal');
 });
 
 // ── FE-04: robot commands ────────────────────────────────────────────────────

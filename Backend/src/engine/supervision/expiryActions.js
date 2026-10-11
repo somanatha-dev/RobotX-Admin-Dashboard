@@ -1013,8 +1013,9 @@ async function pageOperations(ctx) {
  * second one.
  *
  * So there is no transition to attempt, and there should not be. A Leg sitting in
- * `REASSIGNING` past `recover.reassign_budget` is one no round has picked up, and the
- * escalation is a person being told. The Task write is unavailable before the cutover and
+ * `REASSIGNING` past `recover.reassign_budget` is one no round has picked up — or, since
+ * P7-D2, one whose chain was exhausted and which `reconciler.scanOrphanLegs` deliberately
+ * leaves here (`reassignment.chainExceedsBound`) — and the escalation is a person being told. The Task write is unavailable before the cutover and
  * is emitted as a directive, which is the same honest half-effect `progressProbe` reports.
  *
  * @param {object} ctx
@@ -1212,15 +1213,27 @@ function translateReassignment(ctx, result) {
     return { disposition: DISPOSITION.LOST_RACE, outcome: result.reason };
   }
   if (result.outcome === reassignment.OUTCOME.SUSPENDED) {
-    // §4.7's chain bound. The Leg stays in `REASSIGNING` and the deadline is re-armed, so
-    // `ESCALATE` takes it from here — which is the state machine doing exactly what §4.7
-    // describes rather than two mechanisms racing to suspend the same Task.
+    // §4.7's chain bound. `reassign` has frozen the Leg in `REASSIGNING`, withdrawn the
+    // incumbent (fence, RECALL, release) and armed REASSIGNING's deadline, so `ESCALATE`
+    // takes it from here — which is the state machine doing exactly what §4.7 describes
+    // rather than two mechanisms racing to suspend the same Task. The Leg's version moved,
+    // so this is a transition (P7-D2: it used to be REFUSED, with nothing written).
+    //
+    // `legId` is the Leg's own row id from the result. It was `ctx.entity.id`, which on the
+    // lease-expiry path is the *commitment*, so the event named a Leg that does not exist.
     ctx.record("timer.reassignment_chain_exhausted", {
-      legId: ctx.entity.id,
+      legId: result.legId,
       chainLength: result.chainLength,
       taskState: result.taskState,
+      legState: result.legState,
+      awaiting: result.awaiting,
+      releasedCommitmentId: result.releasedCommitmentId,
+      recallFence: result.recallFence === undefined ? null : String(result.recallFence),
     });
-    return { disposition: DISPOSITION.REFUSED, outcome: `MAX_REASSIGNMENTS_EXHAUSTED:${result.chainLength}` };
+    return {
+      disposition: DISPOSITION.TRANSITIONED,
+      outcome: `SUSPENDED_FOR_OPERATOR:MAX_REASSIGNMENTS_EXHAUSTED:${result.chainLength}`,
+    };
   }
   return { disposition: DISPOSITION.REFUSED, outcome: `${result.outcome}:${result.reason}` };
 }

@@ -64,6 +64,8 @@ const legMachine = require("../engine/lifecycle/legMachine");
 // snapshot now belong to one module, and this worker calls it rather than restating it.
 const decisionRecord = require("../engine/observability/decisionRecord");
 const sampling = require("../engine/observability/sampling");
+// P7-D5 D7 — what the pinned `codeVersion` is and covers; read-only, resolves nothing.
+const { describeCodeVersion, SOURCE: CODE_VERSION_SOURCE } = require("../config/codeVersion");
 
 /** @structural milliseconds per second — a unit conversion, not a threshold */
 const MS_PER_SECOND = 1000;
@@ -140,6 +142,11 @@ let processRecordBudget = null;
  * against most: it looks correct in a unit test and admits unbounded volume in an
  * incident.
  *
+ * P7-D5 D3: production does NOT use this. The composition root creates the process's one
+ * budget and injects it (`server.js` → `leaderWorkers` → `deps.recordBudget`), because the
+ * Tier B flusher must drain the same instance the writer offers into; nothing drains this one.
+ * It remains the fallback for a direct `recordRound` / `runRound` call with no budget.
+ *
  * @param {object} [observability] `{ writeBudgetPerMinute, reservoirSize }`
  * @returns {object}
  */
@@ -152,6 +159,339 @@ function defaultRecordBudget(observability) {
     });
   }
   return processRecordBudget;
+}
+
+/**
+ * A value as the decision record stores it: what a `Json` column holds is what is hashed.
+ *
+ * `canonicalJson` (the snapshot and Tier B digests) and Prisma's `Json` serialisation
+ * disagree on several JavaScript values — a `Date` digests as `{}` but stores as an ISO
+ * string, a `BigInt` digests as a decimal string but cannot be stored at all, and a
+ * non-finite number throws in the digest. A record whose stored bytes are not the bytes its
+ * hash covers can never verify, so every value is normalised once, before either sees it:
+ * `Date` → ISO string, `BigInt` → decimal string, non-finite number → its name as a string,
+ * `Map` → plain object, `undefined` and functions dropped.
+ *
+ * @param {*} value
+ * @returns {*}
+ */
+function jsonSafe(value) {
+  if (value === null || value === undefined) return value === null ? null : undefined;
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
+  if (typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "function" || typeof value === "symbol") return undefined;
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+  if (value instanceof Map) return jsonSafe(Object.fromEntries(value.entries()));
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      const safe = jsonSafe(item);
+      return safe === undefined ? null : safe;
+    });
+  }
+  const out = {};
+  for (const key of Object.keys(value)) {
+    const safe = jsonSafe(value[key]);
+    if (safe !== undefined) out[key] = safe;
+  }
+  return out;
+}
+
+/**
+ * P7-D5 — the register parameters `recordRound` reads, by the setting name it reads them as.
+ *
+ * Until P7-D5 the composition root handed the coordinator no `observability` at all, so the
+ * writer offered every decision to the sampler with `sampleRate: undefined` (stored as
+ * `samplingRate = null`, never selected) and built its write budget and reservoir at 0. These
+ * are the register's own names (`appendixA.json`, `supplementary.json`); nothing here invents
+ * a default — an unresolved parameter stays `undefined`, exactly as the writer treated it.
+ * `tierARecordBytes` is `perf.tier_a_record_bytes` (`supplementary.json`, default 2048, §20.1).
+ * P7-D5 D4: it was left unmapped on the mistaken belief that no such parameter existed, so the
+ * writer never received a limit and its `oversize` report could never fire. It only measures and
+ * reports — a record over the bound is still written (`decisionRecord.writeRound`).
+ * @structural the setting name → register name map
+ */
+const OBSERVABILITY_PARAMETERS = Object.freeze({
+  sampleRate: "observability.tier_b_sample_rate",
+  compactTopN: "observability.compact_top_n",
+  fullRetentionDays: "observability.full_retention",
+  tierBRetentionDays: "observability.tier_b_retention",
+  snapshotRetentionDays: "observability.input_snapshot_retention",
+  writeBudgetPerMinute: "observability.tier_b_write_budget",
+  reservoirSize: "observability.tier_b_reservoir_size",
+  tierARecordBytes: "perf.tier_a_record_bytes",
+});
+
+/**
+ * The decision-record settings a published configuration resolves to.
+ *
+ * @param {object|null|undefined} configSnapshot a `config/service` snapshot (`values` is a Map)
+ * @returns {object} each setting, or `undefined` where the parameter does not resolve
+ */
+function observabilityFrom(configSnapshot) {
+  const values = configSnapshot && configSnapshot.values;
+  const read = (name) => {
+    const value = values && typeof values.get === "function" ? values.get(name) : undefined;
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  };
+  const out = {};
+  for (const [setting, name] of Object.entries(OBSERVABILITY_PARAMETERS)) out[setting] = read(name);
+  return out;
+}
+
+/**
+ * The snapshot keys `captureSnapshot` hashes beyond the identity and the resolved values, in
+ * the shape `decisionRecord.snapshotRow` stores (`pins`). Every one is carried — `null` when
+ * the round has no producer for it — because `replayDecision` rebuilds the hashed body from
+ * the row's columns plus `pins`, and a key present in one body and absent from the other is
+ * a hash that can never verify.
+ * @structural the captured body's pin keys
+ */
+const CAPTURED_PIN_KEYS = Object.freeze([
+  "configVersion",
+  "codeVersion",
+  "killSwitchState",
+  "activeRegime",
+  "agentStateVersion",
+  "priceSnapshotVersion",
+  "forecastVersion",
+  "chargerProjectionVersion",
+  "chargerProjectionPublishedAt",
+  "modelVersions",
+]);
+
+/**
+ * P7-D5 D7 — identity evidence keys. Deliberately NOT in `CAPTURED_PIN_KEYS`: that loop writes an
+ * absent key as `null`, and a `null` the hashed body never had would make the stored pins rebuild
+ * a different body (every such record would replay as a hash mismatch). These are carried only
+ * when present, by `capturedPins`, so a key is in `pins` exactly when the hash covers it.
+ * @structural the identity keys
+ */
+const IDENTITY_PIN_KEYS = Object.freeze(["codeIdentity", "registerIdentity"]);
+
+/**
+ * P7-D5 D7 — how the parameter register a round ran with relates to the one its configuration
+ * was published against. Provenance, not a verdict: `DRIFTED` is expected after any deploy that
+ * changes the register, and nothing refuses, re-prices or re-classifies on it.
+ * @structural the comparison states
+ */
+const REGISTER_IDENTITY_STATE = Object.freeze({ SAME: "SAME", DRIFTED: "DRIFTED", UNKNOWN: "UNKNOWN" });
+
+/** A register digest as `config/service.registerDigest` produces one: sha256, lower-case hex. @structural */
+const REGISTER_DIGEST = /^[0-9a-f]{64}$/;
+
+/**
+ * P7-D5 D7 — the register identity of the configuration the round pinned, or `undefined` when it
+ * states no digest at all (then there is no evidence and no key).
+ *
+ * `inForce` is the digest of the register this process loaded (`registerDigest`); `atPublish` is
+ * the digest the published version recorded (`registerDigestAtPublish`). `SAME`/`DRIFTED` only when
+ * BOTH are well-formed digests; `UNKNOWN` when either is absent or malformed (e.g. a configuration
+ * built in-process has no publish-time digest, and a payload may have recorded none). A malformed
+ * value is recorded as `null`, never copied through.
+ *
+ * @param {object|null} configSnapshot the configuration the round pinned
+ * @returns {{ inForce: string|null, atPublish: string|null, state: string }|undefined}
+ */
+function registerIdentityFrom(configSnapshot) {
+  if (!configSnapshot || typeof configSnapshot !== "object") return undefined;
+  const digestOf = (value) => (typeof value === "string" && REGISTER_DIGEST.test(value) ? value : null);
+  const inForce = digestOf(configSnapshot.registerDigest);
+  const atPublish = digestOf(configSnapshot.registerDigestAtPublish);
+  if (inForce === null && atPublish === null) return undefined;
+  const state =
+    inForce === null || atPublish === null
+      ? REGISTER_IDENTITY_STATE.UNKNOWN
+      : inForce === atPublish
+        ? REGISTER_IDENTITY_STATE.SAME
+        : REGISTER_IDENTITY_STATE.DRIFTED;
+  return { inForce, atPublish, state };
+}
+
+/**
+ * P7-D5 D7 — the identity evidence for a round: each key present only when its evidence is
+ * available (a recognised `codeVersion`; a configuration stating a register digest).
+ *
+ * @param {object|null} configSnapshot
+ * @param {string|null} codeVersion
+ * @returns {{ codeIdentity?: object, registerIdentity?: object }}
+ */
+function identityEvidence(configSnapshot, codeVersion) {
+  const out = {};
+  const code = describeCodeVersion(codeVersion);
+  if (code.source !== CODE_VERSION_SOURCE.NONE) out.codeIdentity = { source: code.source, scope: code.scope };
+  const register = registerIdentityFrom(configSnapshot);
+  if (register !== undefined) out.registerIdentity = register;
+  return out;
+}
+
+/**
+ * The `pins` a captured snapshot is stored with: every `CAPTURED_PIN_KEYS` entry (null when the
+ * round has no producer — the long-standing shape), plus each P7-D5 D7 identity key ONLY when the
+ * captured, hashed body has it. One function for the round-start capture and the D2 seal, so the
+ * two can never carry different keys.
+ *
+ * @param {object} captured a `captureSnapshot` result
+ * @returns {object}
+ */
+function capturedPins(captured) {
+  const pins = {};
+  for (const key of CAPTURED_PIN_KEYS) pins[key] = captured[key] === undefined ? null : captured[key];
+  for (const key of IDENTITY_PIN_KEYS) if (captured[key] !== undefined) pins[key] = captured[key];
+  return pins;
+}
+
+/**
+ * P7-D5 — pin one round's inputs for its decision record: the content-addressed snapshot
+ * (§9.6 requirements 4–7, §21.2) and the decision-record settings, both read from the ONE
+ * configuration object in force when the round starts.
+ *
+ * Observation only. `solve/round` never reads `snapshot` (it is documented there and used
+ * nowhere), so nothing here can change what the round decides.
+ *
+ * Precedence, so existing callers are unchanged: an explicit `source.snapshot` is used as is;
+ * an explicit `source.observability` object is used as is. Otherwise both come from
+ * `source.configSnapshot()`, the accessor the solve path itself reads configuration through.
+ *
+ * Fail-safe: when the snapshot cannot be captured — no published configuration version, no
+ * code version — the round still records what it knows (configuration version, resolved
+ * values) but carries **no hash**, so the record never claims to be replayable. The reasons
+ * are returned for the caller to report.
+ *
+ * @param {object} source the round's input (`runRound`'s)
+ * @param {{ roundId: string, decisionTimeMs: number, seed: string }} round
+ * @returns {{ snapshot: object, observability: object, pinned: boolean, problems: string[] }}
+ */
+function pinRoundInputs(source, round) {
+  const settings = source || {};
+  const fallback = { snapshotId: round.roundId, pins: settings.pins ?? null, seed: round.seed };
+
+  let configSnapshot = null;
+  if (typeof settings.configSnapshot === "function") {
+    try {
+      configSnapshot = settings.configSnapshot() || null;
+    } catch {
+      configSnapshot = null;
+    }
+  }
+
+  const observability =
+    settings.observability && typeof settings.observability === "object"
+      ? settings.observability
+      : observabilityFrom(configSnapshot);
+
+  if (settings.snapshot) return { snapshot: settings.snapshot, observability, pinned: false, problems: [] };
+  if (!configSnapshot) {
+    return {
+      snapshot: fallback,
+      observability,
+      pinned: false,
+      problems: typeof settings.configSnapshot === "function" ? ["no configuration snapshot was readable at round start"] : [],
+    };
+  }
+
+  const values = configSnapshot.values instanceof Map ? configSnapshot.values : new Map();
+  const resolvedValues = jsonSafe(values);
+  const inputs = {
+    roundId: round.roundId,
+    decisionTime: round.decisionTimeMs,
+    configVersion: configSnapshot.version ?? null,
+    codeVersion: typeof settings.codeVersion === "string" && settings.codeVersion !== "" ? settings.codeVersion : null,
+    // What `round.execute` is actually handed (`source.killSwitches`), not the published map:
+    // the round reads its switches from its input, and a record of a different set would be
+    // a record of inputs the decision did not use. The published `killswitch.*` values are in
+    // `resolvedValues`.
+    killSwitchState: jsonSafe(settings.killSwitches || {}),
+    activeRegime: configSnapshot.activeRegime ?? null,
+    resolvedValues,
+  };
+  // P7-D5 D7 — identity evidence, as part of the SAME inputs, so the D2 seal (which re-captures
+  // from `captureInputs`) hashes it again. Each key is added only when its evidence exists.
+  Object.assign(inputs, identityEvidence(configSnapshot, inputs.codeVersion));
+
+  try {
+    const captured = snapshotModel.captureSnapshot(inputs);
+    const pins = capturedPins(captured);
+    return {
+      snapshot: {
+        snapshotId: captured.roundId,
+        hash: captured.hash,
+        seed: captured.seed,
+        pins,
+        resolvedValues: captured.resolvedValues,
+      },
+      observability,
+      pinned: true,
+      problems: [],
+      // P7-D5 D2 — kept so `sealRoundSnapshot` can re-capture the same inputs with the round's
+      // configuration evidence once the round has run.
+      captureInputs: inputs,
+    };
+  } catch (error) {
+    // Recorded, never hashed: the versions and values that ARE known are kept, the hash is
+    // not invented, and the record therefore reads as unreplayable rather than as verified.
+    return {
+      snapshot: {
+        snapshotId: round.roundId,
+        seed: round.seed,
+        pins: {
+          configVersion: inputs.configVersion,
+          codeVersion: inputs.codeVersion,
+          killSwitchState: inputs.killSwitchState,
+          activeRegime: inputs.activeRegime,
+          // P7-D5 D7 — recorded beside the other known pins, and like them NOT hashed: there is
+          // no hash here, and none is invented for this evidence.
+          ...(inputs.codeIdentity !== undefined ? { codeIdentity: inputs.codeIdentity } : {}),
+          ...(inputs.registerIdentity !== undefined ? { registerIdentity: inputs.registerIdentity } : {}),
+        },
+        resolvedValues,
+      },
+      observability,
+      pinned: false,
+      problems: [error && error.message ? error.message : String(error)],
+    };
+  }
+}
+
+/** The evidence a round records when its composition supplies no provider (P7-D5 D2). */
+const CONFIG_EVIDENCE_NOT_RECORDED = Object.freeze({
+  state: "NOT_RECORDED",
+  problems: Object.freeze(["the composition supplies no configuration-evidence provider (deps.configEvidence)"]),
+});
+
+/**
+ * P7-D5 D2 — seal the round's snapshot with its configuration evidence.
+ *
+ * Whether the round read only the pinned configuration is known only after it ran, so the
+ * evidence is added here: a pinned snapshot is re-captured from the SAME inputs plus
+ * `configEvidence`, which the hash then covers (and `replayDecision` rebuilds from `pins`).
+ * The values were pinned at round start; only the hash is computed later. An unpinned
+ * snapshot carries the evidence in `pins` and still claims no hash. A caller-supplied
+ * snapshot that already carries a hash is left exactly as given — adding a key to it would
+ * break the hash it came with.
+ *
+ * @param {object} roundInputs `pinRoundInputs`'s result
+ * @param {object} configEvidence
+ * @returns {object} the snapshot to record
+ */
+function sealRoundSnapshot(roundInputs, configEvidence) {
+  const evidence = jsonSafe(configEvidence || CONFIG_EVIDENCE_NOT_RECORDED);
+  const snapshot = roundInputs.snapshot;
+  if (roundInputs.pinned && roundInputs.captureInputs) {
+    try {
+      const captured = snapshotModel.captureSnapshot({ ...roundInputs.captureInputs, configEvidence: evidence });
+      // P7-D5 D7 — the same pin shape as the round-start capture, identity keys included.
+      const pins = capturedPins(captured);
+      pins.configEvidence = captured.configEvidence;
+      return { snapshotId: captured.roundId, hash: captured.hash, seed: captured.seed, pins, resolvedValues: captured.resolvedValues };
+    } catch {
+      // Fall through: the round-start snapshot stands, its hash unchanged, and the evidence is
+      // not attached rather than attached unhashed beside a hash that does not cover it.
+      return snapshot;
+    }
+  }
+  if (snapshot && typeof snapshot.hash === "string" && snapshot.hash !== "") return snapshot;
+  return { ...snapshot, pins: { ...(snapshot && snapshot.pins ? snapshot.pins : {}), configEvidence: evidence } };
 }
 
 /**
@@ -562,7 +902,13 @@ async function recordRound(deps, input) {
   // budget would reset it every few hundred milliseconds.
   const observability = input.observability || {};
 
-  return decisionRecord.writeRound(deps, {
+  // The shard's budget (P7-D5 D3: the process's one shared budget, injected by the composition
+  // root), or this process's fallback. Falling back here as well as at the call site means
+  // `recordRound` can be exercised directly — by a test, or by a recovery path — without
+  // silently writing Tier B against no budget at all.
+  const budget = deps.recordBudget || defaultRecordBudget(observability);
+
+  const written = await decisionRecord.writeRound(deps, {
     // The coordinator knows the round's identity authoritatively — it minted it — so it
     // supplies it rather than depending on the L4 result to echo it back. The result
     // does carry both, and they agree; taking the coordinator's is what keeps the
@@ -583,10 +929,7 @@ async function recordRound(deps, input) {
       // that runs a round and not a second place the record's shape is decided.
       perLeg: input.perLeg || {},
     },
-    // The shard's budget, or this process's. Falling back here as well as at the call
-    // site means `recordRound` can be exercised directly — by a test, or by a recovery
-    // path — without silently writing Tier B against no budget at all.
-    budget: deps.recordBudget || defaultRecordBudget(observability),
+    budget,
     config: {
       sampleRate: observability.sampleRate,
       compactTopN: observability.compactTopN,
@@ -597,6 +940,25 @@ async function recordRound(deps, input) {
     },
     nowMs: input.storeTime instanceof Date ? input.storeTime.getTime() : result.decisionTimeMs,
   });
+
+  // P7-D5 — a Tier B record that failed to write leaves its Tier A row saying so
+  // (`tierBWritten` false), and the round says so here. Never silent, never fatal: the round
+  // has already committed, and evidence is not allowed to change what it did.
+  if (written && Array.isArray(written.tierBFailures) && written.tierBFailures.length > 0 && typeof deps.record === "function") {
+    deps.record("coordinator.tier_b_write_failed", { shardId: input.shardId, roundId: input.roundId, failures: written.tierBFailures });
+  }
+  // P7-D5 D3 — budget exhaustion, named per round: these decisions were selected for Tier B
+  // and NOT written (Tier A `tierBWritten` false). The window's total reaches the audit stream
+  // when the flusher drains the same budget.
+  if (written && written.shedCount > 0 && typeof deps.record === "function") {
+    deps.record("coordinator.tier_b_shed", {
+      shardId: input.shardId,
+      roundId: input.roundId,
+      shed: written.written.filter((row) => row.tierB === sampling.VERDICT.SHED).map((row) => row.decisionId),
+      counters: budget && typeof budget.counters === "function" ? budget.counters(input.shardId) : null,
+    });
+  }
+  return written;
 }
 
 /**
@@ -765,7 +1127,13 @@ async function runRound(deps, input) {
       }
     }
 
-    const snapshot = source.snapshot ?? { snapshotId: roundId, pins: source.pins ?? null, seed };
+    // P7-D5 — the round's pinned snapshot and decision-record settings, from the configuration
+    // in force now. Observation only: `round.execute` does not read `snapshot`.
+    const roundInputs = pinRoundInputs(source, { roundId, decisionTimeMs, seed });
+    const snapshot = roundInputs.snapshot;
+    if (roundInputs.problems.length > 0 && typeof deps.record === "function") {
+      deps.record("coordinator.snapshot_unpinned", { shardId, roundId, problems: roundInputs.problems });
+    }
 
     /* ── 5–7. Plan (L4), commit (L3), and record ────────────────────────────── */
     let result;
@@ -822,6 +1190,28 @@ async function runRound(deps, input) {
 
     const settlement = await settleBatch(deps, { claimed, result, storeTime });
 
+    // P7-D5 D2 — did this round read only the configuration it pinned? Asked after the round,
+    // when planning and every commit are done, and sealed into the snapshot it records. A
+    // provider that throws costs the round its evidence (INCOMPLETE), never the round.
+    let configEvidence = CONFIG_EVIDENCE_NOT_RECORDED;
+    if (typeof deps.configEvidence === "function") {
+      try {
+        configEvidence = deps.configEvidence({ promotionReads: source.promotionConfigReads }) || CONFIG_EVIDENCE_NOT_RECORDED;
+      } catch (error) {
+        configEvidence = { state: "INCOMPLETE", problems: [`the configuration evidence could not be read: ${error && error.message}`] };
+      }
+    }
+    const recordedSnapshot = sealRoundSnapshot(roundInputs, configEvidence);
+    if ((configEvidence.state === "MISMATCH" || configEvidence.state === "INCOMPLETE") && typeof deps.record === "function") {
+      deps.record("coordinator.config_evidence", {
+        shardId,
+        roundId,
+        state: configEvidence.state,
+        mismatches: configEvidence.mismatches || [],
+        problems: configEvidence.problems || [],
+      });
+    }
+
     const recorded = await recordRound(
       {
         ...deps,
@@ -829,18 +1219,19 @@ async function runRound(deps, input) {
         // round would reset it every window and the bound would never bind; one created
         // here, lazily, survives for the life of the process, which is the life of the
         // leadership it holds.
-        recordBudget: deps.recordBudget || defaultRecordBudget(source.observability),
+        recordBudget: deps.recordBudget || defaultRecordBudget(roundInputs.observability),
       },
       {
         shardId,
         roundId,
         result,
         storeTime,
-        snapshot,
+        // P7-D5 D2 — sealed with the round's configuration evidence.
+        snapshot: recordedSnapshot,
         cadenceVerdict,
         leadershipFence: shardLeadership ? shardLeadership.leadershipFence : null,
         instanceId: source.instanceId,
-        observability: source.observability,
+        observability: roundInputs.observability,
         versions: source.versions,
         trigger: source.trigger,
         // The composition's per-Leg context for this round (candidate outcomes, §7.7
@@ -1052,6 +1443,16 @@ module.exports = {
   MS_PER_SECOND,
   LIVENESS_TTL_WINDOWS,
   defaultRecordBudget,
+  OBSERVABILITY_PARAMETERS,
+  CONFIG_EVIDENCE_NOT_RECORDED,
+  IDENTITY_PIN_KEYS,
+  REGISTER_IDENTITY_STATE,
+  registerIdentityFrom,
+  identityEvidence,
+  sealRoundSnapshot,
+  jsonSafe,
+  observabilityFrom,
+  pinRoundInputs,
   readQueueState,
   publishQueueMirror,
   claimBatch,

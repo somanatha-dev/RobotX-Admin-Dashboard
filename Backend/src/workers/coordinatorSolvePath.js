@@ -85,13 +85,15 @@ const planBuilder = require("../engine/plan/planBuilder");
 const timeline = require("../engine/plan/timeline");
 const columnModel = require("../engine/plan/column");
 const feasibility = require("../engine/feasibility/evaluate");
+// P7-D5 — read-only: the registered §7.3 policy, recorded beside an INDETERMINATE verdict.
+const feasibilityRegister = require("../engine/feasibility/register");
 const volatileSubset = require("../engine/feasibility/volatileSubset");
 const consumption = require("../engine/energy/consumption");
 const usable = require("../engine/energy/usable");
 const cDelay = require("../engine/cost/cDelay");
 const { ratesFrom } = require("../engine/cost/exchangeRates");
 const schedulerClient = require("../engine/energy/chargingSchedulerClient");
-const { compareStrings } = require("../engine/determinism/ordering");
+const { canonicalJson, compareStrings } = require("../engine/determinism/ordering");
 const commitment = require("../engine/commitment/commit");
 const offers = require("../engine/dispatch/offers");
 const storablePrecision = require("../services/storablePrecision.service");
@@ -259,6 +261,22 @@ const isNumber = (value) => typeof value === "number" && Number.isFinite(value);
 const isFunction = (value) => typeof value === "function";
 
 /**
+ * P7-C1 — a WGS-84 point the routing seam may be asked about, or `null`. Finite and in range;
+ * anything else is no coordinate at all, and the caller keeps the cell-pair question rather
+ * than routing to an invented point.
+ *
+ * @param {*} lat
+ * @param {*} lon
+ * @returns {{ lat: number, lon: number }|null}
+ */
+function exactPointOf(lat, lon) {
+  if (!isNumber(lat) || !isNumber(lon)) return null;
+  // @structural the WGS-84 latitude and longitude ranges
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat, lon };
+}
+
+/**
  * The key a priced candidate is memoised under.
  *
  * `|` rather than a space, because a Leg or agent identifier containing a space would
@@ -337,6 +355,148 @@ function resolve(snapshot, name, scope) {
   } catch {
     return undefined;
   }
+}
+
+/* ── P7-D5 D2 — one configuration per round, and evidence that it was ──────────
+ *
+ * §22.1 rule 4: "A round observes exactly one config version … the round pins it and every
+ * resolution during that round reads it, never the live store." The planning half used to
+ * re-read the live accessor (`app.locals.config`, swapped by the propagator) per Leg and per
+ * agent, so a publish landing mid-round split one round across two versions, while the
+ * decision record named whichever version was in force when it was pinned.
+ *
+ * Now `beginRound` pins ONE snapshot and planning reads only it, through a view that also
+ * records every resolution a non-global binding answered — the class-specific values
+ * `resolvedValues` (global scope) cannot show. Two kinds of read deliberately stay as they
+ * were, and are recorded and compared instead of pinned:
+ *   · values resolved once at PROMOTION (round limits, cadence, the routing seam's TTL and
+ *     intra-cell offset) — re-resolving them per round would change behaviour after a publish;
+ *   · the COMMIT, which re-reads the live configuration under the row locks. It stays
+ *     authoritative and fails closed on the newest version; it is never made to agree with
+ *     the pin.
+ * `configEvidenceFor` turns all three into one explicit state. */
+
+/** @structural the configuration evidence states a round record can carry */
+const CONFIG_EVIDENCE_STATE = Object.freeze({
+  /** Planning read only the pinned snapshot; promotion-time values and every commit read agree with it. */
+  CONSISTENT: "CONSISTENT",
+  /** A value the round used differs, or may differ, from the pinned snapshot — named in `mismatches`. */
+  MISMATCH: "MISMATCH",
+  /** Something needed to judge consistency was not captured — named in `problems`. */
+  INCOMPLETE: "INCOMPLETE",
+});
+
+const sameValue = (a, b) =>
+  canonicalJson({ v: a === undefined ? null : a }) === canonicalJson({ v: b === undefined ? null : b });
+
+/**
+ * A round's pinned configuration view: the snapshot unchanged, except that `resolve` and
+ * `explain` also record each answer a non-global binding supplied, or that differs from the
+ * global value `resolvedValues` records. Same values, same calls — `resolve` is `explain(…).value`
+ * in `config/resolver`, so answering through `explain` costs nothing extra.
+ *
+ * @param {object|null|undefined} pinned a `config/service` snapshot
+ * @returns {{ view: object|null, ledger: { capture: string, scoped: Map<string, object> } }}
+ */
+function roundConfigView(pinned) {
+  const ledger = { capture: "RECORDED", scoped: new Map() };
+  if (!pinned || !isFunction(pinned.resolve)) return { view: pinned || null, ledger: { ...ledger, capture: "UNAVAILABLE" } };
+  if (!isFunction(pinned.explain)) {
+    // A snapshot that cannot say which scope level answered: values are still pinned, the
+    // class-specific ones are not recordable, and the evidence says so.
+    return { view: pinned, ledger: { ...ledger, capture: "UNAVAILABLE" } };
+  }
+  const globalOf = (name) => (pinned.values && isFunction(pinned.values.get) ? pinned.values.get(name) : undefined);
+  const note = (name, options, explained) => {
+    const index = options && options.index !== undefined && options.index !== null ? String(options.index) : null;
+    const scoped = explained.level !== null && explained.level !== "global";
+    if (!scoped && index === null && sameValue(explained.value, globalOf(name))) return;
+    const key = `${name}|${explained.level}|${explained.key}|${index === null ? "" : index}`;
+    if (!ledger.scoped.has(key)) {
+      ledger.scoped.set(key, { name, level: explained.level, key: explained.key, index, value: explained.value });
+    }
+  };
+  const explain = (name, context, options) => {
+    const explained = pinned.explain(name, context, options);
+    note(name, options, explained);
+    return explained;
+  };
+  const view = Object.freeze({
+    ...pinned,
+    explain,
+    resolve: (name, context, options) => explain(name, context, options).value,
+  });
+  return { view, ledger };
+}
+
+/**
+ * The round's configuration evidence (P7-D5 D2): what was pinned, which class-specific values
+ * planning consumed, and every read that did not come from the pin.
+ *
+ * @param {object} input
+ * @param {object|null} input.pinned the snapshot `beginRound` pinned, or null
+ * @param {{ capture: string, scoped: Map<string, object> }|null} input.ledger
+ * @param {Array<{ version: *, pinned: boolean }>} [input.commitReads] each live read the commit made
+ * @param {Array<{ name: string, used: *, via: string }>} [input.promotionReads] values resolved at promotion
+ * @returns {object} JSON-safe evidence
+ */
+function configEvidenceFor(input) {
+  const source = input || {};
+  const pinned = source.pinned || null;
+  const problems = [];
+  const mismatches = [];
+  const pinnedVersion = pinned ? (pinned.version ?? null) : null;
+
+  if (!pinned) problems.push("no configuration snapshot was pinned for this round");
+  const ledger = source.ledger || { capture: "UNAVAILABLE", scoped: new Map() };
+  if (ledger.capture !== "RECORDED") {
+    problems.push("class-specific resolutions could not be recorded: the pinned snapshot exposes no explain()");
+  }
+
+  // Promotion-time reads: compared value by value, the way each was resolved.
+  const promotionReads = Array.isArray(source.promotionReads) ? source.promotionReads : [];
+  for (const read of promotionReads) {
+    if (!pinned) break;
+    const raw = read.via === "finite"
+      ? (pinned.values && isFunction(pinned.values.get) ? pinned.values.get(read.name) : undefined)
+      : resolve(pinned, read.name, {});
+    const expected =
+      read.via === "finite" ? (isNumber(raw) ? raw : undefined)
+        : read.via === "positive" ? (isNumber(raw) && raw > 0 ? raw : undefined)
+          : raw;
+    if (!sameValue(read.used, expected)) {
+      mismatches.push({ source: "PROMOTION", name: read.name, used: read.used ?? null, pinned: expected ?? null });
+    }
+  }
+
+  // Commit reads: live by design. One that read a different published version is named.
+  const commitReads = Array.isArray(source.commitReads) ? source.commitReads : [];
+  const commitVersions = [...new Set(commitReads.map((read) => (read.version === undefined ? null : read.version)))];
+  for (const version of commitVersions) {
+    const sameObjectOnly = commitReads.filter((read) => (read.version ?? null) === version).every((read) => read.pinned);
+    const sameVersion = isNumber(version) && version === pinnedVersion;
+    if (!sameObjectOnly && !sameVersion) mismatches.push({ source: "COMMIT", version, pinnedVersion });
+  }
+
+  const scopedResolutions = [...ledger.scoped.values()].sort((a, b) =>
+    compareStrings(`${a.name}|${a.level}|${a.key}|${a.index ?? ""}`, `${b.name}|${b.level}|${b.key}|${b.index ?? ""}`),
+  );
+
+  const state = mismatches.length > 0
+    ? CONFIG_EVIDENCE_STATE.MISMATCH
+    : problems.length > 0 ? CONFIG_EVIDENCE_STATE.INCOMPLETE : CONFIG_EVIDENCE_STATE.CONSISTENT;
+
+  return coordinatorWorker.jsonSafe({
+    state,
+    pinnedVersion,
+    scopedResolutionCapture: ledger.capture,
+    scopedResolutions,
+    promotionReads: promotionReads.length,
+    commitReads: commitReads.length,
+    commitVersions,
+    mismatches,
+    problems,
+  });
 }
 
 /**
@@ -1551,6 +1711,9 @@ function targetSocFor({ agentSnapshot, snapshot, scope, decisionTimeMs }) {
 async function chargerCandidatesFor(input) {
   const { context, routing, originCell, profileKey, snapshot, scope } = input;
   const problems = [];
+  // P7-C1 — where the mission ends, exactly, when the plan states it. With it and a charger's
+  // own coordinates the return hop is asked between those two points (below).
+  const originPoint = input.originPoint ? exactPointOf(input.originPoint.lat, input.originPoint.lon) : null;
 
   const table = context.prisma && context.prisma.charger;
   if (!table || !isFunction(table.findMany)) {
@@ -1585,8 +1748,37 @@ async function chargerCandidatesFor(input) {
       problems.push(`charger ${String(row.chargerId)} states no cell and cannot be routed to (§20.3 item 3)`);
       continue;
     }
-    // eslint-disable-next-line no-await-in-loop
-    const traversal = await routing.forPairing(originCell, [{ sequence: 1, cellId: row.cellId }], profileKey);
+    // ── P7-C1: between the exact points when both are known ───────────────────
+    // The return leg was always a cell-pair question, so the cache added §20.3's quantisation
+    // correction at both ends (2 × route.intra_cell_offset_m) to a distance between two points
+    // known exactly — the mission's last stop and this charger's own row. Asked through the
+    // same seam the approach and linehaul use, the hop is routed between those points; whether
+    // a request is exact is still the composition's decision (`routeEndpointBasis`), so a
+    // cell-representative router keeps the correction. Without both coordinates, or when the
+    // exact route is refused, the request is the cell-pair one it always was.
+    const destination = originPoint ? exactPointOf(row.latitude, row.longitude) : null;
+    let traversal = null;
+    if (destination) {
+      // eslint-disable-next-line no-await-in-loop
+      const exact = await routing.forPairing(
+        originCell,
+        [{ sequence: 1, cellId: row.cellId, lat: destination.lat, lon: destination.lon }],
+        profileKey,
+        originPoint,
+      );
+      if (exact.ok && exact.hops[0]) {
+        traversal = exact;
+      } else {
+        problems.push(
+          `charger ${String(row.chargerId)}: the exact return route was refused (${(exact.problems || []).join("; ")}); ` +
+            "priced as a cell pair with the §20.3 correction instead",
+        );
+      }
+    }
+    if (!traversal) {
+      // eslint-disable-next-line no-await-in-loop
+      traversal = await routing.forPairing(originCell, [{ sequence: 1, cellId: row.cellId }], profileKey);
+    }
     if (!traversal.ok || !traversal.hops[0]) {
       problems.push(`charger ${String(row.chargerId)}: ${traversal.problems.join("; ")}`);
       continue;
@@ -2029,6 +2221,8 @@ function evaluateExactFor(context, round) {
       context,
       routing,
       originCell: lastStop ? lastStop.cellId || cellIdFor(lastStop) : null,
+      // P7-C1 — and its exact coordinate, which `chargerCandidatesFor` validates.
+      originPoint: lastStop ? { lat: lastStop.lat, lon: lastStop.lon } : null,
       profileKey,
       snapshot,
       scope,
@@ -2112,6 +2306,9 @@ function evaluateExactFor(context, round) {
         legPurpose: leg.purpose ?? null,
       },
     });
+    // P7-D5 — the verdicts this gate call has just computed, kept for Tier B by reference.
+    // Observation only: written after the gate returned, read by nothing on the decision path.
+    noteEvaluationEvidence(round, legForBound, agentId, agentSnapshot, { verdicts: gated.outcome.verdicts });
     if (!gated.feasible) {
       noteRejectionTuples(round, legForBound, gated.tuples);
       return Object.freeze({
@@ -2184,6 +2381,9 @@ function evaluateExactFor(context, round) {
       return refuse(REFUSAL.UNPRICEABLE, [...phi.missing, ...priced.missing, ...priced.problems]);
     }
 
+    // P7-D5 — the γ decomposition the solver will price this pairing at, for Tier B's Costs.
+    noteEvaluationEvidence(round, legForBound, agentId, agentSnapshot, { breakdown: priced.breakdown });
+
     // Memoised for `pricedCandidateFor`, which `solve/round.plan` calls **synchronously**
     // on each survivor. Round-scoped: `beginRound` clears it, because a plan pinned to one
     // decision time and configuration version must never be priced into another round
@@ -2228,6 +2428,10 @@ function outcomeEntryFor(round, legForBound) {
       legRowId: state && state.leg && state.leg.legRowId !== undefined ? String(state.leg.legRowId) : null,
       candidates: new Map(),
       counts: new Map(),
+      // P7-D5 — Tier B material, by agent: the gate's verdicts, the price decomposition, the
+      // availability class. And what expansion reported for the Leg. See `tierBInputFor`.
+      evidence: new Map(),
+      expansion: null,
     };
     round.outcomes.set(key, entry);
   }
@@ -2280,13 +2484,153 @@ function noteRejectionTuples(round, legForBound, tuples) {
 }
 
 /**
- * The round's `perLeg` context for `decisionRecord.writeRound`: per Leg, the candidate
- * summaries (`candidates`) and the per-predicate rejection counts (`rejectionSummary`).
- * Keyed by both of the Leg's identifiers, because the round's decisions name a Leg by
- * `Leg.id` (the `WorkQueue.legId` row id) while this round state keys the business id.
+ * P7-D5 — keep what one pairing's evaluation already computed, for the Leg's Tier B record.
+ *
+ * Called at the two points `evaluatePairing` already reaches: after the gate (its verdicts,
+ * by reference — not re-evaluated, not copied) and after pricing (the γ decomposition). Read
+ * only by `tierBInputFor`, after the round. Nothing on the decision path reads it, and no
+ * evaluation is added: Tier B records the predicates the gate actually ran — every one for an
+ * admitted candidate, and up to and including the binding denial for a rejected one, because
+ * the gate stops there (`feasibility/evaluate.js`).
  *
  * @param {object} round
- * @returns {Record<string, { candidates: object[], rejectionSummary: object[] }>}
+ * @param {object} legForBound
+ * @param {string} agentId
+ * @param {object} agentSnapshot
+ * @param {{ verdicts?: object, breakdown?: object }} found
+ */
+function noteEvaluationEvidence(round, legForBound, agentId, agentSnapshot, found) {
+  if (!legForBound || legForBound.legId === undefined || legForBound.legId === null || !found) return;
+  const entry = outcomeEntryFor(round, legForBound);
+  const id = String((agentSnapshot && agentSnapshot.agentId) || agentId);
+  const evidence = entry.evidence.get(id) || {
+    availabilityClass: (agentSnapshot && agentSnapshot.availabilityClass) ?? null,
+    verdicts: null,
+    breakdown: null,
+  };
+  if (found.verdicts) evidence.verdicts = found.verdicts;
+  if (found.breakdown) evidence.breakdown = found.breakdown;
+  entry.evidence.set(id, evidence);
+}
+
+/**
+ * P7-D5 — keep what expansion reported for one Leg: each priced survivor's discovery tier and
+ * lower bound, and the agents it excluded because their lower bound did not resolve (§6.1),
+ * which until now survived only as `truncatedBy = "lower_bound_unresolved"`.
+ *
+ * @param {object} round
+ * @param {object} legForBound
+ * @param {object} expanded `expansion.expandCandidates`'s result
+ */
+function noteExpansionEvidence(round, legForBound, expanded) {
+  if (!legForBound || legForBound.legId === undefined || legForBound.legId === null || !expanded) return;
+  const entry = outcomeEntryFor(round, legForBound);
+  entry.expansion = {
+    survivors: Array.isArray(expanded.candidates) ? expanded.candidates : [],
+    unresolvedBoundAgentIds: Array.isArray(expanded.unresolvedBoundAgentIds) ? expanded.unresolvedBoundAgentIds : [],
+  };
+}
+
+/**
+ * The refusal named for an agent expansion excluded without pricing, because its lower bound
+ * did not resolve. A label, like `MISSING_HOP`: the agent never reached the gate.
+ * @structural
+ */
+const LOWER_BOUND_UNRESOLVED = "LOWER_BOUND_UNRESOLVED";
+
+/**
+ * P7-D5 — the `tierB.build()` input for one Leg, assembled after the round from what the round
+ * recorded while it ran. `decisionRecord.writeRound` adds the identity and builds Tier B only
+ * when the sampler selects the decision.
+ *
+ * Only what was observed is stated:
+ *   · every agent the gate or a refusal saw, plus every agent excluded for an unresolved bound;
+ *   · a discovery tier and lower bound only where expansion reported one (its priced survivors);
+ *   · predicate results only for the predicates the gate ran;
+ *   · costs only for priced candidates.
+ * Column detail is left empty: the round result carries column counts, not the generated
+ * columns themselves, and a list rebuilt here would be a guess about which were kept.
+ *
+ * Every value is normalised (`jsonSafe`) so the stored JSON is exactly what `contentHash` covers.
+ *
+ * @param {object} round
+ * @param {object} entry one `round.outcomes` entry
+ * @returns {{ candidates: object[], columns: object[], pruned: object[] }}
+ */
+function tierBInputFor(round, entry) {
+  const { jsonSafe } = coordinatorWorker;
+  const canonical = (id) => String(typeof round.canonicalAgentId === "function" ? round.canonicalAgentId(id) : id);
+  const evidenceOf = entry.evidence instanceof Map ? entry.evidence : new Map();
+  const survivors = new Map();
+  for (const row of (entry.expansion && entry.expansion.survivors) || []) survivors.set(canonical(row.agentId), row);
+
+  const candidates = [];
+  const seen = new Set();
+  for (const summary of entry.candidates.values()) {
+    const key = canonical(summary.agentId);
+    seen.add(key);
+    const evidence = evidenceOf.get(String(summary.agentId)) || null;
+    const survivor = survivors.get(key) || null;
+    const verdicts = evidence && evidence.verdicts ? evidence.verdicts : null;
+    candidates.push({
+      agentId: summary.agentId,
+      discoveryTier: survivor ? (survivor.tier ?? null) : null,
+      availabilityClass: evidence ? evidence.availabilityClass : null,
+      lowerBoundMilliCU: survivor && typeof survivor.lbMilliCU === "bigint" ? survivor.lbMilliCU : null,
+      rejected: summary.rejected === true,
+      bindingPredicateId: summary.bindingPredicateId ?? null,
+      gammaMilliCU: typeof summary.gammaMilliCU === "bigint" ? summary.gammaMilliCU : null,
+      breakdown: evidence && evidence.breakdown ? jsonSafe(evidence.breakdown) : null,
+      predicateResults: verdicts
+        ? Object.keys(verdicts).map((predicateId) => {
+            const result = verdicts[predicateId] || {};
+            const registered = feasibilityRegister.predicate(predicateId);
+            return {
+              predicateId,
+              outcome: result.outcome ?? null,
+              observed: jsonSafe(result.observed) ?? null,
+              required: jsonSafe(result.required) ?? null,
+              inputSource: result.inputSource ?? null,
+              observationAgeMs: jsonSafe(result.observationAgeMs) ?? null,
+              // §7.3's policy is applied only when a predicate could not decide.
+              indeterminatePolicy: result.outcome === "INDETERMINATE" && registered ? registered.policy : null,
+              margin: jsonSafe(result.margin) ?? null,
+              marginUnit: result.marginUnit ?? null,
+            };
+          })
+        : [],
+    });
+  }
+
+  for (const agentId of (entry.expansion && entry.expansion.unresolvedBoundAgentIds) || []) {
+    const key = canonical(agentId);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({
+      agentId: String(agentId),
+      discoveryTier: null,
+      availabilityClass: null,
+      lowerBoundMilliCU: null,
+      rejected: true,
+      bindingPredicateId: LOWER_BOUND_UNRESOLVED,
+      gammaMilliCU: null,
+      breakdown: null,
+      predicateResults: [],
+    });
+  }
+
+  return { candidates, columns: [], pruned: [] };
+}
+
+/**
+ * The round's `perLeg` context for `decisionRecord.writeRound`: per Leg, the candidate
+ * summaries (`candidates`), the per-predicate rejection counts (`rejectionSummary`) and, since
+ * P7-D5, the Tier B input (`tierBInput`). Keyed by both of the Leg's identifiers, because the
+ * round's decisions name a Leg by `Leg.id` (the `WorkQueue.legId` row id) while this round
+ * state keys the business id.
+ *
+ * @param {object} round
+ * @returns {Record<string, { candidates: object[], rejectionSummary: object[], tierBInput: object }>}
  */
 function perLegFor(round) {
   const perLeg = {};
@@ -2294,6 +2638,7 @@ function perLegFor(round) {
     const context = {
       candidates: [...entry.candidates.values()],
       rejectionSummary: [...entry.counts.values()].map((row) => ({ ...row })),
+      tierBInput: tierBInputFor(round, entry),
     };
     perLeg[entry.legId] = context;
     if (entry.legRowId !== null) perLeg[entry.legRowId] = context;
@@ -2409,7 +2754,7 @@ function expandCandidatesFor(context, round) {
     const startedAtMs = Date.now();
     const budgetMs = round.expansionWallClockBudgetMs;
 
-    return expansion.expandCandidates({
+    const expanded = await expansion.expandCandidates({
       legId: leg.legId,
       shardId: input.shardId ?? context.shardId,
       originLat: originStop.lat,
@@ -2440,6 +2785,11 @@ function expandCandidatesFor(context, round) {
       // indistinguishable from "chaining found nothing"; passing nothing skips the tier,
       // which is what a thrown kill switch means.
     });
+    // P7-D5 — what expansion reported (each survivor's discovery tier and lower bound, and the
+    // agents it excluded for an unresolved bound), kept for Tier B. The result is returned
+    // exactly as expansion produced it.
+    noteExpansionEvidence(round, legForBound, expanded);
+    return expanded;
   };
 }
 
@@ -2931,8 +3281,24 @@ function create(context) {
   }
 
   const snapshot = coordinatorPipeline.snapshotFrom(enriched);
-  const routingSeam = routingSeamFor(enriched);
-  const loadAgentSnapshot = agentSnapshotLoaderFor(enriched);
+  // P7-D5 D2 — the routing seam is handed THIS object, so the promotion-time reads recorded
+  // below are the values it actually uses (unchanged: it read the same accessor once, here).
+  const routingSeam = routingSeamFor({ ...enriched, snapshot });
+
+  // P7-D5 D2 — the three configuration sources a round reads. `liveConfig` is the accessor as
+  // it always was. Planning reads the round's pinned view (`round.configView`, set by
+  // `beginRound`); before the first round there is none and it reads live, as before. The
+  // commit reads live — authoritative, newest version — and each of its reads is noted.
+  const liveConfig = () => coordinatorPipeline.snapshotFrom(enriched);
+  const planningContext = { ...enriched, snapshot: () => round.configView || liveConfig() };
+  const commitContext = { ...enriched, snapshot: () => round.noteCommitConfig(liveConfig()) };
+  const promotionReads = [
+    { name: "solve.time_budget", used: enriched.expansionWallClockBudgetMs, via: "positive" },
+    { name: "route.cell_pair_cache_ttl", used: resolve(snapshot, "route.cell_pair_cache_ttl", {}), via: "resolve" },
+    { name: "route.intra_cell_offset_m", used: resolve(snapshot, "route.intra_cell_offset_m", {}), via: "resolve" },
+  ];
+
+  const loadAgentSnapshot = agentSnapshotLoaderFor(planningContext);
   const planState = planStateModel.create({ shardId: enriched.shardId });
 
   /**
@@ -3003,7 +3369,7 @@ function create(context) {
     /** The per-agent loader, always fresh. */
     loadAgentSnapshot,
     /** The commit path's agent read: always fresh, the same rows read concurrently (B1). */
-    freshAgentSnapshot: freshAgentSnapshotLoaderFor(enriched),
+    freshAgentSnapshot: freshAgentSnapshotLoaderFor(commitContext),
     // §20.3 item 2 keys a cell-pair entry on the congestion bucket, so *"an entry computed
     // under one mobility profile or one congestion bucket is never silently applied under
     // another"*. Supplied by the routing seam; absent, `cellPairCache.key` refuses and
@@ -3011,7 +3377,25 @@ function create(context) {
     // rather than a pair cached under the wrong conditions.
     timeBucket: enriched.timeBucket,
 
-    snapshotFor: () => coordinatorPipeline.snapshotFrom(enriched),
+    snapshotFor: () => round.configView || liveConfig(),
+
+    /** P7-D5 D2 — the snapshot `beginRound` pinned, its recording view, and what it recorded. */
+    configPinned: null,
+    configView: null,
+    configLedger: null,
+    /** P7-D5 D2 — every live read the commit made this round: `{ version, pinned }`. */
+    commitConfigReads: [],
+
+    /**
+     * Note one commit-time read of the live configuration and hand it back unchanged.
+     *
+     * @param {object} live
+     * @returns {object} `live`
+     */
+    noteCommitConfig(live) {
+      round.commitConfigReads.push({ version: live ? (live.version ?? null) : null, pinned: live === round.configPinned });
+      return live;
+    },
 
     /** Pin one Leg's round state. Called once per Leg, by `expandCandidates`. */
     rememberLeg(state) {
@@ -3033,6 +3417,14 @@ function create(context) {
       round.agentSnapshots.clear();
       round.planning = null;
       round.generation += 1;
+      // P7-D5 D2 — pin the round's one configuration. Read once, here, at the boundary
+      // `runRound` already marks; every planning read until the next boundary is this object.
+      const pinned = liveConfig() || null;
+      const pinnedView = roundConfigView(pinned);
+      round.configPinned = pinned;
+      round.configView = pinnedView.view;
+      round.configLedger = pinnedView.ledger;
+      round.commitConfigReads = [];
     },
 
     /**
@@ -3055,7 +3447,7 @@ function create(context) {
       const planning = round.planning;
       const position = planning && planning.fleet && asOfMs === planning.decisionTimeMs ? planning.fleet.positionFor(key) : null;
       const promise = position
-        ? agentSnapshotFrom(enriched, position, asOfMs, { facts: planning.fleet.factsFor(position.agentId) })
+        ? agentSnapshotFrom(planningContext, position, asOfMs, { facts: planning.fleet.factsFor(position.agentId) })
         : loadAgentSnapshot(key, asOfMs === undefined ? undefined : { asOfMs });
       if (!held) round.agentSnapshots.set(key, { asOfMs, promise });
       return promise;
@@ -3079,7 +3471,7 @@ function create(context) {
       const prisma = enriched.prisma;
 
       const [fleet, legs, histories, chargerRows, projectionRow] = await Promise.all([
-        settled(() => readPlanningFleet(enriched, shardId, decisionTimeMs)),
+        settled(() => readPlanningFleet(planningContext, shardId, decisionTimeMs)),
         settled(() => readPlanningLegs(prisma, legIds)),
         settled(() => readPlanningHistories(prisma, legIds)),
         // The same two reads `chargerCandidatesFor` and `pinnedChargerProjection` make.
@@ -3361,7 +3753,7 @@ function create(context) {
       }),
   };
 
-  round.evaluateExact = evaluateExactFor(enriched, round);
+  round.evaluateExact = evaluateExactFor(planningContext, round);
 
   // The round boundary, taken from the signal that already marks one.
   //
@@ -3390,7 +3782,7 @@ function create(context) {
     prisma: enriched.prisma,
     kv: enriched.kv,
     planState: roundScopedPlanState,
-    expandCandidates: expandCandidatesFor(enriched, round),
+    expandCandidates: expandCandidatesFor(planningContext, round),
     // B1 — the round's planning read, once claimed Legs are known (`coordinator.worker`
     // step 4b). Planning data only; the commit reads its own, fresh.
     prepareRound: (input) => round.prepare(input),
@@ -3406,10 +3798,22 @@ function create(context) {
       shardId: row.shardId,
       queueAgeSeconds: row.enqueuedAt ? (Date.now() - new Date(row.enqueuedAt).getTime()) / MS_PER_SECOND : null,
     }),
-    commit: commitFor(enriched, round),
+    // The commit reads LIVE configuration (`commitContext`): §10.3.2's recheck stays
+    // authoritative on the newest published version. P7-D5 D2 notes each read; it never pins them.
+    commit: commitFor(commitContext, round),
     // §21.2 — this round's per-Leg candidate outcomes and rejection counts, for the
     // decision record `coordinator.worker.recordRound` writes after the round.
     perLegFor: () => perLegFor(round),
+    // P7-D5 D2 — the round's pinned configuration (what `pinRoundInputs` records), and its
+    // consistency evidence, given the promotion-time values the caller resolved.
+    roundConfig: () => round.configView,
+    configEvidence: (input) =>
+      configEvidenceFor({
+        pinned: round.configPinned,
+        ledger: round.configLedger,
+        commitReads: round.commitConfigReads,
+        promotionReads: [...promotionReads, ...((input && input.promotionReads) || [])],
+      }),
     // Legs the lifecycle returned to QUEUED go back on the work list (coordinator.worker).
     requeueReturnedLegs: (input) => coordinatorWorker.requeueReturnedLegs({ prisma: enriched.prisma }, input),
     // Claims of rounds that died between claim and settlement go back on the work list,
@@ -3444,6 +3848,13 @@ module.exports = {
   ASSIGNABLE_LEG_STATES,
   noteCandidateOutcome,
   noteRejectionTuples,
+  noteEvaluationEvidence,
+  noteExpansionEvidence,
+  tierBInputFor,
+  LOWER_BOUND_UNRESOLVED,
+  CONFIG_EVIDENCE_STATE,
+  roundConfigView,
+  configEvidenceFor,
   perLegFor,
   contextFor,
   delayParametersFrom,

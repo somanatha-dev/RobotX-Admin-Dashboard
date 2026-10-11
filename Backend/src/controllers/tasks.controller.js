@@ -13,7 +13,9 @@ const feasibilityRegister = require("../engine/feasibility/register");
 // PHASE 14 remediation (P14-R3 / P14-R5) — the same policy and the same audit writer the
 // action-class middleware uses. Two policies, or two audit shapes, is how a route gate and
 // a controller come to disagree about who may waive what.
-const { policyFor, recordAuthorisation } = require("../middlewares/auth_middleware");
+const { policyFor, recordAuthorisation, configValue } = require("../middlewares/auth_middleware");
+const taskCancellation = require("../services/taskCancellation.service");
+const { RELEASABLE_STATUSES } = require("../services/taskCompletion.service");
 
 /**
  * PHASE 15 — the API version this controller answers under.
@@ -242,18 +244,86 @@ const cancelTask = asyncHandler(async (req, res) => {
   // `Task.status`. The engine never reads that column: measured live, two tasks cancelled
   // here were still committed, delivered, verified SUFFICIENT and SETTLED while the
   // dashboard showed them CANCELLED. §4.6's cancellation (`lifecycle/cancellation.js`) is
-  // the only lawful path and has no resolution for any Leg state yet, so this refuses and
-  // writes nothing rather than report a cancellation that did not happen.
+  // the only lawful path. Phase 6 gives it its one immediate case — every open Leg QUEUED,
+  // custody NONE, no HARD commitment: `CANCELLED` immediately — run by
+  // `taskCancellation.service` in one transaction. Every other Leg state is still refused
+  // with nothing written, as before.
   const engineLeg = await prisma.leg.findFirst({
     where: { mission: { tasks: { some: { id: task.id } } } },
     select: { state: true },
   });
   if (engineLeg) {
-    const message =
-      `Task ${taskId} is managed by the assignment engine (Leg ${engineLeg.state}); cancelling it is not ` +
-      "available in V1, and nothing was changed.";
-    // `message` is what the dashboard's request client shows the operator.
-    res.status(409).json({ ok: false, code: "ENGINE_CANCELLATION_UNAVAILABLE", error: message, message });
+    const missions = await prisma.mission.findMany({
+      where: { tasks: { some: { id: task.id } } },
+      select: { id: true },
+    });
+    const elevatedRoles = configValue(req, "security.elevated_roles", ["SUPER_ADMIN"]);
+    try {
+      const outcome = await taskCancellation.cancelQueuedTask(prisma, {
+        taskRowId: task.id,
+        taskId,
+        missionIds: missions.map((m) => m.id),
+        actor: { id: req.user?.id ?? null, role: req.user?.role ?? null },
+        // §4.6 step 5 — authority against the requester's scope. The route is authenticated;
+        // the role must be one the register names as elevated (the same list §23.4 uses).
+        authorised: Array.isArray(elevatedRoles) && elevatedRoles.includes(req.user?.role),
+        storeTime: new Date(),
+        reason: toStringOrNull(req.body?.reason) || "OPERATOR_CANCELLATION",
+        // P7-D4 Part 3 — the bound an exhausted REASSIGNING Leg is proven against; unresolved
+        // here, the exit refuses (503 CHAIN_BOUND_UNRESOLVED) rather than guessing one.
+        maxReassignmentsPerLeg: configValue(req, "recover.max_reassignments_per_leg", null),
+      });
+      const releasedRobotId = outcome.outcome === "CANCELLED" && outcome.robotUnbound ? outcome.releasedRobotId : null;
+      if (releasedRobotId) {
+        try {
+          // The route caches the stood-down unit's map drew from — as `publishStandDown` clears them.
+          await Promise.all([kv?.del?.(`taskPath:${taskId}`), kv?.del?.(`robotTaskState:${releasedRobotId}`)]);
+        } catch {
+          // best effort, as when they are written
+        }
+      }
+      if (outcome.outcome === "CANCELLED") {
+        try {
+          io?.to("dashboard")?.emit("TASK_UPDATED", {
+            taskId,
+            status: "CANCELLED",
+            robotId: null,
+            ...(releasedRobotId ? { releasedRobotId } : {}),
+            timestamp: Date.now(),
+          });
+        } catch {
+          // visibility only; the cancellation is committed
+        }
+      }
+      res.json({
+        ok: true,
+        task: await prisma.task.findUnique({ where: { taskId }, include: { robot: { select: { robotId: true } } } }),
+        ...(outcome.outcome === "CANCELLED"
+          ? {
+              cancellation: {
+                resolution: "CANCELLED_IMMEDIATELY",
+                legs: outcome.legs,
+                ...(outcome.operatorExit
+                  ? { operatorExit: outcome.operatorExit, releasedRobotId: outcome.releasedRobotId, robotUnbound: outcome.robotUnbound }
+                  : {}),
+              },
+            }
+          : {}),
+      });
+    } catch (error) {
+      if (!(error instanceof taskCancellation.CancellationRefused)) throw error;
+      // A concurrent duplicate request that won: the task is cancelled, which is what this one
+      // asked for — answered like the terminal case above (idempotent).
+      if (error.code === "LEG_MOVED" || error.code === "TASK_MOVED") {
+        const now = await prisma.task.findUnique({ where: { taskId }, include: { robot: { select: { robotId: true } } } });
+        if (now && now.status === "CANCELLED") {
+          res.json({ ok: true, task: now });
+          return;
+        }
+      }
+      // `message` is what the dashboard's request client shows the operator.
+      res.status(error.status).json({ ok: false, code: error.code, error: error.message, message: error.message });
+    }
     return;
   }
 
@@ -279,7 +349,16 @@ const cancelTask = asyncHandler(async (req, res) => {
       if (robot?.currentTaskId === task.id) {
         await tx.robot.update({
           where: { id: robot.id },
-          data: { currentTaskId: null, status: "IDLE" },
+          data: { currentTaskId: null },
+        });
+        // P7 A3 — back to IDLE only from a status already at IDLE's health tier, as a completion
+        // releases (F1, `RELEASABLE_STATUSES`). An IDLE written over PAUSED (an operator hold),
+        // ERROR, ISSUES or OFFLINE would make a unit the server holds out of service assignable
+        // again (§23.5). Conditional in the database, so a fault committed after the read above
+        // is kept.
+        await tx.robot.updateMany({
+          where: { id: robot.id, status: { in: RELEASABLE_STATUSES } },
+          data: { status: "IDLE" },
         });
         releasedRobotCode = robot.robotId;
       }

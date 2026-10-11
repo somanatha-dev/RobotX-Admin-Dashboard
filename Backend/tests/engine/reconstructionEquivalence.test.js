@@ -214,8 +214,11 @@ describe("§9.6 / §21.2 — replaying a stored decision from the durable record
       { candidatesFor: () => [] },
     );
 
-    expect(result.ok).toBe(true);
+    // P7-D5 D5 — this used to be `ok: true`: nothing was compared and the fixture's hash "h1"
+    // does not recompute, yet the replay "passed". It now says what it found.
+    expect(result).toMatchObject({ ok: false, status: replay.REPLAY_STATUS.SNAPSHOT_HASH_MISMATCH, snapshotState: "HASH_MISMATCH" });
     expect(result.tierBPresent).toBe(false);
+    expect(result.tierBState).toBe(replay.TIER_B_STATE.NEVER_WRITTEN);
     // The sampling decision replays too, or the corpus's Tier B population is not the
     // one the original run produced.
     expect(result.samplingReproducible).toBe(true);

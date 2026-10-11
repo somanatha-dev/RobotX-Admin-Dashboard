@@ -28,7 +28,8 @@ describe("robots.controller — sendRobotCommand (worker-safe dispatch)", () => 
 
   beforeEach(async () => {
     prisma = {
-      robot: { findUnique: jest.fn().mockResolvedValue({ id: "db-robot-1" }) },
+      // P7-D1 — STOP/PAUSE now also write the server-side operator hold.
+      robot: { findUnique: jest.fn().mockResolvedValue({ id: "db-robot-1" }), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
       command: { create: jest.fn().mockResolvedValue({ id: "cmd-1", type: "STOP" }), findUnique: jest.fn(), update: jest.fn() },
     };
     getPrisma.mockReturnValue(prisma);

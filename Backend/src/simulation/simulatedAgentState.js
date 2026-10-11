@@ -216,15 +216,15 @@ function simulatedAgentFacts(input) {
     provenance: PROVENANCE,
     // F1 — the unit was commissioned through `robot.service.createRobotWithProjection`.
     commissioning: { commissioned: true, recordId: `${PROVENANCE}:${robot.robotId}` },
-    // F3 — a simulated unit is stopped when an operator STOP reached it, or when it docked
-    // to charge: `telemetry.handler` stores CHARGING as PAUSED because `RobotStatus` has no
-    // CHARGING. The row cannot tell the two apart, so the hold says so — it is withheld
-    // either way, and never on a claim that an operator acted.
+    // F3 — a simulated unit is stopped: an operator STOP/PAUSE (which the command route now
+    // holds server-side) or the unit's own PAUSED report. P7-D1: a charging dock no longer
+    // lands here — CHARGING is not stored as PAUSED, and charging occupancy is the
+    // reservation's (F18). The hold never claims an operator acted.
     operatorHold:
       robot.status === "PAUSED"
         ? {
             held: true,
-            reason: "simulated robot is stopped — an operator STOP or a charging dock (Robot.status PAUSED cannot distinguish them)",
+            reason: "simulated robot is stopped (Robot.status PAUSED) — an operator STOP/PAUSE or the unit's own report",
             by: "SIMULATOR",
           }
         : { held: false },

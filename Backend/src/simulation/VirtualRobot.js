@@ -140,7 +140,40 @@ const commandSigning = require("../engine/security/commandSigning");
 const chargeCurve = require("../engine/energy/chargeCurve");
 // BATCH 2 — the release reasons the development Charging Scheduler records. Imported so
 // the agent and the scheduler spell them the same way; there is no agent-side copy.
-const { RELEASE_REASON: CHARGE_RELEASE_REASON } = require("./devChargingScheduler");
+const { RELEASE_REASON: CHARGE_RELEASE_REASON, DEVELOPMENT_CHARGER } = require("./devChargingScheduler");
+// P7-D3 Step 1 — the docking test, against the charger this robot verified it reached.
+const chargerRoute = require("./chargerRoute");
+
+/**
+ * P7-D3 Step 1 — why a route to the charger cannot be driven, or `null` when it can.
+ *
+ * The route must be a granted one (`ok: true`), name a charger with a usable coordinate, be
+ * at least two points, every one a WGS-84 point, start at the robot (within the docking
+ * tolerance) and end within the docking radius of that charger. Anything else is a missing
+ * route, and a missing route is no charge — never a straight line to the charger.
+ *
+ * @param {object} route
+ * @param {{ lat: number, lon: number }} from
+ * @returns {string|null}
+ */
+function chargerRouteProblem(route, from) {
+  if (!route || typeof route !== "object") return "no route to the charger was supplied";
+  if (route.ok !== true) {
+    return `the route to the charger was refused (${route.refusal || "UNSPECIFIED"}: ${route.reason || "no reason given"})`;
+  }
+  const charger = route.charger && chargerRoute.pointOf(route.charger);
+  if (!charger || typeof route.charger.chargerId !== "string") return "the route names no charger with a usable coordinate";
+  const points = Array.isArray(route.points) ? route.points : [];
+  // @structural a path needs at least two points to have a direction
+  if (points.length < 2 || !points.every((point) => chargerRoute.pointOf(point))) {
+    return "the route to the charger is not a path of WGS-84 points";
+  }
+  if (!chargerRoute.withinDockingRadius(points[0], from)) return "the route to the charger does not start at the robot";
+  if (!chargerRoute.withinDockingRadius(points[points.length - 1], charger)) {
+    return "the route to the charger does not end at the charger";
+  }
+  return null;
+}
 
 // Redis key for persisting battery across restarts (separate from live-state key)
 const batteryKey = (robotId) => `vr:battery:${robotId}`;
@@ -159,6 +192,41 @@ const BATTERY_KEY_TTL = 48 * 3600; // 48 h — survives overnight / weekend down
 // reject it."
 const dedupKey = (robotId) => `vr:dedup:${robotId}`;
 const DEDUP_KEY_TTL = 1800; // agent.dedup_retention, Appendix A default (30 min)
+
+/**
+ * P7-D4 — the generation a dedup state takes when it is **created, cleared or found
+ * corrupt** (§11.5), and only then. An intact record is loaded with its own generation,
+ * unchanged, so a reconnect is never mistaken for a reset.
+ *
+ * It was `previous + 1`, with `previous` the in-memory value — `0` in every fresh process.
+ * The generation lives in the same record whose loss it must announce, so a process that
+ * lost the record also lost the counter, and every reset reported generation `1`: the
+ * same value the server had stored from the previous reset. §11.5's comparison then read
+ * "generation unchanged" and took the reconnect path for an agent that remembered nothing
+ * (measured on LOCAL, 2026-10-09: four simulated agents, stored generation 1, authority
+ * epoch 0, through every restart since 2026-10-02).
+ *
+ * The simulator has no store that survives the loss it is reporting — on LOCAL its "flash"
+ * is the backend process's own in-memory KV — so the counter is seeded from the wall clock
+ * instead: `max(previous + 1, now in ms)`. A process that recreates its state after the
+ * previous one created its own therefore reports a strictly higher generation without any
+ * new persistence and without asserting anything about what was applied. The `previous + 1`
+ * term keeps two creations inside one process strictly increasing even within one
+ * millisecond. A wall clock stepped *backwards* past an earlier generation yields a lower
+ * one, which the server classifies as `DEDUP_STATE_GENERATION_WENT_BACKWARDS` — also a
+ * reset, the conservative reading. The one undetectable case is a new process recreating
+ * its state in the very millisecond the previous state was created.
+ *
+ * @param {bigint|number|string} previous the generation this process last held (0 when fresh)
+ * @param {number} nowMs the wall clock at creation, in epoch milliseconds
+ * @returns {bigint}
+ */
+function nextDedupGeneration(previous, nowMs) {
+  const counted = BigInt(previous) + 1n;
+  if (!Number.isFinite(nowMs) || nowMs < 0) return counted;
+  const seeded = BigInt(Math.floor(nowMs));
+  return seeded > counted ? seeded : counted;
+}
 
 // §18.5 — `agent.autonomous_continuation_limit`, Appendix A default (15 min). The
 // on-agent bound that carries safety while the Commitment Store is unreachable and
@@ -374,6 +442,9 @@ class VirtualRobot {
     // P1.3 — the last telemetry `sequence` the server accepted from this robot (its durable
     // position log), supplied by `SimulationEngine.addRobot`. The counter resumes above it.
     telemetrySequenceFloor,
+    // P7-D3 Step 2 — whether the server holds this unit (P7-D1's STOP/PAUSE), read from its row by
+    // `SimulationEngine.operatorHoldFrom`: true, false, or null when the row cannot say.
+    operatorHoldAtStart,
     // ── BATCH 2: the Charging Scheduler's agent-side client ───────────────────
     //
     // The development Charging Scheduler (§14.7), bound to THIS agent's row. Supplied by
@@ -605,7 +676,19 @@ class VirtualRobot {
     this._heading    = null;   // degrees clockwise from north (for marker rotation)
 
     // ── Charging ───────────────────────────────────────────────────────────
-    this._chargingPhase    = null;   // null | 'WAITING' | 'CHARGING'
+    this._chargingPhase    = null;   // null | 'SEEKING' | 'APPROACHING' | 'WAITING' | 'CHARGING'
+    // P7-D3 Step 1 — the approach to the reserved charger. `SEEKING`: a plug requested and,
+    // once one is held, the campus route asked for; `APPROACHING`: driving that route.
+    // `_approachCharger` is the charger the route ends at, `_dockCharger` the one this robot
+    // verified it reached (charging requires being within the docking radius of it), and
+    // `_chargeRetryAt` is when a failed approach may be tried again.
+    this._approachCharger  = null;
+    this._dockCharger      = null;
+    this._routePending     = false;
+    this._chargeRetryAt    = null;
+    // P7-D1 — an operator STOP/PAUSE that arrived while charging. The session continues, but
+    // however it ends the robot ends PAUSED, never IDLE (`_statusAfterCharging`).
+    this._stopLatched      = false;
     this._chargeWaitUntil  = null;
     this._pendingResume    = null;   // TASK_ASSIGN payload deferred while charging on low battery
 
@@ -623,6 +706,13 @@ class VirtualRobot {
     this._chargingClient   = typeof chargingClient === "object" && chargingClient !== null ? chargingClient : null;
     this._schedulerState   = null;
     this._schedulerPending = false;
+
+    // ── P7-D3 Step 2: what a restart restores, decided once in `commission()` ──
+    // `_operatorHoldAtStart` is the server's hold as the row stated it (true/false/null);
+    // `_restartRecovery` is the outcome of adopting — or refusing — the reservation that survived.
+    this._operatorHoldAtStart =
+      operatorHoldAtStart === true || operatorHoldAtStart === false ? operatorHoldAtStart : null;
+    this._restartRecovery  = null;
 
     // ── PHASE 7: §14.6's inputs, as the agent receives them ────────────────
     // Both arrive on the offer and neither is computed here. §14.6: "the *agent*
@@ -790,6 +880,12 @@ class VirtualRobot {
 
     this.battery = restoredBattery !== null ? restoredBattery : 100;
 
+    // 2b) P7-D3 Step 2 — the operator hold, then the charging reservation, both of which outlive
+    //     the process while this instance's memory of them does not. Before any socket exists, so
+    //     nothing is reported or received before they are restored.
+    if (this._operatorHoldAtStart === true) this.status = "PAUSED";
+    await this._recoverChargingAtRestart();
+
     // 3) Seed live-state key so DTARO / dashboard see the robot immediately
     await Promise.all([
       kv.set(
@@ -798,7 +894,8 @@ class VirtualRobot {
           lat:        this.lat,
           lon:        this.lon,
           battery:    Math.round(this.battery),
-          status:     "IDLE",
+          // P7-D3 Step 2 — the restored status (IDLE unless held, or docked by recovery).
+          status:     this.status,
           speed:      0,
           lastSeenAt: Date.now(),
         }),
@@ -1016,9 +1113,10 @@ class VirtualRobot {
       }
     }
 
-    // Created or cleared or corrupt: advance the generation.
+    // Created or cleared or corrupt: advance the generation — past every generation an
+    // earlier process could have reported, not merely past this process's own (P7-D4).
     this.dedup = {
-      dedupStateGeneration: BigInt(this.dedup.dedupStateGeneration) + 1n,
+      dedupStateGeneration: nextDedupGeneration(this.dedup.dedupStateGeneration, Date.now()),
       authorityEpoch: 0n,
       fenceFloor: 0n,
       highWaterMarks: new Map(),
@@ -1705,11 +1803,35 @@ class VirtualRobot {
     }
   }
 
-  /** Halt movement. The task is retained so RESUME can pick it back up. */
+  /**
+   * Halt movement. The task is retained so RESUME can pick it back up.
+   *
+   * P7-D1 — while charging, the session is kept (a STOP does not unplug a docked unit) but the
+   * STOP LATCHES: it used to be dropped, and the robot reported IDLE at its charge target, so
+   * an operator's STOP vanished. Now, however the session ends, the robot ends PAUSED.
+   */
   _applyStop(label) {
-    if (this.status !== "CHARGING") this.status = "PAUSED";
+    if (this.status !== "CHARGING") {
+      this.status = "PAUSED";
+    } else {
+      this._stopLatched = true;
+      this.log.info(`[VR] ${this.robotId} ${label} latched while charging — it will end the session PAUSED`);
+    }
     this.speed = 0;
     this.log.info(`[VR] ${this.robotId} ${label}`);
+  }
+
+  /**
+   * P7-D1 — the status a charging session ends in: PAUSED when a STOP latched during it (the
+   * latch is consumed — PAUSED itself is the stop from here on), IDLE otherwise.
+   *
+   * @returns {"PAUSED"|"IDLE"}
+   */
+  _statusAfterCharging() {
+    if (!this._stopLatched) return "IDLE";
+    this._stopLatched = false;
+    this.log.info(`[VR] ${this.robotId} charging session ended under a latched STOP → PAUSED`);
+    return "PAUSED";
   }
 
   /** Abandon the current task entirely and go idle. */
@@ -1717,7 +1839,8 @@ class VirtualRobot {
     this._clearTask();
     this._clearCharging();
     this._pendingResume = null;
-    this.status = "IDLE";
+    // P7-D1 — a STOP latched during a charge survives the end of that session.
+    this.status = this._statusAfterCharging();
     this.speed  = 0;
     this.log.info(`[VR] ${this.robotId} ${label}`);
   }
@@ -1725,6 +1848,13 @@ class VirtualRobot {
   /** Resume a task halted by STOP/PAUSE; otherwise just return to IDLE. */
   _applyResume() {
     if (this.status === "CHARGING") {
+      if (this._stopLatched) {
+        // P7-D1 — the operator withdrew the STOP. The server-side hold the STOP placed is not
+        // the robot's to lift; this only stops the session ending PAUSED.
+        this._stopLatched = false;
+        this.log.info(`[VR] ${this.robotId} RESUME withdrew the latched STOP — still charging`);
+        return;
+      }
       this.log.info(`[VR] ${this.robotId} RESUME ignored — still charging`);
       return;
     }
@@ -1841,6 +1971,7 @@ class VirtualRobot {
     this._clearTask();
     this._clearCharging();
     this._pendingResume = null;
+    this._stopLatched = false;
     this.status = "IDLE";
     this.speed  = 0;
     this.log.info(`[VR] ${this.robotId} reset`);
@@ -1871,6 +2002,8 @@ class VirtualRobot {
       // distinct from `"NONE"`, which is an answer.
       chargingScheduled: this._chargingClient !== null,
       chargingReservationState: this._schedulerState,
+      // P7-D3 Step 2 — what the restart did with the reservation it found (null before commission).
+      chargingRecovery: this._restartRecovery ? this._restartRecovery.outcome : null,
       pendingResumeTaskId: this._pendingResume?.taskId || null,
 
       // ── STEP 8: where in the mission this agent actually is ────────────────
@@ -1963,6 +2096,11 @@ class VirtualRobot {
     }
 
     if (this.status === "CHARGING") {
+      // P7-D1 — STOPped while charging: no assignment is executed or deferred.
+      if (this._stopLatched) {
+        this.log.warn(`[VR] ${this.robotId} TASK_ASSIGN ${taskId} not executed — the robot was STOPped while charging`);
+        return;
+      }
       if (this.battery < CHARGING_INTERRUPT_BATTERY) {
         // Too low to interrupt charging — defer the assignment instead of
         // discarding it. Without this, a task recovered after a restart
@@ -1979,6 +2117,12 @@ class VirtualRobot {
       }
       this._clearCharging();
       this.log.info(`[VR] ${this.robotId} charging interrupted by TASK_ASSIGN`);
+    }
+
+    // P7-D3 Step 1 — a real assignment abandons an approach to the charger, and its plug.
+    if (this._chargingPhase === "SEEKING" || this._chargingPhase === "APPROACHING") {
+      this._clearCharging(CHARGE_RELEASE_REASON.AGENT_RELEASED);
+      this.log.info(`[VR] ${this.robotId} approach to the charger abandoned for TASK_ASSIGN ${taskId}`);
     }
 
     // A fresh, real assignment supersedes anything that was only queued.
@@ -2126,6 +2270,14 @@ class VirtualRobot {
    */
   _clearCharging(reason) {
     const held = this._schedulerState === "ACTIVE" || this._schedulerState === "QUEUED";
+    // P7-D3 Step 1 — the approach is part of the session: its route is dropped with it (unless
+    // a mission now owns the path), and the verified dock is forgotten.
+    if (this._chargingPhase === "APPROACHING" && !this.task) {
+      this.activePath = null;
+      this.pathIndex  = 0;
+    }
+    this._approachCharger = null;
+    this._dockCharger     = null;
     this._chargingPhase   = null;
     this._chargeWaitUntil = null;
 
@@ -2150,27 +2302,280 @@ class VirtualRobot {
    */
   _enterCharging(nowMs) {
     const at = Number.isFinite(nowMs) ? nowMs : Date.now();
+
+    if (this._chargingClient) {
+      // ── P7-D3 Step 1: reserve first, then drive to the charger, THEN charge ──────
+      // This docked where the robot stood (measured on LOCAL: 159 m from the charger whose
+      // plug it held). A scheduled robot now only asks for a plug here: it stays in its own
+      // status, never CHARGING, until `_handleChargerApproach` has a route to the reserved
+      // charger and the robot has driven it to within `chargerRoute.DOCKING_RADIUS_M`.
+      //
+      // The target the session is charging TO travels with the request, because §14.6
+      // makes it the Scheduler's field and the scheduler is what records it. The agent
+      // still does not choose one — `_targetSocPercent()` reads the offer's published
+      // value or the class default, and this hands that same number back as a fraction.
+      this._chargingPhase   = "SEEKING";
+      this._schedulerState  = null;
+      this._approachCharger = null;
+      this._dockCharger     = null;
+      this._chargeRetryAt   = null;
+      this.speed            = 0;
+      this._requestPlug(this._targetSocPercent() / 100); // @structural percentage to fraction
+      this.log.info(
+        `[VR] ${this.robotId} battery critical (${this.battery.toFixed(1)}%) — requesting a plug, then routing to the charger`
+      );
+      return;
+    }
+
+    // Batch 1's unscheduled path, unchanged: an instance with no Charging Scheduler client
+    // (no `Agent` row to reserve against) has no charger to drive to.
     this.status          = "CHARGING";
     this._chargingPhase  = "WAITING";
     this._chargeWaitUntil = at + CHARGING_WAIT_MS;
     this.speed           = 0;
 
-    if (this._chargingClient) {
-      // The target the session is charging TO travels with the request, because §14.6
-      // makes it the Scheduler's field and the scheduler is what records it. The agent
-      // still does not choose one — `_targetSocPercent()` reads the offer's published
-      // value or the class default, and this hands that same number back as a fraction.
-      this._schedulerState = null;
-      this._requestPlug(this._targetSocPercent() / 100); // @structural percentage to fraction
-      this.log.info(
-        `[VR] ${this.robotId} battery critical (${this.battery.toFixed(1)}%) — docking and requesting a plug`
-      );
-      return;
-    }
-
     this.log.info(
       `[VR] ${this.robotId} battery critical (${this.battery.toFixed(1)}%) — docking to charge`
     );
+  }
+
+  /**
+   * P7-D3 Step 1 — the approach to the reserved charger, one tick at a time.
+   *
+   *   SEEKING      no plug verdict held → ask again (one request in flight); never a route,
+   *                never CHARGING. A plug held (QUEUED or ACTIVE) → ask for the campus route.
+   *   APPROACHING  drive the route as RETURNING; a STOP (PAUSED) holds position and a RESUME
+   *                (IDLE) carries on. At the route's end, dock (`_dockAt`).
+   *
+   * The reservation is held throughout, which is what keeps the engine from offering this
+   * robot work (QUEUED and ACTIVE both exclude it from the index, and F18 denies against it).
+   *
+   * @param {number} nowMs
+   */
+  _handleChargerApproach(nowMs) {
+    if (!this._chargingClient) return;
+
+    if (this._chargingPhase === "SEEKING") {
+      const held = this._schedulerState === "QUEUED" || this._schedulerState === "ACTIVE";
+      if (!held) {
+        this._requestPlug(this._targetSocPercent() / 100); // @structural percentage to fraction
+        return;
+      }
+      if (this._routePending) return;
+      this._routePending = true;
+      const from = { lat: this.lat, lon: this.lon };
+      Promise.resolve()
+        .then(() => this._chargingClient.routeToCharger(from))
+        .then((route) => this._adoptChargerRoute(route, from))
+        .catch((e) => this._abandonChargerApproach(`the route to the charger could not be read: ${e && e.message}`))
+        .finally(() => { this._routePending = false; });
+      return;
+    }
+
+    if (this._chargingPhase !== "APPROACHING") return;
+    if (this.status === "PAUSED") return; // a STOP holds position
+    if (this.status === "IDLE") this.status = "RETURNING"; // a RESUME carries on
+    if (this.status !== "RETURNING") return;
+
+    this._stepAlongPath();
+    const finalPoint = this.activePath?.[this.activePath.length - 1];
+    const atEnd =
+      this.pathIndex >= (this.activePath?.length || 0) - 1 &&
+      Boolean(finalPoint) &&
+      haversineMeters(this.lat, this.lon, finalPoint.lat, finalPoint.lon) < ARRIVAL_EPSILON_M;
+    if (atEnd) {
+      this.lat = finalPoint.lat;
+      this.lon = finalPoint.lon;
+      this._dockAt(nowMs);
+    }
+  }
+
+  /**
+   * Take the route the charging client returned, or refuse it.
+   *
+   * Refused — and the plug released, and no charge anywhere — when there is no route, when it
+   * names no usable charger coordinate, or when it does not start at this robot and end within
+   * the docking radius of that charger. A late answer for an approach that has since been
+   * abandoned (a RECALL, a new mission) is ignored.
+   *
+   * @param {object} route `chargerRoute.routeToCharger`'s result
+   * @param {{ lat: number, lon: number }} from where the robot was when it asked
+   */
+  _adoptChargerRoute(route, from) {
+    if (this._chargingPhase !== "SEEKING") return;
+    const problem = chargerRouteProblem(route, from);
+    if (problem) {
+      this._abandonChargerApproach(problem);
+      return;
+    }
+    this._approachCharger = { chargerId: route.charger.chargerId, lat: route.charger.lat, lon: route.charger.lon };
+    this.activePath = route.points.map((point) => ({ lat: point.lat, lon: point.lon }));
+    this.pathIndex = 0;
+    this._chargingPhase = "APPROACHING";
+    // A robot STOPped while it was still asking keeps holding; it sets off after a RESUME.
+    if (this.status !== "PAUSED") this.status = "RETURNING";
+    this.log.info(
+      `[VR] ${this.robotId} plug held — driving ${Math.round(route.distanceM)} m to charger ${route.charger.chargerId}`,
+    );
+  }
+
+  /**
+   * Arrive at the reserved charger. Only here, within the docking radius of the charger the
+   * route ended at, does the robot report CHARGING; the existing phase machine then waits for
+   * the plug (QUEUED) or lets current flow (ACTIVE).
+   *
+   * @param {number} nowMs
+   */
+  _dockAt(nowMs) {
+    if (!chargerRoute.withinDockingRadius(this, this._approachCharger)) {
+      this._abandonChargerApproach("the route ended outside the docking radius of the reserved charger");
+      return;
+    }
+    this._dockCharger     = this._approachCharger;
+    this._approachCharger = null;
+    if (!this.task) {
+      this.activePath = null;
+      this.pathIndex  = 0;
+    }
+    this.status           = "CHARGING";
+    this._chargingPhase   = "WAITING";
+    this._chargeWaitUntil = nowMs + CHARGING_WAIT_MS;
+    this.speed            = 0;
+    this.log.info(`[VR] ${this.robotId} docked at charger ${this._dockCharger.chargerId}`);
+  }
+
+  /**
+   * Give up this charging session safely: release the plug (`AGENT_RELEASED`), go IDLE where
+   * the robot stands, and do not ask again before `CHARGING_WAIT_MS` has passed — the same
+   * cadence the docking wait already uses, so a robot with no route asks at a bounded rate
+   * rather than every tick. Never a charge in place.
+   *
+   * @param {string} reason
+   */
+  _abandonChargerApproach(reason) {
+    this.log.warn(`[VR] ${this.robotId} charging approach abandoned — ${reason}`);
+    this._clearCharging(CHARGE_RELEASE_REASON.AGENT_RELEASED);
+    if (this.status === "RETURNING" || this.status === "CHARGING") this.status = this._statusAfterCharging();
+    this.speed = 0;
+    this._chargeRetryAt = Date.now() + CHARGING_WAIT_MS;
+  }
+
+  /**
+   * P7-D3 Step 2 — adopt, or refuse, the charging reservation that survived a restart. Run once,
+   * from `commission()`, before the robot connects; every later call returns the first outcome
+   * and changes nothing.
+   *
+   * The scheduler is asked through its read (`reservationAtRestart` →
+   * `devChargingScheduler.reservationForRecovery`), which writes nothing. A client without that
+   * read, a read that throws, or any answer but ADOPTABLE leaves the robot exactly as a fresh
+   * instance is: no session, no route, no charge — and the row to the scheduler's own passes.
+   *
+   * @returns {Promise<object>} the recorded outcome (`_restartRecovery`)
+   */
+  async _recoverChargingAtRestart() {
+    if (this._restartRecovery !== null) return this._restartRecovery;
+    const record = (outcome, extra) => {
+      this._restartRecovery = Object.freeze({ outcome, held: this._operatorHoldAtStart, ...(extra || {}) });
+      return this._restartRecovery;
+    };
+    if (!this._chargingClient) return record("UNSCHEDULED");
+    if (typeof this._chargingClient.reservationAtRestart !== "function") {
+      return record("REFUSED", { refusal: "UNAVAILABLE", problems: ["the charging client offers no recovery read"] });
+    }
+    // Claimed before the await, so a concurrent call cannot run a second recovery.
+    this._restartRecovery = Object.freeze({ outcome: "PENDING", held: this._operatorHoldAtStart });
+
+    let verdict;
+    try {
+      verdict = await this._chargingClient.reservationAtRestart();
+    } catch (e) {
+      verdict = { verdict: "REFUSED", refusal: "UNREADABLE", problems: [`the reservation could not be read: ${e && e.message}`] };
+    }
+    this._restartRecovery = null;
+    const outcome = this._applyRestartRecovery(verdict, record);
+    if (outcome.outcome === "REFUSED") {
+      this.log.warn(`[VR] ${this.robotId} restart: charging reservation not adopted — ${outcome.refusal}`, { problems: outcome.problems });
+    } else if (outcome.outcome !== "NONE") {
+      this.log.info(`[VR] ${this.robotId} restart: charging reservation ${outcome.reservationId} → ${outcome.outcome}`);
+    }
+    return outcome;
+  }
+
+  /**
+   * P7-D3 Step 2 — act on the scheduler's recovery verdict. Synchronous; see
+   * `_recoverChargingAtRestart`.
+   *
+   *   ADOPTABLE, battery at or above the target  → release TARGET_REACHED; no charge is drawn.
+   *   ADOPTABLE, within the docking radius       → dock (`_dockAt`): CHARGING / WAITING, so current
+   *                                                flows only once the plug is ACTIVE. A held robot
+   *                                                docks with the STOP latched (P7-D1: a STOP does
+   *                                                not unplug a docked unit, and the session ends PAUSED).
+   *   ADOPTABLE, anywhere else                   → SEEKING with the plug already held, so the next
+   *                                                tick asks for the campus route and drives it; a
+   *                                                held (PAUSED) robot holds position until RESUME.
+   *   anything else, or the hold unknown         → refused, nothing changes.
+   *
+   * @param {object} verdict `devChargingScheduler.reservationForRecovery`'s answer
+   * @param {(outcome: string, extra?: object) => object} record
+   * @returns {object}
+   */
+  _applyRestartRecovery(verdict, record) {
+    const source = verdict && typeof verdict === "object" ? verdict : {};
+    if (source.verdict === "NONE") return record("NONE");
+    if (source.verdict !== "ADOPTABLE") {
+      return record("REFUSED", {
+        refusal: typeof source.refusal === "string" ? source.refusal : "UNRECOGNISED",
+        reservationId: source.reservationId || null,
+        problems: Array.isArray(source.problems) ? source.problems : [],
+      });
+    }
+
+    const reservation = source.reservation || {};
+    const charger = source.charger || {};
+    const reservationId = typeof reservation.reservationId === "string" ? reservation.reservationId : null;
+    const refuse = (refusal, problem) => record("REFUSED", { refusal, reservationId, problems: [problem] });
+
+    // P7-D1 — a robot whose hold cannot be established is not driven or charged on a guess.
+    if (this._operatorHoldAtStart === null) {
+      return refuse("HOLD_UNKNOWN", "the server's operator hold on this unit could not be read, so its reservation is not resumed");
+    }
+    if (
+      !["QUEUED", "ACTIVE"].includes(reservation.state) ||
+      !chargerRoute.pointOf(charger) ||
+      charger.chargerId !== DEVELOPMENT_CHARGER.chargerId
+    ) {
+      return refuse("MALFORMED", "the adoptable reservation names no live state or no usable declared charger");
+    }
+    if (this._chargingPhase !== null || this.task) {
+      return refuse("BUSY", "this instance already has a charging session or a mission");
+    }
+
+    // The target the session was charging to is the Scheduler's recorded field (§14.6). A fresh
+    // instance has no offer-published target, so it adopts this one rather than the class default.
+    if (Number.isFinite(reservation.targetSoc) && !Number.isFinite(this._publishedTargetSoc)) {
+      this._publishedTargetSoc = reservation.targetSoc;
+    }
+    this._schedulerState = reservation.state;
+    const dock = { chargerId: charger.chargerId, lat: charger.lat, lon: charger.lon };
+
+    if (this.battery >= this._targetSocPercent()) {
+      this._clearCharging(CHARGE_RELEASE_REASON.TARGET_REACHED);
+      return record("RELEASED_TARGET_REACHED", { reservationId });
+    }
+
+    if (chargerRoute.withinDockingRadius(this, dock)) {
+      this._approachCharger = dock;
+      this._dockAt(Date.now());
+      if (this._operatorHoldAtStart === true) this._stopLatched = true;
+      return record("RESUMED_AT_CHARGER", { reservationId });
+    }
+
+    this._chargingPhase   = "SEEKING";
+    this._approachCharger = null;
+    this._dockCharger     = null;
+    this._chargeRetryAt   = null;
+    this.speed            = 0;
+    return record("RESUMING_APPROACH", { reservationId });
   }
 
   /**
@@ -2226,6 +2631,14 @@ class VirtualRobot {
   _handleCharging(nowMs) {
     if (this.status !== "CHARGING") return;
 
+    // P7-D3 Step 1 — a scheduled robot charges only where it verified it docked. Anywhere else
+    // (moved off the charger, or put in CHARGING without docking) the session is abandoned and
+    // the plug released: no charge, and so no battery rise, at an unrelated position.
+    if (this._chargingClient && !chargerRoute.withinDockingRadius(this, this._dockCharger)) {
+      this._abandonChargerApproach("not within the docking radius of a charger this robot verified it reached");
+      return;
+    }
+
     if (this._chargingPhase === "WAITING") {
       // ── BATCH 2: scheduled charging ─────────────────────────────────────────
       if (this._chargingClient) {
@@ -2257,7 +2670,7 @@ class VirtualRobot {
     // opinion is not the authority on whether it holds a plug; the scheduler that granted
     // it is, and this is where the agent yields to that.
     if (this._chargingPhase === "CHARGING" && this._chargingClient && this._schedulerState === "NONE") {
-      this.status = "IDLE";
+      this.status = this._statusAfterCharging(); // P7-D1 — PAUSED under a latched STOP
       this._clearCharging(CHARGE_RELEASE_REASON.AGENT_RELEASED);
       this.log.info(`[VR] ${this.robotId} charging stopped — the reservation is no longer held`);
       return;
@@ -2294,7 +2707,8 @@ class VirtualRobot {
         // reached, not at the target. Snapping down to `targetPercent` is the same
         // fabrication one line up.
         this.battery = Math.max(this.battery, targetPercent);
-        this.status  = "IDLE";
+        // P7-D1 — PAUSED, not IDLE, when an operator STOP latched during the session.
+        this.status  = this._statusAfterCharging();
         // BATCH 2 — the plug is freed here, named by the reason it was freed. The owner's
         // rule is that a robot stops at its authoritative target and does not need 100 %,
         // and this is that rule's only exit: the session ends at `targetPercent`, and
@@ -2303,7 +2717,10 @@ class VirtualRobot {
 
         const pending = this._pendingResume;
         this._pendingResume = null;
-        if (pending) {
+        if (pending && this.status === "PAUSED") {
+          // A STOP ended the mission: the deferred assignment is not executed.
+          this.log.warn(`[VR] ${this.robotId} deferred task ${pending.taskId} not resumed — the robot was STOPped while charging`);
+        } else if (pending) {
           this.log.info(
             `[VR] ${this.robotId} reached target SoC ${targetPercent.toFixed(0)}% → resuming deferred task ${pending.taskId}`
           );
@@ -2505,8 +2922,9 @@ class VirtualRobot {
     // 1) Update EMA speed target — only when actually moving
     this._updateSpeed();
 
-    // 2) Charging (highest priority)
+    // 2) Charging (highest priority), and — P7-D3 Step 1 — the approach to the charger
     this._handleCharging(nowMs);
+    this._handleChargerApproach(nowMs);
 
     // 3) Task navigation (only when not charging), bounded by §18.5's on-agent
     //    autonomous-continuation limit. Checked before advancing rather than after, so
@@ -2519,7 +2937,11 @@ class VirtualRobot {
     if (
       this.battery <= BATTERY_CRITICAL_THRESHOLD &&
       this.status !== "CHARGING" &&
-      this.phase === null
+      this.phase === null &&
+      // P7-D3 Step 1 — not while a session is already seeking or approaching, and not before
+      // a failed approach's retry interval has passed.
+      this._chargingPhase === null &&
+      !(Number.isFinite(this._chargeRetryAt) && nowMs < this._chargeRetryAt)
     ) {
       // BATCH 2 — the tick's own instant, so docking is stamped with the same clock read
       // every other step of this tick uses rather than a second one taken inside.
@@ -2569,7 +2991,10 @@ class VirtualRobot {
     // very next tick and strand it mid-route until the battery (never
     // recovers on its own) or task state changes, even though the task stays
     // ASSIGNED/IN_PROGRESS in the DB the whole time.
-    const isNavigating = (this.status === "ACTIVE" || this.status === "ISSUES") && this.phase && this.task;
+    const isNavigating =
+      ((this.status === "ACTIVE" || this.status === "ISSUES") && this.phase && this.task) ||
+      // P7-D3 Step 1 — driving to the reserved charger.
+      (this.status === "RETURNING" && this._chargingPhase === "APPROACHING");
     if (isNavigating) {
       // Target speed varies slightly around the base (smooth with EMA).
       //
@@ -2849,7 +3274,8 @@ class VirtualRobot {
   _applyBattery() {
     if (this.status === "CHARGING") return; // handled by _handleCharging
 
-    const ratePerTick = this.status === "ACTIVE"
+    // P7-D3 Step 1 — RETURNING is driving to the charger, and drains as movement does.
+    const ratePerTick = this.status === "ACTIVE" || this.status === "RETURNING"
       ? BATTERY_DRAIN_ACTIVE   // 100%→20% in 1 h of movement
       : BATTERY_DRAIN_IDLE;    // 100%→20% in 5 h at rest
 
@@ -3053,5 +3479,7 @@ class VirtualRobot {
     } catch { /* ignore */ }
   }
 }
+
+VirtualRobot.nextDedupGeneration = nextDedupGeneration;
 
 module.exports = VirtualRobot;

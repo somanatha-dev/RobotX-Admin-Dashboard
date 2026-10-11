@@ -37,6 +37,9 @@ const { hashSeed } = require("./random");
 // is inherited from the gate that already establishes it rather than re-derived from the
 // discriminator beside it.
 const devChargingScheduler = require("./devChargingScheduler");
+// P7-D3 Step 1 — the campus route to the reserved charger, over the network the engine prices
+// the return leg on.
+const chargerRoute = require("./chargerRoute");
 
 /**
  * STEP 3 — the commissioned specification a `VirtualRobot` is constructed with.
@@ -91,6 +94,33 @@ function specificationInputsFor(row) {
   };
 }
 
+/** The `RobotStatus` values a row can hold (`prisma/schema.prisma`). @structural */
+const ROBOT_STATUSES = Object.freeze(["IDLE", "ACTIVE", "PAUSED", "OFFLINE", "ERROR", "ISSUES"]);
+
+/**
+ * P7-D3 Step 2 — does the server hold this unit (P7-D1's operator STOP/PAUSE), read from its row?
+ *
+ * The hold is durable only server-side: `robots.controller.placeOperatorHold` writes PAUSED, or, for
+ * an OFFLINE unit, `statusBeforeOffline` PAUSED (which a reconnect restores). The agent's own latch
+ * is in memory and does not survive a restart, so a restarted simulated agent takes its hold from
+ * here — otherwise it would come back IDLE and drive (to its charger) while an operator held it.
+ *
+ * `null` when the row does not say (no status, or a value this module does not know): the caller
+ * must then not act as though the unit were free.
+ *
+ * @param {{ status?: string, statusBeforeOffline?: string|null }|null} row
+ * @returns {boolean|null}
+ */
+function operatorHoldFrom(row) {
+  if (!row || !ROBOT_STATUSES.includes(row.status)) return null;
+  if (row.status === "PAUSED") return true;
+  if (row.status !== "OFFLINE") return false;
+  const before = row.statusBeforeOffline === undefined ? null : row.statusBeforeOffline;
+  if (before === null) return false;
+  if (!ROBOT_STATUSES.includes(before)) return null;
+  return before === "PAUSED";
+}
+
 /**
  * BATCH 2 — how often the scheduler's reconciliation pass runs.
  *
@@ -118,11 +148,17 @@ const SCHEDULER_PASS_INTERVAL_MS = 10_000;
  *   `simulationPolicy.isSimulatorEnabled()`, i.e. `ENABLE_VIRTUAL_SIMULATOR=true`, off
  *   otherwise. Injected so the composition root can state it once and so a test need not
  *   mutate `process.env`.
+ * @param {() => object|null} [deps.deliveryDomainFor] P7-D3 Step 1 — the pinned
+ *   delivery-domain declaration, read per request. The campus network a robot drives to its
+ *   charger on is built from its extract, as the V1 composition's router is. Absent, every
+ *   route to the charger is refused by name and no robot charges (none charges in place).
  */
 function createVirtualRobotSimulator({
-  prisma, kv, serverUrl, logger, enabled, runSerializable, selectForUpdate, isSerializationFailure,
+  prisma, kv, serverUrl, logger, enabled, runSerializable, selectForUpdate, isSerializationFailure, deliveryDomainFor,
 } = {}) {
   const log   = logger || console;
+  // P7-D3 Step 1 — one route provider for the fleet; extracts and networks are built once.
+  const chargerRouter = chargerRoute.createChargerRouter({ deliveryDomainFor });
   const simulatorEnabled =
     typeof enabled === "boolean" ? enabled : simulationPolicy.isSimulatorEnabled();
   let robots  = [];
@@ -171,7 +207,7 @@ function createVirtualRobotSimulator({
    * @param {string} agentRowId `Agent.id`
    * @returns {{ request: Function, release: Function, state: Function }}
    */
-  function chargingClientFor(agentRowId) {
+  function chargingClientFor(agentRowId, permissionSet) {
     return {
       async request(targetSoc) {
         const verdict = await devChargingScheduler.requestPlug(chargingDeps, {
@@ -207,6 +243,22 @@ function createVirtualRobotSimulator({
       async state() {
         const live = await devChargingScheduler.liveReservationFor(chargingDeps, agentRowId);
         return { state: live ? live.state : "NONE" };
+      },
+      /**
+       * P7-D3 Step 2 — the live reservation this agent may adopt after a restart, or why not. A
+       * read: it grants, extends and releases nothing (`devChargingScheduler.reservationForRecovery`).
+       */
+      async reservationAtRestart() {
+        return devChargingScheduler.reservationForRecovery(chargingDeps, { agentRowId, nowMs: Date.now() });
+      },
+      /**
+       * P7-D3 Step 1 — the campus route from `from` to the declared charger's own coordinate,
+       * over this robot's class's permitted ways, or a refusal by name. The charger row is read
+       * fresh, so the robot is routed to the row as it is now, never to a remembered one.
+       */
+      async routeToCharger(from) {
+        const chargerRow = await prisma.charger.findUnique({ where: { chargerId: devChargingScheduler.DEVELOPMENT_CHARGER.chargerId } });
+        return chargerRouter.routeToCharger({ chargerRow, from, permissionSet });
       },
     };
   }
@@ -334,6 +386,8 @@ function createVirtualRobotSimulator({
       projectionVersion: provisioned.projectionVersion,
       publishedNewVersion: provisioned.published,
       staleReservationsExpired: reconciled.expired,
+      // P7-D3 Step 0 — live reservations left at the superseded development charger.
+      supersededReservationsReleased: reconciled.superseded,
       evidence: "DEVELOPMENT SIMULATION — not physical charger evidence, and no V1 stop condition is affected",
     });
 
@@ -452,6 +506,9 @@ function createVirtualRobotSimulator({
             battery: true,
             simulated: true,
             massKg: true,
+            // P7-D3 Step 2 — the server-side operator hold (`operatorHoldFrom`).
+            status: true,
+            statusBeforeOffline: true,
             agent: {
               select: {
                 // BATCH 2 — the `Agent` primary key. `ChargerReservation.agentId` is a
@@ -464,7 +521,8 @@ function createVirtualRobotSimulator({
                 },
                 agentClass: {
                   select: {
-                    mobilityModel: { select: { kinematicLimits: true, speedModel: true } },
+                    // P7-D3 Step 1 — `permissionSet`: the ways this class may drive to its charger on.
+                    mobilityModel: { select: { kinematicLimits: true, speedModel: true, permissionSet: true } },
                     energyModel: { select: { packNominalWh: true } },
                     containerModel: { select: { totalMassLimitKg: true } },
                     energyModelParams: { orderBy: { modelVersion: "desc" }, take: 1 },
@@ -543,6 +601,8 @@ function createVirtualRobotSimulator({
           ? (config.randomSeed ^ hashSeed(robotId)) >>> 0
           : undefined,
       telemetrySequenceFloor,
+      // P7-D3 Step 2 — the server's hold on this unit; `null` when the row cannot say.
+      operatorHoldAtStart: operatorHoldFrom(row),
       // ── STEP 3: the commissioned specification, and the persisted pack state ──
       // Read from the row above. Every field is `null` when the unit has no commissioned
       // value, and `VirtualRobot` then falls back to the module constant — a fallback
@@ -557,7 +617,12 @@ function createVirtualRobotSimulator({
       // reservation cannot be written for an agent that does not exist, and inventing the
       // agent to make the charger work would be inventing a fleet participant.
       chargingClient:
-        prisma && row && row.agent && row.agent.id ? chargingClientFor(row.agent.id) : null,
+        prisma && row && row.agent && row.agent.id
+          ? chargingClientFor(
+              row.agent.id,
+              (row.agent.agentClass && row.agent.agentClass.mobilityModel && row.agent.agentClass.mobilityModel.permissionSet) || null,
+            )
+          : null,
     });
 
     try {
@@ -727,4 +792,4 @@ function createVirtualRobotSimulator({
   };
 }
 
-module.exports = { createVirtualRobotSimulator };
+module.exports = { createVirtualRobotSimulator, operatorHoldFrom };
