@@ -1,5 +1,15 @@
 // Deterministic test environment. Runs before every test file (jest `setupFiles`).
-//
+
+// Isolation from every real database, applied first and unconditionally (./isolation.js).
+// The configuration file is a tracked empty one, so `src/config/env.js` never loads a
+// developer's real file (which names the canonical LOCAL database); the database URL is
+// one no PostgreSQL server answers, so a Prisma client a test forgot to mock fails at once.
+// ROBOTX_ENV is removed rather than emptied: the LOCAL guard refuses an empty value.
+const { ISOLATED_ENV_FILE, UNREACHABLE_DATABASE_URL } = require("./isolation");
+process.env.ROBOTX_ENV_FILE = ISOLATED_ENV_FILE;
+process.env.DATABASE_URL = UNREACHABLE_DATABASE_URL;
+delete process.env.ROBOTX_ENV;
+
 // Deliberately UNSET Redis/Mapbox env vars so `kv.js` boots into its real
 // in-memory fallback mode (no live Redis needed) and any accidental call into
 // `mapbox.service.js` fails fast instead of hitting the network.

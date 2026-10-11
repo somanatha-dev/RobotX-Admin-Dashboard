@@ -25,6 +25,10 @@ if (BENCH_POOL_SIZE) {
   process.env.DATABASE_URL = `${stripped}${sep}connection_limit=${BENCH_POOL_SIZE}`;
 }
 
+// dbReset.js TRUNCATEs the robot tables: refuse anything but a disposable loopback database
+// (never the canonical LOCAL one) before any client is created (docs/runbooks/environments.md).
+require("../src/config/environmentGuard").requireDisposableTarget(process.env);
+
 const { PrismaClient } = require("@prisma/client");
 const Redis = require("ioredis");
 const { io: ioClient } = require("socket.io-client");

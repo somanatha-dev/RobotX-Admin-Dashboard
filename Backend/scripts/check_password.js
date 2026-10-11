@@ -1,6 +1,8 @@
 const path = require("path");
 
-require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+// The backend's own configuration loader and LOCAL guard (docs/runbooks/environments.md).
+const { loadedFrom } = require(path.join(__dirname, "..", "src", "config", "env"));
+require(path.join(__dirname, "..", "src", "config", "environmentGuard")).assertEnvironment(process.env, { loadedFrom });
 
 const bcrypt = require("bcrypt");
 const { PrismaClient } = require("@prisma/client");

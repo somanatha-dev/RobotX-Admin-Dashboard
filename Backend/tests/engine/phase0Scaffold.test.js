@@ -23,8 +23,11 @@ describe("the ENGINE_ENABLED master switch", () => {
     expect(process.env.ENGINE_ENABLED).toBe("false");
   });
 
-  test("is declared off in every environment file the plan names", () => {
-    for (const file of [".env", ".env.benchmark"]) {
+  // Only the tracked benchmark profile. `Backend/.env` was a per-machine, gitignored file and the
+  // LOCAL configuration now lives outside the repository (docs/runbooks/environments.md), where
+  // the engine is deliberately on; a test cannot depend on an untracked file's contents.
+  test("is declared off in the tracked benchmark profile", () => {
+    for (const file of [".env.benchmark"]) {
       const contents = fs.readFileSync(path.join(BACKEND_ROOT, file), "utf8");
       expect(contents).toMatch(/^ENGINE_ENABLED=false$/m);
     }

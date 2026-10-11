@@ -51,12 +51,13 @@ const JOBS = [
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const say = (line) => process.stdout.write(`${line}\n`);
-// Only the secrets a server started from another tree needs (it has no `.env` of its own) —
-// never `.env`'s DATABASE_URL (the shared Neon instance) or REDIS_URL (the hosted Redis): the
-// children get the loopback database by flag and the in-memory KV, pinned here as well.
-const dotenvValues = require(path.join(BACKEND, "node_modules/dotenv")).parse(
-  fs.existsSync(path.join(BACKEND, ".env")) ? fs.readFileSync(path.join(BACKEND, ".env")) : "",
-);
+// Only the secrets a server started from another tree needs (it has no configuration of its
+// own) — never the configuration file's DATABASE_URL or REDIS_URL: the children get the loopback
+// database by flag and the in-memory KV, pinned here as well. The file is the one the backend
+// itself loads (`src/config/envFile.js` — ROBOTX_ENV_FILE, Backend/.env, or the LOCAL file),
+// parsed rather than loaded so nothing else from it reaches this process.
+const configFile = require(path.join(BACKEND, "src/config/envFile")).resolveEnvFile();
+const dotenvValues = require(path.join(BACKEND, "node_modules/dotenv")).parse(configFile ? fs.readFileSync(configFile) : "");
 const SECRETS = ["JWT_SECRET", "PRIVACY_SURROGATE_SECRET", "PRIVACY_IDENTITY_KEY", "COMMAND_SIGNING_KEY"];
 const env = {
   ...Object.fromEntries(SECRETS.filter((k) => dotenvValues[k] !== undefined && process.env[k] === undefined).map((k) => [k, dotenvValues[k]])),
@@ -140,11 +141,11 @@ async function main() {
     if (!up) throw new Error(`server did not come up with an indexed fleet and a shard leader (log: ${logFile})`);
     say(`[server] up on ${PORT}${ONE_WAY > 0 ? `, database behind the proxy at one-way ${ONE_WAY} ms` : ""}`);
 
-    // A real token for the seed's real User row, signed with the server's own secret.
-    require(path.join(BACKEND, "node_modules/dotenv")).config({ path: path.join(BACKEND, ".env") });
+    // A real token for the seed's real User row, signed with the server's own secret — the one
+    // the child server was given above.
     const jwt = require(path.join(BACKEND, "node_modules/jsonwebtoken"));
     const user = await prisma.user.findFirst({ where: { email: "v1-demonstration-seed@localhost" } });
-    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: "30m" });
+    const token = jwt.sign({ id: user.id }, env.JWT_SECRET, { expiresIn: "30m" });
     const { points } = require(path.join(ROOT, "tools/demo/seedV1Demonstration.js")).loadGeometry();
 
     const taskIds = [];

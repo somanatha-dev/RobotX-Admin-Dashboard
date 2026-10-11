@@ -3,7 +3,9 @@ const { Server } = require("socket.io");
 const { createAdapter } = require("@socket.io/redis-adapter");
 const Redis = require("ioredis");
 
-require("./src/config/env");
+const { loadedFrom: envFile } = require("./src/config/env");
+// ROBOTX_ENV=LOCAL: refuse a non-loopback database or Redis before anything connects.
+require("./src/config/environmentGuard").assertEnvironment(process.env, { loadedFrom: envFile });
 require("./src/observability/eventLoopMonitor").start();
 
 const app = require("./src/app");

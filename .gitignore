@@ -1,7 +1,17 @@
 node_modules/
 Backend/node_modules/
 Frontend/node_modules/
+
+# Environment files: real values never enter git, at any depth and in any case of the
+# directory name. Only templates (*.env.example) and the benchmark profile are tracked.
+# See docs/runbooks/environments.md.
 .env
+.env.*
+!.env.example
+!Backend/.env.benchmark
+# LOCAL secrets live in %USERPROFILE%\robotx-secrets (robotx-local.env, neon-original.env).
+# A copy that lands in the repository by mistake must still never be committed.
+*.env
 dist/
 build/
 *.log

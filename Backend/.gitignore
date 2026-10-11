@@ -1,6 +1,10 @@
 node_modules
-# Keep environment variables out of version control
+# Keep environment variables out of version control. Only the template and the
+# benchmark profile are tracked (docs/runbooks/environments.md).
 .env
+.env.*
+!.env.example
+!.env.benchmark
 
 /src/generated/prisma
 

@@ -4,6 +4,7 @@
   "main": "server.js",
   "scripts": {
     "dev": "node server.js",
+    "prisma:local": "node tools/env/withLocalEnv.js npx prisma",
     "gate:calibration": "node tools/gates/checkCalibration.js",
     "gate:columngen": "node tools/gates/checkColumnGeneration.js",
     "gate:composition": "node tools/gates/checkCompositionRoot.js",

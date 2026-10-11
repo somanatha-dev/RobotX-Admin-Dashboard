@@ -1,0 +1,4 @@
+# The configuration file every Jest process loads (tests/setup/isolation.js names it as
+# ROBOTX_ENV_FILE). Deliberately empty: a test gets its values from tests/setup/env.js and
+# never from a developer's real file (Backend/.env or %USERPROFILE%\robotx-secrets\robotx-local.env).
+# Do not add values here — a test that needs one sets it itself.

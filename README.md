@@ -99,105 +99,68 @@ formal/                  TLA+ specifications and configurations
 
 ## Development setup
 
+There are **two environments**, and the same code runs in both; environment variables alone
+select the database, endpoints, shard and fleet. **[`docs/runbooks/environments.md`](docs/runbooks/environments.md)**
+is the full reference.
+
+| | LOCAL | ORIGINAL ROBOTX NEON |
+|---|---|---|
+| Database | Docker container `robotx-recovered-db`, `127.0.0.1:5433`, database `robotx` — a verified copy of `neondb` | the original Neon `neondb` |
+| Backend / frontend | `localhost:3000` / `localhost:5173` | Render / Vercel |
+| Configuration | `%USERPROFILE%\robotx-secrets\robotx-local.env` (outside the repository and OneDrive) | Render and Vercel dashboards |
+
+```
+Browser → localhost:5173 (Vite) → localhost:3000 (backend) → Docker PostgreSQL 127.0.0.1:5433/robotx
+```
+
 ### Prerequisites
 
 - **Node.js 20** (what CI runs)
-- **PostgreSQL** — required
-- **Redis** — optional in development; set `REDIS_ENABLED=false` to run without it
-- A **Mapbox token** for map views
+- **Docker Desktop running, with the container `robotx-recovered-db` up** (it starts with Docker
+  Desktop; check with `docker ps --filter name=robotx-recovered-db`)
+- **`%USERPROFILE%\robotx-secrets\robotx-local.env`** — the LOCAL backend configuration. It holds
+  local secrets, so it never lives in the repository or OneDrive; on a new machine, start from
+  `Backend/.env.example`. It declares `ROBOTX_ENV=LOCAL`, which makes the backend **refuse to
+  start** unless its database and Redis are on loopback — local work can never reach Neon.
 
-### 1. Backend
+### Start
 
-```bash
-cd Backend
-npm install
+```powershell
+cd Backend;  npm install; npm run dev    # http://localhost:3000
+cd Frontend; npm install; npm run dev    # http://localhost:5173
 ```
 
-Create `Backend/.env`:
+Open `http://localhost:5173` — `localhost`, not `127.0.0.1`, or the auth cookie is dropped as
+cross-site. Log in with an existing account from the copied data; nothing is seeded (the
+`SEED_ADMIN_*` variables stay blank so a copied user is never overwritten). Check the backend
+with `curl "http://localhost:3000/health?shard=rnsit-shard"`; its boot log names the database it
+uses (`[env] LOCAL: database 127.0.0.1:5433/robotx …`). Run one engine-enabled backend at a time.
 
-```env
-DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/robotx?schema=public"
+The Prisma CLI goes through the same configuration and guard:
 
-# Redis — use rediss:// for TLS (hosted), redis:// for local
-REDIS_URL="redis://localhost:6379"
-# REDIS_ENABLED=false        # run without Redis entirely
-
-JWT_SECRET="a-long-random-string"
-FRONTEND_URL="http://localhost:5173"
-MAPBOX_ACCESS_TOKEN="YOUR_MAPBOX_TOKEN"
-
-# Optional
-# GOOGLE_CLIENT_ID=...
-# ADMIN_EMAIL=... / ADMIN_PASSWORD=...      bootstrap admin
-# LOG_LEVEL=debug
-
-# The virtual robot simulator. OFF unless this says true.
-#
-# When true, the server spawns an in-process VirtualRobot for each Robot row whose
-# `simulated` column is true — and for no others. Physical robots (simulated = false,
-# which is the default for every row) never receive one: a VirtualRobot mints the
-# `session:{robotId}` credential and writes the live-state key, so adopting a physical
-# unit would replace its credentials and fabricate its telemetry.
-#
-# Simulation is a facility for exercising the agent protocol and for demonstrations. It
-# is never evidence about physical hardware.
-ENABLE_VIRTUAL_SIMULATOR=false
-
-# The assignment engine master switch. Leave false — see "Current status".
-ENGINE_ENABLED=false
+```powershell
+cd Backend; npm run prisma:local -- migrate status
 ```
 
-Apply migrations, and optionally seed:
+The wrapper refuses (exit 77) anything outside a read-only allow-list — `prisma db push` (the
+schema file lacks the migrations' triggers and CHECK constraints), `migrate dev`, `migrate reset`,
+`db execute`, `db seed`, `studio` — and admits `migrate deploy` only after review, as
+`migrate deploy --confirm-database robotx`. `prisma migrate deploy` applies pending migrations; **it does not synchronise
+application data**. Schema promotion and data publishing to Neon are separate, reviewed steps —
+see the workflow in [`docs/runbooks/environments.md`](docs/runbooks/environments.md) §5.
 
-```bash
-npx prisma migrate dev
-npx prisma generate         # regenerate the Prisma client
-npx prisma db seed          # seeds the spatial map and reference data
-npx prisma studio           # browse the database in a UI
-```
+> **Scripted V1 demonstration.** `tools/demo/seedV1Demonstration.js` and
+> `tools/demo/startV1Server.js` run the scripted acceptance scenario against a *throwaway*
+> loopback cluster, and refuse port 5432 by design. See
+> `docs/runbooks/v1-demonstration-assignment.md` §4.
 
-Run it:
+`Frontend/.env` holds only browser-public values (API URLs, the Mapbox public token, the Google
+OAuth client id); a deployment sets the same `VITE_*` names in its host's dashboard. Restart the
+dev server after changing them — Vite reads them at startup.
 
-```bash
-npm run dev                 # or: npm start
-```
-
-The backend listens on `http://localhost:3000` (override with `PORT`).
-
-> **This process does not run the assignment engine.** With `ENGINE_ENABLED=false` it starts
-> no coordinator, so every dashboard task is refused with `503 ENGINE_NOT_LIVE` before anything
-> is written. That is by design: the legacy dispatcher was removed at Phase 15. To create and
-> assign tasks from the dashboard, start the V1 demonstration backend instead. Do not edit
-> `.env`. The launcher sets the engine environment itself and only accepts a disposable
-> loopback database. See `docs/runbooks/v1-demonstration-assignment.md` §4:
->
-> ```bash
-> node tools/demo/seedV1Demonstration.js --database-url postgresql://<user>@127.0.0.1:<port>/<db> --fleet baseline
-> node tools/demo/startV1Server.js       --database-url postgresql://<user>@127.0.0.1:<port>/<db> --port 3000
-> ```
-
-> **Resetting the database.** `npx prisma migrate reset` drops everything, re-applies migrations,
-> and re-runs the seed. All data is lost.
-
-### 2. Frontend
-
-```bash
-cd Frontend
-npm install
-npm run dev
-```
-
-Create `Frontend/.env.local`:
-
-```env
-VITE_API_URL=http://localhost:3000
-VITE_SOCKET_URL=http://localhost:3000
-VITE_SOCKET_GLOBAL_KEY=__robotx_socket__
-VITE_MAPBOX_TOKEN=YOUR_MAPBOX_TOKEN
-# VITE_GOOGLE_CLIENT_ID=...
-```
-
-Restart the dev server after changing env vars — Vite reads them at startup.
+Older databases (including Docker `robotx_recovered` and `robotx_demo`, whose `:3001`/`:3002` stacks
+were retired and archived) and the backups are preserved history, not environments
+(environments.md §7).
 
 ---
 
@@ -211,7 +174,7 @@ tests makes acceptable.
 cd Backend
 
 npm run gates          # all eight build gates — EXITS 1 today, see the note below
-npm test               # full suite
+npm test               # full suite — isolated by tests/setup/env.js: never loads a real config file or reaches a real database
 npm run verify         # gates + tests
 
 # Individual gates
@@ -258,7 +221,10 @@ npm run build
 ## Troubleshooting
 
 **`POST /api/tasks/assign` returns 503 `ENGINE_NOT_LIVE`.**
-Expected. See "Current status" above. The legacy dispatcher is deleted and the engine is off.
+The engine is not leading the shard. Check `ENGINE_ENABLED=true`, that `SHARD_ID` equals the
+bootstrap's `--shard-id`, that the bootstrap was applied, and that the boot log has no
+`LEADER_ONLY worker NOT started` line. With `ENGINE_ENABLED=false` it is expected: the legacy
+dispatcher is deleted.
 
 **Telemetry not updating.**
 Confirm the backend is on port 3000; if Redis is enabled, confirm `REDIS_URL` is reachable (hosted
@@ -272,7 +238,13 @@ The frontend socket client is a global singleton to survive Vite HMR. Make sure 
 Set `VITE_MAPBOX_TOKEN` and restart the dev server.
 
 **Prisma errors on start.**
-Ensure `DATABASE_URL` is set, migrations are applied, and `npx prisma generate` has run.
+Ensure Docker Desktop and `robotx-recovered-db` are running, `%USERPROFILE%\robotx-secrets\robotx-local.env`
+exists, migrations are applied, and `npx prisma generate` has run.
+
+**`[env] REFUSED to start the LOCAL environment` (exit 78).**
+Something points LOCAL at a non-loopback database or Redis — usually a `DATABASE_URL` or
+`REDIS_URL` set in the shell, which overrides the configuration file. Remove it; see
+[`docs/runbooks/environments.md`](docs/runbooks/environments.md) §2.2.
 
 **A gate fails after a documentation change.**
 Not a false positive. Four tests read `NEXT_GENERATION_ASSIGNMENT_ENGINE.md` and `docs/adr/**` from

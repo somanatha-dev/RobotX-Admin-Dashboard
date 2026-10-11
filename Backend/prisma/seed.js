@@ -45,8 +45,13 @@ const SEED_SPATIAL_MAP = {
 };
 
 async function main() {
+  // The backend's configuration loader, then the write-script guard (LOCAL only, loopback
+  // database) — the same two lines `seed-pin.js` runs, here inside `main` rather than at module
+  // load because tests import SEED_SPATIAL_MAP from this file (docs/runbooks/environments.md).
+  require("../src/config/env");
+  const target = require("../src/config/environmentGuard").requireLocalTarget(process.env);
   const prisma = getPrisma();
-  console.log("🌱 Minimal seeding started...");
+  console.log(`🌱 Minimal seeding started (${target.host}:${target.port}/${target.database})...`);
 
   //////////////////////////////////////////////////
   // 1. LOCATION TREE (ONLY REQUIRED)
