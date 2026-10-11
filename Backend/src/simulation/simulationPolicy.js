@@ -34,6 +34,10 @@
  * negative answer only by luck, and would make a string `"false"` mean *true*.
  */
 
+// What "retired" means (Agent.lifecycleState = DECOMMISSIONED). A pure module: it does not
+// reach the database layer, which this directory must not import.
+const robotRetirementPolicy = require("../services/robotRetirementPolicy");
+
 /** The environment variable that enables the simulator for a process. */
 const SIMULATOR_ENV_VAR = "ENABLE_VIRTUAL_SIMULATOR";
 
@@ -104,6 +108,12 @@ function maySpawnVirtualRobot(robot, options = {}) {
   }
   if (!isSimulatedRobot(robot)) {
     return { allowed: false, reason: "ROBOT_NOT_SIMULATED" };
+  }
+  // Soft retirement keeps the row, so boot re-hydration still finds a retired simulated
+  // unit. This is the one funnel every spawn passes through (creation and re-hydration
+  // alike), so the refusal lives here — read off the row `addRobot` loads with its Agent.
+  if (robotRetirementPolicy.isRetiredRobot(robot)) {
+    return { allowed: false, reason: robotRetirementPolicy.ROBOT_RETIRED };
   }
   return { allowed: true, reason: null };
 }

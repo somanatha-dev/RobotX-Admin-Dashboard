@@ -611,9 +611,12 @@ export default function AppProvider({ children }) {
       requestAuth(
         `DECOMMISSION UNIT: ${id}`,
         async () => {
-          await robotsApi.deleteRobot(id);
+          // A soft retirement: the unit leaves the fleet, its history stays. A refusal (409 —
+          // live work, unsettled commands, an unfinished task, a charge in progress) throws
+          // with the backend's sentence, which the authorisation dialog shows.
+          const result = await robotsApi.deleteRobot(id);
           await refreshDbState();
-          addEvent(`Unit ${id} decommissioned`, 'warning');
+          addEvent(result?.alreadyRetired ? `Unit ${id} was already retired` : `Unit ${id} retired`, 'warning');
           navigate('/robots');
         },
         true
@@ -910,6 +913,14 @@ export default function AppProvider({ children }) {
       });
     };
 
+    // Soft retirement — a unit was retired (here or on another dashboard). It leaves the list,
+    // and with it the map, the counts and the global STOP's targets. Its tasks keep naming it.
+    const onRobotRetired = (data) => {
+      const robotId = String(data?.robotId || '').trim();
+      if (!robotId) return;
+      setRobots((prev) => prev.filter((r) => String(r.robotId || '').trim() !== robotId));
+    };
+
     // H4 — a commissioned robot reached the server and was refused while pairing. The robot
     // will not retry a refused code by itself, so the operator has to act: say so.
     const onRobotPairingRejected = (data) => {
@@ -1100,6 +1111,7 @@ export default function AppProvider({ children }) {
     socket.on(DASHBOARD_EVENTS.ROBOT_SPECIFICATION_UPDATED, onRobotSpecificationUpdated);
     socket.on(DASHBOARD_EVENTS.ROBOT_OFFLINE, onRobotOffline);
     socket.on(DASHBOARD_EVENTS.ROBOT_ONLINE, onRobotOnline);
+    socket.on(DASHBOARD_EVENTS.ROBOT_RETIRED, onRobotRetired);
     socket.on(DASHBOARD_EVENTS.ROBOT_PAIRING_REJECTED, onRobotPairingRejected);
     socket.on(DASHBOARD_EVENTS.TASK_CREATED, onTaskCreated);
     socket.on(DASHBOARD_EVENTS.TASK_ACCEPTED, onTaskAccepted);
@@ -1116,6 +1128,7 @@ export default function AppProvider({ children }) {
       socket.off(DASHBOARD_EVENTS.ROBOT_SPECIFICATION_UPDATED, onRobotSpecificationUpdated);
       socket.off(DASHBOARD_EVENTS.ROBOT_OFFLINE, onRobotOffline);
       socket.off(DASHBOARD_EVENTS.ROBOT_ONLINE, onRobotOnline);
+      socket.off(DASHBOARD_EVENTS.ROBOT_RETIRED, onRobotRetired);
       socket.off(DASHBOARD_EVENTS.ROBOT_PAIRING_REJECTED, onRobotPairingRejected);
       socket.off(DASHBOARD_EVENTS.TASK_CREATED, onTaskCreated);
       socket.off(DASHBOARD_EVENTS.TASK_ACCEPTED, onTaskAccepted);

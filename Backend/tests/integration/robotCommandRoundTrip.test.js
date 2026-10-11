@@ -48,6 +48,11 @@ describe("server -> robot command round trip (integration)", () => {
       },
       campus: { findFirst: jest.fn().mockResolvedValue(null) },
       zone: { findMany: jest.fn().mockResolvedValue([]), count: jest.fn().mockResolvedValue(1) },
+      // Soft retirement — AUTH's online write runs in a transaction after reading the robot's
+      // Agent lifecycle under a share lock. This robot has no Agent row, so the read is empty
+      // and the robot is not retired, exactly as before.
+      $transaction: jest.fn(async (fn) => fn(prisma)),
+      $queryRawUnsafe: jest.fn(async () => []),
     };
     getPrisma.mockReturnValue(prisma);
     ({ kv } = await createTestKv());

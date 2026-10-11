@@ -443,17 +443,42 @@ describe("H5 — issuing a code is audited without the code; the code itself is 
   });
 });
 
-describe("H6 — decommissioning deletes the robot's credentials and closes its connection", () => {
+// H6, as soft retirement. Decommissioning no longer deletes the Robot row (that failed with
+// a RESTRICT violation for any robot the engine had offered work, and destroyed history where
+// it worked);
+// it moves the Agent to DECOMMISSIONED. What H6 guarantees is unchanged: the robot's
+// credentials go, its live connection is closed, and its old token is refused.
+describe("H6 — retiring a robot deletes its credentials and closes its connection", () => {
+  const { createRetirementStore } = require("../../helpers/retirementStore");
+
+  function retirementWorld() {
+    const world = createRetirementStore({
+      robots: [
+        { id: "row-R1", robotId: "R1", battery: 90 },
+        { id: "row-R2", robotId: "R2", battery: 90 },
+      ],
+      agents: [
+        { id: "agent-R1", agentId: "R1", robotDbId: "row-R1" },
+        { id: "agent-R2", agentId: "R2", robotDbId: "row-R2" },
+      ],
+    });
+    const store = sessionStore();
+    store.deleteMany.mockImplementation(async ({ where }) => {
+      const had = store.rows.delete(where.robotDbId);
+      return { count: had ? 1 : 0 };
+    });
+    world.prisma.robotSession = store;
+    return { ...world, store };
+  }
+
   test("session, pairing, attempts and lock keys are deleted; the live socket is disconnected", async () => {
     jest.resetModules();
     jest.doMock("../../../src/db/prisma");
     const controller = require("../../../src/controllers/robots.controller");
     const robotSockets = require("../../../src/sockets/robotSockets");
     const { kv } = await createTestKv();
-    const prisma = createMockPrisma();
-    prisma.robot.findUnique.mockResolvedValue({ id: "row-R1" });
-    prisma.robot.delete.mockResolvedValue({ id: "row-R1" });
-    require("../../../src/db/prisma").getPrisma.mockReturnValue(prisma);
+    const world = retirementWorld();
+    require("../../../src/db/prisma").getPrisma.mockReturnValue(world.prisma);
 
     for (const robotId of ["R1", "R2"]) {
       await kv.set(`session:${robotId}`, `token-${robotId}`, { ex: 3600 });
@@ -466,7 +491,7 @@ describe("H6 — decommissioning deletes the robot's credentials and closes its 
 
     const { res } = await callHandler(controller.deleteRobot, { params: { robotId: "R1" }, app: { locals: { kv } } });
 
-    expect(res.body).toEqual({ ok: true, robotId: "R1" });
+    expect(res.body).toEqual({ ok: true, robotId: "R1", retired: true, alreadyRetired: false });
     for (const key of ["session:R1", "pairing:R1", "pairingAttempts:R1", "pairingLocked:R1"]) {
       expect(await kv.get(key)).toBeNull();
     }
@@ -474,41 +499,47 @@ describe("H6 — decommissioning deletes the robot's credentials and closes its 
     // Another robot's credentials are untouched.
     expect(await kv.get("session:R2")).toBe("token-R2");
     expect(await kv.get("pairing:R2")).toBe("123456");
-    // The row went first, so a reconnect finds no robot to authenticate as.
-    expect(prisma.robot.delete.mock.invocationCallOrder[0]).toBeLessThan(live.disconnect.mock.invocationCallOrder[0]);
+    // The row is kept and the Agent is retired — and that is durable before the socket closes,
+    // so a reconnect finds a retired robot to refuse.
+    expect(world.prisma.robot.delete).not.toHaveBeenCalled();
+    expect(world.state.robots.map((r) => r.robotId)).toEqual(["R1", "R2"]);
+    expect(world.state.agents.find((a) => a.id === "agent-R1").lifecycleState).toBe("DECOMMISSIONED");
+    expect(world.prisma.agent.update.mock.invocationCallOrder[0]).toBeLessThan(live.disconnect.mock.invocationCallOrder[0]);
     robotSockets.deleteRobotSocket("R1");
   });
 
-  test("a re-commissioned robotId no longer accepts the decommissioned unit's token", async () => {
-    const world = createWorld();
+  test("a retired robot's old token is refused, and so is its id at every credential", async () => {
+    const world = retirementWorld();
     const p1 = await startProcess(world);
     const { token } = await pair(p1);
+    expect(token).toBeTruthy();
+    expect(world.store.rows.has("row-R1")).toBe(true);
 
     jest.doMock("../../../src/db/prisma");
     const controller = require("../../../src/controllers/robots.controller");
-    world.prisma.robot.delete.mockResolvedValue({ id: "row-R1" });
     require("../../../src/db/prisma").getPrisma.mockReturnValue(world.prisma);
     await callHandler(controller.deleteRobot, { params: { robotId: "R1" }, app: { locals: { kv: p1.kv } } });
 
-    // Same robotId commissioned again (the mock's findUnique still answers for R1). The durable
-    // row would have cascaded with the deleted Robot; model that, then present the old token.
-    world.store.rows.delete("row-R1");
+    // Both halves of the session are gone: the KV key and the durable row.
     expect(await p1.kv.get("session:R1")).toBeNull();
+    expect(world.store.rows.has("row-R1")).toBe(false);
     const reused = await p1.auth({ robotId: "R1", token });
     expect(reused.ok).toBe(false);
+    expect(reused.socket.sent).toContainEqual({ event: "AUTH_FAILED", payload: { reason: "INVALID_CREDENTIAL" } });
   });
 
-  test("decommissioning a robot with no live connection is fine", async () => {
+  test("retiring a robot with no live connection is fine", async () => {
     jest.resetModules();
     jest.doMock("../../../src/db/prisma");
     const controller = require("../../../src/controllers/robots.controller");
     const { kv } = await createTestKv();
-    const prisma = createMockPrisma();
-    prisma.robot.findUnique.mockResolvedValue({ id: "row-R9" });
-    prisma.robot.delete.mockResolvedValue({ id: "row-R9" });
-    require("../../../src/db/prisma").getPrisma.mockReturnValue(prisma);
+    const world = createRetirementStore({
+      robots: [{ id: "row-R9", robotId: "R9" }],
+      agents: [{ id: "agent-R9", agentId: "R9", robotDbId: "row-R9" }],
+    });
+    require("../../../src/db/prisma").getPrisma.mockReturnValue(world.prisma);
 
     const { res } = await callHandler(controller.deleteRobot, { params: { robotId: "R9" }, app: { locals: { kv } } });
-    expect(res.body).toEqual({ ok: true, robotId: "R9" });
+    expect(res.body).toEqual({ ok: true, robotId: "R9", retired: true, alreadyRetired: false });
   });
 });

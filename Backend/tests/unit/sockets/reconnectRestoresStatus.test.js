@@ -19,8 +19,13 @@ const robotStateCache = require("../../../src/cache/robotStateCache");
 function store(initial) {
   const rows = new Map(initial.map((row) => [row.robotId, { statusBeforeOffline: null, ...row }]));
   const matches = (row, where) => Object.entries(where).every(([k, v]) => row[k] === v);
-  return {
+  const client = {
     rows,
+    // Soft retirement — `markRobotOnline` writes inside a transaction, after reading the
+    // robot's Agent lifecycle under a share lock. None of these robots has an Agent row, so
+    // the lock reads nothing and the robot is not retired, exactly as before.
+    $transaction: async (fn) => fn(client),
+    $queryRawUnsafe: async () => [],
     robot: {
       findUnique: async ({ where }) => (rows.has(where.robotId) ? { ...rows.get(where.robotId) } : null),
       update: async ({ where, data }) => {
@@ -36,6 +41,7 @@ function store(initial) {
       },
     },
   };
+  return client;
 }
 
 describe("LF-1 — disconnect then reconnect (P1.4)", () => {

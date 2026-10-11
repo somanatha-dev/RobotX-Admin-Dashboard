@@ -371,12 +371,15 @@ describe("Step 5.5 — agent resolution reuses the existing 1:1 Robot → Agent 
     // The family this project keeps finding: a function written, tested, and called from
     // nowhere. Asserted structurally because the alternative is driving an HTTP delete for
     // one line, and because what matters is that the call site exists at all.
-    const controller = require("fs").readFileSync(
-      require("path").join(__dirname, "..", "..", "src", "controllers", "robots.controller.js"),
+    //
+    // Soft retirement moved the decommission cleanup out of the controller into the
+    // retirement service's post-commit step; the call site moved with it.
+    const service = require("fs").readFileSync(
+      require("path").join(__dirname, "..", "..", "src", "services", "robotRetirement.service.js"),
       "utf8",
     );
-    expect(controller).toContain("positionObservation.forget(robotCode)");
-    expect(controller).toContain('require("../services/positionObservation.service")');
+    expect(service).toContain("positionObservation.forget(robotId)");
+    expect(service).toContain('require("./positionObservation.service")');
   });
 
   test("forget() drops one robot's binding without disturbing another's", async () => {

@@ -516,6 +516,10 @@ function createVirtualRobotSimulator({
                 // A String uuid, so the BigInt-serialisation hazard the comment above
                 // names does not apply.
                 id: true,
+                // Soft retirement — `simulationPolicy.maySpawnVirtualRobot` refuses a row
+                // whose Agent is DECOMMISSIONED, which is what keeps a retired simulated
+                // unit from being re-hydrated at boot.
+                lifecycleState: true,
                 batteryState: {
                   select: { kappa: true, kappaSampleCount: true, soh: true, lastObservedSoc: true },
                 },

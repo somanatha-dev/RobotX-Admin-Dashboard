@@ -125,6 +125,14 @@ export const DASHBOARD_EVENTS = Object.freeze({
 	ROBOT_OFFLINE: "robot_offline",
 	ROBOT_ONLINE: "robot_online",
 	/**
+	 * A unit was retired (`DELETE /api/robots/:robotId`, a soft retirement). `{ robotId,
+	 * timestamp }` only. Sent to every dashboard, after a `robot_offline` for the same unit,
+	 * so a page other than the one that retired it drops the unit from its lists — and from
+	 * the global STOP's targets — without waiting for a refetch. The backend's lists already
+	 * omit retired units.
+	 */
+	ROBOT_RETIRED: "robot_retired",
+	/**
 	 * A commissioned robot reached the server and was refused in the pairing branch (H4): a
 	 * wrong or expired code, or a stored token that is no longer valid (it falls through to
 	 * that branch and counts toward the same lockout). `{ robotId, failedAttempts, locked }` only; never a code. Not emitted for a

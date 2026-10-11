@@ -16,10 +16,11 @@ const { z } = require("zod");
 const robotStateCache = require("../cache/robotStateCache");
 // P7-D1 — the operator-hold write reports its own failure (the STOP itself is never held up).
 const logger = require("../config/logger");
-// STEP 5 — the position-Observation writer keeps two per-process facts about each robot
-// (its resolved Agent.id and its telemetry ordering high-water mark). Decommissioning is
-// the one event that invalidates both.
-const positionObservation = require("../services/positionObservation.service");
+// Soft retirement (`DELETE /:robotId`). The post-commit cleanup that used to live in this
+// file — state cache, position-Observation binding, KV keys, simulator, socket — is the
+// service's `releaseRuntimeState` now, beside the transaction it follows.
+const robotRetirement = require("../services/robotRetirement.service");
+const robotRetirementPolicy = require("../services/robotRetirementPolicy");
 const physicalDeclaration = require("../services/physicalDeclaration.service");
 // PHASE 14 — §23.6's override discipline. The rules live in the engine module; this
 // controller applies them at the one operator surface that returns a withdrawn agent to
@@ -28,8 +29,6 @@ const override = require("../engine/security/override");
 // PHASE 14 remediation (P14-R3 / P14-R5) — one policy and one audit writer, shared with
 // the action-class middleware.
 const { policyFor, recordAuthorisation } = require("../middlewares/auth_middleware");
-// H6 — decommissioning closes the robot's live connection, if it has one.
-const { getRobotSocket, disconnectSocket } = require("../sockets/robotSockets");
 
 /** A pairing code's lifetime: single use, and unusable this long after it was issued. */
 const PAIRING_CODE_TTL_SEC = 300;
@@ -256,6 +255,10 @@ const getRobotsState = asyncHandler(async (req, res) => {
   const kv = req.app?.locals?.kv;
 
   const robots = await prisma.robot.findMany({
+    // Soft retirement — a retired unit keeps its row (its tasks and events still name it)
+    // but is not part of the fleet the dashboard shows, counts or targets with a global STOP.
+    // A robot with no Agent row is kept: that is an older unit, not a retired one.
+    where: robotRetirementPolicy.notRetiredRobotWhere(),
     include: {
       campus: true,
       location: true,
@@ -773,10 +776,23 @@ const clearRobotFault = asyncHandler(async (req, res) => {
   res.json({ ok: true, robotId: robotCode, status: nextStatus, healthStatus: "OK" });
 });
 
-// DELETE /api/robots/:robotId
+// DELETE /api/robots/:robotId — retire (decommission) a robot.
+//
+// A soft retirement, not a delete. It used to be `prisma.robot.delete`, which failed with an
+// unhandled RESTRICT violation (SQLSTATE 23001, a 500) for any robot the engine had ever
+// offered work — `Commitment` and
+// `Outbox` restrict the cascade to its Agent — and where it succeeded it destroyed the
+// robot's history. `robotRetirement.service` holds the transition and its safety refusals;
+// this handler maps its outcome to HTTP and then runs the post-commit cleanup.
+//
+//   200 { ok, robotId, retired: true, alreadyRetired }   — retired now, or already retired
+//   404 ROBOT_NOT_FOUND
+//   409 LIVE_COMMITMENT | OUTSTANDING_COMMANDS | ACTIVE_TASK | CHARGING_RESERVATION
+//
+// The cleanup's own failures never undo a durable retirement; they are logged and named in
+// `cleanupIncomplete`.
 const deleteRobot = asyncHandler(async (req, res) => {
   const prisma = getPrisma();
-  const kv = req.app?.locals?.kv;
   const robotCode = toStringOrNull(req.params?.robotId);
 
   if (!robotCode) {
@@ -785,68 +801,34 @@ const deleteRobot = asyncHandler(async (req, res) => {
     throw err;
   }
 
-  const robot = await prisma.robot.findUnique({ where: { robotId: robotCode }, select: { id: true } });
-  if (!robot) {
-    const err = new Error("Unknown robotId");
-    err.status = 404;
-    throw err;
+  let result;
+  try {
+    result = await robotRetirement.retireRobot(prisma, robotCode, {
+      actorId: req.user?.id ?? null,
+      reason: req.body?.reason ?? null,
+    });
+  } catch (error) {
+    if (error instanceof robotRetirement.RetirementRefused) {
+      res.status(error.status).json(error.toBody());
+      return;
+    }
+    throw error;
   }
 
-  await prisma.robot.delete({ where: { robotId: robotCode } });
-  robotStateCache.del(robotCode);
-  // STEP 5 — drop what the position-Observation writer remembers about this robot: its
-  // resolved `Agent.id` and its ordering high-water mark. The binding would expire on its
-  // own TTL, but the high-water mark would not, and a `robotId` re-commissioned after a
-  // decommission would then be measured against the previous unit's newest timestamp —
-  // refusing its telemetry until it happened to overtake a mark belonging to a robot that
-  // no longer exists. Fail-closed rather than dangerous, and wrong either way.
-  positionObservation.forget(robotCode);
+  const cleanup = await robotRetirement.releaseRuntimeState(result, {
+    kv: req.app?.locals?.kv,
+    io: req.app?.locals?.io,
+    virtualSimulator: req.app?.locals?.virtualSimulator,
+    logger,
+  });
 
-  if (kv) {
-    try {
-      await kv.del(`robot:${robotCode}`);
-      if (typeof kv.srem === "function") await kv.srem("robots:all", robotCode);
-    } catch {
-      // ignore
-    }
-
-    // H6 — the robot's credentials go with it. The `RobotSession` row already cascades with the
-    // Robot row, but the KV `session:` key is consulted *first* at AUTH. Left behind, a robotId
-    // re-commissioned within the session lifetime accepted the old unit's token, and an unused
-    // pairing code or a lockout carried over to the new unit. Each key is deleted on its own so
-    // one failure cannot keep the others alive.
-    for (const key of [
-      `session:${robotCode}`,
-      `pairing:${robotCode}`,
-      `pairingAttempts:${robotCode}`,
-      `pairingLocked:${robotCode}`,
-    ]) {
-      try {
-        await kv.del(key);
-      } catch {
-        // ignore — best-effort, like the live-state cleanup above
-      }
-    }
-  }
-
-  // Stop the running VirtualRobot instance so it doesn't keep emitting
-  // telemetry for a robot that no longer exists in the DB.
-  const virtualSimulator = req.app?.locals?.virtualSimulator;
-  if (virtualSimulator && typeof virtualSimulator.removeRobot === "function") {
-    try {
-      virtualSimulator.removeRobot(robotCode);
-    } catch {
-      // non-fatal
-    }
-  }
-
-  // H6 — close the robot's live connection last, after its row and its session are gone, so a
-  // reconnect cannot authenticate: AUTH refuses an unknown robotId. The socket's own disconnect
-  // handler finds no row and writes nothing. A physical robot used to stay connected after it
-  // was decommissioned.
-  disconnectSocket(getRobotSocket(robotCode));
-
-  res.json({ ok: true, robotId: robotCode });
+  res.json({
+    ok: true,
+    robotId: robotCode,
+    retired: true,
+    alreadyRetired: result.outcome === robotRetirement.OUTCOME.ALREADY_RETIRED,
+    ...(cleanup.failed.length > 0 ? { cleanupIncomplete: cleanup.failed.map((entry) => entry.step) } : {}),
+  });
 });
 
 // POST /api/robots/:robotId/command

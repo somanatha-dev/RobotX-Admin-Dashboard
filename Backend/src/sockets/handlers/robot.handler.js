@@ -20,6 +20,8 @@ const agentGate = require("../../engine/cutover/agentGate");
 const commitmentLeaseRenewal = require("../../services/commitmentLeaseRenewal.service");
 // C1 (LAN-3) — the durable half of the legacy session, consulted when the KV has none.
 const robotSession = require("../../services/robotSession.service");
+// Soft retirement — a retired robot keeps its row, so AUTH refuses it by lifecycle.
+const robotRetirementPolicy = require("../../services/robotRetirementPolicy");
 
 // Per-robot throttle for the HEARTBEAT path's Postgres write, mirroring the
 // same gate in telemetry.handler.js. Per-process and in-memory (same pattern
@@ -33,15 +35,39 @@ const robotSession = require("../../services/robotSession.service");
 // it had only moved handlers.
 const lastHeartbeatDbFlushAt = new Map();
 
+/**
+ * Soft retirement — the online write, conditional on the robot not being retired.
+ *
+ * AUTH refuses a retired robot when it first reads the row, but a retirement can commit
+ * between that read and this write. The check is therefore repeated here under a `FOR SHARE`
+ * lock on the robot's Agent row, which conflicts with the `FOR UPDATE` retirement holds:
+ *
+ *   · retirement first — this lock waits for its commit, then reads DECOMMISSIONED and
+ *     writes nothing (`null`, which AUTH turns into a refusal);
+ *   · this write first — retirement waits for it, then clears `isOnline`/`socketId` itself
+ *     and closes the socket after its commit.
+ *
+ * A robot with no Agent row locks nothing and is not retired, as before.
+ *
+ * @returns {Promise<object|null>} the updated row, or null when the robot is retired
+ */
 async function markRobotOnline(prisma, robotId, socketId) {
-  const row = await prisma.robot.update({
-    where: { robotId },
-    data: {
-      isOnline: true,
-      socketId,
-      lastSeenAt: new Date(),
-    },
+  const row = await prisma.$transaction(async (tx) => {
+    const lifecycle = await tx.$queryRawUnsafe(
+      'SELECT a."lifecycleState" FROM "Agent" a JOIN "Robot" r ON r."id" = a."robotDbId" WHERE r."robotId" = $1 FOR SHARE OF a',
+      robotId,
+    );
+    if (Array.isArray(lifecycle) && lifecycle.some((entry) => robotRetirementPolicy.isRetiredAgent(entry))) return null;
+    return tx.robot.update({
+      where: { robotId },
+      data: {
+        isOnline: true,
+        socketId,
+        lastSeenAt: new Date(),
+      },
+    });
   });
+  if (!row) return null;
   robotStateCache.set(robotId, { isOnline: true });
 
   // P1.4 (LF-1) — a server-observed reconnect undoes the server's own disconnect write. The
@@ -650,11 +676,27 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       // cache/robotStateCache.js for why).
       const robot = await prisma.robot.findUnique({
         where: { robotId },
-        select: { id: true, status: true, isOnline: true, lat: true, lon: true, battery: true },
+        select: {
+          id: true,
+          status: true,
+          isOnline: true,
+          lat: true,
+          lon: true,
+          battery: true,
+          ...robotRetirementPolicy.lifecycleSelect(),
+        },
       });
       // R1 — the same answer as a known robot with a wrong credential, so the refusal cannot be
       // used to tell commissioned robot ids from uncommissioned ones.
       if (!robot) return refuseCredential();
+      // Soft retirement — a retired robot keeps its row but is no longer a fleet member. It is
+      // refused before any credential is examined (certificate, session token, durable session
+      // or pairing code), with the same AUTH_FAILED a revoked credential gets: its session was
+      // revoked when it was retired, and it has nothing it may re-pair into.
+      if (robotRetirementPolicy.isRetiredRobot(robot)) {
+        log.warn?.("AUTH refused — the robot is retired", { robotId, socketId: socket.id });
+        return refuseCredential();
+      }
       robotStateCache.set(robotId, {
         id: robot.id,
         status: robot.status,
@@ -856,7 +898,26 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       // Bind socket -> robot mapping for best-effort cleanup.
       await kv.set(`socket:${socket.id}`, robotId, { ex: 3600 });
 
-      await markRobotOnline(prisma, robotId, socket.id);
+      const online = await markRobotOnline(prisma, robotId, socket.id);
+      if (!online) {
+        // Soft retirement — retired between this AUTH's first read and its online write. Undo
+        // what this AUTH did, so the retired robot keeps no session and no connection: the
+        // socket mapping, any session it just minted (pairing writes both stores before this
+        // point) and the robot's earlier socket, which the retirement may not have reached.
+        log.warn?.("AUTH refused — the robot was retired while it was authenticating", { robotId, socketId: socket.id });
+        deleteRobotSocket(robotId, socket);
+        socket.data.isAuthed = false;
+        socket.data.robotId = null;
+        try {
+          await robotSession.revoke(prisma, robot.id);
+          await kv.del(`session:${robotId}`);
+          await kv.del(`socket:${socket.id}`);
+        } catch (e) {
+          log.warn?.("retired robot's session could not be revoked after a refused AUTH", { robotId, message: e?.message });
+        }
+        if (previous && previous.id !== socket.id) disconnectSocket(previous);
+        return refuseCredential();
+      }
 
       // After DB state is updated to the new socketId, it's safe to disconnect the previous socket.
       if (previous && previous.id !== socket.id) {

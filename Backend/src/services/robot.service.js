@@ -7,6 +7,8 @@ const simulationPolicy = require("../simulation/simulationPolicy");
 // module's header for why every physical coefficient it writes is null.
 const agentEnergyProvisioning = require("./agentEnergyProvisioning.service");
 const simulatedClassDeclaration = require("./simulatedClassDeclaration.service");
+// Soft retirement's predicate — pure, so this file and the simulator can both read it.
+const robotRetirementPolicy = require("./robotRetirementPolicy");
 
 function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
@@ -169,9 +171,18 @@ async function createRobotWithProjection(prisma, body, identity) {
   }
 
   // Reject duplicate robot IDs — each unit must have a unique identifier.
-  const duplicate = await prisma.robot.findUnique({ where: { robotId: robotCode }, select: { id: true } });
+  // A retired robot keeps its row, so its identifier stays taken: there is no un-retire, and
+  // a reused id would attach a new unit to the old one's tasks, events and engine history.
+  const duplicate = await prisma.robot.findUnique({
+    where: { robotId: robotCode },
+    select: { id: true, ...robotRetirementPolicy.lifecycleSelect() },
+  });
   if (duplicate) {
-    const err = new Error(`A robot with ID "${robotCode}" is already commissioned. Choose a different identifier.`);
+    const err = new Error(
+      robotRetirementPolicy.isRetiredRobot(duplicate)
+        ? `The ID "${robotCode}" belongs to a retired robot and cannot be reused. Choose a different identifier.`
+        : `A robot with ID "${robotCode}" is already commissioned. Choose a different identifier.`,
+    );
     err.status = 409;
     // Named, so a caller can tell *which* 409 this is without reading the sentence. The
     // simulated path generates its own identifiers and treats this one as its own problem
@@ -604,7 +615,9 @@ async function readAgentProjection(prisma, robotCode) {
 async function listRobots(prisma, query) {
   const { locationId, includeDescendants, campusId, isOnline, status } = query || {};
 
-  const where = {};
+  // Soft retirement — a retired unit is not part of the listed fleet (see
+  // `robotRetirementPolicy`); a robot with no Agent row is kept.
+  const where = { ...robotRetirementPolicy.notRetiredRobotWhere() };
 
   if (campusId) {
     where.campusId = String(campusId);
