@@ -34,6 +34,10 @@
 
 const campusTraversalNetwork = require("./campusTraversalNetwork");
 const devChargingScheduler = require("./devChargingScheduler");
+// RD-2026-10-12-02 — the ONE simulator use of the routing-local containment guard: simulated charger
+// routes stay inside the operating boundary. `routeContainment` exposes booleans about route
+// geometry only (no verdict, no oracle); see that RD and `routingSpatialAuthorityBoundary.test.js`.
+const routeContainment = require("../services/fleetProviders/routeContainment");
 const { haversineMeters } = require("../utils/distance");
 
 /**
@@ -57,7 +61,53 @@ const ROUTE_REFUSAL = Object.freeze({
   NO_PERMITTED_WAYS: "NO_PERMITTED_WAYS",
   MALFORMED_POSITION: "MALFORMED_POSITION",
   NOT_ROUTABLE: "NOT_ROUTABLE",
+  /** RD-2026-10-12-02 — the declaration's operating boundary cannot contain a route. */
+  NO_OPERATING_BOUNDARY: "NO_OPERATING_BOUNDARY",
+  /** RD-2026-10-12-02 — the robot or the charger is not strictly inside the operating boundary. */
+  OUTSIDE_OPERATING_BOUNDARY: "OUTSIDE_OPERATING_BOUNDARY",
+  /** RD-2026-10-12-02 — no access connector or path between them stays inside the boundary. */
+  ROUTE_LEAVES_BOUNDARY: "ROUTE_LEAVES_BOUNDARY",
 });
+
+/** The network's containment refusals, as this module names them. @structural */
+const CONTAINMENT_REFUSALS = Object.freeze({
+  ENDPOINT_OUTSIDE_BOUNDARY: ROUTE_REFUSAL.OUTSIDE_OPERATING_BOUNDARY,
+  ACCESS_LEAVES_BOUNDARY: ROUTE_REFUSAL.ROUTE_LEAVES_BOUNDARY,
+  ROUTE_LEAVES_BOUNDARY: ROUTE_REFUSAL.ROUTE_LEAVES_BOUNDARY,
+});
+
+/** One cache per extract reader, so an injected reader is never answered from another's networks. */
+const containedNetworks = new WeakMap();
+/**
+ * RD-2026-10-12-02 — the CONTAINED campus network of a declaration for a road-class set: built from
+ * the declaration's own extract with `routeContainment`'s guard, so no edge, access connector or
+ * path leaves the operating boundary. One per declaration and class set. Shared with station
+ * validation (`chargingStations`), which must not build its own guard.
+ *
+ * @param {object} declaration the pinned delivery-domain declaration
+ * @param {string[]} roadClasses
+ * @param {(declaration: object) => object} [extractFor]
+ * @returns {{ ok: true, network: object } | { ok: false, refusal: string, problems: string[] }}
+ */
+function containedNetworkFor(declaration, roadClasses, extractFor = campusTraversalNetwork.extractForDeclaration) {
+  const key = `${String(declaration.version)}|${String(declaration.versionDate ?? "")}|${roadClasses.join("+")}`;
+  if (!containedNetworks.has(extractFor)) containedNetworks.set(extractFor, new Map());
+  const networks = containedNetworks.get(extractFor);
+  const cached = networks.get(key);
+  if (cached) return cached;
+  const extract = extractFor(declaration);
+  // A failed read is not cached: the next request reads again, as `lazyRouter` does.
+  if (!extract || !extract.ok) return { ok: false, refusal: "NO_CAMPUS_EXTRACT", problems: (extract && extract.problems) || ["no extract"] };
+  const containment = routeContainment.createRouteContainment(declaration);
+  const built = containment.usable
+    ? {
+      ok: true,
+      network: campusTraversalNetwork.createCampusTraversalNetwork({ features: extract.features, roadClasses, source: extract.file, containment }),
+    }
+    : { ok: false, refusal: ROUTE_REFUSAL.NO_OPERATING_BOUNDARY, problems: containment.problems };
+  networks.set(key, built);
+  return built;
+}
 
 const isNumber = (value) => typeof value === "number" && Number.isFinite(value);
 
@@ -104,32 +154,6 @@ const refused = (refusal, reason) => Object.freeze({ ok: false, refusal, reason 
 function createChargerRouter(settings) {
   const source = settings || {};
   const extractFor = typeof source.extractFor === "function" ? source.extractFor : campusTraversalNetwork.extractForDeclaration;
-  /** One extract per declaration identity, and one network per permitted class set within it. */
-  const extracts = new Map();
-
-  function networkFor(declaration, roadClasses) {
-    const identity = `${String(declaration.version)}|${String(declaration.versionDate ?? "")}`;
-    let entry = extracts.get(identity);
-    if (!entry) {
-      const extract = extractFor(declaration);
-      // A failed read is not cached: the next request reads again, as `lazyRouter` does.
-      if (!extract || !extract.ok) return { ok: false, problems: (extract && extract.problems) || ["no extract"] };
-      entry = { extract, networks: new Map() };
-      extracts.set(identity, entry);
-    }
-    const classKey = roadClasses.join("+");
-    if (!entry.networks.has(classKey)) {
-      entry.networks.set(
-        classKey,
-        campusTraversalNetwork.createCampusTraversalNetwork({
-          features: entry.extract.features,
-          roadClasses,
-          source: entry.extract.file,
-        }),
-      );
-    }
-    return { ok: true, network: entry.networks.get(classKey) };
-  }
 
   /**
    * The campus route from `from` to the charger row's own coordinate.
@@ -146,7 +170,8 @@ function createChargerRouter(settings) {
     const request = input || {};
     const row = request.chargerRow || null;
 
-    const unusable = devChargingScheduler.depotProblems(row);
+    // Phase B — the depot's own test for the depot, a station's for any other charger of the estate.
+    const unusable = row ? devChargingScheduler.chargerProblems(row, row.chargerId) : devChargingScheduler.depotProblems(row);
     if (unusable.length > 0) return refused(ROUTE_REFUSAL.CHARGER_UNUSABLE, unusable.join("; "));
     const charger = pointOf({ lat: row.latitude, lon: row.longitude });
     if (!charger) return refused(ROUTE_REFUSAL.CHARGER_UNUSABLE, `charger "${row.chargerId}" states no usable WGS-84 coordinate`);
@@ -172,13 +197,20 @@ function createChargerRouter(settings) {
       return refused(ROUTE_REFUSAL.NO_PERMITTED_WAYS, "the robot's class declares no permitted ground ways (MobilityModel.permissionSet)");
     }
 
-    const built = networkFor(declaration, roadClasses);
+    const built = containedNetworkFor(declaration, roadClasses, extractFor);
     if (!built.ok) {
-      return refused(ROUTE_REFUSAL.NO_CAMPUS_EXTRACT, `the campus traversal network cannot be built: ${built.problems.join("; ")}`);
+      const refusal = built.refusal === ROUTE_REFUSAL.NO_OPERATING_BOUNDARY ? ROUTE_REFUSAL.NO_OPERATING_BOUNDARY : ROUTE_REFUSAL.NO_CAMPUS_EXTRACT;
+      return refused(refusal, `the contained campus traversal network cannot be built: ${built.problems.join("; ")}`);
     }
 
+    // RD-2026-10-12-02 — CONTAINED. The robot, the charger, both access connectors and the whole path
+    // must lie strictly inside the pinned operating boundary. A robot off this campus (another
+    // campus such as JSSATE, a bad fix) is refused by name; it is never joined to the network by
+    // a straight line across the ground the boundary excludes (3,250 m measured before).
     const routed = built.network.route(from, charger);
-    if (!routed.ok) return refused(ROUTE_REFUSAL.NOT_ROUTABLE, `${routed.refusal}: ${routed.reason}`);
+    if (!routed.ok) {
+      return refused(CONTAINMENT_REFUSALS[routed.refusal] || ROUTE_REFUSAL.NOT_ROUTABLE, `${routed.refusal}: ${routed.reason}`);
+    }
 
     return Object.freeze({
       ok: true,
@@ -192,4 +224,4 @@ function createChargerRouter(settings) {
   return Object.freeze({ routeToCharger });
 }
 
-module.exports = { DOCKING_RADIUS_M, ROUTE_REFUSAL, pointOf, withinDockingRadius, createChargerRouter };
+module.exports = { DOCKING_RADIUS_M, ROUTE_REFUSAL, pointOf, withinDockingRadius, createChargerRouter, containedNetworkFor };

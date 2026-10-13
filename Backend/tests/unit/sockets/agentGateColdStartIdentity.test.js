@@ -46,6 +46,8 @@ function liveSnapshot() {
 function store({ placed = true, shardRegion = "RGN-1" } = {}) {
   const prisma = createMockPrisma();
   prisma.agent.findUnique = jest.fn(async () => ({ id: "agent-1", agentId: "RBT-1", authorityEpoch: 0n, fenceCounter: 5n }));
+  // Gap A — the server reads the robot's persisted state before an ACCEPT binds it; not held.
+  prisma.robot.findUnique = jest.fn(async () => ({ status: "IDLE", statusBeforeOffline: null }));
   prisma.shardMembership = {
     findFirst: jest.fn(async () => (placed ? { agentId: "agent-1", shardId: "SHARD-1", supersededAt: null } : null)),
   };

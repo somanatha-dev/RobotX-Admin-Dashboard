@@ -90,6 +90,9 @@ async function markRobotOnline(prisma, robotId, socketId) {
   return row;
 }
 
+/** How many read-then-conditional-write rounds `markRobotOffline` makes before its plain write. @structural */
+const OFFLINE_WRITE_ATTEMPTS = 3;
+
 /**
  * Take a robot offline because `socketId` — the socket that just disconnected — went away.
  *
@@ -117,10 +120,16 @@ async function markRobotOffline(prisma, robotId, socketId) {
 
   // P1.4 (LF-1) — keep the status this write replaces, for `markRobotOnline` to restore.
   // Conditional on the status just read, so a concurrent status change is never recorded
-  // as the one replaced; a row already `OFFLINE` keeps what it remembered.
-  const current = await prisma.robot.findUnique({ where: { robotId }, select: { status: true, socketId: true } });
-  if (!current || current.socketId !== socketId) return null;
-  if (typeof current.status === "string" && current.status !== "OFFLINE") {
+  // as the one replaced; a row already `OFFLINE` keeps what it remembered. A miss means the
+  // status moved between the read and the write (an operator hold, a fault report), so it is
+  // read again and retried: falling through to the write below would record OFFLINE with
+  // nothing remembered, and the reconnect could then never restore the robot.
+  for (let attempt = 0; attempt < OFFLINE_WRITE_ATTEMPTS; attempt += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const current = await prisma.robot.findUnique({ where: { robotId }, select: { status: true, socketId: true } });
+    if (!current || current.socketId !== socketId) return null;
+    if (typeof current.status !== "string" || current.status === "OFFLINE") break;
+    // eslint-disable-next-line no-await-in-loop
     const written = await prisma.robot.updateMany({
       where: { robotId, socketId, status: current.status },
       data: { ...data, statusBeforeOffline: current.status },
@@ -135,6 +144,81 @@ async function markRobotOffline(prisma, robotId, socketId) {
   if (!written || written.count !== 1) return null;
   robotStateCache.set(robotId, { isOnline: false, status: "OFFLINE" });
   return { robotId, ...data };
+}
+
+/**
+ * Startup: take offline the robots whose disconnect was never processed.
+ *
+ * A robot goes offline through its socket's `disconnect` handler. A backend that crashed, was
+ * killed or was redeployed never ran those handlers, so the robots connected to it kept
+ * `isOnline: true` and a socket id that no longer exists. With the engine off the legacy sweep
+ * notices eventually; with the engine on it stands down (Phase 5) and the reconciler does not own
+ * `Robot.isOnline`, so a robot that never came back was shown online for good. (The engine never
+ * assigned it: F13 also requires a fresh heartbeat.)
+ *
+ * Run once at startup, not as a sweep, and with no timeout: a row's socket either exists somewhere
+ * in the cluster or it does not. Presence is read from Socket.IO's own per-socket room, which the
+ * adapter answers cluster-wide, so a robot connected to another process is left alone; presence
+ * that cannot be read is not evidence, and that row is left alone too. A dead binding gets exactly
+ * the write its disconnect would have made — `markRobotOffline`, conditional on that socket id
+ * (so a robot that reconnected meanwhile is untouched) and remembering the status it replaced (so
+ * the reconnect restores an operator hold or a fault exactly). A row online with no socket at all
+ * is owned by nothing; only its liveness is cleared, conditionally, and its status is kept.
+ *
+ * @param {{ prisma: object, io: object, kv?: object, log?: object }} deps
+ * @returns {Promise<{ offline: string[], unknown: string[] }>}
+ */
+async function reconcileDeadSocketBindings({ prisma, io, kv, log = console }) {
+  const rows = await prisma.robot.findMany({ where: { isOnline: true }, select: { robotId: true, socketId: true } });
+  const offline = [];
+  const unknown = [];
+
+  for (const { robotId, socketId } of rows) {
+    let taken = false;
+    let livenessOnly = false;
+    if (typeof socketId === "string" && socketId !== "") {
+      let present;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        present = (await io.in(socketId).fetchSockets()).length > 0;
+      } catch (e) {
+        unknown.push(robotId);
+        log.warn?.("startup reconciliation: socket presence unknown, robot left as it is", { robotId, message: e?.message });
+        continue;
+      }
+      if (present) continue;
+      // eslint-disable-next-line no-await-in-loop
+      taken = Boolean(await markRobotOffline(prisma, robotId, socketId));
+      if (taken && kv) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await markOffline(kv, robotId, socketId);
+        } catch { /* the registry is best-effort, as at disconnect */ }
+      }
+    } else {
+      // eslint-disable-next-line no-await-in-loop
+      const cleared = await prisma.robot.updateMany({ where: { robotId, isOnline: true, socketId: null }, data: { isOnline: false } });
+      taken = Boolean(cleared && cleared.count === 1);
+      livenessOnly = taken;
+      if (taken) robotStateCache.set(robotId, { isOnline: false });
+    }
+    if (!taken) continue;
+
+    offline.push(robotId);
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      if (kv && typeof kv.srem === "function") await kv.srem("robots:all", robotId);
+    } catch { /* index membership is best-effort */ }
+    // The dashboard is told what was written: `robot_offline` means OFFLINE was written
+    // (`markRobotOffline`); a liveness-only clear goes out as the liveness field alone.
+    if (livenessOnly) io.to("dashboard").emit("robot:update", { robotId, isOnline: false });
+    else io.to("dashboard").emit("robot_offline", { robotId });
+  }
+
+  if (offline.length > 0 || unknown.length > 0) {
+    log.info?.("startup reconciliation: robots no process holds a socket for were taken offline", { offline, unknown });
+  }
+  return { offline, unknown };
 }
 
 // Brute-force lockout thresholds (F32): after this many failed pairing-code
@@ -1317,9 +1401,12 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
 
 module.exports = {
   registerRobotHandlers,
-  // Exported for the LF-1 tests (P1.4); AUTH and disconnect remain their only callers.
+  // Exported for the LF-1 tests (P1.4); AUTH and disconnect remain their only callers, plus the
+  // startup reconciliation below for a disconnect a dead process never processed.
   markRobotOnline,
   markRobotOffline,
+  // Run once by `server.js` at startup.
+  reconcileDeadSocketBindings,
   // R1 — the `AUTH_FAILED` wire reason.
   AUTH_FAILURE_REASON,
   // Exported for the P7-D4 tests (§11.5 reset detection); AUTH remains its only caller.

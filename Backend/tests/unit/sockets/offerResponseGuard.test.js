@@ -53,6 +53,8 @@ function world({ legState = "OFFERED", expiresInMs = 60_000 } = {}) {
 
   const prisma = createMockPrisma();
   prisma.agent.findUnique = jest.fn(async () => ({ id: "agent-1", agentId: "RBT-1", fenceCounter: 5n }));
+  // Gap A — the server reads the robot's persisted state before an ACCEPT binds it; not held.
+  prisma.robot.findUnique = jest.fn(async () => ({ status: "IDLE", statusBeforeOffline: null }));
   prisma.commitment = {
     findUnique: jest.fn(async ({ where }) => {
       const row = state.commitments.get(where.commitmentId);

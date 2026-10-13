@@ -37,6 +37,8 @@
  */
 
 const constants = require("./constants");
+const energyPolicy = require("./energyPolicy");
+const chargeModel = require("./chargeModel");
 const { AMBIENT_MAX_C, siteAmbientC } = require("./simulatedEnvironment");
 
 /** The provenance label every value here carries. @structural a label, not a value */
@@ -67,12 +69,6 @@ const SIMULATED_MISSION_TYPES = Object.freeze(["DELIVERY"]);
 const SIMULATED_SERVICE_INTERVAL_DAYS = 365;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-const TICK_SECONDS = constants.TELEMETRY_INTERVAL_MS / 1000;
-
-/** Wh drawn per second at a drain of `percentPerTick` of a `packWh` pack. */
-function whPerSecond(percentPerTick, packWh) {
-  return ((percentPerTick / 100) * packWh) / TICK_SECONDS;
-}
 
 /** The unit's own declared pack, or the simulator's default pack. */
 function packOrDefault(packNominalWh) {
@@ -82,43 +78,46 @@ function packOrDefault(packNominalWh) {
 }
 
 /**
- * The simulated pack's §14.2 coefficient set, **derived from the simulator's own drain
- * constants** — not invented, not fitted, not a measurement of any vehicle.
+ * The simulated pack's §14.2 coefficient set, **derived from the simulation power policy**
+ * (`energyPolicy`) — not fitted, not a measurement of any vehicle.
  *
- * `VirtualRobot` drains `BATTERY_DRAIN_IDLE` %/tick at rest and `BATTERY_DRAIN_ACTIVE`
- * %/tick while working — a percentage of **the unit's own pack** — per
- * `TELEMETRY_INTERVAL_MS` tick. So, at the shipped constants on a 1000 Wh pack:
+ * Phase E (charging lifecycle): the policy is P(v) = P_standby + (P_moving − P_standby)·v/v_ref,
+ * which is exactly
  *
- *   β_aux       = idle draw                    (0.0445 Wh/s at the shipped constants)
- *   β_move_time = active draw − idle draw      (0.1775 Wh/s)
- *   β_dwell     = active draw − idle draw      (a robot waiting at a stop is ACTIVE)
+ *   β_aux       = P_standby / 3600                        (Wh per second, always)
+ *   β_dist      = (P_moving − P_standby) / (3600 · v_ref)  (Wh per metre driven)
+ *   β_move_time = β_dwell = 0
  *
- * and every term the simulator does not model is **zero because the simulator has no such
- * term** — no mass dependence, no gradient (it has no elevation), no stop-start penalty, no
- * thermal draw. That makes the engine's prediction and the simulator's consumption the same
- * model, which is coherence, not validation (`simulatedEnergy.js` says the same).
+ * It used to be derived from the percentage drain constants (β_aux = idle %/tick of the pack,
+ * β_move_time = β_dwell = active − idle), which made the energy depend on the pack size rather
+ * than on the robot's power. Units commissioned before keep their stored rows, and
+ * `VirtualRobot` consumes from each unit's own row, so they behave exactly as they did.
  *
- * @param {number} [packNominalWh] the unit's declared pack; the simulator's default otherwise
+ * Every term the simulator does not model is **zero because the simulator has no such term** —
+ * no mass dependence, no gradient (it has no elevation), no stop-start penalty, no thermal
+ * draw. That makes the engine's prediction and the simulator's consumption the same model,
+ * which is coherence, not validation (`simulatedEnergy.js` says the same).
+ *
+ * @param {number} [packNominalWh] the unit's declared pack — accepted for the callers' signature;
+ *   a power model's coefficients do not depend on the pack (the pack converts Wh to SoC)
  * @returns {object} `EnergyModelParams` columns in Prisma spelling
  */
 function simulatedEnergyCoefficients(packNominalWh) {
-  const packWh = packOrDefault(packNominalWh);
-  const idle = whPerSecond(constants.BATTERY_DRAIN_IDLE, packWh);
-  const active = whPerSecond(constants.BATTERY_DRAIN_ACTIVE, packWh);
+  const power = energyPolicy.powerCoefficients();
   const flatZero = [
     { x: -50, y: 0 },
     { x: 100, y: 0 },
   ];
   return {
-    betaDist: 0,
+    betaDist: power.betaDist,
     betaMass: 0,
     betaClimb: 0,
     betaRegen: 0,
     etaRegen: 0,
-    betaMoveTime: active - idle,
+    betaMoveTime: power.betaMoveTime,
     betaStopStart: 0,
-    betaDwell: active - idle,
-    betaAux: idle,
+    betaDwell: power.betaDwell,
+    betaAux: power.betaAux,
     betaThermal: { ambientCurve: flatZero, packCurve: flatZero },
     betaPayloadThermal: {},
     // §14.4's stress curves. The simulator models no pack degradation, so every stress
@@ -145,7 +144,7 @@ function simulatedEnergyCoefficients(packNominalWh) {
  * @param {number} [packNominalWh] the unit's declared pack; the simulator's default otherwise
  * @returns {object}
  */
-function simulatedPackDeclaration(packNominalWh) {
+function simulatedPackDeclaration(packNominalWh, reservePct) {
   const packWh = packOrDefault(packNominalWh);
   const [lowC, highC] = [
     constants.CHARGE_POWER_CURVE.temperatureDerating[0].x,
@@ -159,13 +158,17 @@ function simulatedPackDeclaration(packNominalWh) {
       { x: lowC, y: 1 },
       { x: highC, y: 1 },
     ],
-    chargePowerCurve: constants.CHARGE_POWER_CURVE,
+    // Step E — the pack's curve from the simulated charge-rate model (`CHARGE_POWER_CURVE` itself in the
+    // default ABSOLUTE_W mode), so the engine plans charging stops on the curve the robot charges on.
+    chargePowerCurve: chargeModel.curveFor(packWh),
     // The simulator models no capacity fade.
     soh: 1,
-    // `BATTERY_MIN` is the floor `VirtualRobot` clamps the pack to — a fact of the
-    // simulated world, so the §14.5 absolute floor for a simulated pack is that fraction of
-    // its capacity (50 Wh on a 1000 Wh pack).
-    reserveFloorWh: (constants.BATTERY_MIN / 100) * packWh,
+    // Phase E — the reserve formula, stated once in `energyPolicy`: the reserve percentage of
+    // the pack plus the fixed reserve. The engine's snapshot does not carry the unit's
+    // commissioned `batteryReservePct` (the frozen coordinator's whitelist), so a reserve is
+    // passed only by a caller that has it; otherwise the undeclared floor (`BATTERY_MIN`, 5 %)
+    // applies, which is the floor F34 used before the policy existed.
+    reserveFloorWh: energyPolicy.reserveWh({ packWh, reservePct: reservePct === undefined ? null : reservePct }),
     residualCv: simulatedEnergyCoefficients().residualCv,
     // The ambient range the simulated pack is declared to operate in (F31).
     operatingAmbientC: { min: lowC, max: highC },

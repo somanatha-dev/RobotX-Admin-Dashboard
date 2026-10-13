@@ -64,7 +64,14 @@ const PRE_FIX_DEPOT_CANDIDATE = Object.freeze({
 });
 
 /** The four robots as the store held them at 13:44:13.786Z (as `phase7AssignmentQuality` B1). */
+// Replayed AS RECORDED (2026-10-09): F34's floor was then the simulator's 5 %, because the commissioned
+// `batteryReservePct` did not reach the engine. Since the owner's decision of 2026-10-12 it does (15 % on
+// every LOCAL unit); `chargingAssignmentIntegration.test.js` pins the decision under it.
 function tsk816Fleet(socOfAgent) {
+  return w.asRecorded(tsk816FleetCurrent(socOfAgent));
+}
+
+function tsk816FleetCurrent(socOfAgent) {
   return [
     { robotId: AGENT, at: { lat: 12.901151, lon: 77.517575 }, socFraction: socOfAgent ?? 0.29, status: "IDLE", positionAgeMs: 351 },
     {
@@ -112,6 +119,15 @@ async function decideObserved(scenario) {
 
 /** The pack every LOCAL SIM declares, and SIM-0A8C's SoC at decision time. */
 const PACK_WH = 500;
+/**
+ * SIM-0A8C's stored `EnergyModelParams` row — what the engine prices its missions and its return
+ * leg with. Derived, at its commissioning, from the old percentage drain (0.0444 %/2 s of 500 Wh);
+ * new units are declared on the power policy instead (Phase E), and this row is unchanged by that.
+ */
+const STORED_ROW = (() => {
+  const agent = fixture.rows.Agent.find((row) => row.agentId === AGENT);
+  return fixture.rows.EnergyModelParams.find((row) => row.agentClassId === agent.agentClassId);
+})();
 const SOC = 0.29;
 
 /** SIM-0A8C's eReturn call: the only priced plan whose starting usable energy is its 29 % of 500 Wh. */
@@ -162,8 +178,8 @@ describe("P7-C1 — TSK-816, SIM-0A8C: the E_return ledger, value by value", () 
     expect(call.input.candidates.find((row) => row.chargerId === DEV_CHARGER)).toMatchObject({ isDepot: false });
   });
 
-  test("Wh per metre = (β_aux + β_move) / speed = 0.111 Wh/s ÷ 1.4 m/s — the simulator's own active drain, no margin", () => {
-    const coefficients = simulatedAgentState.simulatedEnergyCoefficients(PACK_WH);
+  test("Wh per metre = (β_aux + β_move) / speed = 0.111 Wh/s ÷ 1.4 m/s — the unit's own stored row, no margin", () => {
+    const coefficients = STORED_ROW;
     const activeWhPerSecond = coefficients.betaAux + coefficients.betaMoveTime;
     expect(activeWhPerSecond).toBeCloseTo(0.111, 12); // 0.0444 %/2 s of 500 Wh
     expect(depot.energyWh / depot.distanceM).toBeCloseTo(activeWhPerSecond / 1.4, 12);
@@ -192,7 +208,7 @@ describe("P7-C1 — TSK-816, SIM-0A8C: the E_return ledger, value by value", () 
     expect(mission.kappa).toBe(1);
     const [leg] = mission.result.legs;
     const [profile] = mission.profiles;
-    const coefficients = simulatedAgentState.simulatedEnergyCoefficients(PACK_WH);
+    const coefficients = STORED_ROW;
     expect(leg.terms.moveTime).toBeCloseTo(coefficients.betaMoveTime * profile.movingSeconds, 9);
     expect(leg.terms.dwell).toBeCloseTo(coefficients.betaDwell * profile.dwellSeconds, 9);
     expect(leg.terms.aux).toBeCloseTo(coefficients.betaAux * profile.totalSeconds, 9);

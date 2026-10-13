@@ -149,10 +149,14 @@ async function dispatchRerouteAlert(io, robotId, alertPayload) {
  *
  * @param {object} io - Socket.IO server instance
  * @param {string} robotId
- * @param {{ commandId: string, type: 'STOP'|'PAUSE'|'RETURN'|'RESUME' }} command
+ * @param {{ commandId: string, type: 'STOP'|'PAUSE'|'RETURN'|'RESUME', commitmentId?: string|null }} command
+ *   `commitmentId` is sent only when supplied (RESUME: the commitment the server holds live
+ *   for the robot, or null for none — see `robots.controller.sendRobotCommand`)
  */
-async function dispatchCommand(io, robotId, { commandId, type }) {
-  return dispatch(io, robotId, "COMMAND", { commandId, type, timestamp: Date.now() }, { retries: 0 });
+async function dispatchCommand(io, robotId, { commandId, type, commitmentId }) {
+  const payload = { commandId, type, timestamp: Date.now() };
+  if (commitmentId !== undefined) payload.commitmentId = commitmentId;
+  return dispatch(io, robotId, "COMMAND", payload, { retries: 0 });
 }
 
 /**

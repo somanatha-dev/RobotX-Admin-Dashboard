@@ -196,7 +196,11 @@ describe("P7-C1 Step 3 — TSK-816: the return leg priced between the drop stop 
   const DT = w.TSK816.assignRoundMs;
   const AGENT = "SIM-0A8C043FFE67";
   const DEPOT = { chargerId: "V1DEMO-DEPOT-01", cellId: "8b6014510498fff", lat: 12.900729, lon: 77.517603 };
-  const fleet = () => [
+  // Replayed AS RECORDED (2026-10-09): F34's floor was then the simulator's 5 %, because the commissioned
+  // `batteryReservePct` did not reach the engine. Since the owner's decision of 2026-10-12 it does (15 % on
+  // every LOCAL unit); `chargingAssignmentIntegration.test.js` pins the decision under it.
+  const fleet = () => w.asRecorded(fleetCurrent());
+  const fleetCurrent = () => [
     { robotId: AGENT, at: { lat: 12.901151, lon: 77.517575 }, socFraction: 0.29, status: "IDLE", positionAgeMs: 351 },
     {
       robotId: "SIM-1ABF21512BE5", at: { lat: 12.900817, lon: 77.518043 }, socFraction: 0.362, status: "PAUSED", positionAgeMs: 350,

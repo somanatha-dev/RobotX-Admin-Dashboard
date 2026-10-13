@@ -4,7 +4,10 @@
 /**
  * GATE 1 live proof — physical robot → candidate → signed OFFER, through the real server.
  *
- *   node tools/verify/gate1PhysicalOffer.js --database-url postgresql://<user>@127.0.0.1:<port>/<db> [--port 3041] [--completion]
+ *   node tools/verify/gate1PhysicalOffer.js --database-url postgresql://<user>@127.0.0.1:<port>/<db> --snap-radius-m <m> [--port 3041] [--completion]
+ *
+ * `--snap-radius-m` is required and has no default: it is the declaration's `site.snapRadiusM`
+ * (R13), and without one every physical route is refused.
  *
  * Against a DISPOSABLE local database only (refused otherwise). It:
  *   1. seeds the V1 world (`seedV1Demonstration --fleet single`: the RNSIT region, shard,
@@ -59,6 +62,11 @@ const flag = (name, fallback) => {
 };
 const url = assertDisposableLocal(flag("--database-url", ""), { purpose: "the Gate 1 physical OFFER proof" });
 const PORT = Number(flag("--port", "3041"));
+const SNAP_RADIUS_M = Number(flag("--snap-radius-m", ""));
+if (!Number.isFinite(SNAP_RADIUS_M) || SNAP_RADIUS_M <= 0) {
+  console.error("--snap-radius-m <metres> is required: the declaration's site.snapRadiusM (R13) has no default, and without it every physical route is refused");
+  process.exit(2);
+}
 const BASE = `http://127.0.0.1:${PORT}`;
 const ROBOT_ID = "robotx-pi-gate1";
 const SIGNING_KEY = "gate1-disposable-signing-key-" + "0".repeat(16);
@@ -150,7 +158,7 @@ async function main() {
         charging: { policy: "MANUAL_OUT_OF_SERVICE" },
         stateOfCharge: { policy: "OPERATOR_DECLARED", maxAgeSeconds: 7200 },
         emergencyStop: { mechanism: "SOFTWARE_STOP_LATCH" },
-        site: { ambientC: { min: 18, max: 38 }, terrain: "FLAT_DECLARED", connectivityDeadZones: "NONE_DECLARED", constrictions: "NONE_DECLARED", stopStartCyclesPerHop: 1 },
+        site: { ambientC: { min: 18, max: 38 }, terrain: "FLAT_DECLARED", connectivityDeadZones: "NONE_DECLARED", constrictions: "NONE_DECLARED", stopStartCyclesPerHop: 1, snapRadiusM: SNAP_RADIUS_M },
         localisation: { referenceRadiusM: 25, acceptedFixTypes: ["3D", "RTK_FLOAT", "RTK_FIXED"] },
         risk: { failureProbabilityPrior: 0.05, routeHazardCu: 0 },
         robots: [

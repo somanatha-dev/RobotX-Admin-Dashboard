@@ -34,10 +34,17 @@
  * than inventing a radius. Endpoints are already confined to the campus by the delivery
  * domain and the cell projection's serviceability check.
  *
+ * ── Containment and the access bound (physical routes) ─────────────────────
+ * Optional, and supplied only by `fleetProviders/physicalRouter`. With `containment`, an edge
+ * that leaves or touches the operating boundary is never built, each endpoint and its access
+ * connector must lie inside, and the finished path is checked again. A route that cannot be
+ * kept inside is refused by name. With `maxAccessM` (a caller-declared bound; none is
+ * defaulted here), a connector longer than it refuses. Without either, behaviour is as before.
+ *
  * ── What it is NOT ──────────────────────────────────────────────────────────
  * Not B1, not a production router, not an adapter. `routing/productionRouter.js` and the
- * ADR-11/ADR-33 procurement are untouched; this module is reachable only through
- * `simulationRouter`, which refuses to exist outside a simulated deployment.
+ * ADR-11/ADR-33 procurement are untouched. It is reached through `simulationRouter` for
+ * simulated agents and through `fleetProviders/physicalRouter` for physical agents.
  *
  * ── Determinism (§9.6) ──────────────────────────────────────────────────────
  * No clock, no randomness. Vertices are numbered in file order, ties are broken by the
@@ -66,6 +73,14 @@ const NETWORK_REFUSAL = Object.freeze({
   NO_PERMITTED_WAYS: "NO_PERMITTED_WAYS",
   NOT_CONNECTED: "NOT_CONNECTED",
   MALFORMED_ENDPOINT: "MALFORMED_ENDPOINT",
+  /** An endpoint is not strictly inside the containment boundary. */
+  ENDPOINT_OUTSIDE_BOUNDARY: "ENDPOINT_OUTSIDE_BOUNDARY",
+  /** No access connector from the endpoint to a permitted way stays inside the boundary. */
+  ACCESS_LEAVES_BOUNDARY: "ACCESS_LEAVES_BOUNDARY",
+  /** The shortest admissible access connector is longer than the declared bound. */
+  ACCESS_TOO_LONG: "ACCESS_TOO_LONG",
+  /** The assembled path left the boundary. A guard: the build should make this unreachable. */
+  ROUTE_LEAVES_BOUNDARY: "ROUTE_LEAVES_BOUNDARY",
 });
 
 const isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
@@ -146,6 +161,8 @@ function extractForDeclaration(declaration, options) {
  * @param {object[]} input.features GeoJSON features (`[lon, lat]`)
  * @param {string[]} input.roadClasses permitted `highway` values (`permittedClasses`)
  * @param {string} [input.source] a label for `describe()`
+ * @param {{ containsPoint: Function, containsSegment: Function }} [input.containment] when
+ *   supplied, the route may not leave this boundary (`fleetProviders/routeContainment`)
  * @returns {object}
  */
 function createCampusTraversalNetwork(input) {
@@ -153,6 +170,13 @@ function createCampusTraversalNetwork(input) {
   const features = Array.isArray(settings.features) ? settings.features : [];
   const roadClasses = Array.isArray(settings.roadClasses) ? [...settings.roadClasses].sort() : [];
   const source = settings.source || "unnamed extract";
+  const containment =
+    settings.containment &&
+    typeof settings.containment.containsPoint === "function" &&
+    typeof settings.containment.containsSegment === "function"
+      ? settings.containment
+      : null;
+  let excludedSegmentCount = 0;
 
   /** @type {Array<{ lat: number, lon: number }>} */
   const vertices = [];
@@ -180,6 +204,16 @@ function createCampusTraversalNetwork(input) {
     if (!geometry || geometry.type !== "LineString" || !roadClasses.includes(highway)) continue;
     const coordinates = Array.isArray(geometry.coordinates) ? geometry.coordinates : [];
     for (let i = 1; i < coordinates.length; i += 1) {
+      if (
+        containment &&
+        !containment.containsSegment(
+          { lat: Number(coordinates[i - 1][1]), lon: Number(coordinates[i - 1][0]) },
+          { lat: Number(coordinates[i][1]), lon: Number(coordinates[i][0]) },
+        )
+      ) {
+        excludedSegmentCount += 1;
+        continue;
+      }
       const a = vertex(coordinates[i - 1]);
       const b = vertex(coordinates[i]);
       if (a === b) continue;
@@ -238,8 +272,7 @@ function createCampusTraversalNetwork(input) {
     const lat0 = (point.lat * Math.PI) / 180;
     const kx = Math.cos(lat0) * (Math.PI / 180) * METRES_PER_RADIAN;
     const ky = (Math.PI / 180) * METRES_PER_RADIAN;
-    let best = null;
-    segments.forEach((segment, index) => {
+    const candidates = segments.map((segment, index) => {
       const A = vertices[segment.a];
       const B = vertices[segment.b];
       const ax = (A.lon - point.lon) * kx;
@@ -248,15 +281,27 @@ function createCampusTraversalNetwork(input) {
       const dy = (B.lat - A.lat) * ky;
       const lengthSquared = dx * dx + dy * dy;
       const t = lengthSquared === 0 ? 0 : Math.max(0, Math.min(1, -(ax * dx + ay * dy) / lengthSquared));
-      const offset = Math.hypot(ax + t * dx, ay + t * dy);
-      if (best === null || offset < best.offset) best = { index, segment, t, offset };
+      return { index, segment, t, offset: Math.hypot(ax + t * dx, ay + t * dy) };
     });
-    if (best === null) return null;
-    const A = vertices[best.segment.a];
-    const B = vertices[best.segment.b];
-    const at =
-      best.t === 0 ? A : best.t === 1 ? B : { lat: A.lat + (B.lat - A.lat) * best.t, lon: A.lon + (B.lon - A.lon) * best.t };
-    return { a: best.segment.a, b: best.segment.b, point: { lat: at.lat, lon: at.lon } };
+    // Nearest first; ties keep file order, so the choice stays deterministic.
+    candidates.sort((x, y) => x.offset - y.offset || x.index - y.index);
+    for (const candidate of candidates) {
+      const A = vertices[candidate.segment.a];
+      const B = vertices[candidate.segment.b];
+      const at =
+        candidate.t === 0
+          ? A
+          : candidate.t === 1
+            ? B
+            : { lat: A.lat + (B.lat - A.lat) * candidate.t, lon: A.lon + (B.lon - A.lon) * candidate.t };
+      const projected = { lat: at.lat, lon: at.lon };
+      // Without containment the nearest segment is taken, exactly as before. With it, the
+      // nearest segment whose straight connector stays inside the boundary is taken.
+      if (!containment || containment.containsSegment(point, projected)) {
+        return { a: candidate.segment.a, b: candidate.segment.b, point: projected };
+      }
+    }
+    return null;
   }
 
   const metres = (p, q) => haversineMeters(p.lat, p.lon, q.lat, q.lon);
@@ -266,10 +311,12 @@ function createCampusTraversalNetwork(input) {
    *
    * @param {{ lat: number, lon: number }} from
    * @param {{ lat: number, lon: number }} to
+   * @param {{ maxAccessM?: number }} [options] `maxAccessM`: the longest access connector the
+   *   caller admits. Absent, none is applied (and none is defaulted here)
    * @returns {{ ok: true, points: object[], distanceM: number, accessM: object, vertexCount: number }
    *          | { ok: false, refusal: string, reason: string }}
    */
-  function route(from, to) {
+  function route(from, to, options) {
     if (!isPoint(from) || !isPoint(to)) {
       return { ok: false, refusal: NETWORK_REFUSAL.MALFORMED_ENDPOINT, reason: "an endpoint is not a { lat, lon } pair of finite numbers" };
     }
@@ -277,12 +324,49 @@ function createCampusTraversalNetwork(input) {
       return {
         ok: false,
         refusal: NETWORK_REFUSAL.NO_PERMITTED_WAYS,
-        reason: `the ${source} network has no ways of the permitted classes [${roadClasses.join(", ")}]`,
+        reason: `the ${source} network has no ways of the permitted classes [${roadClasses.join(", ")}]` +
+          (containment ? " that lie inside the operating boundary" : ""),
       };
+    }
+    if (containment) {
+      for (const [name, point] of [["origin", from], ["destination", to]]) {
+        if (!containment.containsPoint(point)) {
+          return {
+            ok: false,
+            refusal: NETWORK_REFUSAL.ENDPOINT_OUTSIDE_BOUNDARY,
+            reason: `the ${name} (${point.lat}, ${point.lon}) is not strictly inside the operating boundary; a route may not leave it`,
+          };
+        }
+      }
     }
 
     const start = snap(from);
     const end = snap(to);
+    for (const [name, point, snapped] of [["origin", from, start], ["destination", to, end]]) {
+      if (snapped === null) {
+        return {
+          ok: false,
+          refusal: NETWORK_REFUSAL.ACCESS_LEAVES_BOUNDARY,
+          reason: `no straight access connector from the ${name} (${point.lat}, ${point.lon}) to a permitted way stays inside the operating boundary`,
+        };
+      }
+    }
+    const maxAccessM = options && options.maxAccessM;
+    if (maxAccessM !== undefined) {
+      if (!isFiniteNumber(maxAccessM) || maxAccessM <= 0) {
+        return { ok: false, refusal: NETWORK_REFUSAL.ACCESS_TOO_LONG, reason: `maxAccessM ${String(maxAccessM)} is not a positive finite number of metres` };
+      }
+      for (const [name, point, snapped] of [["origin", from, start], ["destination", to, end]]) {
+        const access = metres(point, snapped.point);
+        if (access > maxAccessM) {
+          return {
+            ok: false,
+            refusal: NETWORK_REFUSAL.ACCESS_TOO_LONG,
+            reason: `the ${name}'s access connector is ${access.toFixed(1)} m, longer than the declared ${maxAccessM} m`,
+          };
+        }
+      }
+    }
 
     // Every way through the network: leave the start segment by either end, arrive at the
     // end segment by either end. Plus, when both endpoints project onto the same segment,
@@ -322,6 +406,18 @@ function createCampusTraversalNetwork(input) {
     const tail = points[points.length - 1];
     if (points.length > 1 && tail.lat === final.lat && tail.lon === final.lon) points.pop();
     points.push({ lat: final.lat, lon: final.lon });
+
+    if (containment) {
+      for (let i = 1; i < points.length; i += 1) {
+        if (!containment.containsSegment(points[i - 1], points[i])) {
+          return {
+            ok: false,
+            refusal: NETWORK_REFUSAL.ROUTE_LEAVES_BOUNDARY,
+            reason: `the assembled ${source} route leaves the operating boundary between points ${i - 1} and ${i}`,
+          };
+        }
+      }
+    }
 
     // The route's length is the length of the points — the same haversine the agent advances
     // on — so the distance priced is, by construction, the distance driven.
@@ -366,11 +462,15 @@ function createCampusTraversalNetwork(input) {
     vertexCount: n,
     segmentCount: segments.length,
     componentCount,
+    contained: containment !== null,
+    excludedSegmentCount,
     route,
     describe() {
       return (
-        `DEVELOPMENT_SIMULATION campus traversal network from ${source}: ${n} OSM vertices, ${segments.length} ` +
-        `segments, ${componentCount} connected component(s), ways of class [${roadClasses.join(", ")}]`
+        `${containment ? "boundary-contained" : "DEVELOPMENT_SIMULATION"} campus traversal network from ${source}: ` +
+        `${n} OSM vertices, ${segments.length} segments, ${componentCount} connected component(s), ways of class ` +
+        `[${roadClasses.join(", ")}]` +
+        (containment ? `, ${excludedSegmentCount} segment(s) outside or touching the boundary excluded` : "")
       );
     },
   });

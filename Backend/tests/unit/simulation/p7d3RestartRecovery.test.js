@@ -719,27 +719,32 @@ describe("P7-D3 Step 2 — the P7-D1 STOP/PAUSE hold survives a restart", () => 
     expect(robot.task).toBeNull();
   });
 
-  test("held while OFFLINE (statusBeforeOffline PAUSED), away from the charger: the approach is resumed but the robot does not move until RESUME", async () => {
+  test("held while OFFLINE (statusBeforeOffline PAUSED), away from the charger: the reservation is RELEASED, not adopted (D-4); the robot stays put", async () => {
+    // Owner decision 2026-10-12 (charging audit D-4): a robot that is not docked does not keep a
+    // reservation while it cannot move. This used to resume the approach and hold the plug, still,
+    // for the whole window.
     const world = createWorld();
     addRobotRow(world, { robotId: "SIM-HOLD-AWAY", agentRowId: "agent-hold-away", battery: 55, status: "OFFLINE", statusBeforeOffline: "PAUSED" });
     seedReservation(world, { agentRowId: "agent-hold-away", state: RESERVATION_STATE.ACTIVE, fromMs: clock - 10 * MINUTE, untilMs: clock + HOUR });
 
     const { byId } = await boot(world, [{ robotId: "SIM-HOLD-AWAY", at: AWAY }]);
     const robot = byId("SIM-HOLD-AWAY");
-    expect(robot.getStatus()).toMatchObject({ chargingRecovery: "RESUMING_APPROACH", status: "PAUSED" });
+    expect(robot.getStatus()).toMatchObject({ chargingRecovery: "RELEASED_HELD_AWAY", status: "PAUSED" });
 
     await runTicks(robot, 15);
-    expect(robot._chargingPhase).toBe("APPROACHING");
+    expect(robot._chargingPhase).toBeNull();
     expect(robot.status).toBe("PAUSED");
     expect(robot.distanceTravelled).toBe(0);
-    expect(live(world, "agent-hold-away")).toHaveLength(1); // still held, still unassignable
+    expect(live(world, "agent-hold-away")).toHaveLength(0);
     const frames = robot.socket.emitted.filter((entry) => entry.event === "TELEMETRY");
     expect(frames.length).toBeGreaterThan(0);
     expect(frames.every((entry) => entry.payload.status === "PAUSED")).toBe(true);
 
+    // 55 % is above the charge trigger: after a RESUME the robot is simply IDLE.
     robot._applyResume();
-    await runUntil(robot, () => robot.status === "CHARGING", 80);
-    expect(distanceTo(robot, AT_DEPOT)).toBeLessThanOrEqual(chargerRoute.DOCKING_RADIUS_M);
+    await runTicks(robot, 10);
+    expect(robot.status).toBe("IDLE");
+    expect(robot._chargingPhase).toBeNull();
   });
 
   test("held with no reservation: the robot restarts PAUSED and stays PAUSED; an unheld one restarts IDLE", async () => {

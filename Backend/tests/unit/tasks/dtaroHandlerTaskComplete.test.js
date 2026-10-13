@@ -156,9 +156,13 @@ describe("dtaro.handler — C5: the Task completes only after settlement", () =>
           if (!task) return null;
           return select && select.status ? { taskId: task.taskId, status: task.status, robot: { robotId: task.robotCode } } : { taskId: task.taskId };
         }),
+        // Evaluates exactly the filters the writer supplies: a robot binding only when one is
+        // named, and the status as `in` or `notIn`.
         updateMany: jest.fn(async ({ where, data }) => {
           const task = s.tasks[where.taskId];
-          const hit = Boolean(task) && where.robot.robotId === task.robotCode && where.status.in.includes(task.status);
+          const robotOk = !where.robot || where.robot.robotId === task?.robotCode;
+          const statusOk = where.status.in ? where.status.in.includes(task?.status) : !where.status.notIn.includes(task?.status);
+          const hit = Boolean(task) && robotOk && statusOk;
           if (hit) Object.assign(task, data);
           return { count: hit ? 1 : 0 };
         }),
@@ -598,5 +602,55 @@ describe("dtaro.handler — C5: the Task completes only after settlement", () =>
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expectNothingSettled(h, { legState: "RELEASED" });
+  });
+
+  // ── The settled Leg's Task closes even when the read model's binding lags ───
+  //
+  // The Task is the Leg's own (F2, `bindClaim`), so the robot it names and the legacy status it
+  // was projected to are not conditions on completing it. They lag whenever the projection did
+  // not apply: `ROBOT_ALREADY_BOUND` (the unit still carried a Task whose RECALL was never
+  // ACKed) leaves the Task PENDING with no robot, and a reassignment whose projection failed
+  // leaves it naming the previous unit. The completion used to match nothing there, while the
+  // Leg settled, the commitment was released, the robot was freed and the dashboard was told
+  // COMPLETED — a Task left open for ever under a delivered Leg, shown completed until the
+  // next refetch.
+  describe.each(PATHS)("binding lag via %s", (_name, state, drive) => {
+    test.each([
+      ["still names the previous unit (ASSIGNED to RBT-9)", { status: "ASSIGNED", robotCode: "RBT-9" }],
+      ["was never projected (PENDING, no robot)", { status: "PENDING", robotCode: null }],
+    ])("a Task that %s is completed with its settled Leg, and COMPLETED is published once", async (_label, row) => {
+      const h = tracked(harness(state));
+      Object.assign(h.s.task, row);
+      h.s.robot.currentTaskId = null;
+      const sock = await connect(h);
+
+      await drive(h, sock);
+      await waitFor(() => h.s.leg.state === "SETTLED" && completedEvents(h).length > 0);
+
+      expect(h.s.commitment.releasedAt).toBeInstanceOf(Date);
+      expect(h.s.task.status).toBe("COMPLETED");
+      expect(h.s.task.completedAt).toBeInstanceOf(Date);
+      expect(completedEvents(h).map((e) => e.taskId)).toEqual(["TSK-1"]);
+      // Only the Leg's own Task moves.
+      expect(h.s.tasks["TSK-2"].status).toBe("ASSIGNED");
+      expect(h.s.tasks["TSK-3"].status).toBe("ASSIGNED");
+    });
+
+    test.each(["CANCELLED", "FAILED", "REJECTED"])(
+      "a Task already %s is not overwritten, and the dashboard is not told COMPLETED",
+      async (terminal) => {
+        const h = tracked(harness(state));
+        h.s.task.status = terminal;
+        const sock = await connect(h);
+
+        await drive(h, sock);
+        await waitFor(() => h.s.leg.state === "SETTLED");
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        expect(h.s.task.status).toBe(terminal);
+        expect(h.s.task.completedAt).toBeNull();
+        expect(completedEvents(h)).toHaveLength(0);
+      },
+    );
   });
 });

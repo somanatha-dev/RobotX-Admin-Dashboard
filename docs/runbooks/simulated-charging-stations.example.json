@@ -1,0 +1,27 @@
+{
+  "declaredBy": "REPLACE: owner name",
+  "declaredAt": "REPLACE: YYYY-MM-DD",
+  "note": "Development simulation charging stations (SIMULATED_CHARGING_STATIONS_FILE). A station is used only when approved is true AND its coordinate validates: WGS-84 decimal degrees as JSON numbers, inside the pinned RNSIT delivery domain, and reachable from the depot over the campus sidewalk network with the whole route inside the domain. Nothing here is physical charger evidence.",
+  "coordinatesNote": "Both coordinates were supplied by the owner on 2026-10-13 and passed tools/charging/validateStationCoordinates.js against the pinned declaration way/1120154292 (2026-08-30) from the depot V1DEMO-DEPOT-01: PU College INSIDE (36.8 m from the boundary), 161 m by sidewalk, access connector 7.9 m; Canara Bank INSIDE (16.0 m from the boundary — within the map's 25 m UNCERTAIN band), 299 m by sidewalk, access connector 0.3 m. Approval: PU College approved by the owner on 2026-10-13 as the first station; Canara Bank NOT approved pending review of its 16.0 m boundary margin. plugCount 1 is the simulation default (one charging point per station), not a measured capacity.",
+  "includeDepot": true,
+  "stations": [
+    {
+      "chargerId": "RNSIT-CHG-PU-COLLEGE",
+      "name": "Near RNSIT PU College building",
+      "regionId": "rnsit",
+      "approved": true,
+      "lat": 12.900742024769887,
+      "lon": 77.51884060360668,
+      "plugCount": 1
+    },
+    {
+      "chargerId": "RNSIT-CHG-CANARA-BANK",
+      "name": "Near RNSIT Canara Bank",
+      "regionId": "rnsit",
+      "approved": false,
+      "lat": 12.902396962367357,
+      "lon": 77.51862316497345,
+      "plugCount": 1
+    }
+  ]
+}

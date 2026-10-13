@@ -82,8 +82,9 @@
  */
 
 const chargeCurve = require("../engine/energy/chargeCurve");
+// Step E — the pack's curve from the simulated charge-rate model the robot charges on.
+const chargeModel = require("./chargeModel");
 const {
-  CHARGE_POWER_CURVE,
   CHARGE_CHARGER_CLASS,
   CHARGE_CURVE_INTEGRATION_STEPS,
   PACK_NOMINAL_WH,
@@ -184,7 +185,10 @@ const RELEASE_REASON = Object.freeze({
   AGENT_RELEASED: "AGENT_RELEASED",
   STALE_EXPIRED: "STALE_EXPIRED",
   DEREGISTERED: "DEREGISTERED",
-  /** P7-D3 Step 0 — held at a charger this scheduler no longer declares (`SUPERSEDED_CHARGER_IDS`). */
+  /**
+   * P7-D3 Step 0 — held at a charger this scheduler no longer declares (`SUPERSEDED_CHARGER_IDS`);
+   * 2026-10-13 — or, granted by this scheduler, at a charger that has left its published estate.
+   */
   CHARGER_SUPERSEDED: "CHARGER_SUPERSEDED",
 });
 
@@ -236,7 +240,8 @@ const RECOVERY_REFUSAL = Object.freeze({
  * @returns {{ ok: boolean, seconds: number|null, tempC: number|null, missing: string[] }}
  */
 function sessionHorizonSeconds(packNominalWh) {
-  const table = CHARGE_POWER_CURVE.temperatureDerating;
+  const curve = chargeModel.curveFor(packNominalWh);
+  const table = curve.temperatureDerating;
   if (!Array.isArray(table) || table.length === 0) {
     return { ok: false, seconds: null, tempC: null, missing: ["chargePowerCurve.temperatureDerating"] };
   }
@@ -250,7 +255,7 @@ function sessionHorizonSeconds(packNominalWh) {
   }, null);
 
   const integrated = chargeCurve.timeToChargeSeconds({
-    curve: CHARGE_POWER_CURVE,
+    curve,
     fromSoc: 0,
     toSoc: 1,
     tempC: worst.x,
@@ -351,8 +356,8 @@ async function serialized(deps, fn, onConflict) {
  * @param {number} ordinal
  * @returns {string}
  */
-function reservationIdFor(agentRowId, ordinal) {
-  return `${DEVELOPMENT_CHARGER.chargerId}:${agentRowId}:${ordinal}`;
+function reservationIdFor(agentRowId, ordinal, chargerId = DEVELOPMENT_CHARGER.chargerId) {
+  return `${chargerId}:${agentRowId}:${ordinal}`;
 }
 
 /**
@@ -392,6 +397,31 @@ function depotProblems(charger) {
     );
   }
   return problems;
+}
+
+/**
+ * Phase B (charging lifecycle) — why a declared (non-depot) station's row cannot be charged at,
+ * or `[]` when it can. The depot keeps its own, stricter test (`depotProblems`: it must be the
+ * engine's DEPOT_ONLY return target).
+ *
+ * @param {object|null} charger the `Charger` row
+ * @param {string} chargerId the declared id
+ * @returns {string[]}
+ */
+function stationProblems(charger, chargerId) {
+  if (!charger) return [`charger "${chargerId}" has no row`];
+  const problems = [];
+  if (!isNumber(charger.latitude) || !isNumber(charger.longitude)) problems.push(`charger "${chargerId}" states no coordinate`);
+  if (typeof charger.cellId !== "string" || charger.cellId === "") problems.push(`charger "${chargerId}" states no cell`);
+  if (charger.chargerClass !== DEVELOPMENT_CHARGER.chargerClass) {
+    problems.push(`charger "${chargerId}" is class "${String(charger.chargerClass)}", but the simulator's charge curve is declared only for "${DEVELOPMENT_CHARGER.chargerClass}"`);
+  }
+  return problems;
+}
+
+/** The problems for a charger of the estate: the depot's own test, or a station's. */
+function chargerProblems(charger, chargerId) {
+  return chargerId === DEVELOPMENT_CHARGER.chargerId ? depotProblems(charger) : stationProblems(charger, chargerId);
 }
 
 /**
@@ -435,13 +465,41 @@ async function provision(deps, input) {
   // absent, not a depot, unplaced or of an uncharacterised class is refused by name, and no
   // projection is published, so no plug is granted: the scheduler must not invent a charger,
   // a coordinate or a cell, and must not charge at a row the engine would not return to.
+  //
+  // Phase B — unless the owner's station declaration leaves the depot out (`includeDepot:
+  // false`); then the estate is the approved stations alone.
+  const includeDepot = !(input && input.includeDepot === false);
   const charger = await prisma.charger.findUnique({ where: { chargerId: DEVELOPMENT_CHARGER.chargerId } });
-  const unusable = depotProblems(charger);
-  if (unusable.length > 0) {
-    return { ok: false, chargerDbId: charger ? charger.id : null, projectionVersion: null, published: false, problems: unusable };
+  if (includeDepot) {
+    const unusable = depotProblems(charger);
+    if (unusable.length > 0) {
+      return { ok: false, chargerDbId: charger ? charger.id : null, projectionVersion: null, published: false, problems: unusable, stations: [] };
+    }
   }
 
-  const payload = projectionPayload({ nowMs, horizonSeconds: horizon.seconds, charger });
+  // Phase B — the owner-approved stations whose coordinate `chargingStations.validateStation`
+  // accepted. Their rows are ADDED when absent (never deleted, never rewritten): a row that
+  // exists with a different coordinate is refused by name rather than moved.
+  const stationOutcomes = [];
+  const estate = includeDepot ? [{ row: charger, plugCount: DEVELOPMENT_CHARGER.plugCount }] : [];
+  for (const station of (input && Array.isArray(input.stations) ? input.stations : [])) {
+    // eslint-disable-next-line no-await-in-loop
+    const outcome = await provisionStation(prisma, station);
+    stationOutcomes.push({ chargerId: station.chargerId, usable: outcome.ok, created: outcome.created === true, problems: outcome.problems });
+    if (outcome.ok) estate.push({ row: outcome.row, plugCount: station.plugCount });
+  }
+  if (estate.length === 0) {
+    return {
+      ok: false,
+      chargerDbId: null,
+      projectionVersion: null,
+      published: false,
+      problems: ["no usable charger: the depot is excluded and no approved station could be provisioned"],
+      stations: stationOutcomes,
+    };
+  }
+
+  const payload = projectionPayload({ nowMs, horizonSeconds: horizon.seconds, chargers: estate });
 
   const latest = await prisma.chargerAvailabilityProjection.findFirst({
     where: { publishedBy: PUBLISHER },
@@ -456,7 +514,7 @@ async function provision(deps, input) {
     JSON.stringify(estateOf(latest.payload)) === JSON.stringify(estateOf(payload));
 
   if (unchanged) {
-    return { ok: true, chargerDbId: charger.id, projectionVersion: latest.version, published: false, problems: [] };
+    return { ok: true, chargerDbId: charger ? charger.id : null, projectionVersion: latest.version, published: false, problems: [], stations: stationOutcomes };
   }
 
   const highest = await prisma.chargerAvailabilityProjection.findFirst({ orderBy: { version: "desc" }, select: { version: true } });
@@ -472,7 +530,61 @@ async function provision(deps, input) {
     },
   });
 
-  return { ok: true, chargerDbId: charger.id, projectionVersion: version, published: true, problems: [] };
+  return { ok: true, chargerDbId: charger ? charger.id : null, projectionVersion: version, published: true, problems: [], stations: stationOutcomes };
+}
+
+/**
+ * Phase B — make sure an approved, validated station has its `Charger` row: read it, or ADD it
+ * when absent. Never rewrites an existing row.
+ *
+ * @param {object} prisma
+ * @param {{ chargerId: string, lat: number, lon: number, cellId: string, regionId: string|null }} station
+ * @returns {Promise<{ ok: boolean, created?: boolean, row?: object, problems: string[] }>}
+ */
+async function provisionStation(prisma, station) {
+  const problems = [];
+  if (!isNumber(station.lat) || !isNumber(station.lon) || typeof station.cellId !== "string") {
+    return { ok: false, problems: [`station "${station.chargerId}" has no validated coordinate and cell`] };
+  }
+  let row = await prisma.charger.findUnique({ where: { chargerId: station.chargerId } });
+  let created = false;
+  if (row) {
+    // @structural a coordinate equality tolerance (~1 cm)
+    const TOLERANCE_DEG = 1e-7;
+    if (!isNumber(row.latitude) || !isNumber(row.longitude) ||
+      Math.abs(row.latitude - station.lat) > TOLERANCE_DEG || Math.abs(row.longitude - station.lon) > TOLERANCE_DEG) {
+      problems.push(
+        `charger "${station.chargerId}" already exists at (${row.latitude}, ${row.longitude}), not at the declared ` +
+          `(${station.lat}, ${station.lon}); the row is not rewritten`,
+      );
+    }
+  } else {
+    let regionDbId = null;
+    if (station.regionId) {
+      const region = prisma.region && typeof prisma.region.findUnique === "function"
+        ? await prisma.region.findUnique({ where: { regionId: station.regionId } })
+        : null;
+      if (!region) problems.push(`region "${station.regionId}" has no row, so station "${station.chargerId}" cannot be placed in it`);
+      else regionDbId = region.id;
+    }
+    if (problems.length === 0) {
+      row = await prisma.charger.create({
+        data: {
+          chargerId: station.chargerId,
+          regionId: regionDbId,
+          cellId: station.cellId,
+          chargerClass: DEVELOPMENT_CHARGER.chargerClass,
+          ratedPowerW: null,
+          latitude: station.lat,
+          longitude: station.lon,
+          isDepot: false,
+        },
+      });
+      created = true;
+    }
+  }
+  if (problems.length === 0) problems.push(...stationProblems(row, station.chargerId));
+  return problems.length === 0 ? { ok: true, created, row, problems } : { ok: false, created, problems };
 }
 
 /**
@@ -519,6 +631,11 @@ function estateOf(payload) {
  */
 function projectionPayload(input) {
   const untilMs = input.nowMs + input.horizonSeconds * 1000; // @structural ms per second
+  // Phase B — one entry per charger of the estate (`input.chargers`: `{ row, plugCount }`), or the
+  // depot alone (`input.charger`), as before.
+  const entries = Array.isArray(input.chargers)
+    ? input.chargers
+    : [{ row: input.charger, plugCount: DEVELOPMENT_CHARGER.plugCount }];
   return {
     publisher: PUBLISHER,
     evidence: {
@@ -534,19 +651,153 @@ function projectionPayload(input) {
         "no nameplate rating has been supplied by the owner; charge power is the declared P_charge(SoC) curve and " +
         "is a modelling input, not an equipment specification",
     },
-    chargers: [
-      {
-        chargerId: input.charger.chargerId,
-        chargerClass: input.charger.chargerClass,
-        cellId: null,
-        isDepot: input.charger.isDepot === true,
-        latitude: input.charger.latitude,
-        longitude: input.charger.longitude,
-        plugCount: DEVELOPMENT_CHARGER.plugCount,
-        intervals: [{ fromMs: input.nowMs, untilMs, state: "RESERVABLE" }],
-      },
-    ],
+    chargers: entries.map(({ row, plugCount, intervals }) => ({
+      chargerId: row.chargerId,
+      chargerClass: row.chargerClass,
+      cellId: null,
+      isDepot: row.isDepot === true,
+      latitude: row.latitude,
+      longitude: row.longitude,
+      plugCount,
+      // Step D — a refresh states the occupancy it read (`occupancyIntervals`); provisioning states
+      // the whole horizon reservable, as before.
+      intervals: Array.isArray(intervals) ? intervals : [{ fromMs: input.nowMs, untilMs, state: "RESERVABLE" }],
+    })),
   };
+}
+
+/**
+ * Charging lifecycle step D — the environment variable that turns the projection refresh ON, in
+ * seconds. Unset (the default) leaves it OFF: the projection is published only when the estate
+ * changes, as before, so it goes stale after `energy.charger_projection_max_age` and `E_return`
+ * prices on its stated `DEPOT_ONLY` fallback. @structural
+ */
+const PROJECTION_REFRESH_VAR = "SIM_CHARGER_PROJECTION_REFRESH_SECONDS";
+/** The bounds a refresh period may take. @structural `energy.charger_projection_max_age`'s own range */
+const PROJECTION_REFRESH_BOUNDS = Object.freeze({ min: 10, max: 900 });
+
+/**
+ * The configured refresh period, or OFF. Never throws.
+ *
+ * @param {object} [env]
+ * @returns {{ enabled: boolean, seconds: number|null, problem: string|null }}
+ */
+function projectionRefreshSeconds(env) {
+  const raw = (env || process.env)[PROJECTION_REFRESH_VAR];
+  if (raw === undefined || raw === null || String(raw).trim() === "") return { enabled: false, seconds: null, problem: null };
+  const seconds = Number(raw);
+  if (!Number.isInteger(seconds) || seconds < PROJECTION_REFRESH_BOUNDS.min || seconds > PROJECTION_REFRESH_BOUNDS.max) {
+    return {
+      enabled: false,
+      seconds: null,
+      problem: `${PROJECTION_REFRESH_VAR}="${String(raw)}" is not an integer in [${PROJECTION_REFRESH_BOUNDS.min}, ${PROJECTION_REFRESH_BOUNDS.max}] — the refresh stays OFF`,
+    };
+  }
+  return { enabled: true, seconds, problem: null };
+}
+
+/**
+ * Step D — one charger's availability over the horizon, from the reservations it holds now.
+ *
+ * A newcomer gets a plug when a plug is free AND everyone queued ahead of it has been seated
+ * (FIFO, as `promote` seats them). ACTIVE windows hold a plug until `reservedUntil`; each QUEUED
+ * reservation, in queue order, takes the earliest plug for its own window length (D-7 keeps the
+ * length on promotion). The instant a newcomer could first be seated is `freeAtMs`: before it the
+ * charger is OCCUPIED, from it to the horizon it is RESERVABLE. Arrivals of other robots after
+ * `nowMs` are not known and are not guessed — that is what "reservable" means, not "free".
+ *
+ * @param {{ nowMs: number, untilMs: number, plugCount: number, live: object[] }} input `live` in queue order
+ * @returns {{ fromMs: number, untilMs: number, state: string }[]}
+ */
+function occupancyIntervals(input) {
+  const { nowMs, untilMs, plugCount } = input;
+  const active = input.live
+    .filter((row) => row.state === RESERVATION_STATE.ACTIVE)
+    .map((row) => Math.max(row.reservedUntil.getTime(), nowMs))
+    .sort((a, b) => a - b);
+  // More ACTIVE rows than plugs (a capacity cut while robots were plugged in): a newcomer waits for
+  // the surplus to leave as well, which is keeping the LATEST `plugCount` ends.
+  const plugs = active.slice(Math.max(0, active.length - plugCount));
+  while (plugs.length < plugCount) plugs.push(nowMs);
+  for (const row of input.live.filter((entry) => entry.state === RESERVATION_STATE.QUEUED)) {
+    const lengthMs = Math.max(0, row.reservedUntil.getTime() - row.reservedFrom.getTime());
+    plugs.sort((a, b) => a - b);
+    plugs[0] = Math.max(plugs[0], nowMs) + lengthMs;
+  }
+  const freeAtMs = Math.min(...plugs);
+  if (freeAtMs <= nowMs) return [{ fromMs: nowMs, untilMs, state: "RESERVABLE" }];
+  if (freeAtMs >= untilMs) return [{ fromMs: nowMs, untilMs, state: "OCCUPIED" }];
+  return [
+    { fromMs: nowMs, untilMs: freeAtMs, state: "OCCUPIED" },
+    { fromMs: freeAtMs, untilMs, state: "RESERVABLE" },
+  ];
+}
+
+/**
+ * Charging lifecycle step D — keep this scheduler's published projection FRESH (OPT-IN).
+ *
+ * `E_return` (frozen, §14.5) plans against every charger a projection covers only while that
+ * projection is younger than `energy.charger_projection_max_age`; beyond it, the engine's stated
+ * fallback is `DEPOT_ONLY` with `energy.uncalibrated_reserve_factor`. This publisher used to write
+ * only when the estate changed, so every round after the first two minutes priced the return to the
+ * depot. Called on the periodic pass, this republishes the SAME estate — the charger set, positions
+ * and plug counts of the latest projection, never a new station — with each charger's occupancy
+ * (`occupancyIntervals`), once the latest is `refreshAfterSeconds` old.
+ *
+ * It refuses, publishing nothing (so the projection goes stale and the fallback applies, as
+ * before), when nothing has been published, when a charger of the estate no longer has its row, or
+ * when a row's identity or position no longer matches what was published (`provision` owns
+ * estate changes). One row per period is written to the insert-only projection table.
+ *
+ * @param {object} deps `{ prisma }`
+ * @param {{ nowMs: number, refreshAfterSeconds: number }} input
+ * @returns {Promise<{ ok: boolean, published: boolean, version: number|null, ageSeconds: number|null, problems: string[] }>}
+ */
+async function refreshProjection(deps, input) {
+  const prisma = deps && deps.prisma;
+  const nowMs = input && input.nowMs;
+  const refreshAfterSeconds = input && input.refreshAfterSeconds;
+  const refused = (problem, extra) => ({ ok: false, published: false, version: null, ageSeconds: null, problems: [problem], ...extra });
+  if (!prisma) return refused("no prisma client");
+  if (!isNumber(nowMs)) return refused("nowMs is required — this module reads no clock");
+  if (!isNumber(refreshAfterSeconds) || refreshAfterSeconds <= 0) return refused("refreshAfterSeconds is required");
+
+  const latest = await prisma.chargerAvailabilityProjection.findFirst({ where: { publishedBy: PUBLISHER }, orderBy: { version: "desc" } });
+  if (!latest) return refused("no projection has been published by this scheduler — provisioning publishes the estate first");
+  const ageSeconds = (nowMs - new Date(latest.publishedAt).getTime()) / 1000; // @structural ms per second
+  if (ageSeconds < refreshAfterSeconds) return { ok: true, published: false, version: latest.version, ageSeconds, problems: [] };
+
+  const horizon = sessionHorizonSeconds(PACK_NOMINAL_WH);
+  if (!horizon.ok) return refused(`no reservable window can be stated: ${horizon.missing.join(", ")}`, { version: latest.version, ageSeconds });
+  const untilMs = nowMs + horizon.seconds * 1000; // @structural ms per second
+
+  const published = Array.isArray(latest.payload && latest.payload.chargers) ? latest.payload.chargers : [];
+  const estate = [];
+  for (const entry of published) {
+    // eslint-disable-next-line no-await-in-loop
+    const row = await prisma.charger.findUnique({ where: { chargerId: entry.chargerId } });
+    if (!row) return refused(`charger ${String(entry.chargerId)} of the published estate has no row`, { version: latest.version, ageSeconds });
+    // eslint-disable-next-line no-await-in-loop
+    const live = await prisma.chargerReservation.findMany({
+      where: { chargerDbId: row.id, state: { in: LIVE_STATES } },
+      orderBy: [{ reservedFrom: "asc" }, { reservationId: "asc" }],
+    });
+    estate.push({ row, plugCount: entry.plugCount, intervals: occupancyIntervals({ nowMs, untilMs, plugCount: entry.plugCount, live }) });
+  }
+  const payload = projectionPayload({ nowMs, horizonSeconds: horizon.seconds, chargers: estate });
+  if (JSON.stringify(estateOf(payload)) !== JSON.stringify(estateOf(latest.payload))) {
+    return refused("a charger row no longer matches the published estate — provisioning, not the refresh, publishes estate changes", {
+      version: latest.version,
+      ageSeconds,
+    });
+  }
+
+  const highest = await prisma.chargerAvailabilityProjection.findFirst({ orderBy: { version: "desc" }, select: { version: true } });
+  const version = (highest ? highest.version : 0) + 1;
+  await prisma.chargerAvailabilityProjection.create({
+    data: { version, publishedAt: new Date(nowMs), publishedBy: PUBLISHER, horizonEnd: new Date(untilMs), payload },
+  });
+  return { ok: true, published: true, version, ageSeconds, problems: [] };
 }
 
 /**
@@ -562,27 +813,64 @@ function projectionPayload(input) {
  * @param {object} deps `{ prisma }`
  * @returns {Promise<{ ok: boolean, plugCount: number|null, version: number|null, reason: string|null }>}
  */
-async function publishedCapacity(deps) {
+async function publishedCapacity(deps, chargerId = DEVELOPMENT_CHARGER.chargerId, readEstate) {
+  // Phase B — an estate the caller has just read is used as is (one projection read per request).
+  const estate = readEstate && readEstate.ok !== undefined ? readEstate : await publishedEstate(deps);
+  if (!estate.ok) return { ok: false, plugCount: null, version: null, reason: estate.reason };
+  const entry = estate.chargers.find((charger) => charger.chargerId === chargerId);
+  if (!entry) {
+    return {
+      ok: false,
+      plugCount: null,
+      version: estate.version,
+      reason: `projection version ${estate.version} states no plug count for ${chargerId}`,
+    };
+  }
+  return { ok: true, plugCount: entry.plugCount, version: estate.version, reason: null };
+}
+
+/**
+ * Phase B (charging lifecycle) — the charging estate in force: every charger the latest
+ * projection this scheduler published declares, with its plug count. The durable artefact, not
+ * a constant or the declaration file: what governs is what was published.
+ *
+ * @param {object} deps `{ prisma }`
+ * @returns {Promise<{ ok: boolean, version: number|null, chargers: { chargerId: string, plugCount: number,
+ *   isDepot: boolean, latitude: number|null, longitude: number|null }[], reason: string|null }>}
+ */
+async function publishedEstate(deps) {
   const projection = await deps.prisma.chargerAvailabilityProjection.findFirst({
     where: { publishedBy: PUBLISHER },
     orderBy: { version: "desc" },
   });
   if (!projection) {
-    return { ok: false, plugCount: null, version: null, reason: "no availability projection has been published by this scheduler" };
+    return { ok: false, version: null, chargers: [], reason: "no availability projection has been published by this scheduler" };
   }
   const payload = projection.payload && typeof projection.payload === "object" ? projection.payload : {};
-  const entry = (Array.isArray(payload.chargers) ? payload.chargers : []).find(
-    (charger) => charger && charger.chargerId === DEVELOPMENT_CHARGER.chargerId,
-  );
-  if (!entry || !Number.isInteger(entry.plugCount) || entry.plugCount < 0) {
-    return {
-      ok: false,
-      plugCount: null,
-      version: projection.version,
-      reason: `projection version ${projection.version} states no plug count for ${DEVELOPMENT_CHARGER.chargerId}`,
-    };
-  }
-  return { ok: true, plugCount: entry.plugCount, version: projection.version, reason: null };
+  const chargers = (Array.isArray(payload.chargers) ? payload.chargers : [])
+    .filter((entry) => entry && typeof entry.chargerId === "string" && Number.isInteger(entry.plugCount) && entry.plugCount >= 0)
+    .map((entry) => ({
+      chargerId: entry.chargerId,
+      plugCount: entry.plugCount,
+      isDepot: entry.isDepot === true,
+      latitude: isNumber(entry.latitude) ? entry.latitude : null,
+      longitude: isNumber(entry.longitude) ? entry.longitude : null,
+    }));
+  return { ok: true, version: projection.version, chargers, reason: null };
+}
+
+/**
+ * Phase B — the `Charger` rows of the published estate, keyed by row id.
+ *
+ * @param {object} client a Prisma client or transaction
+ * @param {{ chargers: { chargerId: string }[] }} estate
+ * @returns {Promise<Map<string, object>>}
+ */
+async function estateRows(client, estate) {
+  const ids = estate.chargers.map((entry) => entry.chargerId);
+  if (ids.length === 0) return new Map();
+  const rows = await client.charger.findMany({ where: { chargerId: { in: ids } } });
+  return new Map((rows || []).map((row) => [row.id, row]));
 }
 
 /**
@@ -601,11 +889,43 @@ async function publishedCapacity(deps) {
  */
 async function releaseSupersededReservations(tx, scope, nowMs) {
   const retired = await tx.charger.findMany({ where: { chargerId: { in: [...SUPERSEDED_CHARGER_IDS] } } });
-  if (!Array.isArray(retired) || retired.length === 0) return 0;
+  const live = Array.isArray(retired) && retired.length > 0
+    ? await tx.chargerReservation.findMany({
+      where: { ...(scope || {}), chargerDbId: { in: retired.map((row) => row.id) }, state: { in: LIVE_STATES } },
+    })
+    : [];
 
-  const live = await tx.chargerReservation.findMany({
-    where: { ...(scope || {}), chargerDbId: { in: retired.map((row) => row.id) }, state: { in: LIVE_STATES } },
-  });
+  // 2026-10-13 — and every charger that has LEFT the estate this scheduler publishes (a station
+  // withdrawn, or the depot excluded by the owner's declaration): no plug there can be granted or
+  // promoted any more, so a live reservation there stranded its robot until `reservedUntil` (hours),
+  // refused at every request (measured on a live run: the depot excluded, a robot held NO_PLUG).
+  // Only reservations THIS scheduler granted — their `projectionVersion` is one of its own
+  // publications — are released; a foreign reservation stays "not this module's to release"
+  // (P7-D3 Step 2). With no estate published, nothing more is released.
+  const estate = await publishedEstate({ prisma: tx });
+  if (estate.ok && estate.chargers.length > 0) {
+    // Each condition is applied again to the rows returned, so a store that ignored a filter
+    // could never widen the release.
+    const estateIds = estate.chargers.map((entry) => entry.chargerId);
+    const left = await tx.charger.findMany({ where: { chargerId: { notIn: estateIds } } });
+    const leftIds = (Array.isArray(left) ? left : []).filter((row) => row && !estateIds.includes(row.chargerId)).map((row) => row.id);
+    if (leftIds.length > 0) {
+      const own = await tx.chargerAvailabilityProjection.findMany({ where: { publishedBy: PUBLISHER }, select: { version: true, publishedBy: true } });
+      const ownVersions = (Array.isArray(own) ? own : []).filter((row) => row && row.publishedBy === PUBLISHER).map((row) => row.version);
+      if (ownVersions.length > 0) {
+        const stranded = await tx.chargerReservation.findMany({
+          where: { ...(scope || {}), chargerDbId: { in: leftIds }, state: { in: LIVE_STATES }, projectionVersion: { in: ownVersions } },
+        });
+        for (const row of Array.isArray(stranded) ? stranded : []) {
+          const ours = row && leftIds.includes(row.chargerDbId) && LIVE_STATES.includes(row.state) && ownVersions.includes(row.projectionVersion) &&
+            (!scope || !scope.agentId || row.agentId === scope.agentId);
+          if (ours && !live.some((entry) => entry.id === row.id)) live.push(row);
+        }
+      }
+    }
+  }
+  if (live.length === 0) return 0;
+
   let released = 0;
   for (const row of live) {
     const fromMs = row.reservedFrom instanceof Date ? row.reservedFrom.getTime() : Date.parse(row.reservedFrom);
@@ -695,15 +1015,21 @@ async function reservationForRecovery(deps, input) {
   }
   const row = live[0];
 
-  const unusable = depotProblems(depot);
-  if (unusable.length > 0) return refuse(RECOVERY_REFUSAL.CHARGER_UNUSABLE, unusable.join("; "), row.reservationId);
-
-  if (row.chargerDbId !== depot.id) {
-    let held = null;
-    try {
-      held = row.chargerDbId ? await deps.prisma.charger.findUnique({ where: { id: row.chargerDbId } }) : null;
-    } catch (error) {
-      return refuse(RECOVERY_REFUSAL.UNREADABLE, `the reserved charger could not be read: ${error && error.message}`, row.reservationId);
+  // Phase B — the reservation may be at any charger of the published estate, not only the depot.
+  let held = null;
+  let estateIds;
+  try {
+    held = row.chargerDbId ? await deps.prisma.charger.findUnique({ where: { id: row.chargerDbId } }) : null;
+    estateIds = await estateChargerIds(deps);
+  } catch (error) {
+    return refuse(RECOVERY_REFUSAL.UNREADABLE, `the reserved charger could not be read: ${error && error.message}`, row.reservationId);
+  }
+  const atEstateCharger = Boolean(held) && estateIds.includes(held.chargerId);
+  if (!atEstateCharger) {
+    // The depot of the estate is gone or unusable: refused as such, as before.
+    if (estateIds.includes(DEVELOPMENT_CHARGER.chargerId)) {
+      const unusable = depotProblems(depot);
+      if (unusable.length > 0) return refuse(RECOVERY_REFUSAL.CHARGER_UNUSABLE, unusable.join("; "), row.reservationId);
     }
     if (held && SUPERSEDED_CHARGER_IDS.includes(held.chargerId)) {
       return refuse(RECOVERY_REFUSAL.SUPERSEDED_CHARGER, `reserved at the superseded charger "${held.chargerId}"`, row.reservationId);
@@ -714,6 +1040,8 @@ async function reservationForRecovery(deps, input) {
       row.reservationId,
     );
   }
+  const unusable = chargerProblems(held, held.chargerId);
+  if (unusable.length > 0) return refuse(RECOVERY_REFUSAL.CHARGER_UNUSABLE, unusable.join("; "), row.reservationId);
 
   const fromMs = row.reservedFrom instanceof Date ? row.reservedFrom.getTime() : NaN;
   const untilMs = row.reservedUntil instanceof Date ? row.reservedUntil.getTime() : NaN;
@@ -731,7 +1059,7 @@ async function reservationForRecovery(deps, input) {
   return Object.freeze({
     verdict: "ADOPTABLE",
     reservation: Object.freeze({ reservationId: row.reservationId, state: row.state, targetSoc, reservedFromMs: fromMs, reservedUntilMs: untilMs }),
-    charger: Object.freeze({ chargerId: depot.chargerId, lat: depot.latitude, lon: depot.longitude }),
+    charger: Object.freeze({ chargerId: held.chargerId, lat: held.latitude, lon: held.longitude }),
   });
 }
 
@@ -769,7 +1097,12 @@ async function requestPlug(deps, input) {
   if (!isNumber(source.nowMs)) problems.push("nowMs is required — this module reads no clock");
   if (problems.length > 0) return { ok: false, created: false, reservation: null, problems };
 
-  const horizon = sessionHorizonSeconds(PACK_NOMINAL_WH);
+  // D-7 (charging audit) — the window is the worst-case full charge of THIS agent's commissioned
+  // pack. It was the fleet constant (1000 Wh): a larger pack's session outlived its window, and
+  // `reconcile` released it STALE_EXPIRED before the target. `PACK_NOMINAL_WH` remains only the
+  // fallback for an agent with no declared pack.
+  const sessionPackWh = isNumber(source.packNominalWh) && source.packNominalWh > 0 ? source.packNominalWh : PACK_NOMINAL_WH;
+  const horizon = sessionHorizonSeconds(sessionPackWh);
   if (!horizon.ok) {
     return {
       ok: false,
@@ -782,7 +1115,10 @@ async function requestPlug(deps, input) {
     };
   }
 
-  const capacity = await publishedCapacity(deps);
+  // Phase B — the charger asked for: one of the published estate (the depot when none is named).
+  const chargerId = typeof source.chargerId === "string" && source.chargerId !== "" ? source.chargerId : DEVELOPMENT_CHARGER.chargerId;
+  const estate = await publishedEstate(deps);
+  const capacity = await publishedCapacity(deps, chargerId, estate);
   if (!capacity.ok) {
     return { ok: false, created: false, reservation: null, problems: [capacity.reason] };
   }
@@ -802,9 +1138,9 @@ async function requestPlug(deps, input) {
     // §10.3.2 step 1's "explicit row lock, not an optimistic read", on the charger: it is
     // the resource whose occupancy is being counted, so it is the row every concurrent
     // requester must queue behind.
-    const charger = await tx.charger.findUnique({ where: { chargerId: DEVELOPMENT_CHARGER.chargerId } });
+    const charger = await tx.charger.findUnique({ where: { chargerId } });
     if (!charger) {
-      return { ok: false, created: false, reservation: null, problems: ["the development charger has not been provisioned"] };
+      return { ok: false, created: false, reservation: null, problems: [`the charger "${chargerId}" has not been provisioned`] };
     }
     await selectForUpdate(tx, "Charger", "id", charger.id);
 
@@ -822,7 +1158,11 @@ async function requestPlug(deps, input) {
     // agent's plug here. It used to be returned as "existing", so the agent drove to the depot and
     // drew current there without occupying a depot plug. It is neither adopted nor joined by a
     // second reservation; it is not this module's to release.
-    const elsewhere = held.filter((row) => row.chargerDbId !== charger.id);
+    //
+    // Phase B — a live reservation at ANOTHER charger of the published estate IS this agent's plug
+    // (it chose that station earlier): it is returned as existing, and no second one is granted.
+    const declaredRows = await estateRows(tx, estate);
+    const elsewhere = held.filter((row) => row.chargerDbId !== charger.id && !declaredRows.has(row.chargerDbId));
     if (elsewhere.length > 0) {
       return {
         ok: false,
@@ -830,7 +1170,7 @@ async function requestPlug(deps, input) {
         reservation: null,
         problems: [
           `the agent holds a live reservation (${elsewhere.map((row) => row.reservationId).join(", ")}) at a charger ` +
-            `this scheduler does not declare; it is not adopted as a plug at ${DEVELOPMENT_CHARGER.chargerId}, and no ` +
+            `this scheduler does not declare; it is not adopted as a plug at ${chargerId}, and no ` +
             "second reservation is granted beside it",
         ],
       };
@@ -847,7 +1187,7 @@ async function requestPlug(deps, input) {
     try {
       const created = await tx.chargerReservation.create({
         data: {
-          reservationId: reservationIdFor(source.agentRowId, ordinal),
+          reservationId: reservationIdFor(source.agentRowId, ordinal, chargerId),
           agentId: source.agentRowId,
           chargerDbId: charger.id,
           reservedFrom: new Date(source.nowMs),
@@ -911,8 +1251,42 @@ async function promote(deps, input) {
   if (!isNumber(nowMs)) {
     return { ok: false, promoted: [], active: 0, queued: 0, plugCount: null, problems: ["nowMs is required"] };
   }
+  // Phase B — one charger when named; otherwise every charger of the published estate, each under
+  // its own lock and against its own published capacity. The result keeps the single-charger
+  // shape (the depot's counts) for callers that read it, and adds `byCharger`.
+  if (typeof (input && input.chargerId) === "string") return promoteAt(deps, nowMs, input.chargerId);
+  const estate = await publishedEstate(deps);
+  if (!estate.ok) return { ok: false, promoted: [], active: 0, queued: 0, plugCount: null, problems: [estate.reason] };
+  const byCharger = {};
+  const promotedAll = [];
+  const problems = [];
+  let first = null;
+  for (const entry of estate.chargers) {
+    // eslint-disable-next-line no-await-in-loop
+    const result = await promoteAt(deps, nowMs, entry.chargerId);
+    byCharger[entry.chargerId] = result;
+    promotedAll.push(...(result.promoted || []));
+    problems.push(...(result.problems || []));
+    if (!first || entry.chargerId === DEVELOPMENT_CHARGER.chargerId) first = result;
+  }
+  return {
+    ...(first || { ok: true, active: 0, queued: 0, plugCount: null }),
+    ok: Object.values(byCharger).every((result) => result.ok !== false),
+    promoted: promotedAll,
+    problems,
+    byCharger,
+  };
+}
 
-  const capacity = await publishedCapacity(deps);
+/**
+ * Phase B — one scheduling pass at one charger (what `promote` did for the depot alone).
+ *
+ * @param {object} deps
+ * @param {number} nowMs
+ * @param {string} chargerId
+ */
+async function promoteAt(deps, nowMs, chargerId) {
+  const capacity = await publishedCapacity(deps, chargerId);
   if (!capacity.ok) {
     return { ok: false, promoted: [], active: 0, queued: 0, plugCount: null, problems: [capacity.reason] };
   }
@@ -923,9 +1297,9 @@ async function promote(deps, input) {
   }
 
   return serialized(deps, async (tx) => {
-    const charger = await tx.charger.findUnique({ where: { chargerId: DEVELOPMENT_CHARGER.chargerId } });
+    const charger = await tx.charger.findUnique({ where: { chargerId } });
     if (!charger) {
-      return { ok: false, promoted: [], active: 0, queued: 0, plugCount: capacity.plugCount, problems: ["the development charger has not been provisioned"] };
+      return { ok: false, promoted: [], active: 0, queued: 0, plugCount: capacity.plugCount, problems: [`the charger "${chargerId}" has not been provisioned`] };
     }
     await deps.selectForUpdate(tx, "Charger", "id", charger.id);
 
@@ -947,6 +1321,13 @@ async function promote(deps, input) {
       });
 
       for (const reservation of waiting) {
+        // D-7 — the session keeps the window length its request was granted for the agent's own
+        // pack (`requestPlug`); the fleet horizon only covers a row whose window is unreadable.
+        const requestedMs =
+          reservation.reservedUntil instanceof Date && reservation.reservedFrom instanceof Date
+            ? reservation.reservedUntil.getTime() - reservation.reservedFrom.getTime()
+            : NaN;
+        const sessionMs = Number.isFinite(requestedMs) && requestedMs > 0 ? requestedMs : horizon.seconds * 1000; // @structural ms per second
         // eslint-disable-next-line no-await-in-loop
         await tx.chargerReservation.update({
           where: { id: reservation.id },
@@ -956,7 +1337,7 @@ async function promote(deps, input) {
             // is left at the *enqueue* instant deliberately: it is the FIFO key and the
             // durable record of how long this robot waited, and overwriting it would erase
             // the evidence that the queue was fair.
-            reservedUntil: new Date(nowMs + horizon.seconds * 1000), // @structural ms per second
+            reservedUntil: new Date(nowMs + sessionMs),
           },
         });
         promoted.push(reservation.agentId);
@@ -992,13 +1373,14 @@ async function release(deps, input) {
   }
   const reason = Object.values(RELEASE_REASON).includes(source.reason) ? source.reason : RELEASE_REASON.AGENT_RELEASED;
 
+  // Phase B — the agent's plug at whichever charger of the estate holds it.
+  const estateIds = await estateChargerIds(deps);
   const releaseOutcome = await serialized(deps, async (tx) => {
-    const charger = await tx.charger.findUnique({ where: { chargerId: DEVELOPMENT_CHARGER.chargerId } });
-    if (!charger) return false;
-    await deps.selectForUpdate(tx, "Charger", "id", charger.id);
+    const chargers = await lockEstate(tx, deps, estateIds);
+    if (chargers.length === 0) return false;
 
     const live = await tx.chargerReservation.findMany({
-      where: { agentId: source.agentRowId, chargerDbId: charger.id, state: { in: LIVE_STATES } },
+      where: { agentId: source.agentRowId, chargerDbId: { in: chargers.map((row) => row.id) }, state: { in: LIVE_STATES } },
     });
     if (live.length === 0) return false;
 
@@ -1024,6 +1406,37 @@ async function release(deps, input) {
 
   const filled = await promote(deps, { nowMs: source.nowMs });
   return { ok: true, released: releaseOutcome === true, promoted: filled.promoted || [], problems: filled.problems || [] };
+}
+
+/**
+ * Phase B — the business ids of the published estate; the depot alone when nothing has been
+ * published (the behaviour before stations existed).
+ *
+ * @param {object} deps
+ * @returns {Promise<string[]>}
+ */
+async function estateChargerIds(deps) {
+  const estate = await publishedEstate(deps);
+  return estate.ok && estate.chargers.length > 0 ? estate.chargers.map((entry) => entry.chargerId) : [DEVELOPMENT_CHARGER.chargerId];
+}
+
+/**
+ * Phase B — read and row-lock the estate's chargers, in a fixed order (by row id) so two
+ * transactions locking several chargers cannot deadlock on the order.
+ *
+ * @param {object} tx
+ * @param {object} deps
+ * @param {string[]} chargerIds business ids
+ * @returns {Promise<object[]>} the rows found
+ */
+async function lockEstate(tx, deps, chargerIds) {
+  const rows = (await tx.charger.findMany({ where: { chargerId: { in: chargerIds } } })) || [];
+  const ordered = [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (const row of ordered) {
+    // eslint-disable-next-line no-await-in-loop
+    await deps.selectForUpdate(tx, "Charger", "id", row.id);
+  }
+  return ordered;
 }
 
 /**
@@ -1062,14 +1475,15 @@ async function reconcile(deps, input) {
   if (supersededOutcome && supersededOutcome.retryable === true) return { ...supersededOutcome, ok: false };
   const superseded = typeof supersededOutcome === "number" ? supersededOutcome : 0;
 
+  // Phase B — every charger of the estate.
+  const estateIds = await estateChargerIds(deps);
   const expiryOutcome = await serialized(deps, async (tx) => {
-    const charger = await tx.charger.findUnique({ where: { chargerId: DEVELOPMENT_CHARGER.chargerId } });
-    if (!charger) return 0;
-    await deps.selectForUpdate(tx, "Charger", "id", charger.id);
+    const chargers = await lockEstate(tx, deps, estateIds);
+    if (chargers.length === 0) return 0;
 
     const result = await tx.chargerReservation.updateMany({
       where: {
-        chargerDbId: charger.id,
+        chargerDbId: { in: chargers.map((row) => row.id) },
         state: { in: LIVE_STATES },
         reservedUntil: { lt: new Date(nowMs) },
       },
@@ -1098,21 +1512,39 @@ async function reconcile(deps, input) {
  *                     projectionVersion: number|null, queue: object[] }>}
  */
 async function status(deps) {
-  const capacity = await publishedCapacity(deps);
-  const charger = await deps.prisma.charger.findUnique({ where: { chargerId: DEVELOPMENT_CHARGER.chargerId } });
+  const depot = await chargerStatus(deps, DEVELOPMENT_CHARGER.chargerId);
+  // Phase B — every charger of the published estate, in the same shape. The top level stays the
+  // depot's, for the readers that predate stations.
+  const estate = await publishedEstate(deps);
+  const stations = [];
+  for (const entry of estate.ok ? estate.chargers : []) {
+    // eslint-disable-next-line no-await-in-loop
+    stations.push(entry.chargerId === DEVELOPMENT_CHARGER.chargerId ? depot : await chargerStatus(deps, entry.chargerId));
+  }
+  return { ...depot, stations };
+}
+
+/** One charger's occupancy and queue (FIFO order). */
+async function chargerStatus(deps, chargerId) {
+  const capacity = await publishedCapacity(deps, chargerId);
+  const charger = await deps.prisma.charger.findUnique({ where: { chargerId } });
+  const placement = charger
+    ? { latitude: charger.latitude ?? null, longitude: charger.longitude ?? null, isDepot: charger.isDepot === true }
+    : { latitude: null, longitude: null, isDepot: chargerId === DEVELOPMENT_CHARGER.chargerId };
   if (!charger) {
-    return { chargerId: DEVELOPMENT_CHARGER.chargerId, plugCount: capacity.plugCount, active: 0, queued: 0, projectionVersion: capacity.version, queue: [] };
+    return { chargerId, plugCount: capacity.plugCount, active: 0, queued: 0, projectionVersion: capacity.version, queue: [], ...placement };
   }
   const live = await deps.prisma.chargerReservation.findMany({
     where: { chargerDbId: charger.id, state: { in: LIVE_STATES } },
     orderBy: [{ reservedFrom: "asc" }, { reservationId: "asc" }],
   });
   return {
-    chargerId: DEVELOPMENT_CHARGER.chargerId,
+    chargerId,
     plugCount: capacity.plugCount,
     active: live.filter((entry) => entry.state === RESERVATION_STATE.ACTIVE).length,
     queued: live.filter((entry) => entry.state === RESERVATION_STATE.QUEUED).length,
     projectionVersion: capacity.version,
+    ...placement,
     queue: live.map((entry) => ({
       reservationId: entry.reservationId,
       agentId: entry.agentId,
@@ -1135,8 +1567,15 @@ module.exports = {
   sessionHorizonSeconds,
   reservationIdFor,
   depotProblems,
+  stationProblems,
+  chargerProblems,
+  publishedEstate,
   projectionPayload,
   provision,
+  PROJECTION_REFRESH_VAR,
+  projectionRefreshSeconds,
+  occupancyIntervals,
+  refreshProjection,
   publishedCapacity,
   liveReservationFor,
   reservationForRecovery,

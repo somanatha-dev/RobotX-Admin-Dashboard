@@ -302,17 +302,22 @@ describe("P7-D3 Step 1 — a simulated robot drives to the reserved charger befo
     expect(calls.release.length).toBeGreaterThan(0);
   });
 
-  test("a STOP during the approach holds position; after RESUME it carries on to the charger", async () => {
-    const { client } = chargingClient();
+  test("a STOP during the approach holds position and RELEASES the plug (D-4); after RESUME it asks again and drives to the charger", async () => {
+    // The route double starts wherever the robot asks from, as the real campus route does.
+    const fromHere = (from) => ({ ok: true, points: [{ ...from }, { lat: CHARGER.lat, lon: CHARGER.lon }], charger: CHARGER, distanceM: metres(from, CHARGER) });
+    const { calls, client } = chargingClient({ route: fromHere });
     const { robot } = lowRobot(client);
     await runTicks(robot, 4);
     robot._applyStop("STOP");
     const held = { lat: robot.lat, lon: robot.lon };
+    // D-4 (charging audit, owner decision 2026-10-12) — not docked, so the plug is not kept.
+    expect(calls.release).toEqual([RELEASE_REASON.AGENT_RELEASED]);
 
     await runTicks(robot, 5);
     expect(robot.lat).toBe(held.lat);
     expect(robot.lon).toBe(held.lon);
     expect(robot.status).toBe("PAUSED");
+    expect(robot._chargingPhase).toBeNull();
 
     robot._applyResume();
     for (let chunk = 0; chunk < 20 && robot.status !== "CHARGING"; chunk += 1) await runTicks(robot, 10); // eslint-disable-line no-await-in-loop
@@ -426,6 +431,8 @@ describe("P7-D3 Step 1 — SimulationEngine hands each robot a route to the depo
         },
       },
       charger: { findUnique: async ({ where }) => (where.chargerId === depotRow.chargerId ? { ...depotRow } : null) },
+      // Phase B — the client routes to the charger the agent holds a plug at; this agent holds none.
+      chargerReservation: { findFirst: async () => null },
     };
     const simulator = createVirtualRobotSimulator({
       prisma,

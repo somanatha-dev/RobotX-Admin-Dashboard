@@ -38,6 +38,9 @@ const mockPrismaClient = {
   user: { findUnique: jest.fn() },
   robot: { findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
   command: { create: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+  // A RESUME names the robot's live commitment (`liveCommitmentIdFor`); none is held here.
+  agent: { findUnique: jest.fn() },
+  commitment: { findFirst: jest.fn() },
   event: { create: jest.fn() },
   auditEvent: { findFirst: jest.fn(), create: jest.fn() },
   overrideAudit: { create: jest.fn() },

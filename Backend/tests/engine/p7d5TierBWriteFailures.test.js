@@ -198,11 +198,12 @@ describe("P7-D5 D6 — TSK-816 through the real path and the real writer", () =>
   test("the decision and the Tier B hash are the pre-D4/D6 baseline; the claim lands; no failure", async () => {
     const out = await w.decide({
       decisionTimeMs: w.TSK816.assignRoundMs,
-      robots: [
+      // Replayed as recorded (5 % floor then; see `phase7World.asRecorded`).
+      robots: w.asRecorded([
         { robotId: "SIM-0A8C043FFE67", at: { lat: 12.901151, lon: 77.517575 }, socFraction: 0.2, status: "IDLE", positionAgeMs: 351 },
         { robotId: "SIM-1ABF21512BE5", at: { lat: 12.900817, lon: 77.518043 }, socFraction: 0.9, status: "IDLE", positionAgeMs: 350 },
         { robotId: "SIM-9F6F88D84EBD", at: { lat: 12.90032004, lon: 77.51870238 }, socFraction: 0.95, status: "IDLE", positionAgeMs: 1360 },
-      ],
+      ]),
     });
     expect(out.winner).toBe("SIM-9F6F88D84EBD");
     const round = { ...ROUND, roundId: `default:${w.TSK816.assignRoundMs}`, decisionTimeMs: w.TSK816.assignRoundMs, partitions: [], decisions: [out.decision] };

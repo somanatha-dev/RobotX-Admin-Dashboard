@@ -22,8 +22,36 @@ function getSimulator(req, res) {
 const getStatus = asyncHandler(async (req, res) => {
   const sim = req.app?.locals?.virtualSimulator;
   if (!sim) return res.status(503).json({ error: "Simulator not initialised" });
-  res.json(sim.getStatus());
+  res.json(await withChargingOverview(sim, sim.getStatus()));
 });
+
+/**
+ * Phase B / dashboard — the simulator's status with the charging estate (stations, occupancy)
+ * and each queued robot's place in its queue merged into its `charging` view. An overview that
+ * cannot be read leaves the status as it was, with `charging: null` saying so.
+ *
+ * @param {object} sim
+ * @param {object} status `sim.getStatus()`
+ * @returns {Promise<object>}
+ */
+async function withChargingOverview(sim, status) {
+  if (typeof sim.chargingOverview !== "function") return status;
+  let overview = null;
+  try {
+    overview = await sim.chargingOverview();
+  } catch {
+    overview = null;
+  }
+  if (!overview) return { ...status, charging: null };
+  return {
+    ...status,
+    charging: { stations: overview.stations, provenance: overview.provenance },
+    robots: (status.robots || []).map((entry) => {
+      const queue = overview.robots[entry.robotId];
+      return queue && entry.charging ? { ...entry, charging: { ...entry.charging, ...queue } } : entry;
+    }),
+  };
+}
 
 // POST /api/simulator/start — (re)start the engine and every robot it holds.
 //

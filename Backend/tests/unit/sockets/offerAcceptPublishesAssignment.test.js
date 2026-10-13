@@ -103,7 +103,8 @@ function harness({ withGeometry = true, taskStatus = "PENDING" } = {}) {
   // one. A test whose transaction has no clock exercises the throw, not the handler.
   prisma.$queryRawUnsafe.mockResolvedValue([{ now: new Date() }]);
 
-  prisma.robot.findUnique.mockResolvedValue({ id: "robot-row-1", currentTaskId: null });
+  // Gap A — `status` is what the server reads before an ACCEPT binds the robot; not held.
+  prisma.robot.findUnique.mockResolvedValue({ id: "robot-row-1", currentTaskId: null, status: "IDLE", statusBeforeOffline: null });
   prisma.task.updateMany.mockResolvedValue({ count: taskStatus === "PENDING" ? 1 : 0 });
   prisma.robot.updateMany.mockResolvedValue({ count: 1 });
 

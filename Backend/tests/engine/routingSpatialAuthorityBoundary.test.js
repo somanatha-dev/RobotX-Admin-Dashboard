@@ -130,15 +130,79 @@ describe("the routing layer is not a second delivery-domain authority", () => {
     // and only that use, is exempt: every call must be the argument of
     // `createCellProjection({ serviceability: … })`. A call anywhere else is still an offence.
     const ROUTING_LOCAL_USE = /createCellProjection\(\s*\{\s*serviceability:\s*campusServiceability\.createServiceabilityOracle\(/gu;
+    //
+    // PHYSICAL ROUTE CONTAINMENT (2026-10-12, RD-2026-10-12-01 AC1, owner-authorised). The
+    // physical router must keep a route inside the boundary, so `routeContainment.js` asks the
+    // same routing-local question of route geometry this repository derives — network edges,
+    // access connectors and path points — that the cell projection asks of a cell centre. It is
+    // exempt in that one file, for that one call, and the tests below hold it to the
+    // routing-local side of the line. A call anywhere else is still an offence.
+    const ROUTE_CONTAINMENT_FILE = "services/fleetProviders/routeContainment.js";
+    const ROUTE_CONTAINMENT_USE = /const oracle = createServiceabilityOracle\(declaration\);/gu;
     const offenders = sourceFiles()
       .filter(([file]) => file !== "engine/routing/campusServiceability.js")
-      .filter(([, body]) => {
+      .filter(([file, body]) => {
         const calls = (body.match(/createServiceabilityOracle\s*\(/gu) || []).length;
         const routingLocal = (body.match(ROUTING_LOCAL_USE) || []).length;
-        return calls > routingLocal;
+        const containment = file === ROUTE_CONTAINMENT_FILE ? (body.match(ROUTE_CONTAINMENT_USE) || []).length : 0;
+        return calls > routingLocal + containment;
       })
       .map(([file]) => file);
     expect(offenders).toEqual([]);
+  });
+
+  describe("physical route containment is a routing-local guard, never a delivery-domain verdict", () => {
+    const FILE = path.resolve(SRC, "services", "fleetProviders", "routeContainment.js");
+    const body = fs.readFileSync(FILE, "utf8");
+
+    test("it constructs exactly one oracle, by the exempted call", () => {
+      expect((body.match(/createServiceabilityOracle\s*\(/gu) || []).length).toBe(1);
+      expect(body).toMatch(/const oracle = createServiceabilityOracle\(declaration\);/u);
+    });
+
+    test("it neither reads nor writes the pinned D1 verdict, and never evaluates a destination's membership", () => {
+      expect(body).not.toMatch(/geofenceResult/u);
+      expect(body).not.toMatch(/pinnedMembership/u);
+      expect(body).not.toMatch(/evaluatePoint/u);
+      expect(body).not.toMatch(/require\([^)]*spatial\/deliveryDomain/u);
+    });
+
+    test("it exposes no verdict and no oracle: only booleans about route geometry", () => {
+      const containment = require(FILE).createRouteContainment(rnsitDeclaration());
+      expect(Object.keys(containment).sort()).toEqual(["containsPoint", "containsSegment", "problems", "usable"]);
+      expect(typeof containment.containsPoint({ lat: 12.9013, lon: 77.5181 })).toBe("boolean");
+    });
+
+    test("only the physical router uses it — not intake, not the round, not the engine", () => {
+      const requirers = sourceFiles()
+        .filter(([, source]) => /require\([^)]*routeContainment["']\)/u.test(source))
+        .map(([file]) => file)
+        .sort();
+      // SIMULATED CHARGER ROUTES (2026-10-12, RD-2026-10-12-02, owner-approved in principle): the one
+      // further use. A simulated robot's route to its charger is kept inside the boundary by the same
+      // guard, in that one file; held to the routing-local side of the line by the test below.
+      expect(requirers).toEqual(["services/fleetProviders/physicalRouter.js", "simulation/chargerRoute.js"]);
+    });
+
+    test("RD-2026-10-12-02: the simulated charger router uses the guard only to build a contained network — no verdict, no oracle", () => {
+      const charger = fs.readFileSync(path.resolve(SRC, "simulation", "chargerRoute.js"), "utf8");
+      expect((charger.match(/routeContainment\.createRouteContainment\(/gu) || []).length).toBe(1);
+      expect(charger).toMatch(/createCampusTraversalNetwork\(\{[^}]*containment\s*\}\)/u);
+      expect(charger).not.toMatch(/createServiceabilityOracle|evaluatePoint|verdictFor|pinnedMembership|geofenceResult/u);
+      // Station validation reuses that contained network and builds no guard of its own.
+      const stations = fs.readFileSync(path.resolve(SRC, "simulation", "chargingStations.js"), "utf8");
+      expect(stations).not.toMatch(/routeContainment|createServiceabilityOracle|evaluatePoint|verdictFor|geofenceResult/u);
+      expect(stations).toMatch(/chargerRoute\.containedNetworkFor\(/u);
+    });
+
+    test("intake geofencing is still the sole admission authority: the router's refusal is a routing refusal", () => {
+      // An off-campus destination still gets its D1 verdict from `deliveryDomain`, and a
+      // containment refusal carries no `GEOFENCE_VERDICT` vocabulary for anything to mistake.
+      const containment = require(FILE).createRouteContainment(rnsitDeclaration());
+      const gate = { lat: 12.902682, lon: 77.519241 }; // rnsit-main-gate, outside (RD-2026-08-30-01 §5)
+      expect(containment.containsPoint(gate)).toBe(false);
+      expect(Object.values(GEOFENCE_VERDICT)).not.toContain(containment.containsPoint(gate));
+    });
   });
 
   test("the V1 composition's oracle feeds only the cell projection, never a domain verdict", () => {

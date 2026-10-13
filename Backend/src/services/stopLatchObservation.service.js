@@ -123,12 +123,25 @@ async function recordStopLatch(input) {
  * @returns {Promise<{ robotId: string, socketId: string, engaged: boolean, observedAtMs: number }|null>}
  */
 async function getStopLatchState(kv, robotId) {
-  if (!kv || !robotId) return null;
+  const read = await readStopLatchState(kv, robotId);
+  return read.state;
+}
+
+/**
+ * `getStopLatchState`, telling a store that could not be read apart from a robot with no latch on
+ * record — for a reader that must say which (the acceptance check, `offerAcceptanceAdmission`).
+ *
+ * @param {object} kv
+ * @param {string} robotId
+ * @returns {Promise<{ ok: boolean, state: object|null, problem: string|null }>}
+ */
+async function readStopLatchState(kv, robotId) {
+  if (!kv || !robotId) return { ok: false, state: null, problem: "no store to read the stop latch from" };
   try {
     const state = safeJsonParse(await kv.get(stopLatchKey(robotId)));
-    return state && typeof state === "object" && state.robotId === robotId ? state : null;
-  } catch {
-    return null;
+    return { ok: true, state: state && typeof state === "object" && state.robotId === robotId ? state : null, problem: null };
+  } catch (error) {
+    return { ok: false, state: null, problem: `the stop latch could not be read: ${error && error.message}` };
   }
 }
 
@@ -137,4 +150,4 @@ function resetStopLatchState() {
   lastRecorded.clear();
 }
 
-module.exports = { MECHANISM, STOP_LATCH_STATE_TTL_SEC, stopLatchKey, recordStopLatch, getStopLatchState, resetStopLatchState };
+module.exports = { MECHANISM, STOP_LATCH_STATE_TTL_SEC, stopLatchKey, recordStopLatch, getStopLatchState, readStopLatchState, resetStopLatchState };

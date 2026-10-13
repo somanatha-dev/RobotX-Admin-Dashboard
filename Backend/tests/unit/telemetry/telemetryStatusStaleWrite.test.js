@@ -74,7 +74,8 @@ function statefulPrisma(initial) {
   prisma.robot.findUnique.mockImplementation(async () => (row ? { ...row } : null));
   prisma.robot.update.mockImplementation(async ({ where, data }) => {
     await delay();
-    if (!row || row.robotId !== where.robotId) {
+    // A unique `where` with extra filters (Prisma 5): no match is P2025, as for a missing row.
+    if (!row || !matches(row, where)) {
       const e = new Error("Record to update not found.");
       e.code = "P2025";
       throw e;
@@ -184,7 +185,7 @@ describe("Robot.status — a stale telemetry frame never overwrites a newer stat
     expect(t.store.applied.filter((a) => a.status === "ACTIVE")).toEqual([]);
     // The attempted write was conditional on the status the frame validated against.
     const attempt = t.store.prisma.robot.updateMany.mock.calls.find(([args]) => args.data.status === "ACTIVE");
-    expect(attempt[0].where).toEqual({ robotId: ROBOT, status: "ACTIVE" });
+    expect(attempt[0].where).toEqual({ robotId: ROBOT, status: "ACTIVE", socketId: "sock" });
     expect((t.robotStateCache.get(ROBOT) || {}).status).not.toBe("ACTIVE");
   });
 
@@ -272,7 +273,7 @@ describe("Robot.status — legitimate telemetry transitions are unchanged", () =
     t.socket.trigger("TELEMETRY", frame(to));
     await frameDone(kv, 12.9001);
     expect(t.store.row.status).toBe(to);
-    expect(t.store.applied).toEqual([{ via: "updateMany", status: to, where: { robotId: ROBOT, status: from } }]);
+    expect(t.store.applied).toEqual([{ via: "updateMany", status: to, where: { robotId: ROBOT, status: from, socketId: "sock" } }]);
     expect(t.robotStateCache.get(ROBOT)).toMatchObject({ status: to, isOnline: true });
   });
 
@@ -306,8 +307,73 @@ describe("Robot.status — legitimate telemetry transitions are unchanged", () =
     await frameDone(kv, 12.9001);
     expect(t.store.prisma.robot.updateMany).not.toHaveBeenCalled();
     const [[args]] = t.store.prisma.robot.update.mock.calls;
-    expect(args.where).toEqual({ robotId: ROBOT });
+    // Conditional on the socket that owns the row (stale-online fix below).
+    expect(args.where).toEqual({ robotId: ROBOT, socketId: "sock" });
     expect(args.data).not.toHaveProperty("status");
     expect(t.store.row).toMatchObject({ status: "ACTIVE", battery: 55, isOnline: true });
+  });
+});
+
+/**
+ * Stale "online": a frame from a socket that no longer owns the row writes nothing.
+ *
+ * Every flush writes `isOnline: true`. A frame still in flight when its socket disconnects lands
+ * after `markRobotOffline` (OFFLINE, `isOnline: false`, `socketId: null`). The status branch is
+ * conditional on the status it validated, so it misses; the plain branch, taken whenever the
+ * frame writes no status (none sent, or §23.5 refused it, e.g. a held PAUSED robot reporting
+ * IDLE), was unconditional. It put `isOnline` back to true with no socket behind it, and under the
+ * engine nothing clears that, so the dashboard showed the gone robot online for good. Both
+ * branches now write only while the frame's socket is the row's socket, as `markRobotOffline` (Y1)
+ * takes a robot offline only for its current socket.
+ */
+describe("Robot.isOnline — a frame from a socket that no longer owns the row never revives it", () => {
+  test.each([
+    ["a frame with no status", { lat: 12.9001, lon: 77.5001, battery: 55, speed: 0 }, "ACTIVE"],
+    ["a held PAUSED robot's refused IDLE", frame("IDLE"), "PAUSED"],
+  ])("%s, in flight at the disconnect: the robot stays offline", async (_label, payload, status) => {
+    const real = await freshKv();
+    const gate = gatedKv(real, ROBOT);
+    const t = rig({ status, engineOn: true });
+    t.registerTelemetryHandlers(t.io, t.socket, { prisma: t.store.prisma, kv: gate.kv, logger: silentLogger, appLocals: { config: {} } });
+
+    t.socket.trigger("TELEMETRY", payload);
+    await gate.reached;
+    t.store.set({ status: "OFFLINE", isOnline: false, socketId: null, statusBeforeOffline: status }); // markRobotOffline's write
+    gate.release();
+    await frameDone(real, 12.9001);
+
+    expect(t.store.row).toMatchObject({ status: "OFFLINE", isOnline: false, socketId: null, statusBeforeOffline: status });
+    // Not mistaken for a deleted robot, and the next frame re-reads the row.
+    expect(t.io.emittedTo("dashboard", "robot_unregistered")).toEqual([]);
+    expect(t.robotStateCache.get(ROBOT)).toBeNull();
+  });
+
+  test.each([
+    ["a frame with no status", { lat: 12.9001, lon: 77.5001, battery: 55, speed: 0 }],
+    ["a status-bearing frame", frame("IDLE")],
+  ])("%s from a socket a newer AUTH replaced writes nothing over the newer session", async (_label, payload) => {
+    const real = await freshKv();
+    const gate = gatedKv(real, ROBOT);
+    const t = rig({ status: "ACTIVE", engineOn: true });
+    t.registerTelemetryHandlers(t.io, t.socket, { prisma: t.store.prisma, kv: gate.kv, logger: silentLogger, appLocals: { config: {} } });
+
+    t.socket.trigger("TELEMETRY", payload);
+    await gate.reached;
+    t.store.set({ socketId: "sock-new" }); // markRobotOnline for the newer socket
+    gate.release();
+    await frameDone(real, 12.9001);
+
+    expect(t.store.row).toMatchObject({ socketId: "sock-new", status: "ACTIVE", battery: 60, isOnline: true });
+    expect(t.io.emittedTo("dashboard", "robot_unregistered")).toEqual([]);
+  });
+
+  test("the socket that owns the row still flushes position, battery and liveness", async () => {
+    const kv = await freshKv();
+    const t = rig({ status: "ACTIVE", engineOn: true });
+    t.store.set({ isOnline: false }); // e.g. read before AUTH's write was cached
+    t.registerTelemetryHandlers(t.io, t.socket, { prisma: t.store.prisma, kv, logger: silentLogger, appLocals: { config: {} } });
+    t.socket.trigger("TELEMETRY", { lat: 12.9001, lon: 77.5001, battery: 55, speed: 0 });
+    await frameDone(kv, 12.9001);
+    expect(t.store.row).toMatchObject({ socketId: "sock", battery: 55, isOnline: true });
   });
 });

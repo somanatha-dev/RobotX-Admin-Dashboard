@@ -431,11 +431,12 @@ describe("P7-D5 D7 — TSK-816's Tier B hash is unchanged with identity in its s
   test("Tier B contentHash is the pre-D4/D6/D7 baseline; the stored snapshot carries identity and is intact", async () => {
     const out = await w.decide({
       decisionTimeMs: w.TSK816.assignRoundMs,
-      robots: [
+      // Replayed as recorded (5 % floor then; see `phase7World.asRecorded`).
+      robots: w.asRecorded([
         { robotId: "SIM-0A8C043FFE67", at: { lat: 12.901151, lon: 77.517575 }, socFraction: 0.2, status: "IDLE", positionAgeMs: 351 },
         { robotId: "SIM-1ABF21512BE5", at: { lat: 12.900817, lon: 77.518043 }, socFraction: 0.9, status: "IDLE", positionAgeMs: 350 },
         { robotId: "SIM-9F6F88D84EBD", at: { lat: 12.90032004, lon: 77.51870238 }, socFraction: 0.95, status: "IDLE", positionAgeMs: 1360 },
-      ],
+      ]),
     });
     expect(out.winner).toBe("SIM-9F6F88D84EBD");
 

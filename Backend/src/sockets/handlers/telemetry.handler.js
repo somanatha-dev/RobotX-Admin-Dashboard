@@ -153,6 +153,51 @@ function healthTierOf(status) {
 const lastAcceptedFixAt = new Map();
 
 /**
+ * D-2 (charging audit) — the state of charge (percent) of the last report this process applied
+ * for each agent, and when: the reference §23.5's energy row measures the next report against.
+ *
+ * It used to be `existing.battery`, the Robot row. The flush gate writes that column only on a
+ * 2-point swing, every 15 s or on a status change, so it trails the robot: after a charge the
+ * robot's first idle reports "rose while not charging" against it and were refused for minutes
+ * (73 frames measured), and — the other direction — a real rise that stayed below a stale,
+ * higher row value was admitted. The row is the reference only until this process has applied
+ * a report for the agent (a restart, or a reconnect to another process).
+ */
+const lastAppliedSoc = new Map();
+
+/**
+ * The reference state of charge for an agent's next report: the last applied report, else the
+ * row's value.
+ *
+ * @param {string} robotId
+ * @param {object} existing the Robot row (cache)
+ * @returns {number|null} percent
+ */
+function socReferenceFor(robotId, existing) {
+  const applied = lastAppliedSoc.get(robotId);
+  if (applied && Number.isFinite(applied.soc)) return applied.soc;
+  return existing && Number.isFinite(existing.battery) ? existing.battery : null;
+}
+
+/**
+ * Record the state of charge of a report that is being applied.
+ *
+ * @param {string} robotId
+ * @param {number} soc percent
+ * @param {number} atMs
+ */
+function recordAppliedSoc(robotId, soc, atMs) {
+  if (!Number.isFinite(soc)) return;
+  lastAppliedSoc.set(robotId, { soc, atMs });
+  // Bounded by fleet size, swept on the same opportunistic schedule as `lastAcceptedFixAt`.
+  if (lastAppliedSoc.size > 50_000) {
+    for (const [id, entry] of lastAppliedSoc) {
+      if (atMs - entry.atMs > DB_FLUSH_INTERVAL_MS * 10) lastAppliedSoc.delete(id);
+    }
+  }
+}
+
+/**
  * Read a configuration value from the process's pinned snapshot.
  *
  * @param {object} config
@@ -210,11 +255,13 @@ function assessAgentReport(input) {
     if (position.verdict === trustBoundaries.VERDICT.REJECTED) reasons.push(...position.reasons);
   }
 
-  if (Number.isFinite(reported.battery) && Number.isFinite(existing.battery)) {
+  // D-2 — measured against the last applied report, not the throttled Robot row.
+  const referenceSoc = socReferenceFor(source.robotId, existing);
+  if (Number.isFinite(reported.battery) && Number.isFinite(referenceSoc)) {
     /** @structural percent to ratio */
     const PERCENT = 100;
     const energy = trustBoundaries.validateEnergy({
-      lastSoc: existing.battery / PERCENT,
+      lastSoc: referenceSoc / PERCENT,
       reportedSoc: reported.battery / PERCENT,
       charging: source.charging === true,
       rateTolerance: configValue(config, "security.energy_rate_tolerance", undefined),
@@ -234,14 +281,20 @@ function assessAgentReport(input) {
     }
   }
 
+  // Enforced only where the engine is the decision path **for this agent's shard**. Off,
+  // the verdict is computed and logged so the refusal rate is observable before it is
+  // load-bearing (§21.6's shadow discipline applied to a security control). D-6: the
+  // shard half is asked here too, so a staged rollout does not begin enforcing on shards
+  // it has not reached.
+  const enforced = engineEnabled(source.socket, config);
+
+  // D-2 — a report that will be applied becomes the next report's reference. A refused report
+  // is applied only where the check is not enforced, and then it is the state the server holds.
+  if (!refused || !enforced) recordAppliedSoc(source.robotId, reported.battery, reported.atMs);
+
   return {
     refused,
-    // Enforced only where the engine is the decision path **for this agent's shard**. Off,
-    // the verdict is computed and logged so the refusal rate is observable before it is
-    // load-bearing (§21.6's shadow discipline applied to a security control). D-6: the
-    // shard half is asked here too, so a staged rollout does not begin enforcing on shards
-    // it has not reached.
-    enforced: engineEnabled(source.socket, config),
+    enforced,
     reasons,
     measured,
     quarantineThreshold: configValue(config, "security.implausible_report_quarantine_threshold", undefined),
@@ -765,7 +818,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
             // against it, and the flush is not recorded, so that frame flushes again.
             const validatedFrom = existing.status;
             const written = ROBOT_STATUS.has(validatedFrom)
-              ? await prisma.robot.updateMany({ where: { robotId, status: validatedFrom }, data })
+              ? await prisma.robot.updateMany({ where: { robotId, status: validatedFrom, socketId: socket.id }, data })
               : null;
             if (!written || written.count !== 1) {
               superseded = true;
@@ -785,7 +838,12 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
               });
             }
           } else {
-            await prisma.robot.update({ where: { robotId }, data });
+            // Liveness too is written only by the socket that owns the row (as `markRobotOffline`
+            // takes a robot offline only for its current socket, Y1). A frame still in flight
+            // when its socket disconnected used to land after the disconnect's write and put
+            // `isOnline` back to true with no socket behind it, and under the engine nothing
+            // cleared that again. No match is P2025, told apart from a deleted robot below.
+            await prisma.robot.update({ where: { robotId, socketId: socket.id }, data });
           }
           if (!superseded) {
             lastDbFlushAt.set(robotId, nowMs);
@@ -799,15 +857,28 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
           }
         } catch (e) {
           if (e?.code === "P2025") {
-            // Robot was deleted from DB while still connected (admin
-            // decommission mid-session) — self-heal: same signal the old
-            // per-tick findUnique gave every tick, now surfaced on the
-            // write that actually discovers it instead.
             robotStateCache.del(robotId);
-            io.to("dashboard").emit("robot_unregistered", { robotId });
-            return;
+            // The row is there and another socket (or none) owns it: this frame's socket is
+            // gone or replaced. Nothing was written, and that is not a deleted robot.
+            const row = await prisma.robot.findUnique({ where: { robotId }, select: { socketId: true } });
+            if (row) {
+              superseded = true;
+              log.warn?.("Telemetry not written: this frame's socket no longer owns the robot", {
+                robotId,
+                socketId: socket.id,
+                current: row.socketId ?? null,
+              });
+            } else {
+              // Robot was deleted from DB while still connected (admin
+              // decommission mid-session) — self-heal: same signal the old
+              // per-tick findUnique gave every tick, now surfaced on the
+              // write that actually discovers it instead.
+              io.to("dashboard").emit("robot_unregistered", { robotId });
+              return;
+            }
+          } else {
+            throw e;
           }
-          throw e;
         }
       }
 

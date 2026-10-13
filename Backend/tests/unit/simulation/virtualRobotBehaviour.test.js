@@ -596,15 +596,16 @@ describe("Step 4 E — battery drains coherently and never goes out of range", (
     expect(drainOver(1000, 40)).toBeCloseTo(drainOver(2000, 20), 5);
   });
 
-  test("a robot below the warning threshold while working reports ISSUES and keeps moving", () => {
+  test("a robot below the warning threshold while working stays ACTIVE and keeps moving (D-1: low battery is not a fault)", () => {
     const { robot } = makeAgent({ robotId: "SIM-LOW" });
     robot.battery = 19;
     robot._onTaskAssign(executableAssignment());
     const before = robot.distanceTravelled;
     runTicks(robot, 10);
 
-    expect(robot.status).toBe("ISSUES");
-    // ISSUES means "navigating on low charge", not "halted" — it must still travel.
+    // Low battery used to be reported as ISSUES, a MARGINAL health tier the engine-on server
+    // could never lift again (charging audit D-1). The battery travels on every frame instead.
+    expect(robot.status).toBe("ACTIVE");
     expect(robot.distanceTravelled).toBeGreaterThan(before);
   });
 });
@@ -675,7 +676,13 @@ describe("Step 4 F — charging follows the shared curve and never runs backward
     expect(robot.battery).toBeGreaterThanOrEqual(before);
     // The session finishes at the level actually reached, not snapped down to the target.
     expect(robot.battery).toBeCloseTo(90, 5);
+    // D-2 (charging audit) — the tick that reaches the target still reports CHARGING (its frame
+    // carries the last charge); the session ends on the next tick, before any drain.
+    expect(robot.status).toBe("CHARGING");
+    expect(robot._chargingPhase).toBe("COMPLETE");
+    robot._handleCharging(Date.now());
     expect(robot.status).toBe("IDLE");
+    expect(robot.battery).toBeCloseTo(90, 5);
 
     // And across full ticks the pack is nowhere near the low target: what little it loses is
     // ordinary idle drain *after* the session ended, which is a different mechanism.
@@ -694,13 +701,15 @@ describe("Step 4 F — charging follows the shared curve and never runs backward
     await Promise.resolve();
 
     // A fresh instance for the same robot restores that level rather than starting at 100.
-    const { robot: restarted } = makeAgent({ robotId: "SIM-PERSIST", kv: flash, dbBattery: 12 });
+    // (D-3: with a row value as well, the LOWER of the two is restored —
+    // `conservativeBatteryRestore.test.js`; here the row has none.)
+    const { robot: restarted } = makeAgent({ robotId: "SIM-PERSIST", kv: flash });
     await restarted.commission(flash);
     expect(restarted.battery).toBeCloseTo(43.7, 1);
   });
 
   test("a configured initialBattery is the fallback for a fresh robot, never an override", async () => {
-    // Ordering matters: Redis → DB → configured → 100. Letting configuration win would make
+    // Ordering matters: the lower of Redis and DB (D-3) → configured → 100. Letting configuration win would make
     // every restart reset the pack, which is a charge that never happened.
     const flash = makeFlash();
     const { robot: fresh } = makeAgent({ robotId: "SIM-INIT-A", kv: flash, initialBattery: 55 });

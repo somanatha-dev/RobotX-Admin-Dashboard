@@ -85,6 +85,35 @@ describe("LF-1 — disconnect then reconnect (P1.4)", () => {
     expect(prisma.rows.get("R-OLD")).toMatchObject({ status: "OFFLINE", isOnline: true });
   });
 
+  // A status written between the disconnect's read and its conditional write (an operator hold
+  // from the dashboard, a fault report still in flight) made the conditional write miss. The
+  // fallback then wrote OFFLINE remembering nothing, so the reconnect had nothing to restore:
+  // the robot stayed OFFLINE for good (F9 denies it; `clear-fault` refuses OFFLINE; its own
+  // IDLE is refused by §23.5). The status that was really replaced must be remembered.
+  test.each([
+    ["an operator hold (IDLE → PAUSED)", "IDLE", "PAUSED"],
+    ["a fault (ACTIVE → ERROR)", "ACTIVE", "ERROR"],
+    ["a status report (ACTIVE → IDLE)", "ACTIVE", "IDLE"],
+  ])("a status that changes between the disconnect's read and write — %s — is remembered and restored", async (_name, before, landed) => {
+    const prisma = store([{ robotId: "R-RACE", socketId: "sock-1", status: before, isOnline: true }]);
+    const write = prisma.robot.updateMany;
+    let landedOnce = false;
+    prisma.robot.updateMany = async (args) => {
+      if (!landedOnce && args.data.status === "OFFLINE") {
+        landedOnce = true;
+        prisma.rows.get("R-RACE").status = landed; // commits after the read, before the write
+      }
+      return write(args);
+    };
+
+    expect(await markRobotOffline(prisma, "R-RACE", "sock-1")).not.toBeNull();
+    expect(landedOnce).toBe(true);
+    expect(prisma.rows.get("R-RACE")).toMatchObject({ status: "OFFLINE", isOnline: false, socketId: null, statusBeforeOffline: landed });
+
+    await markRobotOnline(prisma, "R-RACE", "sock-2");
+    expect(prisma.rows.get("R-RACE")).toMatchObject({ status: landed, isOnline: true, statusBeforeOffline: null });
+  });
+
   test("a status that moved on after the disconnect is not overwritten by the reconnect", async () => {
     const prisma = store([{ robotId: "R-3", socketId: "sock-1", status: "IDLE", isOnline: true }]);
     await markRobotOffline(prisma, "R-3", "sock-1");

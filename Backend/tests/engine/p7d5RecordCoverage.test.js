@@ -42,7 +42,11 @@ const answer = (result, query) => result.answers.find((row) => row.query === que
 
 describe("P7-D5 D4 — TSK-816 through the real path and the real writer", () => {
   const DT = w.TSK816.assignRoundMs;
-  const fleet = () => [
+  // Replayed AS RECORDED (2026-10-09): F34's floor was then the simulator's 5 %, because the commissioned
+  // `batteryReservePct` did not reach the engine. Since the owner's decision of 2026-10-12 it does (15 % on
+  // every LOCAL unit); `chargingAssignmentIntegration.test.js` pins the decision under it.
+  const fleet = () => w.asRecorded(fleetCurrent());
+  const fleetCurrent = () => [
     { robotId: "SIM-0A8C043FFE67", at: { lat: 12.901151, lon: 77.517575 }, socFraction: 0.2, status: "IDLE", positionAgeMs: 351 },
     { robotId: "SIM-1ABF21512BE5", at: { lat: 12.900817, lon: 77.518043 }, socFraction: 0.9, status: "IDLE", positionAgeMs: 350 },
     { robotId: "SIM-9F6F88D84EBD", at: { lat: 12.90032004, lon: 77.51870238 }, socFraction: 0.95, status: "IDLE", positionAgeMs: 1360 },

@@ -135,9 +135,16 @@ function createPhysicalProvider(settings) {
     batteryWearInputsFor: (agentSnapshot, plan) => v1DemonstrationComposition.batteryWearInputsFor(agentSnapshot, plan),
     agentEnergyDeclarationsFor: (agentSnapshot) => {
       const declared = declaredFor(agentSnapshot);
-      return declared
-        ? { residualCv: declared.energy.residualCv, reserveFloorWh: declared.energy.reserveFloorWh, provenance: physicalPolicy.PROVENANCE }
-        : null;
+      if (!declared) return null;
+      // Decision 4 (2026-10-13) — the STRICTER of the two valid reserves: the owner's declared
+      // floor, and the robot's commissioned `batteryReservePct` of its commissioned pack (both on
+      // the snapshot). No simulator setting is read, and no battery reading is involved. A
+      // percentage outside [0, 100] or an unknown pack adds nothing: the declaration still stands.
+      const pct = agentSnapshot.batteryReservePct;
+      const packWh = agentSnapshot.energyModel && agentSnapshot.energyModel.packNominalWh;
+      const commissionedWh = isNumber(pct) && pct >= 0 && pct <= 100 && isNumber(packWh) && packWh > 0 ? (packWh * pct) / 100 : null;
+      const reserveFloorWh = commissionedWh === null ? declared.energy.reserveFloorWh : Math.max(declared.energy.reserveFloorWh, commissionedWh);
+      return { residualCv: declared.energy.residualCv, reserveFloorWh, provenance: physicalPolicy.PROVENANCE };
     },
 
     /* ── routing (§5) ───────────────────────────────────────────────────── */

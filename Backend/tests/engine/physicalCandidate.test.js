@@ -86,6 +86,10 @@ const FIRMWARE = "robotx-pi-agent/0.9.0";
 
 /* ── The owner's declaration (the shape the deployment file carries) ─────── */
 
+// A TEST FIXTURE, not an owner value: R13 has none yet (RD-2026-10-12-01 AC2). It only has to
+// admit this file's pickup and drop, whose access connectors are under 2 m.
+const TEST_SNAP_RADIUS_M = 50;
+
 function declaration(overrides) {
   const base = {
     declaredBy: "test owner",
@@ -93,7 +97,7 @@ function declaration(overrides) {
     charging: { policy: "MANUAL_OUT_OF_SERVICE" },
     stateOfCharge: { policy: "OPERATOR_DECLARED", maxAgeSeconds: 7200 },
     emergencyStop: { mechanism: "SOFTWARE_STOP_LATCH" },
-    site: { ambientC: { min: 18, max: 38 }, terrain: "FLAT_DECLARED", connectivityDeadZones: "NONE_DECLARED", constrictions: "NONE_DECLARED", stopStartCyclesPerHop: 1 },
+    site: { ambientC: { min: 18, max: 38 }, terrain: "FLAT_DECLARED", connectivityDeadZones: "NONE_DECLARED", constrictions: "NONE_DECLARED", stopStartCyclesPerHop: 1, snapRadiusM: TEST_SNAP_RADIUS_M },
     localisation: { referenceRadiusM: 25, acceptedFixTypes: ["3D", "RTK_FLOAT", "RTK_FIXED"] },
     risk: { failureProbabilityPrior: 0.05, routeHazardCu: 0 },
     robots: [

@@ -16,7 +16,7 @@
  *                   never fitted (fittedAt null), so the uncalibrated reserve factor applies
  *
  * plus the declarations those depend on (charging, terrain, link, constrictions, localisation
- * mapping, risk prior). Every value here is PRODUCTION_DECLARED: owned, recorded, not
+ * mapping, risk prior, and the routing snap radius `site.snapRadiusM`). Every value here is PRODUCTION_DECLARED: owned, recorded, not
  * measured. A section that is absent or invalid turns its policy OFF, and the predicate that
  * needs it keeps denying by name, which is exactly the behaviour before this file existed.
  *
@@ -164,6 +164,11 @@ function fromDeclaration(raw) {
     ? site.stopStartCyclesPerHop
     : null;
   if (stopStartCyclesPerHop === null) problems.push("site.stopStartCyclesPerHop must be a non-negative integer");
+  // R13 — the longest straight access connector from a pickup, drop or robot to the campus
+  // network. The owner's to declare (RD-2026-10-12-01 AC2); no value is defaulted, and
+  // without one every physical route is refused.
+  const snapRadiusM = isNumber(site.snapRadiusM) && site.snapRadiusM > 0 ? site.snapRadiusM : null;
+  if (snapRadiusM === null) problems.push("site.snapRadiusM must be a positive number of metres: physical routes are refused NO_SNAP_RADIUS");
 
   const loc = source.localisation || {};
   const localisation =
@@ -196,7 +201,7 @@ function fromDeclaration(raw) {
     charging,
     stateOfCharge: socPolicy,
     emergencyStop: estop,
-    site: Object.freeze({ ambientC, terrain, connectivityDeadZones: deadZones, constrictions, stopStartCyclesPerHop }),
+    site: Object.freeze({ ambientC, terrain, connectivityDeadZones: deadZones, constrictions, stopStartCyclesPerHop, snapRadiusM }),
     localisation,
     risk: Object.freeze({ failureProbabilityPrior, routeHazardCu }),
     robots,

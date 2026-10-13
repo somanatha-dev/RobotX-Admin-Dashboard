@@ -320,7 +320,10 @@ describe("2 — the V1 router prices the campus route between exact endpoints", 
   }
 
   test("the profile key carries the class's permitted ways, so two permission sets never share a route", () => {
-    expect(composition.simulatedProfileKeyFor(simulatedAgent(ROBOT_AT))).toBe(`SIMULATED:v=${STANDARD_SPEED}:wh=1000:net=footway+path+service`);
+    // Phase E — the key also carries the agent's own energy per metre (`:whm=`), between the pack and the ways.
+    expect(composition.simulatedProfileKeyFor(simulatedAgent(ROBOT_AT))).toMatch(
+      new RegExp(`^SIMULATED:v=${STANDARD_SPEED}:wh=1000:whm=[0-9.e-]+:net=footway\\+path\\+service$`),
+    );
     const stairs = simulatedAgent(ROBOT_AT, { mobilityModel: { permissionSet: { ...ROVER, stairCapable: true }, speedModel: { nominalSpeedMps: STANDARD_SPEED } } });
     expect(composition.simulatedProfileKeyFor(stairs)).toContain(":net=footway+path+service+steps");
     // Speed and the return-leg rate still read off the key exactly as before.

@@ -184,19 +184,20 @@ describe("the kinematic limit commissioning writes is the one the search reads",
    4. SimulatedAgentState — derived from the simulator, labelled, never permissive.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-describe("the simulated pack's coefficients are the simulator's own drain constants", () => {
-  test("β_aux is the idle draw and β_aux + β_move_time the active draw", () => {
+describe("the simulated pack's coefficients are the simulation power policy (Phase E)", () => {
+  const energyPolicy = require("../../src/simulation/energyPolicy");
+
+  test("β_aux is the standby power and β_aux + β_dist·v the power at speed v", () => {
     const beta = simulatedAgentState.simulatedEnergyCoefficients(1000);
-    const tick = constants.TELEMETRY_INTERVAL_MS / 1000;
-    expect(beta.betaAux).toBeCloseTo(((constants.BATTERY_DRAIN_IDLE / 100) * 1000) / tick, 10);
-    expect(beta.betaAux + beta.betaMoveTime).toBeCloseTo(((constants.BATTERY_DRAIN_ACTIVE / 100) * 1000) / tick, 10);
+    const p = energyPolicy.policy();
+    expect(beta.betaAux * 3600).toBeCloseTo(p.standbyPowerW, 10);
+    expect((beta.betaAux + beta.betaDist * p.movingPowerReferenceSpeedMps) * 3600).toBeCloseTo(p.movingPowerW, 10);
+    expect(beta.betaMoveTime).toBe(0);
+    expect(beta.betaDwell).toBe(0);
   });
 
-  test("the draw scales with the unit's own pack (the simulator drains a percentage)", () => {
-    expect(simulatedAgentState.simulatedEnergyCoefficients(500).betaAux).toBeCloseTo(
-      simulatedAgentState.simulatedEnergyCoefficients(1000).betaAux / 2,
-      10,
-    );
+  test("the power does not scale with the pack (the pack converts Wh to state of charge)", () => {
+    expect(simulatedAgentState.simulatedEnergyCoefficients(500)).toEqual(simulatedAgentState.simulatedEnergyCoefficients(1000));
   });
 
   test("the floor is the simulator's own clamp, as a fraction of the pack", () => {
@@ -286,10 +287,13 @@ describe("simulated routing profiles route an agent at the speed it drives", () 
     expect(composition.simulatedWhPerMetre("GROUND")).toBeUndefined();
   });
 
-  test("the return-leg rate is the pack's declared draw over the driven speed", () => {
+  test("the return-leg rate is the agent's own energy per metre at the speed it drives", () => {
+    const energyPolicy = require("../../src/simulation/energyPolicy");
     const key = composition.simulatedProfileKeyFor(simulated);
+    // No stored row on this snapshot: the simulation power policy's coefficients.
     const beta = simulatedAgentState.simulatedEnergyCoefficients(1000);
-    expect(composition.simulatedWhPerMetre(key)).toBeCloseTo((beta.betaAux + beta.betaMoveTime) / 1.5, 10);
+    expect(composition.simulatedWhPerMetre(key)).toBeCloseTo((beta.betaAux + beta.betaMoveTime) / 1.5 + beta.betaDist, 10);
+    expect(composition.simulatedWhPerMetre(key)).toBeCloseTo(energyPolicy.whPerMetre(beta, 1.5), 10);
   });
 });
 

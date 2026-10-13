@@ -37,6 +37,10 @@ const { hashSeed } = require("./random");
 // is inherited from the gate that already establishes it rather than re-derived from the
 // discriminator beside it.
 const devChargingScheduler = require("./devChargingScheduler");
+// Phase B (charging lifecycle) — the station estate (owner declaration + validation) and the
+// choice of station for one robot.
+const chargingStations = require("./chargingStations");
+const chargerSelection = require("./chargerSelection");
 // P7-D3 Step 1 — the campus route to the reserved charger, over the network the engine prices
 // the return leg on.
 const chargerRoute = require("./chargerRoute");
@@ -86,6 +90,8 @@ function specificationInputsFor(row) {
       packNominalWh: agentClass && agentClass.energyModel ? agentClass.energyModel.packNominalWh : null,
       payloadCapacityKg:
         agentClass && agentClass.containerModel ? agentClass.containerModel.totalMassLimitKg : null,
+      // Phase E — the commissioned minimum reserve (`Robot.batteryReservePct`).
+      batteryReservePct: row && typeof row.batteryReservePct === "number" ? row.batteryReservePct : null,
     },
     batteryState: agent && agent.batteryState ? agent.batteryState : null,
     // In `legEnergyWh`'s own naming. On this deployment every coefficient is null, so the
@@ -155,6 +161,9 @@ const SCHEDULER_PASS_INTERVAL_MS = 10_000;
  */
 function createVirtualRobotSimulator({
   prisma, kv, serverUrl, logger, enabled, runSerializable, selectForUpdate, isSerializationFailure, deliveryDomainFor,
+  // Phase B — the owner's station declaration (the parsed JSON), injected by a test; otherwise
+  // read from `SIMULATED_CHARGING_STATIONS_FILE` at provisioning (`chargingStations.loadDeclaration`).
+  stationDeclaration,
 } = {}) {
   const log   = logger || console;
   // P7-D3 Step 1 — one route provider for the fleet; extracts and networks are built once.
@@ -174,6 +183,61 @@ function createVirtualRobotSimulator({
    */
   let schedulerTimer = null;
   const chargingDeps = { prisma, runSerializable, selectForUpdate, isSerializationFailure };
+  /** D-6 — why the last provisioning failed (null when it succeeded or has not run). */
+  let provisioningProblems = null;
+  /**
+   * Phase B — every declared station with its validation outcome, for status and the dashboard:
+   * `{ chargerId, name, approved, lat, lon, plugCount, usable, problems, provisioned }`.
+   */
+  let stationCatalogue = [];
+  /** Phase B — the instance of each managed agent, by `Agent.id` (for queue wait estimates). */
+  const vrByAgentRowId = new Map();
+
+  /** The pinned delivery-domain declaration, or null (never throws). */
+  function pinnedDomain() {
+    try {
+      return typeof deliveryDomainFor === "function" ? deliveryDomainFor() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Phase B — the published estate's chargers with their rows and live load: plug count, the
+   * remaining charge time of each active session (from the robots charging there), and the
+   * agents queued, in FIFO order.
+   */
+  async function estateLoad() {
+    const estate = await devChargingScheduler.publishedEstate(chargingDeps);
+    if (!estate.ok) return [];
+    const out = [];
+    for (const entry of estate.chargers) {
+      // eslint-disable-next-line no-await-in-loop
+      const row = await prisma.charger.findUnique({ where: { chargerId: entry.chargerId } });
+      // eslint-disable-next-line no-await-in-loop
+      const live = row
+        ? await prisma.chargerReservation.findMany({
+          where: { chargerDbId: row.id, state: { in: devChargingScheduler.LIVE_STATES } },
+          orderBy: [{ reservedFrom: "asc" }, { reservationId: "asc" }],
+        })
+        : [];
+      const active = live.filter((r) => r.state === devChargingScheduler.RESERVATION_STATE.ACTIVE);
+      const queued = live.filter((r) => r.state === devChargingScheduler.RESERVATION_STATE.QUEUED);
+      out.push({
+        chargerId: entry.chargerId,
+        row,
+        plugCount: entry.plugCount,
+        isDepot: entry.isDepot,
+        activeAgents: active.map((r) => r.agentId),
+        queuedAgents: queued.map((r) => r.agentId),
+        activeRemainingS: active.map((r) => {
+          const vr = vrByAgentRowId.get(r.agentId);
+          return vr && typeof vr.chargeSecondsRemaining === "function" ? vr.chargeSecondsRemaining() : null;
+        }),
+      });
+    }
+    return out;
+  }
 
   /**
    * BATCH 2 — is this agent one the development Charging Scheduler covers?
@@ -207,13 +271,73 @@ function createVirtualRobotSimulator({
    * @param {string} agentRowId `Agent.id`
    * @returns {{ request: Function, release: Function, state: Function }}
    */
-  function chargingClientFor(agentRowId, permissionSet) {
+  function chargingClientFor(agentRowId, permissionSet, packNominalWh) {
+    /**
+     * Phase B — the station for a new session: reachable (contained campus route), keeping the
+     * reserve where possible, soonest to start charging (`chargerSelection`). `context` is what
+     * the robot knows about itself; without it (an older caller) the depot is asked for.
+     */
+    async function chooseStation(context) {
+      if (!context || !context.from) return { chargerId: devChargingScheduler.DEVELOPMENT_CHARGER.chargerId, selection: null };
+      const load = await estateLoad();
+      // Nothing published: not a routing question. The depot is asked for, and the scheduler's
+      // refusal (with the provisioning problems) says why no plug can be had.
+      if (load.length === 0) return { chargerId: devChargingScheduler.DEVELOPMENT_CHARGER.chargerId, selection: null };
+      const candidates = load.map((entry) => {
+        const routed = chargerRouter.routeToCharger({ chargerRow: entry.row, from: context.from, permissionSet });
+        return routed.ok
+          ? { chargerId: entry.chargerId, distanceM: routed.distanceM, plugCount: entry.plugCount, activeRemainingS: entry.activeRemainingS, queued: entry.queuedAgents.length }
+          : { chargerId: entry.chargerId, refusal: routed.refusal, reason: routed.reason };
+      });
+      const selection = chargerSelection.selectStation({ candidates, robot: context });
+      return { chargerId: selection.chosen ? selection.chosen.chargerId : null, selection };
+    }
+
     return {
-      async request(targetSoc) {
+      async request(targetSoc, context) {
+        // A robot that already holds a plug anywhere in the estate keeps it (idempotent); only a
+        // new session chooses a station.
+        let existing = await devChargingScheduler.liveReservationFor(chargingDeps, agentRowId);
+        let chargerId = devChargingScheduler.DEVELOPMENT_CHARGER.chargerId;
+        let selection = null;
+        if (existing && existing.chargerDbId) {
+          // A reservation at a charger that has LEFT the published estate can never be served: it is
+          // not this robot's plug any more. The scheduler releases it (CHARGER_SUPERSEDED, its own
+          // grants only) when the request below runs; the robot chooses a usable station instead.
+          const estate = await devChargingScheduler.publishedEstate(chargingDeps);
+          const heldRow = await prisma.charger.findUnique({ where: { id: existing.chargerDbId } });
+          if (estate.ok && heldRow && !estate.chargers.some((entry) => entry.chargerId === heldRow.chargerId)) existing = null;
+        }
+        if (existing) {
+          // The plug it holds is at the reservation's OWN charger, and that is the charger this
+          // request and the promotion pass below are about. Naming the depot here left a robot
+          // queued at a station waiting for ever when the estate had no depot — the depot's
+          // capacity is unpublished, so the restated request was refused every tick and the
+          // robot never heard its promotion (measured: RNSIT owner stations, includeDepot false).
+          const heldRow = existing.chargerDbId ? await prisma.charger.findUnique({ where: { id: existing.chargerDbId } }) : null;
+          if (heldRow && heldRow.chargerId) chargerId = heldRow.chargerId;
+        } else {
+          const chosen = await chooseStation(context);
+          selection = chosen.selection;
+          if (!chosen.chargerId) {
+            const reasons = selection ? selection.excluded.map((e) => `${e.chargerId}: ${e.reason}`) : [];
+            return {
+              state: null,
+              retryable: false,
+              blockedCode: "ROUTE_REFUSED",
+              problems: reasons.length > 0 ? [`no charging station is reachable — ${reasons.join("; ")}`] : ["no charging station is published"],
+            };
+          }
+          chargerId = chosen.chargerId;
+        }
         const verdict = await devChargingScheduler.requestPlug(chargingDeps, {
           agentRowId,
           targetSoc,
           nowMs: Date.now(),
+          // D-7 — the reservation window is sized for this agent's commissioned pack.
+          packNominalWh,
+          // Phase B — the chosen station.
+          chargerId,
         });
         if (!verdict.ok) {
           // `retryable` means PostgreSQL declined to serialise the transaction against a
@@ -228,14 +352,20 @@ function createVirtualRobotSimulator({
           // `null`, never `"NONE"`. "The scheduler did not answer" is not "you hold
           // nothing"; reporting the second would let a charging agent conclude its
           // reservation had been taken away because one transaction lost a race.
-          return { state: null, retryable: verdict.retryable === true, problems: verdict.problems };
+          // D-6 — with the reason provisioning failed, when it did: "no projection" alone does
+          // not tell an operator that the charger row itself is missing.
+          return {
+            state: null,
+            retryable: verdict.retryable === true,
+            problems: [...(verdict.problems || []), ...(provisioningProblems || [])],
+          };
         }
         // A newly queued robot is promoted by the same pass everybody else is, so the
         // request does not grant its own plug. Running the pass here keeps the common
         // case — a free plug and an empty queue — one round trip rather than one tick.
-        await devChargingScheduler.promote(chargingDeps, { nowMs: Date.now() });
-        const live = await devChargingScheduler.liveReservationFor(chargingDeps, agentRowId);
-        return { state: live ? live.state : "NONE", problems: [] };
+        await devChargingScheduler.promote(chargingDeps, { nowMs: Date.now(), chargerId });
+        const held = await devChargingScheduler.liveReservationFor(chargingDeps, agentRowId);
+        return { state: held ? held.state : "NONE", problems: [], chargerId, urgent: Boolean(selection && selection.urgent) };
       },
       async release(reason) {
         return devChargingScheduler.release(chargingDeps, { agentRowId, nowMs: Date.now(), reason });
@@ -256,8 +386,33 @@ function createVirtualRobotSimulator({
        * over this robot's class's permitted ways, or a refusal by name. The charger row is read
        * fresh, so the robot is routed to the row as it is now, never to a remembered one.
        */
+      /**
+       * Phase E — the campus route length from `from` to the nearest usable charger, for the
+       * robot's early-trigger check (`VirtualRobot._chargerOutOfReach`). A read: nothing is
+       * reserved. `{ ok: false }` when no usable charger can be routed to.
+       */
+      async chargerTripEstimate(from) {
+        // Phase B — the nearest (by campus route) usable charger of the estate.
+        const estate = await devChargingScheduler.publishedEstate(chargingDeps);
+        const ids = estate.ok && estate.chargers.length > 0 ? estate.chargers.map((e) => e.chargerId) : [devChargingScheduler.DEVELOPMENT_CHARGER.chargerId];
+        let best = null;
+        let lastRefusal = null;
+        for (const chargerId of ids) {
+          // eslint-disable-next-line no-await-in-loop
+          const chargerRow = await prisma.charger.findUnique({ where: { chargerId } });
+          const routed = chargerRouter.routeToCharger({ chargerRow, from, permissionSet });
+          if (routed.ok && (!best || routed.distanceM < best.distanceM)) best = { ok: true, chargerId, distanceM: routed.distanceM };
+          if (!routed.ok) lastRefusal = routed;
+        }
+        return best || { ok: false, refusal: lastRefusal ? lastRefusal.refusal : "NO_CHARGER", reason: lastRefusal ? lastRefusal.reason : "no charger is published" };
+      },
       async routeToCharger(from) {
-        const chargerRow = await prisma.charger.findUnique({ where: { chargerId: devChargingScheduler.DEVELOPMENT_CHARGER.chargerId } });
+        // Phase B — the route to the charger this agent HOLDS a plug at; the depot when it holds
+        // none (an older caller asks for the route before reserving).
+        const held = await devChargingScheduler.liveReservationFor(chargingDeps, agentRowId);
+        const chargerRow = held && held.chargerDbId
+          ? await prisma.charger.findUnique({ where: { id: held.chargerDbId } })
+          : await prisma.charger.findUnique({ where: { chargerId: devChargingScheduler.DEVELOPMENT_CHARGER.chargerId } });
         return chargerRouter.routeToCharger({ chargerRow, from, permissionSet });
       },
     };
@@ -334,9 +489,15 @@ function createVirtualRobotSimulator({
     // fleet and stopped with it, because a scheduler promoting robots that are not running
     // would hand plugs to agents that cannot use them.
     if (prisma && schedulerTimer === null) {
+      // Step D — OPT-IN (`SIM_CHARGER_PROJECTION_REFRESH_SECONDS`): republish the estate's
+      // occupancy so `E_return` can price against the projection instead of its DEPOT_ONLY fallback.
+      const refresh = devChargingScheduler.projectionRefreshSeconds();
+      if (refresh.problem) log.warn("[VR] charger projection refresh", { problem: refresh.problem });
       schedulerTimer = setInterval(() => {
+        const nowMs = Date.now();
         devChargingScheduler
-          .reconcile(chargingDeps, { nowMs: Date.now() })
+          .reconcile(chargingDeps, { nowMs })
+          .then(() => (refresh.enabled ? devChargingScheduler.refreshProjection(chargingDeps, { nowMs, refreshAfterSeconds: refresh.seconds }) : null))
           .catch((e) => log.warn("[VR] charging scheduler pass failed", { message: e?.message }));
       }, SCHEDULER_PASS_INTERVAL_MS);
       if (typeof schedulerTimer.unref === "function") schedulerTimer.unref();
@@ -368,11 +529,45 @@ function createVirtualRobotSimulator({
     if (!prisma) return { ok: false, problems: ["no prisma client"] };
     const nowMs = options && Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
 
-    const provisioned = await devChargingScheduler.provision({ prisma }, { nowMs });
+    // Phase B — the owner's station declaration: each approved station's coordinate is validated
+    // against the pinned delivery domain and the campus network (reachable from the depot, the
+    // whole route inside the domain) before it is offered to the scheduler. Unapproved or invalid
+    // stations stay in the catalogue with their problems, never in the estate.
+    const declared = stationDeclaration !== undefined
+      ? chargingStations.normaliseDeclaration(stationDeclaration, "injected")
+      : chargingStations.loadDeclaration();
+    const domain = pinnedDomain();
+    const depotRow = await prisma.charger.findUnique({ where: { chargerId: devChargingScheduler.DEVELOPMENT_CHARGER.chargerId } });
+    const reference = depotRow && Number.isFinite(depotRow.latitude) && Number.isFinite(depotRow.longitude)
+      ? { lat: depotRow.latitude, lon: depotRow.longitude }
+      : null;
+    stationCatalogue = declared.stations.map((station) => {
+      const verdict = chargingStations.validateStation({ station, declaration: domain, reference });
+      const problems = [...verdict.problems];
+      if (verdict.usable && !reference) problems.push({ code: "NOT_REACHABLE", detail: "no depot coordinate to test reachability from" });
+      return { ...station, usable: problems.length === 0, problems, cellId: verdict.cellId, accessM: verdict.accessM, provisioned: false };
+    });
+    const offered = stationCatalogue
+      .filter((station) => station.usable)
+      .map((station) => ({ chargerId: station.chargerId, lat: station.lat, lon: station.lon, cellId: station.cellId, regionId: station.regionId, plugCount: station.plugCount }));
+
+    const provisioned = await devChargingScheduler.provision({ prisma }, { nowMs, stations: offered, includeDepot: declared.includeDepot });
+    for (const outcome of provisioned.stations || []) {
+      const entry = stationCatalogue.find((station) => station.chargerId === outcome.chargerId);
+      if (!entry) continue;
+      entry.provisioned = outcome.usable;
+      if (!outcome.usable) {
+        entry.usable = false;
+        entry.problems = [...entry.problems, ...outcome.problems.map((detail) => ({ code: "NOT_PROVISIONED", detail }))];
+      }
+    }
+    if (declared.problems.length > 0) log.warn("[VR] charging station declaration problems", { source: declared.source, problems: declared.problems });
     if (!provisioned.ok) {
+      provisioningProblems = Array.isArray(provisioned.problems) ? provisioned.problems : null;
       log.warn("[VR] development charger not provisioned", { problems: provisioned.problems });
       return provisioned;
     }
+    provisioningProblems = null;
 
     // Restart reconciliation, before the first robot asks for anything. A process that
     // died with three robots ACTIVE left three occupied plugs and no in-memory state;
@@ -383,6 +578,8 @@ function createVirtualRobotSimulator({
     log.info("[VR] development charging scheduler ready", {
       chargerId: devChargingScheduler.DEVELOPMENT_CHARGER.chargerId,
       plugCount: devChargingScheduler.DEVELOPMENT_CHARGER.plugCount,
+      // Phase B — the declared stations and whether each is in the estate.
+      stations: stationCatalogue.map((station) => ({ chargerId: station.chargerId, approved: station.approved, usable: station.usable, problems: station.problems.map((x) => x.code) })),
       projectionVersion: provisioned.projectionVersion,
       publishedNewVersion: provisioned.published,
       staleReservationsExpired: reconciled.expired,
@@ -506,6 +703,8 @@ function createVirtualRobotSimulator({
             battery: true,
             simulated: true,
             massKg: true,
+            // Phase E — the commissioned reserve, read with the rest of the specification.
+            batteryReservePct: true,
             // P7-D3 Step 2 — the server-side operator hold (`operatorHoldFrom`).
             status: true,
             statusBeforeOffline: true,
@@ -596,6 +795,8 @@ function createVirtualRobotSimulator({
       speedJitter:         config.speedJitter,
       obstacleProbability: config.obstacleProbability,
       initialBattery:      config.initialBattery,
+      // Phase E — the charge trigger, when one has been configured for this process.
+      chargeTriggerPct:    config.chargeTriggerPct,
       // A configured seed is *offset by the robot id* rather than used directly. Handing
       // every robot the same seed would make them move identically — synchronised jitter
       // across the fleet — which is the opposite of the independence a seed is set for. The
@@ -625,6 +826,7 @@ function createVirtualRobotSimulator({
           ? chargingClientFor(
               row.agent.id,
               (row.agent.agentClass && row.agent.agentClass.mobilityModel && row.agent.agentClass.mobilityModel.permissionSet) || null,
+              specificationInputsFor(row).specification.packNominalWh,
             )
           : null,
     });
@@ -640,6 +842,7 @@ function createVirtualRobotSimulator({
     }
 
     robots.push(vr);
+    if (row && row.agent && row.agent.id) vrByAgentRowId.set(row.agent.id, vr);
 
     if (started) {
       vr.connect(serverUrl);
@@ -665,11 +868,97 @@ function createVirtualRobotSimulator({
     // a plug for every decommission and the queue behind it stops moving. Issued before
     // the splice, while the instance still holds its bound client.
     try { robots[idx]._clearCharging(devChargingScheduler.RELEASE_REASON.DEREGISTERED); } catch { /* ignore */ }
+    for (const [agentRowId, instance] of vrByAgentRowId) {
+      if (instance === robots[idx]) vrByAgentRowId.delete(agentRowId);
+    }
     robots.splice(idx, 1);
     log.info(`[VR] ${robotId} virtual robot removed`);
   }
 
   // ── Introspection ───────────────────────────────────────────────────────────
+
+  /**
+   * Phase B / dashboard — the charging estate as the operator sees it, and each queued robot's
+   * place in its queue.
+   *
+   *   stations: the depot and every declared station — approved or not, usable or not, with the
+   *             problems that keep it out — each with its plug count, occupancy and queue length.
+   *             A station with no approved coordinate is listed with no coordinate.
+   *   robots:   robotId → { stationName, queuePosition (1 = next; 0 = on a plug), estimatedWaitS },
+   *             the wait from `chargerSelection.expectedWaitSeconds` (null when unknown).
+   *
+   * @returns {Promise<{ stations: object[], robots: object, provenance: string }>}
+   */
+  async function chargingOverview() {
+    const load = prisma ? await estateLoad() : [];
+    const loadById = new Map(load.map((entry) => [entry.chargerId, entry]));
+    const depotId = devChargingScheduler.DEVELOPMENT_CHARGER.chargerId;
+    const nameOf = (chargerId) => {
+      if (chargerId === depotId) return devChargingScheduler.DEVELOPMENT_CHARGER.name;
+      const declared = stationCatalogue.find((station) => station.chargerId === chargerId);
+      return declared ? declared.name : chargerId;
+    };
+    const occupancy = (entry) => (entry
+      ? { inEstate: true, plugCount: entry.plugCount, active: entry.activeAgents.length, queued: entry.queuedAgents.length }
+      : { inEstate: false, plugCount: null, active: 0, queued: 0 });
+
+    const stations = [];
+    const depotLoad = loadById.get(depotId);
+    if (depotLoad) {
+      stations.push({
+        chargerId: depotId,
+        name: nameOf(depotId),
+        isDepot: true,
+        approved: true,
+        usable: true,
+        lat: depotLoad.row ? depotLoad.row.latitude : null,
+        lon: depotLoad.row ? depotLoad.row.longitude : null,
+        problems: [],
+        ...occupancy(depotLoad),
+      });
+    }
+    for (const station of stationCatalogue) {
+      const entry = loadById.get(station.chargerId);
+      // The coordinate the owner DECLARED, for display only — when it is a well-formed WGS-84
+      // pair (never a malformed one, never a guessed one). `lat`/`lon` stay the position of a
+      // station that can serve robots, and are null for every other: a declared position is
+      // not a usable charger, and the dashboard draws it as inactive with its problems.
+      const declaredWellFormed = Number.isFinite(station.lat) && Number.isFinite(station.lon) &&
+        Math.abs(station.lat) <= 90 && Math.abs(station.lon) <= 180 &&
+        !(station.problems || []).some((p) => p && (p.code === "MALFORMED_COORDINATE" || p.code === "NO_COORDINATE"));
+      stations.push({
+        chargerId: station.chargerId,
+        name: station.name,
+        isDepot: false,
+        approved: station.approved,
+        usable: station.usable && Boolean(entry),
+        lat: station.usable ? station.lat : null,
+        lon: station.usable ? station.lon : null,
+        declaredLat: declaredWellFormed ? station.lat : null,
+        declaredLon: declaredWellFormed ? station.lon : null,
+        problems: station.problems,
+        ...occupancy(entry),
+      });
+    }
+
+    const robotsInfo = {};
+    for (const entry of load) {
+      for (const agentRowId of entry.activeAgents) {
+        const vr = vrByAgentRowId.get(agentRowId);
+        if (vr) robotsInfo[vr.robotId] = { stationName: nameOf(entry.chargerId), queuePosition: 0, estimatedWaitS: 0 };
+      }
+      entry.queuedAgents.forEach((agentRowId, index) => {
+        const vr = vrByAgentRowId.get(agentRowId);
+        if (!vr) return;
+        robotsInfo[vr.robotId] = {
+          stationName: nameOf(entry.chargerId),
+          queuePosition: index + 1,
+          estimatedWaitS: chargerSelection.expectedWaitSeconds({ plugCount: entry.plugCount, activeRemainingS: entry.activeRemainingS, queued: index }),
+        };
+      });
+    }
+    return { stations, robots: robotsInfo, provenance: "DEVELOPMENT_SIMULATION" };
+  }
 
   function getStatus() {
     const robotStatuses = robots.map((vr) => vr.getStatus());
@@ -753,6 +1042,9 @@ function createVirtualRobotSimulator({
         if ("telemetryIntervalMs" in normalised.config) {
           changed = vr.setTelemetryInterval(normalised.config.telemetryIntervalMs) || changed;
         }
+        if ("chargeTriggerPct" in normalised.config && typeof vr.setChargeTriggerPct === "function") {
+          changed = vr.setChargeTriggerPct(normalised.config.chargeTriggerPct) || changed;
+        }
         if ("obstacleProbability" in normalised.config) {
           changed = vr.setObstacleProbability(normalised.config.obstacleProbability) || changed;
         }
@@ -793,6 +1085,8 @@ function createVirtualRobotSimulator({
     managesAgent,
     // The charger's occupancy, for diagnostics and the live verification harness.
     chargingStatus: () => devChargingScheduler.status(chargingDeps),
+    // Phase B / dashboard — stations, occupancy and queue positions.
+    chargingOverview,
   };
 }
 

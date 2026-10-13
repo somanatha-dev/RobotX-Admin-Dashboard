@@ -61,6 +61,10 @@ const legEntryDeadline = require("../../engine/cutover/legEntryDeadline");
 // keep it a projection and the test that asserts them structurally.
 const assignmentProjection = require("../../services/assignmentProjection.service");
 const legProgress = require("../../services/legProgress.service");
+// Commit-race closure, Gap A — whether the robot's PERSISTED state lets its ACCEPT bind it.
+const offerAcceptanceAdmission = require("../../services/offerAcceptanceAdmission.service");
+// …and the physical robot's recorded software stop latch, the input F7 reads.
+const stopLatchObservation = require("../../services/stopLatchObservation.service");
 // §4.4's transition table — read, never extended. It is what says which Leg state an offer
 // response answers (`OFFERED --AGENT_ACK--> ACCEPTED`) and what an ACK must prove
 // (`FENCE_MATCHES_OFFER_UNEXPIRED`).
@@ -164,6 +168,70 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
       return undefined;
     }
   };
+
+  /**
+   * Commit-race closure, Gap A — refuse an ACCEPT the robot's persisted state does not admit,
+   * and withdraw the offer so the robot stands down and the Leg goes back to the queue.
+   *
+   * The withdrawal is the engine's own (`offers.withdrawExpiredOffer`, §11.4 step 2's
+   * withdraw-at-an-advanced-fence, the TTL expiry's path), with this refusal as its reason: the
+   * agent's fence advanced under the locked `Agent` row, a signed `WITHDRAW` enqueued, the Leg
+   * `OFFERED → QUEUED`, the commitment released, the agent excluded for `dispatch.nack_cooloff`.
+   * The QUEUED deadline is armed in the same transaction (§4.5) by the handler's one shared
+   * arming site, which a withdrawal reaches with `legState: QUEUED` exactly as an applied
+   * disposition does. Nothing about the commit, the engine or the offer's contents changes.
+   *
+   * Fail closed: when any input the withdrawal needs is unresolved (the signing key, the
+   * delivery delay, the cool-off, the QUEUED deadline), nothing is written — the ACCEPT is still
+   * not applied, the Leg stays OFFERED, and the offer's own TTL expiry withdraws it.
+   *
+   * @returns {Promise<{ outcome: string, reason: string, withdrawn: boolean, legState: string|null }>}
+   */
+  async function refuseAcceptance(tx, input) {
+    const { admission, commitment, leg, storeTime, snapshot } = input;
+    const reason = `ACCEPT_REFUSED:${admission.code}`;
+    const signingKey = settings.signingKey || process.env.COMMAND_SIGNING_KEY;
+    const maxDeliveryDelaySeconds = settingOrPinned("maxDeliveryDelaySeconds", "dispatch.max_delivery_delay");
+    const nackCooloffSeconds = settingOrPinned("nackCooloffSeconds", "dispatch.nack_cooloff");
+    const queuedDeadlineSeconds = legEntryDeadline.deadlineSecondsFrom(snapshot && snapshot.values, offers.LEG_STATE.QUEUED);
+    const unresolved = [
+      ["COMMAND_SIGNING_KEY", typeof signingKey === "string" && signingKey !== "" ? signingKey : undefined],
+      ["dispatch.max_delivery_delay", maxDeliveryDelaySeconds],
+      ["dispatch.nack_cooloff", nackCooloffSeconds],
+      ["the QUEUED deadline", queuedDeadlineSeconds],
+    ].filter(([, value]) => value === undefined || value === null || (typeof value === "number" && !(value > 0)));
+    if (unresolved.length > 0) {
+      log.warn("OFFER_ACCEPT refused; the offer is left to its TTL expiry", {
+        commitmentId: commitment.commitmentId,
+        refusal: admission.code,
+        detail: admission.reason,
+        unresolved: unresolved.map(([name]) => name),
+      });
+      return { outcome: offers.OUTCOME.REFUSED, reason, withdrawn: false, legState: null };
+    }
+
+    // The fence is allocated from the agent row as it stands under the lock, as every other
+    // fence writer allocates it (invariant I6).
+    await tx.$queryRawUnsafe('SELECT "id" FROM "Agent" WHERE "id" = $1 FOR UPDATE', input.agent.id);
+    const agent = await tx.agent.findUnique({ where: { id: input.agent.id } });
+    await offers.withdrawExpiredOffer(tx, {
+      commitment,
+      agent,
+      leg,
+      storeTime,
+      maxDeliveryDelaySeconds,
+      nackCooloffSeconds,
+      signingKey,
+      reason,
+    });
+    log.warn("OFFER_ACCEPT refused and the offer withdrawn", {
+      commitmentId: commitment.commitmentId,
+      refusal: admission.code,
+      detail: admission.reason,
+    });
+    // The Leg is now QUEUED: the shared arming site below supervises it, as for any entered state.
+    return { outcome: offers.OUTCOME.REFUSED, reason, withdrawn: true, legState: offers.LEG_STATE.QUEUED };
+  }
 
   /**
    * Publish an accepted assignment to the surfaces built against the legacy schema.
@@ -316,13 +384,42 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
         });
         if (!awaiting.ok) return { outcome: offers.OUTCOME.IGNORED, reason: awaiting.reason };
 
-        const applied = await apply(tx, {
-          agent,
-          commitment: matched.commitment,
-          leg,
-          storeTime,
-          data: parsed.data,
-        });
+        // ── Commit-race closure, Gap A — the server's own answer to an ACCEPT ──────
+        //
+        // The ACCEPT is the binding point, and the robot's word is not the authority on whether
+        // it is held: its PERSISTED row is (`offerAcceptanceAdmission`). A held or faulted
+        // robot's ACCEPT is never applied; the offer is withdrawn instead (`refuseAcceptance`).
+        let admission = null;
+        if (event === "OFFER_ACCEPT") {
+          const robotRow = await tx.robot.findUnique({
+            where: { robotId },
+            select: { status: true, statusBeforeOffline: true, socketId: true },
+          });
+          admission = offerAcceptanceAdmission.assess(robotRow);
+          // A robot in the owner's physical fleet declaration: its software stop latch, by F7's
+          // own rule (`assessEmergencyStop`). Any other robot has no latch to read.
+          const physicalPolicy = appLocals?.physicalFleetPolicy ?? null;
+          if (admission.admitted && offerAcceptanceAdmission.isDeclaredPhysical(physicalPolicy, robotId)) {
+            admission = offerAcceptanceAdmission.assessEmergencyStop({
+              robot: robotRow,
+              latchRead: await stopLatchObservation.readStopLatchState(kv, robotId),
+              policy: physicalPolicy,
+              config: { get: (name) => (snapshot && typeof snapshot.resolve === "function" ? snapshot.resolve(name, {}) : undefined) },
+              atMs: storeTime.getTime(),
+            });
+          }
+        }
+
+        const applied =
+          admission && !admission.admitted
+            ? await refuseAcceptance(tx, { admission, agent, commitment: matched.commitment, leg, storeTime, snapshot })
+            : await apply(tx, {
+                agent,
+                commitment: matched.commitment,
+                leg,
+                storeTime,
+                data: parsed.data,
+              });
 
         // ── PHASE 15 remediation (X2a) — §4.5's deadline for the entered state ──
         //
@@ -336,14 +433,15 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
         // and is never probed and never reassigned. All three dispositions are armed, not
         // just the accept, because §4.5's obligation is about the *state*, not about which
         // event produced it — and supervising two of three is how the next divergence
-        // starts.
-        if (applied.outcome === offers.OUTCOME.APPLIED && applied.legState) {
+        // starts. A refused ACCEPT whose offer was withdrawn (Gap A) entered QUEUED too, and is
+        // armed here, at the same one site.
+        if ((applied.outcome === offers.OUTCOME.APPLIED && applied.legState) || (applied.withdrawn === true && applied.legState)) {
           await legEntryDeadline.superviseEntry(tx, {
             leg,
             state: applied.legState,
             storeTime,
             deadlineSeconds: legEntryDeadline.deadlineSecondsFrom(snapshot && snapshot.values, applied.legState),
-            event,
+            event: applied.withdrawn === true ? "OFFER_ACCEPT_REFUSED" : event,
             shardId: gate.shardId,
           });
         }

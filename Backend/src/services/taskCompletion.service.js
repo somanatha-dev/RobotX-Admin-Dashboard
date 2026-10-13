@@ -19,7 +19,7 @@
  *
  *   · `recordInTx` runs **inside the settling transaction**, so a Leg is never settled with its
  *     Task left open, or the reverse.
- *   · The Task write is conditional on the Task still being open, and the robot is released
+ *   · The Task write is conditional on the Task still being open (not terminal), and the robot is released
  *     only by the caller whose settlement moved the Leg or whose write closed the Task. A
  *     duplicate or late caller (ALREADY_SETTLED, a Task already COMPLETED) changes nothing and
  *     publishes nothing.
@@ -28,6 +28,7 @@
 const robotStateCache = require("../cache/robotStateCache");
 const { updateAssignedTask } = require("./robotRegistry.service");
 const settlement = require("../engine/lifecycle/settlement");
+const { TERMINAL_TASK_STATUSES } = require("./taskCancellation.service");
 
 /** The settlement outcomes after which the Task is complete. @structural */
 const SETTLED_OUTCOMES = Object.freeze([settlement.OUTCOME.SETTLED, settlement.OUTCOME.ALREADY_SETTLED]);
@@ -107,8 +108,13 @@ async function recordInTx(tx, input) {
   const { robotId, taskId, settledNow } = input;
   let taskCompleted = false;
   if (taskId) {
+    // The Task is the settled Leg's own (F2, `bindClaim`), so it is closed whatever robot the
+    // read model names and whichever open status it was projected to. Both lag when the
+    // projection did not apply (`ROBOT_ALREADY_BOUND` leaves it PENDING with no robot; a failed
+    // re-projection leaves it naming the previous unit), and a filter on them left the Task
+    // open for ever under a SETTLED Leg. Only a terminal Task is left alone.
     const written = await tx.task.updateMany({
-      where: { taskId, robot: { robotId }, status: { in: ["ASSIGNED", "IN_PROGRESS"] } },
+      where: { taskId, status: { notIn: [...TERMINAL_TASK_STATUSES] } },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
     taskCompleted = Boolean(written && written.count === 1);
@@ -150,7 +156,10 @@ async function publish(input) {
     await Promise.allSettled([kv.del(`robotTaskState:${robotId}`), kv.del(`robotTask:${robotId}`)]);
   }
   await updateAssignedTask(kv, robotId, null);
-  if (io) {
+  // COMPLETED only when this completion wrote it. A Leg settled under a Task that was already
+  // terminal (CANCELLED, FAILED, REJECTED) still frees the robot, but telling the dashboard the
+  // Task completed would be false, and its next refetch would contradict it.
+  if (io && completion.taskCompleted === true) {
     io.to("dashboard").emit("TASK_UPDATED", { robotId, taskId, status: "COMPLETED", timestamp: Date.now() });
   }
   return true;

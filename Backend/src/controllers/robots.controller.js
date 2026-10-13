@@ -881,6 +881,9 @@ const sendRobotCommand = asyncHandler(async (req, res) => {
     throw err;
   }
 
+  // Read before the Command row is written, so a store that cannot answer leaves nothing behind.
+  const firstBinding = await resumeBinding();
+
   const command = await prisma.command.create({
     data: {
       robotId: robot.id,
@@ -927,7 +930,7 @@ const sendRobotCommand = asyncHandler(async (req, res) => {
           const next = retries + 1;
           await setRetryCount(command.id, next);
 
-          await dispatchCommand(io, robotCode, { commandId: command.id, type });
+          await dispatchCommand(io, robotCode, { commandId: command.id, type, ...(await resumeBinding()) });
 
           await scheduleReliabilityCheck({ attempt: next });
           return;
@@ -940,11 +943,22 @@ const sendRobotCommand = asyncHandler(async (req, res) => {
     }, 5000);
   }
 
+  // RESUME names the commitment the server holds live for this robot (null for none), read for
+  // each delivery, redeliveries included. A unit drops a mission only when a RECALL is admitted,
+  // and one that never arrived (sent while it was disconnected, held for a sequence gap, failed
+  // by the outbox after its deadline) leaves the obsolete route on the unit; an unchecked RESUME
+  // then drove it. The unit resumes a commitment-bound mission only when it carries out the
+  // commitment named here (VirtualRobot `_resumeBindingRefusal`, the Pi's `BackendLink`).
+  async function resumeBinding() {
+    if (type !== "RESUME") return {};
+    return { commitmentId: await liveCommitmentIdFor(prisma, robotCode) };
+  }
+
   // Dispatched through the robot's Socket.IO room rather than this process's
   // local socket Map, so a command still reaches a robot whose connection is
   // owned by a different worker. `delivered` now reflects adapter-wide
   // presence rather than local presence.
-  const delivery = await dispatchCommand(io, robotCode, { commandId: command.id, type });
+  const delivery = await dispatchCommand(io, robotCode, { commandId: command.id, type, ...firstBinding });
 
   // Reliability: retry up to 2 times before FAILED.
   if (kv) await setRetryCount(command.id, 0);
@@ -952,6 +966,28 @@ const sendRobotCommand = asyncHandler(async (req, res) => {
 
   res.json({ ok: true, command, delivered: Boolean(delivery?.dispatched), ...(operatorHold ? { operatorHold } : {}) });
 });
+
+/**
+ * The commitment the server holds live for this robot — the one a RESUME may resume — or null.
+ *
+ * Resolved as `dtaro.handler.verifyCompletionClaim` and `legProgress.onPositionFix` resolve "the
+ * Leg this agent holds": the robot's Agent (`agentId` is the robot code), its newest unreleased
+ * commitment. A robot with no Agent row holds none.
+ *
+ * @param {object} prisma
+ * @param {string} robotCode the business id
+ * @returns {Promise<string|null>}
+ */
+async function liveCommitmentIdFor(prisma, robotCode) {
+  const agent = await prisma.agent.findUnique({ where: { agentId: robotCode }, select: { id: true } });
+  if (!agent) return null;
+  const commitment = await prisma.commitment.findFirst({
+    where: { agentId: agent.id, releasedAt: null },
+    orderBy: { grantedAt: "desc" },
+    select: { commitmentId: true },
+  });
+  return commitment ? commitment.commitmentId : null;
+}
 
 /**
  * P7-D1 — what the unit itself must report before its hold may be lifted: running again.

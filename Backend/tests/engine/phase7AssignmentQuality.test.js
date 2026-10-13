@@ -84,7 +84,14 @@ afterAll(() => {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /** The four robots as the store held them at 13:44:13.786Z (Observation, Telemetry, Robot, Commitment). */
+// Replayed AS RECORDED (2026-10-09): F34's floor was then the simulator's 5 %, because the commissioned
+// `batteryReservePct` did not reach the engine. Since the owner's decision of 2026-10-12 it does (15 % on
+// every LOCAL unit); `chargingAssignmentIntegration.test.js` pins the decision under it.
 function tsk816Fleet(changes) {
+  return w.asRecorded(tsk816FleetCurrent(changes));
+}
+
+function tsk816FleetCurrent(changes) {
   const c = changes || {};
   return [
     { robotId: "SIM-0A8C043FFE67", at: { lat: 12.901151, lon: 77.517575 }, socFraction: 0.29, status: "IDLE", positionAgeMs: 351, ...(c["SIM-0A8C043FFE67"] || {}) },

@@ -97,7 +97,6 @@ const {
   SPEED_MAX_MS,
   BATTERY_DRAIN_ACTIVE,
   BATTERY_DRAIN_IDLE,
-  BATTERY_WARN_THRESHOLD,
   BATTERY_CRITICAL_THRESHOLD,
   BATTERY_MIN,
   CHARGING_WAIT_MS,
@@ -110,7 +109,6 @@ const {
   RECONNECT_DELAY_MS,
   // PHASE 7 — §14.6's modelled pack.
   PACK_NOMINAL_WH,
-  CHARGE_POWER_CURVE,
   CHARGE_CHARGER_CLASS,
   CHARGE_PACK_TEMPERATURE_C,
   CHARGE_CURVE_INTEGRATION_STEPS,
@@ -118,12 +116,29 @@ const {
 } = require("./constants");
 
 const simulationPolicy = require("./simulationPolicy");
+// Step E — the simulated charge-rate model (one curve per pack; ABSOLUTE_W by default).
+const chargeModel = require("./chargeModel");
 // STEP 4 — the simulated thermal environment. Ambient inside the owner's declared
 // 25–35 °C band, and a pack temperature that responds to load and relaxes toward ambient.
 const { createSimulatedEnvironment } = require("./simulatedEnvironment");
 // STEP 5 — consumption through §14.2's model. This module holds no energy equation; it
 // builds the leg profile and calls the same `legEnergyWh` the assignment engine calls.
 const simulatedEnergy = require("./simulatedEnergy");
+// Phase E (charging lifecycle) — the simulation power policy, the reserve formula and the charge
+// trigger, stated once and shared with commissioning and the V1 composition.
+const energyPolicy = require("./energyPolicy");
+
+/** A charge trigger the simulator accepts, in percent. @structural */
+function validTriggerPct(value) {
+  // Strictly below the charge target (2026-10-13): at or above it a charged robot re-seeks at once.
+  return Number.isFinite(value) && value >= 1 && value <= 95 && value < TARGET_SOC_FALLBACK * 100;
+}
+
+/**
+ * Phase E — how often an idle robot re-estimates its trip to the nearest usable charger (the
+ * early-trigger check). @structural a refresh cadence, not a fleet parameter
+ */
+const CHARGER_TRIP_REFRESH_MS = 60_000;
 // STEP 4 — one deterministic pseudo-random stream per robot, so a run is reproducible and
 // two robots are not coupled through a shared generator. See `random.js` for why the
 // global `Math.random()` was a correctness problem and not merely an aesthetic one.
@@ -140,7 +155,7 @@ const commandSigning = require("../engine/security/commandSigning");
 const chargeCurve = require("../engine/energy/chargeCurve");
 // BATCH 2 — the release reasons the development Charging Scheduler records. Imported so
 // the agent and the scheduler spell them the same way; there is no agent-side copy.
-const { RELEASE_REASON: CHARGE_RELEASE_REASON, DEVELOPMENT_CHARGER } = require("./devChargingScheduler");
+const { RELEASE_REASON: CHARGE_RELEASE_REASON } = require("./devChargingScheduler");
 // P7-D3 Step 1 — the docking test, against the charger this robot verified it reached.
 const chargerRoute = require("./chargerRoute");
 
@@ -232,6 +247,29 @@ function nextDedupGeneration(previous, nowMs) {
 // on-agent bound that carries safety while the Commitment Store is unreachable and
 // invariant I2 is explicitly suspended. Overridable per instance.
 const AUTONOMOUS_CONTINUATION_LIMIT_SEC = 900;
+
+/**
+ * D-6 (charging audit) — the longest a robot waits between attempts to charge when charging is
+ * unavailable. The back-off starts at `CHARGING_WAIT_MS` (30 s) and doubles to this cap, so a
+ * robot whose charger appears (a declaration, a route, a freed plug) tries again within it.
+ * @structural a retry ceiling for a simulator, not a fleet parameter
+ */
+const CHARGING_BACKOFF_MAX_MS = 10 * 60 * 1000;
+
+/**
+ * D-6 — why charging is unavailable (`getStatus().chargingBlocked.code`).
+ * @structural
+ */
+const CHARGING_BLOCKED = Object.freeze({
+  /** The Charging Scheduler granted no plug (no charger declared, no projection, a refusal). */
+  NO_PLUG: "NO_PLUG",
+  /** No campus route to the reserved charger (no declaration, off the network, outside the domain). */
+  ROUTE_REFUSED: "ROUTE_REFUSED",
+  /** The reservation ended under the approach (expiry, release). */
+  RESERVATION_LOST: "RESERVATION_LOST",
+  /** Any other reason the approach was given up (docking radius, a route that did not fit). */
+  APPROACH_ABANDONED: "APPROACH_ABANDONED",
+});
 
 /**
  * Speed jitter for a commissioned unit, as a fraction of its own nominal speed.
@@ -474,6 +512,9 @@ class VirtualRobot {
     obstacleProbability,
     initialBattery,
     randomSeed,
+    // Phase E (charging lifecycle) — the charge trigger (percent), a live simulator parameter;
+    // the energy policy's default (20 %) otherwise.
+    chargeTriggerPct,
     // ── STEP 3: the unit's own commissioned specification ─────────────────────
     //
     // The single most important argument in this constructor. Before it, every simulated
@@ -513,6 +554,17 @@ class VirtualRobot {
     this._batteryState = batteryState && typeof batteryState === "object" ? batteryState : null;
     this._energyModelParams =
       energyModelParams && typeof energyModelParams === "object" ? energyModelParams : null;
+    // Phase E — the four terms a simulated unit's coefficient row reduces to, when it is a
+    // simulated declaration (every unmodelled term zero). Then this robot consumes exactly what
+    // the engine prices its missions with; otherwise the §14.2 path below (and its labelled
+    // fallback) applies, unchanged.
+    this._simulatedTerms = energyPolicy.simulatedTerms(this._energyModelParams);
+    this._chargeTriggerPct = validTriggerPct(chargeTriggerPct) ? chargeTriggerPct : energyPolicy.policy().chargeTriggerPct;
+    // Metres driven since the last energy step, and the latest estimate of the trip to the nearest
+    // usable charger (`_chargerOutOfReach`).
+    this._tickDistanceM = 0;
+    this._chargerTrip = null;
+    this._chargerTripPending = false;
 
     // ── STEP 4: the tick period and the movement/obstacle model, per instance ──
     // Held on the instance rather than read from the module so that two robots in one
@@ -630,7 +682,7 @@ class VirtualRobot {
     // dbBattery is the DB fallback passed in by SimulationEngine.
     //
     // ── STEP 4: where a configured `initialBattery` sits in that order ─────────
-    // **Last**, not first. The restore order is Redis → DB → configured → 100, so a
+    // **Last**, not first. The restore order is the lower of Redis and DB → configured → 100, so a
     // configured value replaces the hard-coded 100 and nothing else. The alternative —
     // letting configuration win — would make a restart reset the pack to its starting level
     // and so break the persistence §6 requires; a robot that recharged itself every time
@@ -686,10 +738,14 @@ class VirtualRobot {
     this._dockCharger      = null;
     this._routePending     = false;
     this._chargeRetryAt    = null;
+    // D-6 — why charging is currently unavailable, and the back-off: null when it is not.
+    this._chargingBlocked  = null;
     // P7-D1 — an operator STOP/PAUSE that arrived while charging. The session continues, but
     // however it ends the robot ends PAUSED, never IDLE (`_statusAfterCharging`).
     this._stopLatched      = false;
     this._chargeWaitUntil  = null;
+    // D-2 — the target a session reached on the tick it reached it; consumed on the next tick.
+    this._completedAtTargetPercent = null;
     this._pendingResume    = null;   // TASK_ASSIGN payload deferred while charging on low battery
 
     // ── BATCH 2: the scheduler client and the verdict it last gave ────────────
@@ -706,6 +762,9 @@ class VirtualRobot {
     this._chargingClient   = typeof chargingClient === "object" && chargingClient !== null ? chargingClient : null;
     this._schedulerState   = null;
     this._schedulerPending = false;
+    // D-8 — advanced whenever a charging session starts or ends. A scheduler answer (request,
+    // state read or route) carries the value it was asked under and is discarded if it changed.
+    this._chargingSession  = 0;
 
     // ── P7-D3 Step 2: what a restart restores, decided once in `commission()` ──
     // `_operatorHoldAtStart` is the server's hold as the row stated it (true/false/null);
@@ -804,6 +863,12 @@ class VirtualRobot {
         Number.isFinite(source.payloadCapacityKg) && source.payloadCapacityKg >= 0
           ? source.payloadCapacityKg
           : null,
+      // Phase E — `Robot.batteryReservePct`, the commissioned minimum reserve (commissioning
+      // admits 0–90 %). Null when undeclared; `energyPolicy.reserveWh` then applies its floor.
+      batteryReservePct:
+        Number.isFinite(source.batteryReservePct) && source.batteryReservePct >= 0 && source.batteryReservePct <= 90
+          ? source.batteryReservePct
+          : null,
     };
   }
 
@@ -812,7 +877,7 @@ class VirtualRobot {
   /**
    * Seed Redis with session token and restore the last-known battery level.
    *
-   * Priority:  Redis vr:battery key  →  DB value  →  100 % (full charge)
+   * Priority:  the lower of Redis vr:battery and the DB value (D-3)  →  configured  →  100 %
    *
    * The robot record in PostgreSQL was already created by the Commission API
    * before addRobot() is called — do NOT touch DB here.
@@ -851,23 +916,34 @@ class VirtualRobot {
     await kv.set(`session:${this.robotId}`, this.sessionToken, { ex: SESSION_TTL_SEC });
 
     // 2) Restore battery
+    //
+    // D-3 (charging audit) — the LOWER of the two persisted values, not Redis first. The Redis
+    // snapshot is written every 2 min and the Robot row at least every 15 s, so the snapshot is
+    // normally the older and the higher; restoring it handed the robot energy a newer record said
+    // it had spent, and its first frames were refused as a rise against the row. A value that is
+    // not a finite percentage is ignored, never coerced (`Number`, not `parseFloat`: "50abc" is
+    // not 50).
+    const validPercent = (value) => Number.isFinite(value) && value >= 0 && value <= 100;
     let source = "default (100%)";
     let restoredBattery = null;
+    const candidates = [];
 
     try {
       const raw = await kv.get(batteryKey(this.robotId));
       if (raw !== null && raw !== undefined) {
-        const v = parseFloat(raw);
-        if (Number.isFinite(v) && v >= 1 && v <= 100) {
-          restoredBattery = v;
-          source = `Redis (${v.toFixed(1)}%)`;
-        }
+        const v = Number(raw);
+        if (validPercent(v)) candidates.push({ value: v, source: `Redis (${v.toFixed(1)}%)` });
       }
     } catch { /* Redis unavailable — fall through */ }
 
-    if (restoredBattery === null && this._dbBattery !== null) {
-      restoredBattery = this._dbBattery;
-      source = `DB (${this._dbBattery.toFixed(1)}%)`;
+    if (validPercent(this._dbBattery)) {
+      candidates.push({ value: this._dbBattery, source: `DB (${this._dbBattery.toFixed(1)}%)` });
+    }
+
+    if (candidates.length > 0) {
+      const lowest = candidates.reduce((low, entry) => (entry.value < low.value ? entry : low));
+      restoredBattery = lowest.value;
+      source = candidates.length > 1 ? `${lowest.source}, the lower of Redis and DB` : lowest.source;
     }
 
     // STEP 4 — a configured `initialBattery` is the *last* fallback, replacing the
@@ -1593,6 +1669,16 @@ class VirtualRobot {
       } catch { /* ignore */ }
     };
 
+    // Commit-race closure, Gap A — a held robot takes no new work. PAUSED (an operator
+    // STOP/PAUSE, or the server's hold restored at start) or a STOP latched during a charge: the
+    // answer is a REJECT that names the hold. The server refuses a held robot's ACCEPT on its own
+    // (`offer.handler` / `offerAcceptanceAdmission`); this is the robot's half, not the guarantee.
+    const hold = this.status === "PAUSED" ? "PAUSED" : this._stopLatched ? "STOP_LATCHED" : null;
+    if (hold) {
+      respond("OFFER_REJECT", { reason: `AGENT_HELD:${hold}` });
+      return;
+    }
+
     // PHASE 7 — §14.6. Adopt the offer's published inputs *before* deciding, so the
     // decision is taken on the same numbers the server planned with.
     this._adoptEnergyInputs(envelope.payload);
@@ -1756,9 +1842,17 @@ class VirtualRobot {
       case "RETURN":
         this._applyReturnToBase(type);
         break;
-      case "RESUME":
+      case "RESUME": {
+        const refusal = this._resumeBindingRefusal(payload);
+        if (refusal) {
+          // Refused as an unknown type is: not applied, not acknowledged and not recorded, so
+          // the server's redelivery (which re-reads the live commitment) is decided afresh.
+          this.log.warn(`[VR] ${this.robotId} RESUME ${commandId || ""} refused — ${refusal}`);
+          return;
+        }
         this._applyResume();
         break;
+      }
       default:
         this.log.warn(`[VR] ${this.robotId} ignoring unknown COMMAND type ${type}`);
         // Unknown type — deliberately not acknowledged, and deliberately **not recorded**
@@ -1778,6 +1872,31 @@ class VirtualRobot {
       this._appliedCommands.set(commandId, { type, at: Date.now() });
       this._emitCommandAck(commandId);
     }
+  }
+
+  /**
+   * Why an operator RESUME may not resume the mission this unit holds, or null.
+   *
+   * A mission is dropped only when its RECALL / WITHDRAW is admitted. One that never arrived
+   * (sent while disconnected, held for a sequence gap, failed by the outbox after its deadline)
+   * leaves the mission here after the server released its commitment, and a RESUME drove that
+   * obsolete route. The server names the commitment it holds live for this robot on RESUME
+   * (`commitmentId`, null for none); a commitment-bound mission resumes only when it is that one.
+   * Unchanged: a RESUME without the field (an older server) and one to a unit holding no
+   * commitment-bound mission (idle, charging, the approach to a charger).
+   *
+   * @param {object} payload the COMMAND payload
+   * @returns {string|null}
+   */
+  _resumeBindingRefusal(payload) {
+    if (!payload || !Object.prototype.hasOwnProperty.call(payload, "commitmentId")) return null;
+    if (!this._activeCommitment) return null;
+    const carried = this._activeCommitment.commitmentId;
+    if (payload.commitmentId === carried) return null;
+    return (
+      `the server holds ${payload.commitmentId === null ? "no live commitment" : `commitment ${payload.commitmentId}`} ` +
+      `for this robot, and the held mission carries out ${carried}`
+    );
   }
 
   /** The legacy operator-command acknowledgement. One emitter, so both paths agree. */
@@ -1812,6 +1931,14 @@ class VirtualRobot {
    */
   _applyStop(label) {
     if (this.status !== "CHARGING") {
+      // D-4 (charging audit) — a robot that has not docked does not keep a charger reservation
+      // while it cannot move: the approach (or the request for a plug) ends here and the plug
+      // goes back to the queue. It asks again after a RESUME. A docked robot (CHARGING) keeps
+      // its session below, with the STOP latched.
+      if (this._chargingPhase === "SEEKING" || this._chargingPhase === "APPROACHING") {
+        this._clearCharging(CHARGE_RELEASE_REASON.AGENT_RELEASED);
+        this.log.info(`[VR] ${this.robotId} ${label} before docking — charger reservation released`);
+      }
       this.status = "PAUSED";
     } else {
       this._stopLatched = true;
@@ -1836,11 +1963,15 @@ class VirtualRobot {
 
   /** Abandon the current task entirely and go idle. */
   _applyReturnToBase(label) {
+    // Commit-race closure, Gap A — a hold in force survives the end of the work: a WITHDRAW or
+    // RECALL of a PAUSED robot's mission does not un-pause it (only RESUME / clear-fault does).
+    const wasPaused = this.status === "PAUSED";
     this._clearTask();
     this._clearCharging();
     this._pendingResume = null;
     // P7-D1 — a STOP latched during a charge survives the end of that session.
     this.status = this._statusAfterCharging();
+    if (wasPaused) this.status = "PAUSED";
     this.speed  = 0;
     this.log.info(`[VR] ${this.robotId} ${label}`);
   }
@@ -1968,13 +2099,18 @@ class VirtualRobot {
   }
 
   reset() {
+    // An operator hold survives a simulator reset (2026-10-13): a PAUSED robot, or one whose STOP
+    // latched while it charged, comes back PAUSED — only RESUME and the server's gated release
+    // lift a hold. Before this, reset wrote IDLE over it, so a held robot drove off (to charge)
+    // while the server still held it.
+    const held = this.status === "PAUSED" || this._stopLatched === true;
     this._clearTask();
     this._clearCharging();
     this._pendingResume = null;
     this._stopLatched = false;
-    this.status = "IDLE";
+    this.status = held ? "PAUSED" : "IDLE";
     this.speed  = 0;
-    this.log.info(`[VR] ${this.robotId} reset`);
+    this.log.info(`[VR] ${this.robotId} reset${held ? " — operator hold kept (PAUSED)" : ""}`);
   }
 
   getStatus() {
@@ -2004,6 +2140,18 @@ class VirtualRobot {
       chargingReservationState: this._schedulerState,
       // P7-D3 Step 2 — what the restart did with the reservation it found (null before commission).
       chargingRecovery: this._restartRecovery ? this._restartRecovery.outcome : null,
+      // D-6 — why charging is unavailable ({ code, detail, sinceMs, retryAtMs, attempts }), or null.
+      chargingBlocked: this._chargingBlocked,
+      // Phase E — the commissioned pack, the energy in it, the reserve kept (one formula) and the
+      // trigger, all in the units the policy states them in.
+      capacityWh: this._packWh(),
+      // @structural percentage to fraction
+      energyWh: (this.battery / 100) * this._packWh(),
+      reserveWh: this._reserveWh(),
+      chargeTriggerPct: this._chargeTriggerPct,
+      chargerTrip: this._chargerTrip,
+      // Phase B / dashboard — the charging session as the operator sees it (`chargingView`).
+      charging: this.chargingView(),
       pendingResumeTaskId: this._pendingResume?.taskId || null,
 
       // ── STEP 8: where in the mission this agent actually is ────────────────
@@ -2280,6 +2428,8 @@ class VirtualRobot {
     this._dockCharger     = null;
     this._chargingPhase   = null;
     this._chargeWaitUntil = null;
+    this._completedAtTargetPercent = null;
+    this._chargingSession += 1; // D-8 — answers for the session that just ended are discarded
 
     if (this._chargingClient && held) {
       this._schedulerState = "NONE";
@@ -2314,6 +2464,7 @@ class VirtualRobot {
       // makes it the Scheduler's field and the scheduler is what records it. The agent
       // still does not choose one — `_targetSocPercent()` reads the offer's published
       // value or the class default, and this hands that same number back as a fraction.
+      this._chargingSession += 1; // D-8 — a new session; earlier answers no longer apply
       this._chargingPhase   = "SEEKING";
       this._schedulerState  = null;
       this._approachCharger = null;
@@ -2364,18 +2515,35 @@ class VirtualRobot {
       if (this._routePending) return;
       this._routePending = true;
       const from = { lat: this.lat, lon: this.lon };
+      const session = this._chargingSession; // D-8 — a route for an ended session is not adopted
       Promise.resolve()
         .then(() => this._chargingClient.routeToCharger(from))
-        .then((route) => this._adoptChargerRoute(route, from))
-        .catch((e) => this._abandonChargerApproach(`the route to the charger could not be read: ${e && e.message}`))
+        .then((route) => { if (session === this._chargingSession) this._adoptChargerRoute(route, from); })
+        .catch((e) => {
+          if (session === this._chargingSession) this._abandonChargerApproach(`the route to the charger could not be read: ${e && e.message}`, CHARGING_BLOCKED.ROUTE_REFUSED);
+        })
         .finally(() => { this._routePending = false; });
       return;
     }
 
     if (this._chargingPhase !== "APPROACHING") return;
-    if (this.status === "PAUSED") return; // a STOP holds position
-    if (this.status === "IDLE") this.status = "RETURNING"; // a RESUME carries on
+    // D-4 — a robot that cannot move does not keep a reservation it has not docked on. A STOP
+    // releases at once (`_applyStop`); this covers any other way of arriving here held.
+    if (this.status === "PAUSED") {
+      this._clearCharging(CHARGE_RELEASE_REASON.AGENT_RELEASED);
+      return;
+    }
+    if (this.status === "IDLE") this.status = "RETURNING";
     if (this.status !== "RETURNING") return;
+
+    // D-4 — the reservation can end underneath the approach (window expiry, an operator or
+    // `reconcile` release). The agent re-reads it while driving, as it does while charging, and
+    // stops driving to a plug it no longer holds.
+    this._refreshSchedulerState();
+    if (this._schedulerState === "NONE") {
+      this._abandonChargerApproach("the charger reservation is no longer held (expired or released)", CHARGING_BLOCKED.RESERVATION_LOST);
+      return;
+    }
 
     this._stepAlongPath();
     const finalPoint = this.activePath?.[this.activePath.length - 1];
@@ -2405,7 +2573,7 @@ class VirtualRobot {
     if (this._chargingPhase !== "SEEKING") return;
     const problem = chargerRouteProblem(route, from);
     if (problem) {
-      this._abandonChargerApproach(problem);
+      this._abandonChargerApproach(problem, route && route.ok === false ? CHARGING_BLOCKED.ROUTE_REFUSED : CHARGING_BLOCKED.APPROACH_ABANDONED);
       return;
     }
     this._approachCharger = { chargerId: route.charger.chargerId, lat: route.charger.lat, lon: route.charger.lon };
@@ -2432,6 +2600,7 @@ class VirtualRobot {
       return;
     }
     this._dockCharger     = this._approachCharger;
+    this._chargingBlocked = null; // D-6 — charging is available again; the back-off resets
     this._approachCharger = null;
     if (!this.task) {
       this.activePath = null;
@@ -2446,18 +2615,47 @@ class VirtualRobot {
 
   /**
    * Give up this charging session safely: release the plug (`AGENT_RELEASED`), go IDLE where
-   * the robot stands, and do not ask again before `CHARGING_WAIT_MS` has passed — the same
-   * cadence the docking wait already uses, so a robot with no route asks at a bounded rate
-   * rather than every tick. Never a charge in place.
+   * the robot stands, and do not ask again before the back-off has passed (`_blockCharging`).
+   * Never a charge in place.
    *
    * @param {string} reason
+   * @param {string} [code] why charging is unavailable, for `getStatus().chargingBlocked`
    */
-  _abandonChargerApproach(reason) {
+  _abandonChargerApproach(reason, code = CHARGING_BLOCKED.APPROACH_ABANDONED) {
     this.log.warn(`[VR] ${this.robotId} charging approach abandoned — ${reason}`);
     this._clearCharging(CHARGE_RELEASE_REASON.AGENT_RELEASED);
     if (this.status === "RETURNING" || this.status === "CHARGING") this.status = this._statusAfterCharging();
     this.speed = 0;
-    this._chargeRetryAt = Date.now() + CHARGING_WAIT_MS;
+    this._blockCharging(code, reason);
+  }
+
+  /**
+   * D-6 (charging audit) — charging is unavailable for now: say why, and back off.
+   *
+   * The robot used to ask again every tick when the scheduler refused it (900 reads and 902
+   * warnings in 30 min with no charger row) or every 30 s after a refused route (57 reservation
+   * rows in 30 min), and nothing outside the log said why it was not charging. Now each
+   * consecutive failure doubles the wait, from `CHARGING_WAIT_MS` up to
+   * `CHARGING_BACKOFF_MAX_MS`, and the reason is reported on `getStatus().chargingBlocked` until a
+   * session docks. It never charges in place instead.
+   *
+   * @param {string} code one of `CHARGING_BLOCKED`
+   * @param {string} detail
+   */
+  _blockCharging(code, detail) {
+    const nowMs = Date.now();
+    const attempts = (this._chargingBlocked ? this._chargingBlocked.attempts : 0) + 1;
+    // @structural doubling back-off
+    const delayMs = Math.min(CHARGING_WAIT_MS * 2 ** (attempts - 1), CHARGING_BACKOFF_MAX_MS);
+    this._chargeRetryAt = nowMs + delayMs;
+    this._chargingBlocked = Object.freeze({
+      code,
+      detail: String(detail || ""),
+      sinceMs: this._chargingBlocked ? this._chargingBlocked.sinceMs : nowMs,
+      retryAtMs: this._chargeRetryAt,
+      attempts,
+    });
+    this.log.warn(`[VR] ${this.robotId} charging unavailable (${code}) — retry in ${Math.round(delayMs / 1000)} s: ${detail}`);
   }
 
   /**
@@ -2542,7 +2740,8 @@ class VirtualRobot {
     if (
       !["QUEUED", "ACTIVE"].includes(reservation.state) ||
       !chargerRoute.pointOf(charger) ||
-      charger.chargerId !== DEVELOPMENT_CHARGER.chargerId
+      // Phase B — any charger of the published estate (the scheduler's recovery read checked it).
+      typeof charger.chargerId !== "string" || charger.chargerId === ""
     ) {
       return refuse("MALFORMED", "the adoptable reservation names no live state or no usable declared charger");
     }
@@ -2570,6 +2769,14 @@ class VirtualRobot {
       return record("RESUMED_AT_CHARGER", { reservationId });
     }
 
+    // D-4 — held away from the charger: it cannot move, so it does not keep the plug. The
+    // reservation is released (AGENT_RELEASED); after a RESUME the robot asks again if it still
+    // needs to.
+    if (this._operatorHoldAtStart === true) {
+      this._clearCharging(CHARGE_RELEASE_REASON.AGENT_RELEASED);
+      return record("RELEASED_HELD_AWAY", { reservationId });
+    }
+
     this._chargingPhase   = "SEEKING";
     this._approachCharger = null;
     this._dockCharger     = null;
@@ -2590,17 +2797,50 @@ class VirtualRobot {
   _requestPlug(targetSoc) {
     if (!this._chargingClient || this._schedulerPending) return;
     this._schedulerPending = true;
-    Promise.resolve(this._chargingClient.request(targetSoc))
+    // D-8 — the session this request belongs to. An answer that arrives after that session
+    // ended (a STOP before docking, a RECALL, a new mission) is not this robot's state any more:
+    // it is discarded, and a plug it granted is handed straight back.
+    const session = this._chargingSession;
+    // Phase B — what the client needs to choose a station: where the robot is, how fast it drives,
+    // what a metre costs it, and its energy and reserve (`chargerSelection`).
+    Promise.resolve(this._chargingClient.request(targetSoc, this._selectionContext()))
       .then((verdict) => {
-        this._schedulerState = verdict && verdict.state ? verdict.state : "NONE";
+        // `state: null` is "the scheduler granted nothing" (a refusal, or a serialisation
+        // conflict when `retryable`) — not "you hold nothing".
+        const unanswered = Boolean(verdict) && verdict.state === null;
+        const state = verdict && verdict.state ? verdict.state : "NONE";
+        if (session !== this._chargingSession) {
+          if (state === "QUEUED" || state === "ACTIVE") {
+            Promise.resolve(this._chargingClient.release(CHARGE_RELEASE_REASON.AGENT_RELEASED))
+              .catch((e) => this.log.warn(`[VR] ${this.robotId} charging release failed`, { message: e?.message }));
+          }
+          return;
+        }
+        if (unanswered) {
+          this._schedulerState = null;
+          // D-6 — refused while still looking for a plug: say why and back off, rather than
+          // asking again every tick. A conflict (`retryable`) is asked again next tick; a docked
+          // robot waiting in the queue keeps asking, which is its queue wait.
+          if (verdict.retryable !== true && this._chargingPhase === "SEEKING") {
+            const problems = Array.isArray(verdict.problems) ? verdict.problems.join("; ") : "";
+            const code = verdict.blockedCode === CHARGING_BLOCKED.ROUTE_REFUSED ? CHARGING_BLOCKED.ROUTE_REFUSED : CHARGING_BLOCKED.NO_PLUG;
+            this._abandonChargerApproach(problems || "the Charging Scheduler granted no plug", code);
+          }
+          return;
+        }
+        this._schedulerState = state;
       })
       .catch((e) => {
-        // A request that failed granted nothing. The agent stays in `WAITING` and asks
-        // again next tick; it must never advance to `CHARGING` on an unanswered request,
-        // because drawing current from a plug nobody granted is the four-robots-on-three-
-        // plugs defect arriving by a different route.
+        // A request that failed granted nothing. The agent must never advance to `CHARGING` on
+        // an unanswered request, because drawing current from a plug nobody granted is the
+        // four-robots-on-three-plugs defect arriving by a different route.
         this._schedulerState = null;
         this.log.warn(`[VR] ${this.robotId} plug request failed`, { message: e?.message });
+        // D-6 — while still looking for a plug, back off rather than retry every tick. A docked
+        // robot (WAITING) keeps asking next tick, as before.
+        if (session === this._chargingSession && this._chargingPhase === "SEEKING") {
+          this._abandonChargerApproach(`the plug request failed: ${e && e.message}`, CHARGING_BLOCKED.NO_PLUG);
+        }
       })
       .finally(() => { this._schedulerPending = false; });
   }
@@ -2614,8 +2854,12 @@ class VirtualRobot {
   _refreshSchedulerState() {
     if (!this._chargingClient || this._schedulerPending) return;
     this._schedulerPending = true;
+    // D-8 — a read that resolves after its session ended is discarded: it used to restore
+    // `ACTIVE` over a released reservation.
+    const session = this._chargingSession;
     Promise.resolve(this._chargingClient.state())
       .then((verdict) => {
+        if (session !== this._chargingSession) return;
         this._schedulerState = verdict && verdict.state ? verdict.state : "NONE";
       })
       .catch((e) => {
@@ -2636,6 +2880,12 @@ class VirtualRobot {
     // the plug released: no charge, and so no battery rise, at an unrelated position.
     if (this._chargingClient && !chargerRoute.withinDockingRadius(this, this._dockCharger)) {
       this._abandonChargerApproach("not within the docking radius of a charger this robot verified it reached");
+      return;
+    }
+
+    // D-2 — the target was reached last tick (and reported as CHARGING); the session ends now.
+    if (this._chargingPhase === "COMPLETE") {
+      this._completeChargingSession();
       return;
     }
 
@@ -2707,28 +2957,44 @@ class VirtualRobot {
         // reached, not at the target. Snapping down to `targetPercent` is the same
         // fabrication one line up.
         this.battery = Math.max(this.battery, targetPercent);
-        // P7-D1 — PAUSED, not IDLE, when an operator STOP latched during the session.
-        this.status  = this._statusAfterCharging();
-        // BATCH 2 — the plug is freed here, named by the reason it was freed. The owner's
-        // rule is that a robot stops at its authoritative target and does not need 100 %,
-        // and this is that rule's only exit: the session ends at `targetPercent`, and
-        // `_clearCharging` hands the plug to whoever is at the front of the queue.
-        this._clearCharging(CHARGE_RELEASE_REASON.TARGET_REACHED);
-
-        const pending = this._pendingResume;
-        this._pendingResume = null;
-        if (pending && this.status === "PAUSED") {
-          // A STOP ended the mission: the deferred assignment is not executed.
-          this.log.warn(`[VR] ${this.robotId} deferred task ${pending.taskId} not resumed — the robot was STOPped while charging`);
-        } else if (pending) {
-          this.log.info(
-            `[VR] ${this.robotId} reached target SoC ${targetPercent.toFixed(0)}% → resuming deferred task ${pending.taskId}`
-          );
-          this._onTaskAssign(pending);
-        } else {
-          this.log.info(`[VR] ${this.robotId} reached target SoC ${targetPercent.toFixed(0)}% → IDLE`);
-        }
+        // D-2 (charging audit) — the session ends on the NEXT tick, not this one. This tick's
+        // charge flowed while docked, so this tick's frame reports CHARGING; ending it here made
+        // the frame carrying the last rise report IDLE, which §23.5's energy row refuses as a
+        // rise "while not charging".
+        this._chargingPhase = "COMPLETE";
+        this._completedAtTargetPercent = targetPercent;
       }
+    }
+  }
+
+  /**
+   * End a charging session that reached its target on the previous tick: release the plug and
+   * leave CHARGING. Runs before this tick drains anything, so the first non-CHARGING frame is
+   * at or below the last CHARGING one.
+   */
+  _completeChargingSession() {
+    const targetPercent = Number.isFinite(this._completedAtTargetPercent) ? this._completedAtTargetPercent : this._targetSocPercent();
+    this._completedAtTargetPercent = null;
+    // P7-D1 — PAUSED, not IDLE, when an operator STOP latched during the session.
+    this.status  = this._statusAfterCharging();
+    // BATCH 2 — the plug is freed here, named by the reason it was freed. The owner's
+    // rule is that a robot stops at its authoritative target and does not need 100 %,
+    // and this is that rule's only exit: the session ends at `targetPercent`, and
+    // `_clearCharging` hands the plug to whoever is at the front of the queue.
+    this._clearCharging(CHARGE_RELEASE_REASON.TARGET_REACHED);
+
+    const pending = this._pendingResume;
+    this._pendingResume = null;
+    if (pending && this.status === "PAUSED") {
+      // A STOP ended the mission: the deferred assignment is not executed.
+      this.log.warn(`[VR] ${this.robotId} deferred task ${pending.taskId} not resumed — the robot was STOPped while charging`);
+    } else if (pending) {
+      this.log.info(
+        `[VR] ${this.robotId} reached target SoC ${targetPercent.toFixed(0)}% → resuming deferred task ${pending.taskId}`
+      );
+      this._onTaskAssign(pending);
+    } else {
+      this.log.info(`[VR] ${this.robotId} reached target SoC ${targetPercent.toFixed(0)}% → IDLE`);
     }
   }
 
@@ -2877,16 +3143,15 @@ class VirtualRobot {
     if (to <= soc) return 0;
 
     // STEP 3 / STEP 4 — same curve, this unit's pack and this unit's temperature.
+    const packUsableWh = this._specification.packNominalWh !== null ? this._specification.packNominalWh : PACK_NOMINAL_WH;
     const integrated = chargeCurve.timeToChargeSeconds({
-      curve: CHARGE_POWER_CURVE,
+      // Step E — the pack's curve from the one charge-rate model (`CHARGE_POWER_CURVE` itself by default).
+      curve: chargeModel.curveFor(packUsableWh),
       fromSoc: soc,
       toSoc: to,
       tempC: this._packC === null ? CHARGE_PACK_TEMPERATURE_C : this._packC,
       chargerClass: CHARGE_CHARGER_CLASS,
-      packUsableWh:
-        this._specification.packNominalWh !== null
-          ? this._specification.packNominalWh
-          : PACK_NOMINAL_WH,
+      packUsableWh,
       steps: CHARGE_CURVE_INTEGRATION_STEPS,
     });
 
@@ -2935,13 +3200,22 @@ class VirtualRobot {
 
     // 4) Enter charging if battery critically low and no active task
     if (
-      this.battery <= BATTERY_CRITICAL_THRESHOLD &&
       this.status !== "CHARGING" &&
+      // D-4 — a held robot cannot move, so it starts no session (and reserves no plug).
+      this.status !== "PAUSED" &&
       this.phase === null &&
       // P7-D3 Step 1 — not while a session is already seeking or approaching, and not before
       // a failed approach's retry interval has passed.
       this._chargingPhase === null &&
-      !(Number.isFinite(this._chargeRetryAt) && nowMs < this._chargeRetryAt)
+      !(Number.isFinite(this._chargeRetryAt) && nowMs < this._chargeRetryAt) &&
+      // Never at or above the session's own target: such a session ends the moment it docks, and
+      // with a trigger at or above the target (the live config admits up to 95 %) the robot looped —
+      // dock, "complete" at 0 s, re-seek — and never returned to the pool (measured on a live run,
+      // trigger 80 / target 80, 2026-10-13).
+      this.battery < this._targetSocPercent() &&
+      // Phase E — the configurable trigger (20 % by default), or earlier when the nearest usable
+      // charger is about to fall out of reach with the reserve kept (`_chargerOutOfReach`).
+      (this.battery <= this._chargeTriggerPct || this._chargerOutOfReach(nowMs))
     ) {
       // BATCH 2 — the tick's own instant, so docking is stamped with the same clock read
       // every other step of this tick uses rather than a second one taken inside.
@@ -2980,6 +3254,19 @@ class VirtualRobot {
         speed:   Math.round(this.speed * 100) / 100,
       });
     }
+  }
+
+  /**
+   * D-5 — is the robot working this tick: executing a mission (moving to a stop or dwelling at
+   * one) or driving to its charger? The drain and the engine's coefficients (`β_move_time`,
+   * `β_dwell`) both describe working time, whatever status label the robot carries.
+   *
+   * @returns {boolean}
+   */
+  _drainsAsWorking() {
+    if (this.status === "RETURNING") return true;
+    if (this.status === "ACTIVE") return true;
+    return this.status === "ISSUES" && Boolean(this.task && this.phase);
   }
 
   // ── Speed model ──────────────────────────────────────────────────────────
@@ -3185,6 +3472,7 @@ class VirtualRobot {
       if (dist <= budgetM) {
         // Enough budget to reach this waypoint
         this.distanceTravelled += dist;
+        this._tickDistanceM += dist; // Phase E — the distance term of this tick's energy
         budgetM -= dist;
         curLat = target.lat;
         curLon = target.lon;
@@ -3194,6 +3482,7 @@ class VirtualRobot {
         // Move partially toward this waypoint
         const t = budgetM / dist;
         this.distanceTravelled += budgetM;
+        this._tickDistanceM += budgetM; // Phase E — the distance term of this tick's energy
         curLat = curLat + (target.lat - curLat) * t;
         curLon = curLon + (target.lon - curLon) * t;
         budgetM = 0;
@@ -3274,8 +3563,38 @@ class VirtualRobot {
   _applyBattery() {
     if (this.status === "CHARGING") return; // handled by _handleCharging
 
+    // Phase E — a simulated unit consumes from its OWN coefficient row: standby for the
+    // interval, the distance term for the metres driven, and (on rows that declare them) the
+    // move-time and dwell terms while working. That row is the one F34 prices this robot's
+    // missions with, so the engine's prediction and the simulator's consumption are the same
+    // arithmetic. Units commissioned before the power policy carry rows derived from the old
+    // percentage drain, and consume exactly as they did.
+    if (this._simulatedTerms) {
+      // @structural milliseconds to seconds
+      const seconds = this._telemetryIntervalMs / 1000;
+      const working = this._drainsAsWorking();
+      const moving = working && this.speed > 0;
+      const wh = energyPolicy.intervalWh(this._simulatedTerms, {
+        seconds,
+        movingSeconds: moving ? seconds : 0,
+        dwellSeconds: working && !moving ? seconds : 0,
+        distanceM: this._tickDistanceM,
+      });
+      this._tickDistanceM = 0;
+      this._energyBasis = "SIMULATED_POWER_WH";
+      this._energyMissing = [];
+      this._lastTickWh = wh;
+      this._cumulativeWh += wh;
+      // @structural fraction to percentage
+      this.battery = Math.max(BATTERY_MIN, this.battery - (wh / this._packWh()) * 100);
+      return;
+    }
+    this._tickDistanceM = 0;
+
     // P7-D3 Step 1 — RETURNING is driving to the charger, and drains as movement does.
-    const ratePerTick = this.status === "ACTIVE" || this.status === "RETURNING"
+    // D-5 (charging audit) — keyed on what the robot is doing, not on its label: a robot on a
+    // mission labelled ISSUES drove at full speed on the idle rate (5× too little).
+    const ratePerTick = this._drainsAsWorking()
       ? BATTERY_DRAIN_ACTIVE   // 100%→20% in 1 h of movement
       : BATTERY_DRAIN_IDLE;    // 100%→20% in 5 h at rest
 
@@ -3308,10 +3627,12 @@ class VirtualRobot {
 
     this.battery = Math.max(BATTERY_MIN, this.battery - outcome.socDeltaPercent);
 
-    // Warn when battery drops below threshold while working
-    if (this.battery < BATTERY_WARN_THRESHOLD && this.status === "ACTIVE") {
-      this.status = "ISSUES";
-    }
+    // D-1 (charging audit) — low battery is NOT reported as `ISSUES`. It used to be, below
+    // `BATTERY_WARN_THRESHOLD` while working; but `ISSUES` is a health statement (MARGINAL), and
+    // §23.5 refuses every later self-report that would raise it, task completion does not
+    // release it and clear-fault refuses it — so a robot that ran low once never returned to V1
+    // service, even fully charged. The battery is reported numerically on every frame, and F34
+    // (task energy feasibility) is the authority on whether the robot may take work.
   }
 
   /**
@@ -3387,6 +3708,154 @@ class VirtualRobot {
    *
    * @returns {number}
    */
+  /** Phase E — the commissioned pack in Wh (`PACK_NOMINAL_WH` only for a unit with none). */
+  _packWh() {
+    return this._specification.packNominalWh !== null ? this._specification.packNominalWh : PACK_NOMINAL_WH;
+  }
+
+  /** Phase E — the reserve this robot keeps, by the one formula (`energyPolicy.reserveWh`). */
+  _reserveWh() {
+    return energyPolicy.reserveWh({ packWh: this._packWh(), reservePct: this._specification.batteryReservePct });
+  }
+
+  /** Phase E — Wh per metre driven at the robot's base speed, from its own coefficient row, or null. */
+  _whPerMetre() {
+    return this._simulatedTerms ? energyPolicy.whPerMetre(this._simulatedTerms, this._speedBaseMs) : null;
+  }
+
+  /**
+   * Phase E — the owner's rule that a robot may need to charge before the trigger: an idle robot
+   * that could no longer drive to the nearest usable charger and still keep its reserve seeks one
+   * now. The trip is the campus route the charging client estimates, priced with this robot's own
+   * coefficients; it is re-estimated at most every `CHARGER_TRIP_REFRESH_MS`. With no estimate (no
+   * client, no route, no coefficient row) the check says nothing and the percentage trigger
+   * stands alone.
+   *
+   * @param {number} nowMs
+   * @returns {boolean}
+   */
+  _chargerOutOfReach(nowMs) {
+    this._refreshChargerTrip(nowMs);
+    const trip = this._chargerTrip;
+    const reserveWh = this._reserveWh();
+    if (!trip || !Number.isFinite(trip.wh) || !Number.isFinite(reserveWh)) return false;
+    // @structural percentage to fraction
+    const availableWh = (this.battery / 100) * this._packWh();
+    return !energyPolicy.feasibility({ availableWh, deliveryWh: 0, chargerTripWh: trip.wh, reserveWh }).feasible;
+  }
+
+  /** Phase E — ask the charging client for the trip to the nearest usable charger (one request in flight). */
+  _refreshChargerTrip(nowMs) {
+    if (!this._chargingClient || typeof this._chargingClient.chargerTripEstimate !== "function") return;
+    if (this._chargerTripPending) return;
+    if (this._chargerTrip && nowMs - this._chargerTrip.atMs < CHARGER_TRIP_REFRESH_MS) return;
+    const perMetre = this._whPerMetre();
+    if (!Number.isFinite(perMetre)) return;
+    this._chargerTripPending = true;
+    const from = { lat: this.lat, lon: this.lon };
+    Promise.resolve()
+      .then(() => this._chargingClient.chargerTripEstimate(from))
+      .then((estimate) => {
+        this._chargerTrip = estimate && estimate.ok === true && Number.isFinite(estimate.distanceM)
+          ? Object.freeze({ chargerId: estimate.chargerId || null, distanceM: estimate.distanceM, wh: estimate.distanceM * perMetre, atMs: nowMs })
+          : Object.freeze({ chargerId: null, distanceM: null, wh: null, atMs: nowMs });
+      })
+      .catch(() => { this._chargerTrip = Object.freeze({ chargerId: null, distanceM: null, wh: null, atMs: nowMs }); })
+      .finally(() => { this._chargerTripPending = false; });
+  }
+
+  /**
+   * Phase B — what the charging client needs to choose a station for this robot.
+   * @returns {{ from: object, speedMps: number, whPerMetre: number|null, availableWh: number, reserveWh: number|null }}
+   */
+  _selectionContext() {
+    return {
+      from: { lat: this.lat, lon: this.lon },
+      speedMps: this._speedBaseMs,
+      whPerMetre: this._whPerMetre(),
+      // @structural percentage to fraction
+      availableWh: (this.battery / 100) * this._packWh(),
+      reserveWh: this._reserveWh(),
+    };
+  }
+
+  /**
+   * Phase B — seconds of charging left from the present level to this session's target, on the
+   * shared curve at the pack's present temperature; 0 at or above the target; null with no
+   * session. Used for this robot's completion ETA and for the wait of robots queued behind it.
+   *
+   * @returns {number|null}
+   */
+  chargeSecondsRemaining() {
+    if (this._chargingPhase === null) return null;
+    const targetPct = this._targetSocPercent();
+    if (this.battery >= targetPct) return 0;
+    const integrated = chargeCurve.timeToChargeSeconds({
+      curve: chargeModel.curveFor(this._packWh()),
+      // @structural percentage to fraction
+      fromSoc: Math.max(0, Math.min(1, this.battery / 100)),
+      toSoc: Math.max(0, Math.min(1, targetPct / 100)),
+      tempC: this._packC === null ? CHARGE_PACK_TEMPERATURE_C : this._packC,
+      chargerClass: CHARGE_CHARGER_CLASS,
+      packUsableWh: this._packWh(),
+      steps: CHARGE_CURVE_INTEGRATION_STEPS,
+    });
+    return integrated.ok && Number.isFinite(integrated.seconds) ? integrated.seconds : null;
+  }
+
+  /**
+   * Phase B / dashboard — the charging session as the operator sees it. Every value is this
+   * robot's own state or arithmetic on it; nothing is defaulted:
+   *   · the station it is driving to or docked at, and the route it has left to drive;
+   *   · arrival ETA = remaining route / its base speed (null when there is no route or speed);
+   *   · completion ETA = the curve's time to the target, only while current flows;
+   *   · why charging is unavailable, when it is (`chargingBlocked`).
+   * Queue position and wait are the scheduler's and are added by the simulator's overview.
+   *
+   * @returns {object}
+   */
+  chargingView() {
+    const station = this._dockCharger || this._approachCharger || null;
+    let route = null;
+    let remainingRouteM = null;
+    if (this._chargingPhase === "APPROACHING" && Array.isArray(this.activePath) && this.activePath.length > 0) {
+      route = [{ lat: this.lat, lon: this.lon }, ...this.activePath.slice(Math.max(0, this.pathIndex))];
+      remainingRouteM = 0;
+      for (let i = 1; i < route.length; i += 1) {
+        remainingRouteM += haversineMeters(route[i - 1].lat, route[i - 1].lon, route[i].lat, route[i].lon);
+      }
+    }
+    const speed = Number.isFinite(this._speedBaseMs) && this._speedBaseMs > 0 ? this._speedBaseMs : null;
+    const flowing = this._chargingPhase === "CHARGING" || this._chargingPhase === "COMPLETE";
+    return {
+      phase: this._chargingPhase,
+      reservationState: this._schedulerState,
+      stationId: station ? station.chargerId : null,
+      stationLat: station ? station.lat : null,
+      stationLon: station ? station.lon : null,
+      route,
+      remainingRouteM,
+      etaArrivalS: remainingRouteM !== null && speed !== null ? remainingRouteM / speed : this.status === "CHARGING" ? 0 : null,
+      targetPct: this._targetSocPercent(),
+      sessionChargeS: this.chargeSecondsRemaining(),
+      etaCompleteS: flowing ? this.chargeSecondsRemaining() : null,
+      blocked: this._chargingBlocked,
+      // Step E — the charge-rate model these ETAs come from, labelled a SIMULATION ASSUMPTION.
+      rateModel: chargeModel.describe(this._packWh()),
+    };
+  }
+
+  /**
+   * Phase E — set the charge trigger (percent) for this running robot: a live simulator parameter.
+   * @param {number} pct
+   * @returns {boolean} whether it was applied
+   */
+  setChargeTriggerPct(pct) {
+    if (!validTriggerPct(pct)) return false;
+    this._chargeTriggerPct = pct;
+    return true;
+  }
+
   _kappa() {
     const stored = this._batteryState && this._batteryState.kappa;
     return Number.isFinite(stored) && stored > 0 ? stored : 1;

@@ -6,7 +6,10 @@
  * MotionIntent → Pi safety gate → DRIVE → the ESP32 firmware (host simulator) → ACK/telemetry.
  *
  *   node tools/verify/gate3PiSimOffer.js --database-url postgresql://<user>@127.0.0.1:<port>/<db>
- *        [--port 3043] [--pi-repo <path to RobotX-Pi>] [--sim-exe <rover_sim(.exe)>] [--completion]
+ *        --snap-radius-m <m> [--port 3043] [--pi-repo <path to RobotX-Pi>] [--sim-exe <rover_sim(.exe)>] [--completion]
+ *
+ * `--snap-radius-m` is required and has no default: it is the declaration's `site.snapRadiusM`
+ * (R13), and without one every physical route is refused.
  *
  * DISPOSABLE local database only. Steps 1–4 are the Gate 1 setup, unchanged (mixed fleet,
  * physical unit commissioned and declared, real server.js with PHYSICAL_FLEET_ENABLED,
@@ -44,6 +47,11 @@ const flag = (name, fallback) => {
 };
 const url = assertDisposableLocal(flag("--database-url", ""), { purpose: "the Gate 3 Pi + ESP32 simulator proof" });
 const PORT = Number(flag("--port", "3043"));
+const SNAP_RADIUS_M = Number(flag("--snap-radius-m", ""));
+if (!Number.isFinite(SNAP_RADIUS_M) || SNAP_RADIUS_M <= 0) {
+  console.error("--snap-radius-m <metres> is required: the declaration's site.snapRadiusM (R13) has no default, and without it every physical route is refused");
+  process.exit(2);
+}
 const BASE = `http://127.0.0.1:${PORT}`;
 const ROBOT_ID = "robotx-pi-gate3";
 const SIGNING_KEY = "gate1-disposable-signing-key-" + "0".repeat(16);
@@ -129,7 +137,7 @@ async function main() {
         charging: { policy: "MANUAL_OUT_OF_SERVICE" },
         stateOfCharge: { policy: "OPERATOR_DECLARED", maxAgeSeconds: 7200 },
         emergencyStop: { mechanism: "SOFTWARE_STOP_LATCH" },
-        site: { ambientC: { min: 18, max: 38 }, terrain: "FLAT_DECLARED", connectivityDeadZones: "NONE_DECLARED", constrictions: "NONE_DECLARED", stopStartCyclesPerHop: 1 },
+        site: { ambientC: { min: 18, max: 38 }, terrain: "FLAT_DECLARED", connectivityDeadZones: "NONE_DECLARED", constrictions: "NONE_DECLARED", stopStartCyclesPerHop: 1, snapRadiusM: SNAP_RADIUS_M },
         localisation: { referenceRadiusM: 25, acceptedFixTypes: ["3D", "RTK_FLOAT", "RTK_FIXED"] },
         risk: { failureProbabilityPrior: 0.05, routeHazardCu: 0 },
         robots: [

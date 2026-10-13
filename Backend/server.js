@@ -21,6 +21,8 @@ const {
 const { assertSchemaMatchesClient } = require("./src/db/schemaDrift");
 const { initKv } = require("./src/cache/kv");
 const initSocketServer = require("./src/sockets/socket.server");
+const { closeHttpAndSockets } = require("./src/utils/closeHttpServer");
+const { reconcileDeadSocketBindings } = require("./src/sockets/handlers/robot.handler");
 const { createVirtualRobotSimulator } = require("./src/simulation/SimulationEngine");
 const simulationPolicy = require("./src/simulation/simulationPolicy");
 const { rehydrateSimulatedRobots } = require("./src/simulation/rehydrate");
@@ -594,6 +596,16 @@ async function start() {
   // possible.
   initSocketServer(io, { prisma, kv, logger, appLocals: app.locals });
 
+  // Robots a previous process was serving when it died kept `isOnline: true`: their disconnect
+  // handlers never ran. Once, at startup, a row whose socket exists nowhere in the cluster gets
+  // the write that disconnect would have made (`robot.handler.reconcileDeadSocketBindings`). Not
+  // a sweep and not the legacy offline detector: it runs whether or not the engine is enabled.
+  reconcileDeadSocketBindings({ prisma, io, kv, log: logger }).catch((e) =>
+    logger.warn("startup reconciliation of robot socket bindings failed; robots keep their recorded liveness", {
+      message: e?.message,
+    }),
+  );
+
   // P2B-2 — the server-initiated PROBE round trip (§7.5 F14's proof). Off unless
   // AGENT_PROBE_INTERVAL_MS is set: the physical Pi does not implement PROBE yet, and an
   // unanswered probe proves nothing and changes nothing (`services/agentProbe.service.js`).
@@ -676,6 +688,10 @@ async function start() {
         policy: physicalFleetPolicy,
       })
     : null;
+  // The offer handler (registered above, at socket init) reads this declaration at call time: a
+  // robot it declares has its ACCEPT judged by F7's rule on its stop latch (`offerAcceptanceAdmission`).
+  // Null when the physical fleet is off — then no physical robot has the facts to be committed at all.
+  app.locals.physicalFleetPolicy = physicalFleetPolicy;
   if (physicalFleetPolicy) {
     logger.warn("[physical] physical fleet declaration loaded", {
       declaredBy: physicalFleetPolicy.declaredBy,
@@ -1309,8 +1325,9 @@ async function start() {
         }
       }
 
-      await new Promise((resolve) => server.close(resolve));
-      io.close();
+      // Socket.IO first: `server.close()` alone waits on every connected websocket, so one open
+      // dashboard or robot held the shutdown here and nothing below ran.
+      await closeHttpAndSockets({ server, io });
       if (redisAdapterClients) {
         try { redisAdapterClients.pubClient.disconnect(); } catch { /* ignore */ }
         try { redisAdapterClients.subClient.disconnect(); } catch { /* ignore */ }

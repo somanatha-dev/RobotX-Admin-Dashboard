@@ -235,12 +235,12 @@ model Robot {
   // `massKg` is here because no column in this schema carries a vehicle's mass, and
   // §14.2's consumption equation has a `β_mass` term that needs one.
   //
-  // `batteryReservePct` is the **unit's own** hardware protection floor as configured at
-  // commissioning. It is deliberately NOT §14.5's reserve stack: that is four additive
-  // layers composed in watt-hours from published register parameters at decision time
-  // (`engine/energy/reserves.js`), and writing an operator-entered percentage into it
-  // would be a calibration value nobody calibrated. Two quantities, kept apart because
-  // they are apart.
+  // `batteryReservePct` is the **unit's own** reserve as configured at commissioning, a
+  // percentage of `EnergyModel.packNominalWh`. Owner decisions 2026-10-12/13: it feeds the
+  // FLOOR layer of §14.5's reserve stack (`engine/energy/reserves.js`), counted once and
+  // only ever raising it — a simulated unit's floor is pack × pct + `SIM_FIXED_RESERVE_WH`
+  // (`simulation/energyPolicy.reserveWh`); a physical unit's is the stricter of pack × pct
+  // and its declared `energy.reserveFloorWh` (`fleetProviders/physicalProvider`). Null adds nothing.
   //////////////////////////////////////////////////
 
   massKg            Float?

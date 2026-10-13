@@ -26,8 +26,9 @@
  *   · the WALL CLOCK: `Date.now()` is pinned to the scenario's decision time, and the round's
  *     budget clock reads 0 ms elapsed, so a decision is never truncated by test-machine load.
  *     Production's §9.4 wall-clock truncation is therefore NOT exercised here.
- *   · the COMMIT (§10.3.2) is not run: the decision is `round.plan`'s output. Commit-time
- *     volatile re-verification is outside this harness.
+ *   · the COMMIT (§10.3.2) is not run unless a scenario asks for it (`scenario.commit`, step F):
+ *     the decision is `round.plan`'s output. With `scenario.commit` the real commit runs on a
+ *     recording transaction double (`commitTxDouble`) — writes are recorded, never applied.
  *   · scenario rows (positions, battery, status, commitments) are constructed per test from
  *     the fixture's real rows; each test says which values it changed.
  *
@@ -97,6 +98,24 @@ function reviveRow(row) {
 }
 
 const copy = (value) => (value === null || value === undefined ? value : structuredClone(value));
+
+/**
+ * Charging lifecycle step D — `structuredClone` returns its Dates from Node's own realm, not Jest's
+ * sandbox, so the engine's `publishedAt instanceof Date` (`chargingSchedulerClient.consumeProjection`)
+ * is false for every projection this store returns and none is ever pinned (the P7-C1 suite pins
+ * that artefact for the recorded replays). A scenario that publishes its own projections
+ * (`scenario.projections`) reads them with Dates of the engine's realm, as a Prisma row carries.
+ */
+function sameRealm(value) {
+  if (Object.prototype.toString.call(value) === "[object Date]") return new Date(value.getTime());
+  if (Array.isArray(value)) return value.map(sameRealm);
+  if (value && typeof value === "object" && Object.prototype.toString.call(value) === "[object Object]") {
+    const out = {};
+    for (const [key, entry] of Object.entries(value)) out[key] = sameRealm(entry);
+    return out;
+  }
+  return value;
+}
 
 /* ── The in-memory store ─────────────────────────────────────────────────── */
 
@@ -377,6 +396,63 @@ function createStore(seed) {
   return { prisma, tables, writes, rowsOf };
 }
 
+/**
+ * Charging lifecycle step F — the §10.3.2 transaction double for `scenario.commit`. Reads go to the
+ * store (the commit's idempotency and active-commitment reads; the `FOR UPDATE` locks return the
+ * store's CURRENT rows — whatever changed since the round planned); every write is recorded and
+ * NOT applied, so a test can see whether the commit got past step 3. `$transaction` is absent, as
+ * on a Prisma interactive-transaction client (`outbox.isTransactionClient`).
+ */
+function commitTxDouble(store, { storeTimeMs, leadershipFence }) {
+  const writes = [];
+  const READS = new Set(["findMany", "findFirst", "findUnique", "count"]);
+  const table = (name) =>
+    new Proxy({}, {
+      get(_target, op) {
+        if (typeof op !== "string") return undefined;
+        return async (args) => {
+          if (READS.has(op)) {
+            const delegate = store.prisma[name];
+            if (delegate && typeof delegate[op] === "function") return sameRealm(await delegate[op](args));
+            return op === "findMany" ? [] : op === "count" ? 0 : null;
+          }
+          writes.push({ table: name, op, args: copy(args) });
+          if (op === "updateMany" || op === "deleteMany") return { count: 1 };
+          const data = (args && (args.data || args.create)) || {};
+          return { id: crypto.randomUUID(), ...copy(data) };
+        };
+      },
+    });
+  const own = {
+    __writes: writes,
+    $queryRawUnsafe: async (sql) => {
+      if (/FROM "ShardLeadership"/.test(sql)) {
+        return [{ shardId: SHARD_ID, leadershipFence, holder: "phase7-harness", leaseExpiry: new Date(storeTimeMs + 3_600_000) }];
+      }
+      if (/SELECT NOW\(\)/.test(sql)) return [{ now: new Date(storeTimeMs) }];
+      throw new Error(`phase7World commit double: unexpected SQL ${sql}`);
+    },
+    $executeRawUnsafe: async (sql, ...params) => {
+      writes.push({ table: "$executeRawUnsafe", op: "execute", args: { sql, params: copy(params) } });
+      return 1;
+    },
+  };
+  const tx = new Proxy(own, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      if (typeof prop !== "string" || prop === "then" || prop.startsWith("$")) return undefined;
+      return table(prop);
+    },
+  });
+  const selectForUpdate = async (_tx, tableName, _column, value) => {
+    const model = tableName === "Agent" ? "agent" : tableName === "Leg" ? "leg" : null;
+    if (!model) return null;
+    const row = store.rowsOf(model).find((entry) => entry.id === value);
+    return row ? sameRealm(copy(row)) : null;
+  };
+  return { tx, writes, selectForUpdate, runSerializable: async (_client, fn) => fn(tx) };
+}
+
 /* ── Scenario construction ───────────────────────────────────────────────── */
 
 const FIXTURE_ROWS = FIXTURE.rows;
@@ -421,6 +497,9 @@ function robotRows(spec, decisionTimeMs) {
     currentTaskId: null,
     simulated: true,
     statusBeforeOffline: null,
+    // Charging lifecycle — the commissioned reserve, when a scenario states one (the fixture's
+    // otherwise: 15 % on every LOCAL unit).
+    ...(spec.batteryReservePct !== undefined ? { batteryReservePct: spec.batteryReservePct } : {}),
   };
   const agent = {
     ...agentRow,
@@ -479,6 +558,28 @@ function robotRows(spec, decisionTimeMs) {
     capacitySlot: 0,
   }));
   return { robot: reviveRow(robot), agent: reviveRow(agent), battery, observation, commitments, agentRowId };
+}
+
+/**
+ * A `ChargerReservation` row for a scenario robot, in `devChargingScheduler`'s shape, at the depot.
+ * @param {{ robotId: string, state: string, fromAgoMs?: number, untilInMs?: number }} spec
+ */
+function reservationRow(spec, agentRowIdOf, decisionTimeMs) {
+  const depot = FIXTURE_ROWS.Charger.find((row) => row.chargerId === "V1DEMO-DEPOT-01");
+  const agentId = agentRowIdOf[spec.robotId];
+  if (!agentId) throw new Error(`phase7World: no scenario robot "${spec.robotId}" for a reservation`);
+  return {
+    id: `reservation-${spec.robotId}`,
+    reservationId: `V1DEMO-DEPOT-01:${agentId}:0`,
+    agentId,
+    chargerDbId: depot.id,
+    reservedFrom: new Date(decisionTimeMs - (spec.fromAgoMs ?? 60_000)),
+    reservedUntil: new Date(decisionTimeMs + (spec.untilInMs ?? 3_600_000)),
+    targetSoc: 0.8,
+    state: spec.state,
+    externalId: null,
+    projectionVersion: 1,
+  };
 }
 
 /** A Leg/Mission/Task/Stops for a delivery, cloned from TSK-816's real rows with new stops. */
@@ -620,6 +721,7 @@ async function decide(scenario) {
     store.tables.set("robot", []);
     const agentRowIds = [];
     const simulatedRobotIds = new Set();
+    const agentRowIdOf = {};
     for (const spec of scenario.robots) {
       const rows = robotRows(spec, decisionTimeMs);
       if (spec.capabilities) rows.agent.agentClassId = cloneClassWithCapabilities(store, rows.agent.agentClassId, spec.robotId, spec.capabilities);
@@ -631,6 +733,22 @@ async function decide(scenario) {
       for (const c of rows.commitments) store.rowsOf("commitment").push(c);
       agentRowIds.push(rows.agentRowId);
       simulatedRobotIds.add(spec.robotId);
+      agentRowIdOf[spec.robotId] = rows.agentRowId;
+    }
+    // Charging lifecycle (Phase C) — charger reservations held before the round (QUEUED/ACTIVE
+    // rows a scenario names by robot), in the scheduler's row shape.
+    for (const row of scenario.reservations || []) {
+      store.rowsOf("chargerReservation").push(reservationRow(row, agentRowIdOf, decisionTimeMs));
+    }
+    // Charging lifecycle step D — projection rows a scenario publishes (`devChargingScheduler`'s own
+    // shape), ADDED after the recorded one, so the latest version is the scenario's.
+    if (scenario.projections) {
+      for (const row of scenario.projections) store.rowsOf("chargerAvailabilityProjection").push({ ...row });
+      const table = store.prisma.chargerAvailabilityProjection;
+      const findFirst = table.findFirst;
+      const findMany = table.findMany;
+      table.findFirst = async (query) => sameRealm(await findFirst(query));
+      table.findMany = async (query) => sameRealm(await findMany(query));
     }
 
     let legRowId;
@@ -670,6 +788,15 @@ async function decide(scenario) {
       },
       agentRowIds,
     );
+    // Charging lifecycle (Phase C) — a change that lands AFTER the index was built and before the
+    // round decides (a robot reserving a charger in that window): the round must not trust the
+    // index for it.
+    if (typeof scenario.afterIndex === "function") {
+      await scenario.afterIndex({
+        store,
+        addReservation: (row) => store.rowsOf("chargerReservation").push(reservationRow(row, agentRowIdOf, decisionTimeMs)),
+      });
+    }
     const indexed = store.rowsOf("agentCellPosition").map((row) => ({
       agentId: store.rowsOf("agent").find((a) => a.id === row.agentId).agentId,
       availabilityClass: row.availabilityClass,
@@ -678,6 +805,7 @@ async function decide(scenario) {
     // ── 2. The composition and the assembly (leaderWorkers.create + server.js) ──
     const seams = composition.createV1DemonstrationComposition({ prisma: store.prisma, kv, snapshot: () => snapshot, env: ENV });
     const records = [];
+    let commitDouble = null;
     const assembly = coordinatorSolvePath.create({
       ...seams,
       prisma: store.prisma,
@@ -687,12 +815,16 @@ async function decide(scenario) {
       shardId: SHARD_ID,
       regionId: FIXTURE_ROWS.Shard[0].regionId,
       instanceId: "phase7-harness",
-      signingKey: "phase7-test-only-signing-key",
-      runSerializable: async () => {
-        throw new Error("phase7World: the commit is outside this harness");
+      signingKey: "phase7-test-only-signing-key-32-bytes",
+      // Step F — the commit runs only when a scenario asks for it (`scenario.commit`), on the
+      // recording transaction double; otherwise it stays outside this harness, as before.
+      runSerializable: async (client, fn) => {
+        if (!commitDouble) throw new Error("phase7World: the commit is outside this harness");
+        return commitDouble.runSerializable(client, fn);
       },
-      selectForUpdate: async () => {
-        throw new Error("phase7World: the commit is outside this harness");
+      selectForUpdate: async (...args) => {
+        if (!commitDouble) throw new Error("phase7World: the commit is outside this harness");
+        return commitDouble.selectForUpdate(...args);
       },
       record: (event, detail) => records.push({ event, detail }),
     });
@@ -777,14 +909,59 @@ async function decide(scenario) {
     const decision = planned.decisions.find((row) => row.legId === legRowId) || null;
     const assignment = planned.assignments.find((row) => row.legId === legRowId) || null;
 
+    // ── 4. Step F (opt-in) — §10.3.2's commit of the round's assignment, after a change that
+    // lands BETWEEN the decision and the commit (`scenario.commit.between`). The real
+    // `assembly.deps.commit` runs: the row locks, the guards and the volatile re-check (step 3)
+    // read the store as it is NOW; writes are recorded on the transaction double, not applied.
+    let committed = null;
+    if (scenario.commit && assignment) {
+      const storeTimeMs = decisionTimeMs + (Number.isFinite(scenario.commit.afterMs) ? scenario.commit.afterMs : 1000);
+      const leadershipFence = 1n;
+      if (typeof scenario.commit.between === "function") {
+        await scenario.commit.between({
+          store,
+          kv,
+          agentRowIdOf,
+          robotRow: (robotId) => store.rowsOf("robot").find((row) => row.robotId === robotId),
+          batteryRow: (robotId) => store.rowsOf("batteryState").find((row) => row.agentId === agentRowIdOf[robotId]),
+          setLiveState: (robotId, state) => robotRegistry.setRobotState(kv, robotId, state),
+          addReservation: (row) => store.rowsOf("chargerReservation").push(reservationRow(row, agentRowIdOf, storeTimeMs)),
+        });
+      }
+      commitDouble = commitTxDouble(store, { storeTimeMs, leadershipFence });
+      nowSpy.mockReturnValue(storeTimeMs);
+      const outcome = await assembly.deps.commit(assignment, { roundId, leadershipFence });
+      committed = {
+        outcome: outcome ? outcome.outcome ?? null : null,
+        committed: outcome ? outcome.committed === true : false,
+        reason: outcome ? outcome.reason ?? null : null,
+        detail: outcome ? outcome.detail ?? null : null,
+        writes: commitDouble.writes.map((row) => `${row.table}.${row.op}`),
+        // The recorded writes themselves (arguments included), e.g. the OFFER row the agent would be sent.
+        recorded: commitDouble.writes,
+      };
+    }
+
     // Priced plans — distance and ETA the engine priced each surviving candidate on.
     const priced = {};
     for (const entry of assembly.round.priced.values()) {
       const plan = entry.plan || {};
       const pickupStop = (plan.stops || []).find((stop) => stop.stopType === "PICKUP") || (plan.stops || [])[0] || null;
       const energy = plan.energy && typeof plan.energy === "object" ? plan.energy : null;
+      const reach = energy && energy.chargerReachability ? energy.chargerReachability : null;
       priced[businessIdOf(entry.agentId)] = {
         energyReserves: energy ? energy.reserves || energy.ledger || null : null,
+        // Step D — the E_return verdict F35 read: its basis and the charger it chose.
+        returnReach: reach
+          ? {
+            basis: reach.basis ?? null,
+            chargerId: reach.chargerId ?? null,
+            reachable: reach.reachable ?? null,
+            projectionVersion: reach.projectionVersion ?? null,
+            eReturnWh: reach.eReturnWh ?? null,
+            considered: Array.isArray(reach.considered) ? reach.considered.map((row) => ({ ...row })) : [],
+          }
+          : null,
         tierProbabilities: energy ? energy.tierProbabilities || null : null,
         distanceM: plan.totals ? plan.totals.distanceM : (plan.distanceM ?? null),
         durationSeconds: plan.durationSeconds ?? null,
@@ -833,11 +1010,22 @@ async function decide(scenario) {
       routeCalls,
       records,
       writes: store.writes,
+      // Step F — the commit's outcome (`scenario.commit`), or null.
+      committed,
     };
   } finally {
     nowSpy.mockRestore();
     await close();
   }
+}
+
+/**
+ * Replay robots AS RECORDED before 2026-10-12: with the commissioned `batteryReservePct` absent, as
+ * the engine read them then (F34's floor was the simulator's 5 %). For replays that pin a recorded
+ * round or an analysis of one; a current-behaviour scenario must not use it.
+ */
+function asRecorded(robots) {
+  return robots.map((spec) => ({ ...spec, batteryReservePct: null }));
 }
 
 /** A robot at a named RNSIT point (or a literal point), cloned from SIM-9F6F88D84EBD's real rows. */
@@ -848,6 +1036,7 @@ function sim(robotId, at, overrides) {
 module.exports = {
   FIXTURE,
   POINTS,
+  asRecorded,
   SHARD_ID,
   TSK816,
   createStore,

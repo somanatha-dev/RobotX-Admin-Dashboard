@@ -428,6 +428,8 @@ describe("P1 — provenance and the provider choice never reach the assignment e
       "services/fleetProviders/physicalPolicy.js",
       "services/fleetProviders/physicalProvider.js",
       "services/fleetProviders/physicalRouter.js",
+      // 2026-10-12 — the physical router's boundary containment (RD-2026-10-12-01 AC1).
+      "services/fleetProviders/routeContainment.js",
       "services/fleetProviders/simulationProvider.js",
     ]);
     expect(providerReferences(providerFiles).length).toBeGreaterThan(0);

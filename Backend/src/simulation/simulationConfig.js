@@ -41,7 +41,7 @@
  * Parameters that may be changed for a robot that is already running.
  * @type {ReadonlyArray<string>}
  */
-const LIVE_PARAMETERS = Object.freeze(["telemetryIntervalMs", "obstacleProbability"]);
+const LIVE_PARAMETERS = Object.freeze(["telemetryIntervalMs", "obstacleProbability", "chargeTriggerPct"]);
 
 /**
  * Parameters that describe a robot's starting conditions and therefore apply only to
@@ -105,8 +105,20 @@ const PROTECTED_FIELDS = Object.freeze([
  * configured below that would have its own frames silently dropped and would look broken
  * for a reason the operator could not see from either side.
  */
+/**
+ * The charge target a session charges TO when no offer published one (`constants.TARGET_SOC_FALLBACK`,
+ * 80 %). The trigger must lie strictly below it: at or above it, a robot that has just charged to the
+ * target is immediately "at or below the trigger" again and re-seeks a plug for ever (measured on a
+ * live run, trigger 80 / target 80, 2026-10-13). @structural derived, not chosen
+ */
+const CHARGE_TARGET_PCT = require("./constants").TARGET_SOC_FALLBACK * 100;
+
 const RANGES = Object.freeze({
   telemetryIntervalMs: { min: 100, max: 60_000, integer: true },
+  // Phase E (charging lifecycle) — the battery percentage at or below which an idle simulated
+  // robot seeks a charger (the energy policy's default, 20 %, otherwise). Live: it describes what
+  // the robot does next, not where it started.
+  chargeTriggerPct: { min: 1, max: 95, integer: false },
   obstacleProbability: { min: 0, max: 1, integer: false },
   speedBaseMs: { min: 0, max: 40, integer: false },
   speedJitter: { min: 0, max: 20, integer: false },
@@ -174,6 +186,13 @@ function normaliseConfig(input) {
     }
     if (value < range.min || value > range.max) {
       problems.push(`${key} must be between ${range.min} and ${range.max} (received ${value})`);
+      continue;
+    }
+    if (key === "chargeTriggerPct" && value >= CHARGE_TARGET_PCT) {
+      problems.push(
+        `chargeTriggerPct must be below the charge target (${CHARGE_TARGET_PCT} %) — received ${value}; at or above it a ` +
+          "robot charged to the target would re-seek a plug at once and never return to the pool",
+      );
       continue;
     }
 

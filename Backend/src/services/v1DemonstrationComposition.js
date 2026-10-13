@@ -54,6 +54,7 @@ const simulationRouter = require("../simulation/simulationRouter");
 const campusTraversalNetwork = require("../simulation/campusTraversalNetwork");
 const { ENDPOINT_BASIS } = require("../engine/routing/cellPairCache");
 const simulatedAgentState = require("../simulation/simulatedAgentState");
+const energyPolicy = require("../simulation/energyPolicy");
 
 const cellProjection = require("../engine/routing/cellProjection");
 const campusTravelModel = require("../engine/routing/campusTravelModel");
@@ -174,17 +175,28 @@ function simulatedProfileKeyFor(agentSnapshot) {
   // cached route. An empty set is stated, and the router refuses it rather than guessing.
   const permissionSet = agentSnapshot.mobilityModel && agentSnapshot.mobilityModel.permissionSet;
   const network = campusTraversalNetwork.permittedClasses(permissionSet).join("+");
-  return `${PROFILE_PREFIX}:v=${nominal}:wh=${packWh}:net=${network}`;
+  // Phase E (charging lifecycle) — the fourth thing the return leg depends on: the agent's OWN
+  // energy per metre, from the coefficient row its missions are priced with (and the simulated
+  // robot consumes from). It used to be recomputed from the simulator's constants for the pack,
+  // so a unit whose row said otherwise had its return leg priced on a different model than its
+  // mission. Falls back to the simulation power policy for a unit with no row.
+  const whPerMetre =
+    energyPolicy.whPerMetre(agentSnapshot.energyModelParams, nominal) ??
+    energyPolicy.whPerMetre(energyPolicy.powerCoefficients(), nominal);
+  const whm = isNumber(whPerMetre) ? `:whm=${Number(whPerMetre.toPrecision(12))}` : "";
+  return `${PROFILE_PREFIX}:v=${nominal}:wh=${packWh}${whm}:net=${network}`;
 }
 
-/** @returns {{ speed: number, packWh: number, roadClasses: string[] }|null} */
+/** @returns {{ speed: number, packWh: number, whPerMetre: number|null, roadClasses: string[] }|null} */
 function parseSimulatedProfile(profileKey) {
-  const match = /^SIMULATED:v=([0-9.]+):wh=([0-9.]+)(?::net=([a-z_+]*))?$/u.exec(String(profileKey || ""));
+  const match = /^SIMULATED:v=([0-9.]+):wh=([0-9.]+)(?::whm=([0-9.eE+-]+))?(?::net=([a-z_+]*))?$/u.exec(String(profileKey || ""));
   if (!match) return null;
   const speed = Number(match[1]);
   const packWh = Number(match[2]);
-  const roadClasses = match[3] ? match[3].split("+").filter(Boolean) : [];
-  return isNumber(speed) && speed > 0 && isNumber(packWh) && packWh > 0 ? { speed, packWh, roadClasses } : null;
+  const whPerMetre = match[3] === undefined ? null : Number(match[3]);
+  const roadClasses = match[4] ? match[4].split("+").filter(Boolean) : [];
+  if (!(isNumber(speed) && speed > 0 && isNumber(packWh) && packWh > 0)) return null;
+  return { speed, packWh, whPerMetre: isNumber(whPerMetre) && whPerMetre > 0 ? whPerMetre : null, roadClasses };
 }
 
 /**
@@ -222,8 +234,9 @@ function speedForProfile(profileKey) {
 }
 
 /**
- * The return-leg energy per metre for a simulated profile: the simulated pack's declared
- * draw (β_aux + β_move_time) over the speed it drives at. Derived, V1.
+ * The return-leg energy per metre for a simulated profile: the agent's own coefficient row's
+ * (β_aux + β_move_time) / speed + β_dist, carried on the profile key (`simulatedProfileKeyFor`).
+ * A key without it (older format) is priced on the simulation power policy. Derived, V1.
  *
  * @param {string} profileKey
  * @returns {number|undefined}
@@ -231,8 +244,9 @@ function speedForProfile(profileKey) {
 function simulatedWhPerMetre(profileKey) {
   const parsed = parseSimulatedProfile(profileKey);
   if (!parsed) return undefined;
-  const coefficients = simulatedAgentState.simulatedEnergyCoefficients(parsed.packWh);
-  return (coefficients.betaAux + coefficients.betaMoveTime) / parsed.speed;
+  if (isNumber(parsed.whPerMetre)) return parsed.whPerMetre;
+  const fallback = energyPolicy.whPerMetre(energyPolicy.powerCoefficients(), parsed.speed);
+  return isNumber(fallback) ? fallback : undefined;
 }
 
 /**
@@ -323,8 +337,12 @@ function createV1DemonstrationComposition(settings) {
     agentFactsFor: agentFacts.createAgentFactsProvider({ prisma, kv, tenantId: profile.DEMONSTRATION_TENANT_ID }),
     agentEnergyDeclarationsFor: (agentSnapshot) => {
       if (!isSimulatedSnapshot(agentSnapshot)) return null;
+      // The reserve floor is the unit's COMMISSIONED reserve percentage of its pack plus the fixed
+      // Wh reserve (`energyPolicy.reserveWh`), counted once as F34's E_floor. A unit with no
+      // commissioned percentage keeps the simulator's 5 % floor.
       const pack = simulatedAgentState.simulatedPackDeclaration(
         agentSnapshot.energyModel ? agentSnapshot.energyModel.packNominalWh : undefined,
+        agentSnapshot.batteryReservePct,
       );
       return { residualCv: pack.residualCv, reserveFloorWh: pack.reserveFloorWh, provenance: simulatedAgentState.PROVENANCE };
     },

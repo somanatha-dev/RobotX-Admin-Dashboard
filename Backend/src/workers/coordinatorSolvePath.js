@@ -974,6 +974,11 @@ async function agentSnapshotFrom(context, position, asOfMs, prefetched) {
     // β_mass term needs. E-8b recorded it as "written and never read on the decision
     // path"; `vehicleMassKgFor` reads it from here.
     vehicleMassKg: agent.robot && isNumber(agent.robot.massKg) ? agent.robot.massKg : null,
+    // `Robot.batteryReservePct` — the commissioned minimum reserve, read beside the mass (owner
+    // decision 2026-10-12, charging lifecycle). Additive: it is a column passed through, and only the
+    // composition's `agentEnergyDeclarationsFor` seam reads it, as F34's reserve floor. No predicate,
+    // cost or default changes here; absent stays null.
+    batteryReservePct: agent.robot && isNumber(agent.robot.batteryReservePct) ? agent.robot.batteryReservePct : null,
     regionId: agent.regionId,
     homeDepotId: agent.homeDepotId,
 
@@ -2803,6 +2808,12 @@ function expandCandidatesFor(context, round) {
  */
 function commitFor(context, round) {
   const snapshot = () => coordinatorPipeline.snapshotFrom(context);
+  /**
+   * Commit-race closure, Gap B — the I/O half of the commit-time energy re-check, resolved
+   * BEFORE the transaction opens (`freshEnergyInputsFor`), per pairing being committed. Read by
+   * `buildContext` under the row locks; deleted when the commit returns.
+   */
+  const freshEnergyInputs = new Map();
 
   /**
    * §10.3.2 step 3's adapter: the locked rows → the evaluation context the volatile
@@ -2840,7 +2851,19 @@ function commitFor(context, round) {
     return {
       agentSnapshot: agentSnapshot ? { ...agentSnapshot, legExclusions: entry.legExclusions ?? null } : agentSnapshot,
       mission: entry.mission || round.missionFor(state),
-      plan: entry.plan,
+      // Commit-race closure, Gap B — the plan being committed, with its ENERGY re-evaluated on the
+      // agent as it is under the locks (battery, commissioned pack and reserve) and on the current
+      // charger projection, by the same Plan Builder. Everything else is the committed plan's.
+      plan: freshEnergyPlan({
+        context,
+        state,
+        entry,
+        agentSnapshot,
+        // Read before the transaction by `commit` below. A re-check invoked on its own (no `commit`
+        // around it) reads them here instead, so it still judges fresh energy rather than none.
+        inputs: freshEnergyInputs.get(key) || (await freshEnergyInputsFor(context, round, state, agentSnapshot)),
+        storeTimeMs: commitContext.storeTime instanceof Date ? commitContext.storeTime.getTime() : state.decisionTimeMs,
+      }),
       config: { get: (name) => resolve(snapshot(), name, state.scope) },
       // The **store's** time, read under the row locks and handed in by `commit.js` — not
       // the round's pinned decision time, which is what the *plan* was built against. A
@@ -2942,107 +2965,201 @@ function commitFor(context, round) {
     const taskIds = (state.leg.tasks && state.leg.tasks.taskIds) || [];
     const taskId = taskIds.length === 1 ? taskIds[0] : null;
 
-    return commitment.commit(
-      {
-        prisma: context.prisma,
-        runSerializable: context.runSerializable,
-        selectForUpdate: context.selectForUpdate,
-        // Optional by `commit.js`'s own contract, and supplied where the composition root
-        // has it: without it a serialisation failure throws instead of aborting, and
-        // `coordinator.worker.runRound` already returns the whole batch to the queue on a
-        // throw. Passing it turns a batch-wide requeue into the single-pairing abort
-        // §10.3.2 describes.
-        isSerializationFailure: context.isSerializationFailure,
-        volatileRecheck,
-        // §10.3.2 step 5 — the outbox row, inside this transaction. `dispatch/offers.js`
-        // owns the §11.2 payload and the §23.3 signature; this composer supplies the
-        // transaction, the key, and the plan the offer describes.
-        sideEffects: async (tx, effectContext) => {
-          const offerTtlSeconds = resolve(current, "dispatch.offer_ttl", scope);
-          const enqueued = await offers.enqueueOffer(tx, {
-            commitment: effectContext.commitment,
-            // §23.3's addressee: the agent's own identity, not its row id.
-            addressee: agentSnapshot.agentId,
-            storeTime: effectContext.storeTime,
-            offerTtlSeconds,
-            signingKey: context.signingKey,
-            // P2B-2 — quantised so the numbers signed are the numbers stored and delivered;
-            // the Json column shortens doubles and the agent verifies what it receives
-            // (`services/storablePrecision.service.js`). Message content only — no decision
-            // is re-read from it.
-            offer: storablePrecision.toStorablePrecision({
-              missionPlan: entry ? entry.plan.planId : null,
-              // The plan's stops, each carrying the drivable geometry resolved above.
-              // Built outside this closure: `sideEffects` runs inside the SERIALIZABLE
-              // transaction and must do no I/O of its own.
-              stopSequence: geometry.stops,
-              // §2.4's Task, so the agent reports completion against the row that
-              // represents the customer's work rather than against a Leg key no legacy
-              // consumer can resolve.
-              taskId,
-              // Absent rather than invented. §5.2's route reference belongs to the routing
-              // engine that produced the traversal, and the cell-pair seam carries hops
-              // rather than a route identity.
-              routeReference: null,
-              payloadManifest: (state.leg.manifests || []).map((manifest) => manifest.manifestId ?? manifest.id),
-              // §14.6 — the Charging Scheduler's, consumed and never computed here.
-              energyReserveParams: entry ? entry.plan.reserves : null,
-              targetSoc: entry && entry.plan.charging ? entry.plan.charging.targetSoc : null,
-            }),
-          });
-          // §4.5 — the OFFERED state's deadline, armed in the transaction that enters it.
-          // Without it an OFFER that was delivered and never answered held the Leg and the
-          // agent's capacity for ever: the outbox expires only *undelivered* rows (measured
-          // on the V1 failure run, 2026-09-23 — a silent robot's OFFER was still live ten
-          // minutes later). On expiry the timer worker withdraws it (`WITHDRAW_EXCLUDE_REPLAN`).
-          await legEntryDeadline.superviseEntry(tx, {
-            leg: effectContext.leg,
-            state: COMMITTED_LEG_STATE,
-            storeTime: effectContext.storeTime,
-            deadlineSeconds: offerTtlSeconds,
-            event: "ROUND_COMMIT",
-            shardId: context.shardId ?? null,
-          });
-          return enqueued;
+    // Commit-race closure, Gap B — the route, the charger estate and the CURRENT projection the
+    // commit-time energy re-check needs, read here for the same reason the geometry is: no I/O
+    // inside the serialisable transaction. The battery, pack and reserve are read under the locks.
+    const energyKey = pricedKey(legKey, round.canonicalAgentId(assignment.agentId));
+    if (entry) freshEnergyInputs.set(energyKey, await freshEnergyInputsFor(context, round, state, agentSnapshot));
+
+    try {
+      return await commitment.commit(
+        {
+          prisma: context.prisma,
+          runSerializable: context.runSerializable,
+          selectForUpdate: context.selectForUpdate,
+          // Optional by `commit.js`'s own contract, and supplied where the composition root
+          // has it: without it a serialisation failure throws instead of aborting, and
+          // `coordinator.worker.runRound` already returns the whole batch to the queue on a
+          // throw. Passing it turns a batch-wide requeue into the single-pairing abort
+          // §10.3.2 describes.
+          isSerializationFailure: context.isSerializationFailure,
+          volatileRecheck,
+          // §10.3.2 step 5 — the outbox row, inside this transaction. `dispatch/offers.js`
+          // owns the §11.2 payload and the §23.3 signature; this composer supplies the
+          // transaction, the key, and the plan the offer describes.
+          sideEffects: async (tx, effectContext) => {
+            const offerTtlSeconds = resolve(current, "dispatch.offer_ttl", scope);
+            const enqueued = await offers.enqueueOffer(tx, {
+              commitment: effectContext.commitment,
+              // §23.3's addressee: the agent's own identity, not its row id.
+              addressee: agentSnapshot.agentId,
+              storeTime: effectContext.storeTime,
+              offerTtlSeconds,
+              signingKey: context.signingKey,
+              // P2B-2 — quantised so the numbers signed are the numbers stored and delivered;
+              // the Json column shortens doubles and the agent verifies what it receives
+              // (`services/storablePrecision.service.js`). Message content only — no decision
+              // is re-read from it.
+              offer: storablePrecision.toStorablePrecision({
+                missionPlan: entry ? entry.plan.planId : null,
+                // The plan's stops, each carrying the drivable geometry resolved above.
+                // Built outside this closure: `sideEffects` runs inside the SERIALIZABLE
+                // transaction and must do no I/O of its own.
+                stopSequence: geometry.stops,
+                // §2.4's Task, so the agent reports completion against the row that
+                // represents the customer's work rather than against a Leg key no legacy
+                // consumer can resolve.
+                taskId,
+                // Absent rather than invented. §5.2's route reference belongs to the routing
+                // engine that produced the traversal, and the cell-pair seam carries hops
+                // rather than a route identity.
+                routeReference: null,
+                payloadManifest: (state.leg.manifests || []).map((manifest) => manifest.manifestId ?? manifest.id),
+                // §14.6 — the Charging Scheduler's, consumed and never computed here.
+                energyReserveParams: entry ? entry.plan.reserves : null,
+                targetSoc: entry && entry.plan.charging ? entry.plan.charging.targetSoc : null,
+              }),
+            });
+            // §4.5 — the OFFERED state's deadline, armed in the transaction that enters it.
+            // Without it an OFFER that was delivered and never answered held the Leg and the
+            // agent's capacity for ever: the outbox expires only *undelivered* rows (measured
+            // on the V1 failure run, 2026-09-23 — a silent robot's OFFER was still live ten
+            // minutes later). On expiry the timer worker withdraws it (`WITHDRAW_EXCLUDE_REPLAN`).
+            await legEntryDeadline.superviseEntry(tx, {
+              leg: effectContext.leg,
+              state: COMMITTED_LEG_STATE,
+              storeTime: effectContext.storeTime,
+              deadlineSeconds: offerTtlSeconds,
+              event: "ROUND_COMMIT",
+              shardId: context.shardId ?? null,
+            });
+            return enqueued;
+          },
         },
-      },
-      {
-        agentId: agentSnapshot.agentRowId,
-        legId: state.leg.legRowId,
-        decisionRoundId: roundResult.roundId,
-        targetLegState: COMMITTED_LEG_STATE,
-        planSnapshotRef: entry ? entry.plan.planId : null,
-        // F5 — the DecisionRecord this commitment's decision is recorded under: `roundId:legId`,
-        // the Leg named by its row id as the round's decisions name it. I10 joins on it by
-        // equality; the bare `roundId` matched no record (0/5 resolved, measured on V1).
-        decisionRef: decisionIdFor(roundResult.roundId, state.leg.legRowId),
-        shardId: context.shardId,
-        // §9.6 requirement 5 — the round's pinned view of the two rows the guards fence
-        // against. Read from the snapshot the plan was built on, never re-read here: a
-        // guard comparing a freshly-read value against itself would always pass.
-        //
-        // D1 — G3's epoch is the one the pairing was priced from. It used to be the
-        // pre-transaction read above, so an epoch advanced between planning and that read
-        // (a migration, a dedup re-fence) passed G3. No priced entry means no planning
-        // epoch, and G3 refuses an absent one ("absence is not agreement").
-        snapshot: {
-          leadershipFence: roundResult.leadershipFence ?? null,
-          authorityEpoch: entry && entry.authorityEpoch !== undefined ? entry.authorityEpoch : null,
-          legVersion: state.leg.version,
-          expectedLegState: ASSIGNABLE_LEG_STATES.includes(state.leg.state) ? state.leg.state : ASSIGNABLE_LEG_STATES,
+        {
+          agentId: agentSnapshot.agentRowId,
+          legId: state.leg.legRowId,
+          decisionRoundId: roundResult.roundId,
+          targetLegState: COMMITTED_LEG_STATE,
+          planSnapshotRef: entry ? entry.plan.planId : null,
+          // F5 — the DecisionRecord this commitment's decision is recorded under: `roundId:legId`,
+          // the Leg named by its row id as the round's decisions name it. I10 joins on it by
+          // equality; the bare `roundId` matched no record (0/5 resolved, measured on V1).
+          decisionRef: decisionIdFor(roundResult.roundId, state.leg.legRowId),
+          shardId: context.shardId,
+          // §9.6 requirement 5 — the round's pinned view of the two rows the guards fence
+          // against. Read from the snapshot the plan was built on, never re-read here: a
+          // guard comparing a freshly-read value against itself would always pass.
+          //
+          // D1 — G3's epoch is the one the pairing was priced from. It used to be the
+          // pre-transaction read above, so an epoch advanced between planning and that read
+          // (a migration, a dedup re-fence) passed G3. No priced entry means no planning
+          // epoch, and G3 refuses an absent one ("absence is not agreement").
+          snapshot: {
+            leadershipFence: roundResult.leadershipFence ?? null,
+            authorityEpoch: entry && entry.authorityEpoch !== undefined ? entry.authorityEpoch : null,
+            legVersion: state.leg.version,
+            expectedLegState: ASSIGNABLE_LEG_STATES.includes(state.leg.state) ? state.leg.state : ASSIGNABLE_LEG_STATES,
+          },
+          config: {
+            capacity: round.capacityFor(agentSnapshot),
+            // `lease.duration` (§12.2) — the register's name, and the one
+            // `commitment/leases.grant` quotes in its own `RangeError`. Under the old
+            // spelling this resolved to `undefined` and `grant()` threw **inside** the
+            // serialisable transaction, after step 1's row locks, so the commit failed at
+            // its last step rather than being refused at composition time (§M.1, M-3).
+            leaseDurationSeconds: resolve(current, "lease.duration", scope),
+          },
         },
-        config: {
-          capacity: round.capacityFor(agentSnapshot),
-          // `lease.duration` (§12.2) — the register's name, and the one
-          // `commitment/leases.grant` quotes in its own `RangeError`. Under the old
-          // spelling this resolved to `undefined` and `grant()` threw **inside** the
-          // serialisable transaction, after step 1's row locks, so the commit failed at
-          // its last step rather than being refused at composition time (§M.1, M-3).
-          leaseDurationSeconds: resolve(current, "lease.duration", scope),
-        },
-      },
-    );
+      );
+    } finally {
+      freshEnergyInputs.delete(energyKey);
+    }
   };
+}
+
+/**
+ * Commit-race closure, Gap B — the I/O half of the commit-time energy re-check, for one pairing:
+ * the traversal from where the agent is now, the declared charger estate routed from the mission
+ * end, and the LATEST published charger projection (not the round's pinned one: the question at
+ * commit is whether the return is viable now). Exactly the reads `evaluatePairing` makes, through
+ * the same functions. Never throws; what it could not read travels as `problems`.
+ *
+ * @returns {Promise<{ ok: boolean, problems: string[], traversal?: object, estate?: object, projection?: object|null }>}
+ */
+async function freshEnergyInputsFor(context, round, state, agentSnapshot) {
+  try {
+    if (!agentSnapshot || !agentSnapshot.cellId) return { ok: false, problems: ["the agent has no resolved origin cell"] };
+    const { leg, snapshot, scope } = state;
+    const profileKey = round.profileKeyFor(agentSnapshot);
+    const traversal = await round.routing.forPairing(agentSnapshot.cellId, leg.stops, profileKey, { lat: agentSnapshot.lat, lon: agentSnapshot.lon });
+    if (!traversal.ok) return { ok: false, problems: traversal.problems || ["the traversal was refused"] };
+    const lastStop = leg.stops.length > 0 ? leg.stops[leg.stops.length - 1] : null;
+    const estate = await chargerCandidatesFor({
+      context,
+      routing: round.routing,
+      originCell: lastStop ? lastStop.cellId || cellIdFor(lastStop) : null,
+      originPoint: lastStop ? { lat: lastStop.lat, lon: lastStop.lon } : null,
+      profileKey,
+      snapshot,
+      scope,
+    });
+    const pinned = await pinnedChargerProjection(context);
+    return { ok: true, problems: [], traversal, estate, projection: pinned.projection };
+  } catch (error) {
+    return { ok: false, problems: [`the commit-time energy inputs could not be read: ${error && error.message}`] };
+  }
+}
+
+/**
+ * Commit-race closure, Gap B — the committed plan with its energy re-evaluated for the agent as it
+ * is NOW. The Plan Builder is the one that priced the pairing (`planInputFor` → `planBuilder.build`,
+ * §14.3's usable energy, the composition's declared reserve floor — commissioned `% of pack` plus
+ * the fixed reserve, once — §14.5's E_return against the estate and projection just read); only
+ * `energy` and `energyUnresolved` are taken from it, so F34 and F35 judge fresh energy while every
+ * other volatile predicate reads the plan being committed, as §10.3.2 step 3 requires.
+ *
+ * FAIL CLOSED: when the inputs could not be read or the plan cannot be rebuilt, `energy` is null
+ * with the reason — F34 and F35 then deny by their own rules, and the commit aborts
+ * `VOLATILE_FEASIBILITY_LOST`. Synchronous: no I/O happens under the row locks.
+ *
+ * @returns {object} the plan the volatile re-check evaluates
+ */
+function freshEnergyPlan({ context, state, entry, agentSnapshot, inputs, storeTimeMs }) {
+  const failed = (why) => ({ ...entry.plan, energy: null, energyUnresolved: [`commit-time energy re-check: ${why}`] });
+  if (!agentSnapshot) return failed("the agent could not be read under the lock");
+  if (!inputs || !inputs.ok) return failed((inputs && inputs.problems.join("; ")) || "its inputs were not read");
+  try {
+    const target = targetSocFor({
+      agentSnapshot,
+      snapshot: state.snapshot,
+      scope: { ...state.scope, agent_class: agentSnapshot.agentClassId ?? null },
+      decisionTimeMs: storeTimeMs,
+    });
+    const built = planBuilder.build(
+      planInputFor({
+        agentSnapshot,
+        leg: state.leg,
+        hops: inputs.traversal.hops,
+        hopsForSequence: inputs.traversal.hopsForSequence,
+        snapshot: state.snapshot,
+        scope: state.scope,
+        decisionTimeMs: storeTimeMs,
+        seams: context,
+        slaClass: state.slaClass,
+        queueAgeSeconds: state.queueAgeSeconds,
+        chargerCandidates: inputs.estate.candidates,
+        chargerProjection: inputs.projection,
+        targetSoc: target.targetSoc,
+        targetSocSource: target.targetSocSource,
+        routable: true,
+      }),
+    );
+    if (!built.ok) return failed(`the plan could not be rebuilt: ${(built.problems || []).join("; ")}`);
+    return { ...entry.plan, energy: built.plan.energy, energyUnresolved: built.plan.energyUnresolved };
+  } catch (error) {
+    return failed(`the plan could not be rebuilt: ${error && error.message}`);
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

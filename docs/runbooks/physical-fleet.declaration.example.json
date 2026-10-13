@@ -9,7 +9,8 @@
     "terrain": "FLAT_DECLARED",
     "connectivityDeadZones": "NONE_DECLARED",
     "constrictions": "NONE_DECLARED",
-    "stopStartCyclesPerHop": 1
+    "stopStartCyclesPerHop": 1,
+    "snapRadiusM": "REPLACE: owner-determined maximum access connector, in metres (R13); no default exists"
   },
   "localisation": { "referenceRadiusM": 25, "acceptedFixTypes": ["3D", "RTK_FLOAT", "RTK_FIXED"] },
   "risk": { "failureProbabilityPrior": 0.05, "routeHazardCu": 0 },

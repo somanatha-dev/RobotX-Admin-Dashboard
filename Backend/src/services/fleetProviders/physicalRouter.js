@@ -17,6 +17,12 @@
  *                    NO_TERRAIN_SOURCE otherwise
  *   stopStartCycles  the site declaration's per-hop count; refused NO_STOP_START_SOURCE otherwise
  *
+ * A physical route never leaves the operating boundary (RD-2026-10-12-01 AC1): the network is
+ * built from boundary-contained edges only, each endpoint and access connector must lie
+ * inside, and a route that cannot be kept inside is refused by name (`routeContainment`).
+ * Each access connector is bounded by the declared `site.snapRadiusM` (R13); with none
+ * declared, every route is refused. There is no straight-line fallback.
+ *
  * The simulation router is never called for a physical profile, and this router never answers
  * a `SIMULATED:` one.
  */
@@ -28,6 +34,10 @@ const campusServiceability = require("../../engine/routing/campusServiceability"
 const { ENDPOINT_BASIS, hasExactEndpoints } = require("../../engine/routing/cellPairCache");
 const { RouteRefusedError, ROUTE_REFUSAL, FIELD_PROVENANCE } = require("../../engine/routing/productionRouter");
 const physicalPolicy = require("./physicalPolicy");
+const routeContainment = require("./routeContainment");
+
+/** Network refusals that mean "this endpoint is outside the operating region". @structural */
+const OUTSIDE_REFUSALS = Object.freeze([campusTraversalNetwork.NETWORK_REFUSAL.ENDPOINT_OUTSIDE_BOUNDARY]);
 
 /** @structural the reserved namespace */
 const PROFILE_PREFIX = "PHYSICAL";
@@ -94,22 +104,35 @@ function createPhysicalRouter(settings) {
       settings && settings.extractDirectory ? { directory: settings.extractDirectory } : undefined,
     );
     if (!extract.ok) throw new Error(`the campus traversal network cannot be built: ${extract.problems.join("; ")}`);
+    const containment = routeContainment.createRouteContainment(declaration);
+    if (!containment.usable) {
+      throw new Error(`the operating boundary cannot contain a route: ${containment.problems.join("; ")}`);
+    }
+    // Two networks per class set: the contained one routes; the full one only answers
+    // MAP_MATCH's "how far is this fix from a way", which is a measurement, not a route.
     const networks = new Map();
+    const networkOf = (roadClasses, contained) => {
+      const key = `${contained ? "contained" : "full"}:${[...roadClasses].sort().join("+")}`;
+      if (!networks.has(key)) {
+        networks.set(
+          key,
+          campusTraversalNetwork.createCampusTraversalNetwork({
+            features: extract.features,
+            roadClasses,
+            source: extract.file,
+            ...(contained ? { containment } : {}),
+          }),
+        );
+      }
+      return networks.get(key);
+    };
     built = {
       projection: cellProjection.createCellProjection({
         serviceability: campusServiceability.createServiceabilityOracle(declaration),
       }),
       travelModel: campusTravelModel.resolveModelParameters(current, {}),
-      networkFor(roadClasses) {
-        const key = [...roadClasses].sort().join("+");
-        if (!networks.has(key)) {
-          networks.set(
-            key,
-            campusTraversalNetwork.createCampusTraversalNetwork({ features: extract.features, roadClasses, source: extract.file }),
-          );
-        }
-        return networks.get(key);
-      },
+      networkFor: (roadClasses) => networkOf(roadClasses, true),
+      mapNetworkFor: (roadClasses) => networkOf(roadClasses, false),
     };
     return built;
   }
@@ -131,6 +154,14 @@ function createPhysicalRouter(settings) {
       throw new RouteRefusedError(
         ROUTE_REFUSAL.NO_STOP_START_SOURCE,
         "no stop-start source: the physical fleet declaration does not declare site.stopStartCyclesPerHop",
+      );
+    }
+    if (!isNumber(site.snapRadiusM) || site.snapRadiusM <= 0) {
+      throw new RouteRefusedError(
+        ROUTE_REFUSAL.NOT_ROUTABLE,
+        "no snap radius: the physical fleet declaration does not declare site.snapRadiusM (R13), so no access " +
+          "connector can be bounded and no route is produced",
+        { refusal: "NO_SNAP_RADIUS" },
       );
     }
 
@@ -159,8 +190,16 @@ function createPhysicalRouter(settings) {
 
     const exact = hasExactEndpoints(source);
     const network = world.networkFor(parsed.roadClasses);
-    const routed = network.route(exact ? source.originPoint : origin, exact ? source.destPoint : destination);
-    if (!routed.ok) throw new RouteRefusedError(ROUTE_REFUSAL.NOT_ROUTABLE, routed.reason, { refusal: routed.refusal });
+    const routed = network.route(exact ? source.originPoint : origin, exact ? source.destPoint : destination, {
+      maxAccessM: site.snapRadiusM,
+    });
+    if (!routed.ok) {
+      throw new RouteRefusedError(
+        OUTSIDE_REFUSALS.includes(routed.refusal) ? ROUTE_REFUSAL.OUTSIDE_SERVICEABLE_REGION : ROUTE_REFUSAL.NOT_ROUTABLE,
+        routed.reason,
+        { refusal: routed.refusal },
+      );
+    }
 
     const modelled = campusTravelModel.travelTimeFor({
       distanceM: routed.distanceM,
@@ -207,7 +246,7 @@ function createPhysicalRouter(settings) {
     } catch {
       return null;
     }
-    const routed = world.networkFor(classes).route(point, point);
+    const routed = world.mapNetworkFor(classes).route(point, point);
     return routed.ok && routed.accessM && isNumber(routed.accessM.origin) ? routed.accessM.origin : null;
   }
 

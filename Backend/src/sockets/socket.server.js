@@ -82,63 +82,89 @@ function startOfflineDetector(prisma, kv, { logger } = {}) {
     const log = logger || console;
     setInterval(async () => {
         try {
-            const nowMs = Date.now();
-            const cutoff = new Date(nowMs - OFFLINE_CUTOFF_MS);
-
-            // Only robots that already look stale are examined, so the sweep's
-            // cost scales with the number of suspect robots, not fleet size.
-            const stale = await prisma.robot.findMany({
-                where: { isOnline: true, lastSeenAt: { lt: cutoff } },
-                select: { robotId: true },
-                take: OFFLINE_SWEEP_BATCH,
-            });
-            if (stale.length === 0) return;
-
-            const states = await getManyRobotStates(kv, stale.map((r) => r.robotId));
-            const liveThreshold = nowMs - OFFLINE_CUTOFF_MS;
-
-            const trulyOffline = [];
-            const stillAlive = [];
-            for (const { robotId } of stale) {
-                const beat = states.get(robotId)?.lastHeartbeat;
-                if (typeof beat === "number" && beat >= liveThreshold) stillAlive.push(robotId);
-                else trulyOffline.push(robotId);
-            }
-
-            if (trulyOffline.length > 0) {
-                await prisma.robot.updateMany({
-                    where: { robotId: { in: trulyOffline } },
-                    data: { isOnline: false, status: "OFFLINE", socketId: null },
-                });
-                for (const robotId of trulyOffline) {
-                    robotStateCache.set(robotId, { isOnline: false, status: "OFFLINE" });
-                }
-                // Keep the live-robot index in step with the DB. The disconnect
-                // handler does this for a clean disconnect; this sweep exists
-                // precisely for the cases where that handler never ran, so it
-                // has to do the same cleanup or the index leaks those robots.
-                try {
-                    if (typeof kv?.srem === "function") await kv.srem("robots:all", ...trulyOffline);
-                } catch { /* index membership is best-effort */ }
-            }
-
-            // Alive per Redis but stale in Postgres — reconcile the mirror
-            // rather than marking a running robot offline. Should be rare; a
-            // sustained non-zero count here means the flush gate is not
-            // keeping up and is worth alerting on.
-            if (stillAlive.length > 0) {
-                await prisma.robot.updateMany({
-                    where: { robotId: { in: stillAlive } },
-                    data: { lastSeenAt: new Date(nowMs) },
-                });
-                log.warn("offline sweep: robots live in registry but stale in DB", {
-                    count: stillAlive.length,
-                });
-            }
+            await sweepOfflineOnce(prisma, kv, { nowMs: Date.now(), log });
         } catch (e) {
             log.error("offline detector failed", e);
         }
     }, OFFLINE_SWEEP_INTERVAL_MS);
+}
+
+/**
+ * One pass of the offline sweep.
+ *
+ * P1.4 (LF-1), as `robot.handler.markRobotOffline` does it: the status the sweep replaces is
+ * kept in `statusBeforeOffline`, so the robot's reconnect restores it. Without it the robot came
+ * back OFFLINE and stayed there (F9 denies it, `clear-fault` refuses OFFLINE, and its own IDLE is
+ * refused by §23.5). Each write is conditional on the row still being online, stale and in the
+ * status just read, so a robot that reconnected meanwhile is left alone and a status that moved
+ * is never recorded as the one replaced; such a row is examined again on the next pass.
+ *
+ * @param {object} prisma
+ * @param {object} kv
+ * @param {{ nowMs: number, log?: object }} options
+ * @returns {Promise<{ offline: string[], stillAlive: string[] }>}
+ */
+async function sweepOfflineOnce(prisma, kv, { nowMs, log = console }) {
+    const cutoff = new Date(nowMs - OFFLINE_CUTOFF_MS);
+
+    // Only robots that already look stale are examined, so the sweep's
+    // cost scales with the number of suspect robots, not fleet size.
+    const stale = await prisma.robot.findMany({
+        where: { isOnline: true, lastSeenAt: { lt: cutoff } },
+        select: { robotId: true, status: true },
+        take: OFFLINE_SWEEP_BATCH,
+    });
+    if (stale.length === 0) return { offline: [], stillAlive: [] };
+
+    const states = await getManyRobotStates(kv, stale.map((r) => r.robotId));
+    const liveThreshold = nowMs - OFFLINE_CUTOFF_MS;
+
+    const suspects = [];
+    const stillAlive = [];
+    for (const row of stale) {
+        const beat = states.get(row.robotId)?.lastHeartbeat;
+        if (typeof beat === "number" && beat >= liveThreshold) stillAlive.push(row.robotId);
+        else suspects.push(row);
+    }
+
+    const trulyOffline = [];
+    for (const { robotId, status } of suspects) {
+        const remember = typeof status === "string" && status !== "OFFLINE";
+        // eslint-disable-next-line no-await-in-loop
+        const written = await prisma.robot.updateMany({
+            where: { robotId, isOnline: true, lastSeenAt: { lt: cutoff }, status },
+            data: { isOnline: false, status: "OFFLINE", socketId: null, ...(remember ? { statusBeforeOffline: status } : {}) },
+        });
+        if (written && written.count === 1) trulyOffline.push(robotId);
+    }
+
+    if (trulyOffline.length > 0) {
+        for (const robotId of trulyOffline) {
+            robotStateCache.set(robotId, { isOnline: false, status: "OFFLINE" });
+        }
+        // Keep the live-robot index in step with the DB. The disconnect
+        // handler does this for a clean disconnect; this sweep exists
+        // precisely for the cases where that handler never ran, so it
+        // has to do the same cleanup or the index leaks those robots.
+        try {
+            if (typeof kv?.srem === "function") await kv.srem("robots:all", ...trulyOffline);
+        } catch { /* index membership is best-effort */ }
+    }
+
+    // Alive per Redis but stale in Postgres — reconcile the mirror
+    // rather than marking a running robot offline. Should be rare; a
+    // sustained non-zero count here means the flush gate is not
+    // keeping up and is worth alerting on.
+    if (stillAlive.length > 0) {
+        await prisma.robot.updateMany({
+            where: { robotId: { in: stillAlive } },
+            data: { lastSeenAt: new Date(nowMs) },
+        });
+        log.warn("offline sweep: robots live in registry but stale in DB", {
+            count: stillAlive.length,
+        });
+    }
+    return { offline: trulyOffline, stillAlive };
 }
 
 function startDtaroSweep(prisma, kv, { logger } = {}) {
@@ -291,3 +317,6 @@ function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig, appLoc
 }
 
 module.exports = initSocketServer;
+// One pass of the legacy offline sweep, for its tests (the interval in `startOfflineDetector`
+// is its only production caller).
+module.exports.sweepOfflineOnce = sweepOfflineOnce;
