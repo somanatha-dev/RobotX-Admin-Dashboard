@@ -677,6 +677,96 @@ describe("supplying the decisions releases exactly the steps they release", () =
   });
 });
 
+describe("D1 — a placeholder is not a cardinality exception", () => {
+  // The FIXTURE cover holds one fine cell, far outside §3.6's 1 000–100 000 band, so V-9 passes
+  // only on the strength of `cover.cardinalityException`. Before this rule, "TBD" there reported
+  // D1 PASS: an out-of-band count accepted with no stated reason.
+  const withException = (cardinalityException) =>
+    readiness.assessD1({ ...FIXTURE, cover: { ...FIXTURE.cover, cardinalityException } });
+
+  test("the fixture's stated reason is accepted — the rule does not refuse an answer", () => {
+    expect(withException(FIXTURE.cover.cardinalityException).status).toBe(READINESS.PASS);
+  });
+
+  test.each([["TBD"], ["tbd."], ["  todo  "], ["n/a"], ["pending"], ["?"], ["-"], ["placeholder"]])(
+    "%j is refused: D1 FAILS and names the field",
+    (token) => {
+      const result = withException(token);
+      expect(result.status).toBe(READINESS.FAIL);
+      expect(result.problems.join("\n")).toMatch(/cover\.cardinalityException is ".*", which is a placeholder rather than a stated reason/u);
+    },
+  );
+
+  test("absent or whitespace-only is still V-9's own finding, not the placeholder one", () => {
+    for (const value of [undefined, "", "   "]) {
+      const result = withException(value);
+      expect(result.status).toBe(READINESS.FAIL);
+      expect(result.problems.join("\n")).toMatch(/V-9/u);
+      expect(result.problems.join("\n")).not.toMatch(/is a placeholder rather than a stated reason/u);
+    }
+  });
+
+  test("the rule is the shared placeholder authority, not a second token list", () => {
+    const source = require("fs").readFileSync(require.resolve("../../tools/routing/b1Readiness"), "utf8");
+    expect(source).toMatch(/isNonEmptyString\(exception\) && contract\.isPlaceholder\(exception\)/u);
+  });
+});
+
+describe("D3 — a placeholder does not address a speed-model factor", () => {
+  // `speedModelStatus` counts a factor as addressed when its key is present and non-null, so six
+  // "TBD" strings classified DECLARED and reported D3 PASS, releasing Step 1.
+  const withFactors = (overrides) => ({ ...FIXTURE.mobility[0], speedModel: { ...FIXTURE.mobility[0].speedModel, ...overrides } });
+  const allFactors = (value) => Object.fromEntries(mobilityModel.SPEED_MODEL_FACTORS.map((factor) => [factor, value]));
+
+  test("the fixture's factors are accepted — the rule does not refuse an answer", () => {
+    expect(readiness.assessD3({ mobility: FIXTURE.mobility }).status).toBe(READINESS.PASS);
+  });
+
+  test.each([["TBD"], ["tbd."], ["  todo  "], ["n/a"], ["unknown"], ["pending"], ["?"], [""], ["   "]])(
+    "a speed model of six %j factors FAILS D3 and keeps Step 1 BLOCKED",
+    (token) => {
+      const report = readiness.assess({ config: { ...FIXTURE, mobility: [withFactors(allFactors(token))] }, asOf: "2026-08-09" });
+      expect(report.decisions.D3.status).toBe(READINESS.FAIL);
+      expect(report.decisions.D3.models[0].routable).toBe(false);
+      // The authority's own classification is unchanged; the refusal is D3's.
+      expect(report.decisions.D3.models[0].speedModelStatus).toBe(mobilityModel.SPEED_MODEL_STATUS.DECLARED);
+      expect(report.decisions.D3.problems.join("\n")).toMatch(/are placeholders rather than a declared factor/u);
+      expect(stepOf(report, 1).status).toBe(READINESS.BLOCKED);
+      expect(stepOf(report, 1).blockedBy).toEqual(["D3"]);
+      expect(report.stepEvidenceAdmissible).toBe(false);
+    },
+  );
+
+  test("one placeholder factor among five declared ones is enough, and the problem names it", () => {
+    const result = readiness.assessD3({ mobility: [withFactors({ weather: "TBD" })] });
+    expect(result.status).toBe(READINESS.FAIL);
+    expect(result.problems.join("\n")).toMatch(/speedModel weather: "TBD" is a placeholder rather than a declared factor/u);
+    expect(result.problems.join("\n")).not.toMatch(/roadClass: /u);
+  });
+
+  test("non-string factor values stay opaque — their content is Fleet Engineering's", () => {
+    for (const value of [{}, { supplied: "by D3" }, 0, false, ["fixture"]]) {
+      expect(readiness.assessD3({ mobility: [withFactors(allFactors(value))] }).status).toBe(READINESS.PASS);
+    }
+  });
+
+  test("a placeholder nested inside a factor's object is not judged here", () => {
+    expect(readiness.assessD3({ mobility: [withFactors({ gradient: { note: "TBD" } })] }).status).toBe(READINESS.PASS);
+  });
+
+  test("a STUB with a placeholder note is still reported as the STUB it is, and only that", () => {
+    const result = readiness.assessD3({ mobility: [{ ...FIXTURE.mobility[0], speedModel: { note: "TBD" } }] });
+    expect(result.status).toBe(READINESS.FAIL);
+    expect(result.models[0].speedModelStatus).toBe(mobilityModel.SPEED_MODEL_STATUS.STUB);
+    expect(result.problems.join("\n")).not.toMatch(/rather than a declared factor/u);
+  });
+
+  test("the rule is the shared placeholder authority, not a second token list", () => {
+    const source = require("fs").readFileSync(require.resolve("../../tools/routing/b1Readiness"), "utf8");
+    expect(source).toMatch(/!isNonEmptyString\(value\) \|\| contract\.isPlaceholder\(value\)/u);
+  });
+});
+
 describe("the CLI", () => {
   test("prints the gate and exits 0 — a missing decision is not a build failure", () => {
     const log = jest.spyOn(console, "log").mockImplementation(() => {});

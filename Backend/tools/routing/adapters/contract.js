@@ -189,6 +189,10 @@ const PLACEHOLDER_TOKENS = new Set(["tbd", "tba", "todo", "n/a", "unknown", "uns
  *                               b1Benchmark.js:89–90, :590–591 — Step 4's operational record.
  *   `extract.identity`, `extract.source`  (b1Readiness `assessD8`) — D8's own two: the name every
  *                               measurement is attributed to, and where the snapshot came from.
+ *   `cover.cardinalityException`  (b1Readiness `assessD1`) — the stated reason an out-of-band
+ *                               fine-cell count is accepted (V-9); its whole content is the why.
+ *   `speedModel.<factor>`  (b1Readiness `assessD3`) — a §2.2 factor whose whole value is a
+ *                               placeholder string addresses nothing; other values stay opaque.
  *
  * It is **not** applied to every string in the system, and specifically not to `engineProfile`
  * (an engine-side costing name, D3's, matched against a deployed profile rather than read as

@@ -182,6 +182,23 @@ function assessD1(config) {
     problems.push(...cover.problems);
   }
 
+  // ── A placeholder is not a cardinality exception ────────────────────────────────────────
+  // V-9 accepts any non-empty `cover.cardinalityException`, so `"TBD"` cleared the band and
+  // reported D1 PASS: an out-of-band cover with no stated reason, recorded as a complete D1
+  // answer. The exception's whole content is the *why* (handoff §1.4), which makes it a named
+  // answer in R-3's sense, so it is judged by the same placeholder rule as D8's named fields.
+  // Applied here rather than in `regionBoundary.validateCover`, which is another authority's
+  // contract (see `contract.isPlaceholder`). No exception text is supplied or defaulted.
+  const exception = source.cover && source.cover.cardinalityException;
+  if (isNonEmptyString(exception) && contract.isPlaceholder(exception)) {
+    problems.push(
+      `cover.cardinalityException is "${exception}", which is a placeholder rather than a stated reason. V-9 reads ` +
+        "the exception as the justification for an out-of-band fine-cell count, and a placeholder is " +
+        "indistinguishable from an answer once D1 reports PASS. Writing it is an owner act (handoff §1.8.4 " +
+        "item 1); nothing is inferred or defaulted here",
+    );
+  }
+
   // ── V-11 — and the region under assessment is always in the comparison ──────────────────
   // PHASE 15 adversarial pass. This read `Array.isArray(source.regions) ? source.regions.map(…)
   // : [declaration]`, so the moment an operator supplied the neighbours the seam documents —
@@ -315,12 +332,44 @@ function assessD3(config) {
 
   const models = declared.map((model) => {
     const readiness = mobilityModel.validateRoutingReadiness(model);
+    const modelId = model && typeof model.modelId === "string" ? model.modelId : "<unnamed>";
+    const problems = [...readiness.problems];
+
+    // ── A placeholder does not address a factor ─────────────────────────────────────────────
+    // `speedModelStatus` counts a factor as addressed when its key is present and non-null, so
+    // `{ roadClass: "TBD", …, weather: "TBD" }` classified DECLARED and reported D3 PASS, which
+    // released Step 1: six placeholders recorded as a complete speed model. That status exists to
+    // tell "a model" from "a placeholder" (mobilityModel.js:148-156), and a factor whose whole
+    // value is a placeholder token, or a blank string, addresses nothing. It is judged by the same
+    // placeholder authority as D1's exception and D8's named fields. Applied here rather than in
+    // `mobilityModel.js`, which is the engine domain's contract and must not require `tools/`.
+    // Only a factor that is entirely such a string is refused. Any other value stays opaque,
+    // because its content is Fleet Engineering's, and nothing is supplied or defaulted.
+    const speed = model && typeof model === "object" ? model.speedModel : undefined;
+    const unaddressed =
+      speed && typeof speed === "object" && !Array.isArray(speed)
+        ? mobilityModel.SPEED_MODEL_FACTORS.filter((factor) => {
+            if (!Object.prototype.hasOwnProperty.call(speed, factor)) return false;
+            const value = speed[factor];
+            return typeof value === "string" && (!isNonEmptyString(value) || contract.isPlaceholder(value));
+          })
+        : [];
+    if (unaddressed.length > 0) {
+      problems.push(
+        `mobility model "${modelId}" speedModel ${unaddressed.map((factor) => `${factor}: ${JSON.stringify(speed[factor])}`).join(", ")} ` +
+          `${unaddressed.length === 1 ? "is a placeholder" : "are placeholders"} rather than a declared factor. §2.2's speed model is ` +
+          "speed as a function of six factors, and a placeholder is indistinguishable from an answer once D3 reports PASS " +
+          "and Step 1 builds a hierarchy over it. The factor is Fleet Engineering's to supply from fleet measurement (D3); " +
+          "nothing is inferred or defaulted here",
+      );
+    }
+
     return Object.freeze({
-      modelId: model && typeof model.modelId === "string" ? model.modelId : "<unnamed>",
+      modelId,
       profileKey: mobilityModel.routingProfileKey(model, { loaded: false }),
-      routable: readiness.routable,
+      routable: problems.length === 0,
       speedModelStatus: readiness.speedModel.status,
-      problems: Object.freeze(readiness.problems),
+      problems: Object.freeze(problems),
     });
   });
 
