@@ -386,6 +386,46 @@ describe("§22.3 — Safety-class changes", () => {
   });
 });
 
+describe("§22.3 / §23.4 — the approval record of an HTTP publish (verifiedApproverId)", () => {
+  const safetyChange = [...BASELINE, bind("lease.duration", 90)];
+  const VERIFIED = "22222222-2222-4222-8222-222222222222";
+
+  test("a direct caller (no verifiedApproverId) is unchanged: string identities, stored exactly as given", async () => {
+    const { client, versions } = createConfigStore();
+    const approvals = [{ approverId: "safety-1", approvedAt: "t" }];
+    await service.publish(client, { publishedBy: "ops-1", bindings: safetyChange, approvals });
+    expect(versions[0].approvals).toEqual(approvals);
+    expect(service.checkApprovalIdentities({ publishedBy: "ops-1", approvals })).toEqual([]);
+  });
+
+  test("an HTTP publish with no verified approver attached is refused (S5) and nothing is written", async () => {
+    const { client, versions } = createConfigStore();
+    await expectRefused(
+      service.publish(client, { publishedBy: "ops-1", bindings: BASELINE, approvals: [], verifiedApproverId: null }),
+      /no second approver verified by the route gate/,
+    );
+    expect(versions).toHaveLength(0);
+  });
+
+  test("approvals[] may name the publisher and the verified approver, and nobody else (S4)", () => {
+    const check = (approvals) => service.checkApprovalIdentities({ publishedBy: "ops-1", approvals, verifiedApproverId: VERIFIED }).map((f) => f.id);
+    expect(check([{ approverId: VERIFIED, approvedAt: "t" }, { approverId: "ops-1", approvedAt: "t" }])).toEqual([]);
+    expect(check([{ approverId: "safety-1", approvedAt: "t" }])).toEqual(["S4"]);
+    expect(check([{ approverId: VERIFIED, approvedAt: "t" }, { approverId: "safety-1", approvedAt: "t" }])).toEqual(["S4"]);
+  });
+
+  test("the stored record marks the verified approver, adding an entry without approvedAt when approvals[] omits them", () => {
+    const at = "2026-10-13T10:00:00.000Z";
+    expect(service.recordedApprovals({ approvals: [], verifiedApproverId: VERIFIED, approverVerifiedAt: at })).toEqual([
+      { approverId: VERIFIED, verifiedBy: "SAFETY_CONFIG_CHANGE", verifiedAt: at },
+    ]);
+    expect(service.recordedApprovals({ approvals: [{ approverId: VERIFIED, approvedAt: "t" }], verifiedApproverId: VERIFIED, approverVerifiedAt: at })).toEqual([
+      { approverId: VERIFIED, approvedAt: "t", verifiedBy: "SAFETY_CONFIG_CHANGE", verifiedAt: at },
+    ]);
+    expect(service.recordedApprovals({ approvals: [{ approverId: "safety-1", approvedAt: "t" }] })).toEqual([{ approverId: "safety-1", approvedAt: "t" }]);
+  });
+});
+
 describe("pin and load — cache-read, DB-authoritative (§3.3)", () => {
   async function publishAndPin() {
     const store = createConfigStore();

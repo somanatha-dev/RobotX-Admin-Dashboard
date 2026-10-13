@@ -62,6 +62,8 @@ const { sendRobotCommand } = require("../../../src/controllers/robots.controller
 
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "ops@robotx.test", role: "SUPER_ADMIN" };
 const VIEWER = { ...USER, role: "VIEWER" };
+// The second approver is an existing account, resolved by id (the gate refuses a made-up identity).
+const APPROVER = { id: "22222222-2222-4222-8222-222222222222", role: "SUPER_ADMIN" };
 const token = () => jwt.sign({ id: USER.id }, process.env.JWT_SECRET);
 
 const kvHandles = [];
@@ -215,7 +217,7 @@ describe("P7-D1 — a PAUSED robot is restored only through the QUARANTINE_OVERR
   beforeEach(async () => {
     jest.clearAllMocks();
     kv = await freshKv();
-    mockPrismaClient.user.findUnique.mockResolvedValue(USER);
+    mockPrismaClient.user.findUnique.mockImplementation(async ({ where }) => [USER, APPROVER].find((row) => row.id === where.id) || null);
     mockPrismaClient.auditEvent.findFirst.mockResolvedValue(null);
     mockPrismaClient.auditEvent.create.mockImplementation(async ({ data }) => ({ ...data }));
     mockPrismaClient.overrideAudit.create.mockResolvedValue({});
@@ -237,11 +239,13 @@ describe("P7-D1 — a PAUSED robot is restored only through the QUARANTINE_OVERR
       .post("/api/robots/AGT-1/clear-fault")
       .set("Authorization", `Bearer ${token()}`)
       .set("X-Override-Reason", "unit inspected after the STOP; operator resumed it")
-      .set("X-Second-Approver", "ops-2");
+      .set("X-Second-Approver", APPROVER.id);
 
   test.each([
     ["no recorded reason", (r) => r.unset("X-Override-Reason"), 400, override.REFUSAL.NO_REASON],
     ["no second approver", (r) => r.unset("X-Second-Approver"), 400, override.REFUSAL.SECOND_APPROVER_REQUIRED],
+    ["a second approver naming no account", (r) => r.set("X-Second-Approver", "33333333-3333-4333-8333-333333333333"), 400, override.REFUSAL.SECOND_APPROVER_UNKNOWN],
+    ["a made-up second approver", (r) => r.set("X-Second-Approver", "ops-2"), 400, override.REFUSAL.SECOND_APPROVER_UNKNOWN],
   ])("the gate is unchanged: %s is refused and nothing is written", async (_label, alter, status, refusal) => {
     setRobotSocket("AGT-1", socket);
     await live({ status: "IDLE" });

@@ -2,6 +2,7 @@ const asyncHandler = require("../utils/asyncHandler");
 const { getPrisma } = require("../db/prisma");
 const configService = require("../engine/config/service");
 const { SCOPE_ORDER } = require("../engine/config/resolver");
+const override = require("../engine/security/override");
 
 const HTTP_BAD_REQUEST = 400;
 const HTTP_NOT_FOUND = 404;
@@ -94,6 +95,21 @@ const listVersions = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * The second approver the SAFETY_CONFIG_CHANGE gate verified on this request, or null. Read from
+ * `req.override` — the decision `requireActionClass` attaches only when it granted — so nothing
+ * the caller sends can stand in for it.
+ *
+ * @param {object} req
+ * @returns {string|null}
+ */
+function verifiedApproverFrom(req) {
+  const gated = req.override;
+  if (!gated || !gated.decision || gated.decision.granted !== true) return null;
+  if (!gated.request || gated.request.actionClass !== override.ACTION_CLASS.SAFETY_CONFIG_CHANGE.id) return null;
+  return typeof gated.request.secondApproverId === "string" && gated.request.secondApproverId ? gated.request.secondApproverId : null;
+}
+
 // POST /api/config/publish
 //
 // Invalid configuration is rejected here, not discovered at decision time (§22.1
@@ -119,6 +135,13 @@ const publishVersion = asyncHandler(async (req, res) => {
     // An automated caller must say so. It is then refused any Safety-class change.
     automated: Boolean(body.automated),
     enforceLaunchGate: Boolean(body.enforceLaunchGate),
+    // The second approver the route gate verified (an existing account, distinct, admitted
+    // role), taken from the gate's own granted decision — never from the body. `approvals[]` may
+    // name only the publisher and this identity, and the stored record marks it
+    // (`configService.checkApprovalIdentities` / `recordedApprovals`). `null` when no such
+    // decision is attached, which the service refuses (S5).
+    verifiedApproverId: verifiedApproverFrom(req),
+    approverVerifiedAt: new Date().toISOString(),
   };
 
   let published;

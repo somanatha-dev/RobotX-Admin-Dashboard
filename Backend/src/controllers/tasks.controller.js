@@ -13,7 +13,7 @@ const feasibilityRegister = require("../engine/feasibility/register");
 // PHASE 14 remediation (P14-R3 / P14-R5) — the same policy and the same audit writer the
 // action-class middleware uses. Two policies, or two audit shapes, is how a route gate and
 // a controller come to disagree about who may waive what.
-const { policyFor, recordAuthorisation, configValue } = require("../middlewares/auth_middleware");
+const { policyFor, recordAuthorisation, configValue, verifySecondApprover } = require("../middlewares/auth_middleware");
 const taskCancellation = require("../services/taskCancellation.service");
 const { RELEASABLE_STATUSES } = require("../services/taskCompletion.service");
 
@@ -119,7 +119,19 @@ const assignTask = asyncHandler(async (req, res) => {
     // empty list meant "every role is elevated" rather than "none is" (P14-R3), so the two
     // defects composed into a class-P waiver granted to any authenticated caller. Reading
     // the same `policyFor(req)` the middleware reads means the two can never disagree.
-    const decision = override.authoriseWaiver(waiverRequest, policyFor(req), waiverSubject);
+    const policy = policyFor(req);
+    let decision = override.authoriseWaiver(waiverRequest, policy, waiverSubject);
+
+    // A class C waiver's second approver is an account, not a string: `authoriseWaiver` sees only
+    // the identity (present, distinct from the caller), and the route gate's action class requires
+    // no second approver by default, so this is the one place it is resolved — by the gate's own
+    // check (`verifySecondApprover`). It establishes that the account exists and holds an admitted
+    // role; it does not, and cannot, establish that its holder consented. Fails closed when the
+    // account cannot be read.
+    if (decision.granted && override.waiverRequiresSecondApprover(waiverRequest.constraintClass)) {
+      const approval = await verifySecondApprover(waiverRequest, policy);
+      if (!approval.granted) decision = { ...approval, waivedPredicate: null };
+    }
 
     // PHASE 14 remediation (P14-R5) — §23.6: "Every override is audited and counted."
     //
@@ -130,7 +142,9 @@ const assignTask = asyncHandler(async (req, res) => {
     await recordAuthorisation(req, decision, waiverRequest, waiverSubject);
 
     if (!decision.granted) {
-      res.status(403).json({
+      // 503 only when the approver could not be verified (an outage, not a decision); every
+      // decided refusal stays 403, as before.
+      res.status(decision.refusal === override.REFUSAL.SECOND_APPROVER_UNVERIFIABLE ? 503 : 403).json({
         ok: false,
         error: "Forbidden",
         refusal: decision.refusal,

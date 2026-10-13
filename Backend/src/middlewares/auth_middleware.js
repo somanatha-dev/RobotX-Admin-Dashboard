@@ -186,18 +186,63 @@ function requireActionClass(actionClassId, options) {
     };
 
     const subject = typeof settings.subjectFrom === "function" ? settings.subjectFrom(req) : {};
-    const decision = override.authoriseAction(request, policyFor(req), subject);
+    const policy = policyFor(req);
+    let decision = override.authoriseAction(request, policy, subject);
+
+    // The second approver is an account, not a string: resolved only once everything else has
+    // been granted (an unelevated caller learns nothing about which accounts exist), and refused
+    // when the lookup cannot answer — an unverified approver is not an approver.
+    if (decision.granted && override.secondApproverRequired(actionClassId, policy)) {
+      decision = await verifySecondApprover(request, policy);
+    }
 
     await recordAuthorisation(req, decision, request, subject);
 
     if (!decision.granted) {
-      const status = decision.refusal === override.REFUSAL.ROLE_NOT_ELEVATED || decision.refusal === override.REFUSAL.OUT_OF_SCOPE ? 403 : 400;
-      return res.status(status).json({ ok: false, error: "Forbidden", refusal: decision.refusal, detail: decision.detail });
+      return res.status(REFUSAL_STATUS[decision.refusal] || 400).json({ ok: false, error: "Forbidden", refusal: decision.refusal, detail: decision.detail });
     }
 
     req.override = { decision, request, subject };
     return next();
   };
+}
+
+/** HTTP status per refusal; any other refusal is a 400. */
+const REFUSAL_STATUS = Object.freeze({
+  [override.REFUSAL.ROLE_NOT_ELEVATED]: 403,
+  [override.REFUSAL.OUT_OF_SCOPE]: 403,
+  [override.REFUSAL.SECOND_APPROVER_NOT_ELEVATED]: 403,
+  [override.REFUSAL.SECOND_APPROVER_UNVERIFIABLE]: 503,
+});
+
+/**
+ * Resolve the second approver's identity to its `User` row and judge it
+ * (`override.assessSecondApprover`). Read from the same store `authUser` resolves the caller
+ * from. An identity that is not a UUID names no account and is refused without a query. Shared
+ * by this gate and by `tasks.controller`'s class C waiver, so both apply one check.
+ *
+ * @param {object} request the request `authoriseAction` (or `authoriseWaiver`) granted
+ * @param {object} policy
+ * @returns {Promise<object>} the final decision
+ */
+async function verifySecondApprover(request, policy) {
+  let approver = null;
+  if (isUuid(request.secondApproverId)) {
+    try {
+      approver = await getPrisma().user.findUnique({
+        where: { id: request.secondApproverId },
+        select: { id: true, role: true },
+      });
+    } catch {
+      return {
+        granted: false,
+        refusal: override.REFUSAL.SECOND_APPROVER_UNVERIFIABLE,
+        detail: "the second approver's account could not be read, so the approval cannot be verified",
+        actionClass: override.ACTION_CLASS[request.actionClass] || null,
+      };
+    }
+  }
+  return override.assessSecondApprover(request, approver, policy);
 }
 
 /**
@@ -254,5 +299,6 @@ module.exports = {
   policyFor,
   requireElevatedRole,
   requireActionClass,
+  verifySecondApprover,
   recordAuthorisation,
 };

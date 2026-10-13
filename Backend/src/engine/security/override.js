@@ -17,7 +17,7 @@
  * | Manual choice among feasible agents is always permitted | `manualSelection()` — a single-candidate set through the standard gate |
  * | Every override is audited and counted | `toAuditEvent()` / `toOverrideAuditRow()`; the chain is `observability/auditStream.js` |
  * | Override rates are monitored per operator and per predicate | `rates()`, `breaches()` |
- * | High-risk overrides require a second approver | `ACTION_CLASS[…].secondApprover`, checked in `authoriseAction()` |
+ * | High-risk overrides require a second approver | `ACTION_CLASS[…].secondApprover`, checked in `authoriseAction()`; the approver's account in `assessSecondApprover()` |
  *
  * ── Why the refusal comes before the actor check ────────────────────────────
  * A class I waiver request is refused **without consulting the requester's role**, and
@@ -143,6 +143,9 @@ const REFUSAL = Object.freeze({
   ROLE_NOT_ELEVATED: "ROLE_NOT_ELEVATED",
   SECOND_APPROVER_REQUIRED: "SECOND_APPROVER_REQUIRED",
   SECOND_APPROVER_NOT_DISTINCT: "SECOND_APPROVER_NOT_DISTINCT",
+  SECOND_APPROVER_UNKNOWN: "SECOND_APPROVER_UNKNOWN",
+  SECOND_APPROVER_NOT_ELEVATED: "SECOND_APPROVER_NOT_ELEVATED",
+  SECOND_APPROVER_UNVERIFIABLE: "SECOND_APPROVER_UNVERIFIABLE",
   UNKNOWN_ACTION_CLASS: "UNKNOWN_ACTION_CLASS",
   OUT_OF_SCOPE: "OUT_OF_SCOPE",
 });
@@ -253,7 +256,7 @@ function authoriseWaiver(request, policy, subject) {
     return { granted: false, refusal: REFUSAL.OUT_OF_SCOPE, detail: scopeProblem, waivedPredicate: null };
   }
 
-  if (waivability.requiresSecondApprover) {
+  if (waiverRequiresSecondApprover(source.constraintClass)) {
     if (!source.secondApproverId) {
       return {
         granted: false,
@@ -360,14 +363,7 @@ function authoriseAction(request, policy, subject) {
     return { granted: false, refusal: REFUSAL.OUT_OF_SCOPE, detail: scopeProblem, actionClass: definition };
   }
 
-  // "and where configured a second approver" — the default is the action class's own,
-  // and a deployment may require it for more classes but never for fewer. Allowing a
-  // configuration to *remove* a second-approver requirement would put the strongest
-  // control in this section behind an ordinary config change.
-  const configured = Array.isArray(rules.requireSecondApproverFor) ? rules.requireSecondApproverFor : [];
-  const needsSecond = definition.secondApprover || configured.includes(definition.id);
-
-  if (needsSecond) {
+  if (secondApproverRequired(definition.id, rules)) {
     if (!source.secondApproverId) {
       return { granted: false, refusal: REFUSAL.SECOND_APPROVER_REQUIRED, detail: `${definition.id} requires a second approver (§23.4, §23.6)`, actionClass: definition };
     }
@@ -376,6 +372,77 @@ function authoriseAction(request, policy, subject) {
     }
   }
 
+  return { granted: true, refusal: null, detail: null, actionClass: definition };
+}
+
+/**
+ * Does this action class require a second approver under this policy?
+ *
+ * "and where configured a second approver" — the default is the action class's own, and a
+ * deployment may require it for more classes but never for fewer. Allowing a configuration to
+ * *remove* a second-approver requirement would put the strongest control in this section behind
+ * an ordinary config change.
+ *
+ * @param {string} actionClassId one of `ACTION_CLASS`
+ * @param {object} [policy] `{ requireSecondApproverFor }`
+ * @returns {boolean}
+ */
+function secondApproverRequired(actionClassId, policy) {
+  const definition = ACTION_CLASS[actionClassId];
+  if (!definition) return false;
+  const configured = policy && Array.isArray(policy.requireSecondApproverFor) ? policy.requireSecondApproverFor : [];
+  return definition.secondApprover || configured.includes(definition.id);
+}
+
+/**
+ * Does a waiver of a predicate of this class require a second approver? (§7.2: class C, the
+ * documented exception.) The rule `authoriseWaiver` applies, exported so the caller that
+ * resolves the approver's account asks the same question.
+ *
+ * @param {string} constraintClass one of `CONSTRAINT_CLASS`
+ * @returns {boolean}
+ */
+function waiverRequiresSecondApprover(constraintClass) {
+  const row = WAIVABILITY[constraintClass];
+  return Boolean(row && row.waivable && row.requiresSecondApprover);
+}
+
+/**
+ * The second approver, checked against the account the identity names.
+ *
+ * `authoriseAction` sees only the identity string, so on its own any value distinct from the
+ * actor passed — including one naming no account at all, which made two-person approval a
+ * formality one person could satisfy by typing anything. The caller resolves the identity to its
+ * account (`approver`, `{ id, role }` or null) and this decides: the account must exist, be the
+ * one named, and hold a role the same policy admits for the action itself. Distinctness from the
+ * actor stays `authoriseAction`'s, which runs first.
+ *
+ * @param {object} request the request `authoriseAction` granted
+ * @param {{ id: string, role: string }|null} approver the account the identity resolved to
+ * @param {object} [policy] `{ elevatedRoles }`
+ * @returns {{ granted: boolean, refusal: string|null, detail: string|null, actionClass: object|null }}
+ */
+function assessSecondApprover(request, approver, policy) {
+  const source = request || {};
+  const definition = ACTION_CLASS[source.actionClass] || null;
+  if (!approver || String(approver.id) !== String(source.secondApproverId)) {
+    return {
+      granted: false,
+      refusal: REFUSAL.SECOND_APPROVER_UNKNOWN,
+      detail: "the second approver must name an existing user account (§23.4, §23.6)",
+      actionClass: definition,
+    };
+  }
+  if (!roleAdmitted((policy || {}).elevatedRoles, approver.role)) {
+    return {
+      granted: false,
+      refusal: REFUSAL.SECOND_APPROVER_NOT_ELEVATED,
+      detail:
+        `the second approver's role "${String(approver.role)}" is not authorised to approve ` +
+        `${definition ? definition.id : source.predicateId ? `a waiver of ${String(source.predicateId)}` : "this action"} (§23.4)`,
+      actionClass: definition,
+    };
+  }
   return { granted: true, refusal: null, detail: null, actionClass: definition };
 }
 
@@ -592,6 +659,9 @@ module.exports = {
   roleAdmitted,
   authoriseWaiver,
   authoriseAction,
+  secondApproverRequired,
+  waiverRequiresSecondApprover,
+  assessSecondApprover,
   outOfScope,
   manualSelection,
   toAuditEvent,

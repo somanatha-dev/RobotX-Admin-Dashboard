@@ -405,6 +405,76 @@ function checkSafetyApproval(request, changes) {
 }
 
 /**
+ * The approval record of an HTTP publish names only identities this request established.
+ *
+ * `checkSafetyApproval` counts identity *strings*: on its own, a made-up `approverId` in
+ * `approvals[]` satisfies S2, and the version row then stored an approval nobody verified. Over
+ * HTTP the route gate (SAFETY_CONFIG_CHANGE) has already verified one second approver — an
+ * existing account, distinct from the publisher, holding an admitted role — and the controller
+ * passes that identity as `verifiedApproverId`. So `approvals[]` may name the publisher (the
+ * authenticated caller) and that approver, and nobody else (S4); and an HTTP publish carrying no
+ * verified approver is refused (S5). S2 and S3 still judge the caller's list exactly as before:
+ * the gate is the outer check, not a substitute for §22.3's.
+ *
+ * What this establishes is the account and its role — not that the person consented, which no
+ * part of this request can show.
+ *
+ * Applies only when the caller states `verifiedApproverId` (the HTTP controller always does,
+ * `null` included). Direct callers — operator tools holding database access, the rollback
+ * publisher — state none, and their behaviour is unchanged.
+ *
+ * @param {{ publishedBy: string, approvals?: object[], verifiedApproverId?: string|null }} request
+ * @returns {object[]} findings
+ */
+function checkApprovalIdentities(request) {
+  if (request.verifiedApproverId === undefined) return [];
+  if (!request.verifiedApproverId) {
+    return [{
+      id: "S5",
+      severity: SEVERITY.BLOCKING,
+      rule: "§22.3 / §23.4",
+      message: "this publish carries no second approver verified by the route gate (SAFETY_CONFIG_CHANGE), so its approval record cannot be established.",
+    }];
+  }
+  const established = new Set([String(request.publishedBy), String(request.verifiedApproverId)]);
+  const unverified = [...new Set(
+    (request.approvals || [])
+      .filter((approval) => approval && approval.approverId && !established.has(String(approval.approverId)))
+      .map((approval) => String(approval.approverId)),
+  )];
+  if (unverified.length === 0) return [];
+  return [{
+    id: "S4",
+    severity: SEVERITY.BLOCKING,
+    rule: "§22.3 / §23.4",
+    message:
+      `approvals[] names ${unverified.map((id) => `"${id}"`).join(", ")}, which this request did not verify. An approval may ` +
+      "name only the publisher or the second approver the route gate verified (sent as X-Second-Approver / secondApproverId).",
+  }];
+}
+
+/**
+ * The approval record the version row stores. For an HTTP publish, the gate-verified approver is
+ * marked on the entry naming them, or — when `approvals[]` does not name them (a publish with no
+ * Safety-class change need not) — added as an entry of its own. That entry says what the gate did
+ * (`verifiedBy`, `verifiedAt`) and carries no `approvedAt`: the time a person approved is the
+ * caller's statement to make, and none was made.
+ *
+ * @param {object} request
+ * @returns {object[]}
+ */
+function recordedApprovals(request) {
+  const approvals = request.approvals || [];
+  if (!request.verifiedApproverId) return approvals;
+  const verified = String(request.verifiedApproverId);
+  const mark = { verifiedBy: "SAFETY_CONFIG_CHANGE", verifiedAt: request.approverVerifiedAt || null };
+  if (approvals.some((approval) => approval && String(approval.approverId) === verified)) {
+    return approvals.map((approval) => (approval && String(approval.approverId) === verified ? { ...approval, ...mark } : approval));
+  }
+  return [...approvals, { approverId: verified, ...mark }];
+}
+
+/**
  * The payload a published version carries: everything a replay needs to reconstruct
  * the same resolution, without consulting any other store.
  *
@@ -435,6 +505,9 @@ function publishPayload(snapshot) {
  * @param {string} request.publishedBy
  * @param {Array<object>} [request.bindings]
  * @param {Array<object>} [request.approvals]
+ * @param {string|null} [request.verifiedApproverId] HTTP publishes only — the second approver the
+ *   route gate verified (`checkApprovalIdentities`); absent for direct callers
+ * @param {string} [request.approverVerifiedAt] when that verification was made (ISO-8601)
  * @param {Record<string, boolean>} [request.killSwitchState]
  * @param {object[]} [request.regimes]
  * @param {object} [request.spatial]
@@ -464,7 +537,7 @@ async function publish(prisma, request) {
   const previousValues = latest && latest.payload ? latest.payload.values || null : null;
 
   const changes = safetyClassChanges(snapshot.entries, snapshot.values, previousValues, request.regimes);
-  const approvalFindings = checkSafetyApproval(request, changes);
+  const approvalFindings = [...checkSafetyApproval(request, changes), ...checkApprovalIdentities(request)];
   result.findings.push(...approvalFindings);
   result.blocking.push(...approvalFindings);
 
@@ -489,7 +562,7 @@ async function publish(prisma, request) {
         signature,
         payload,
         note: request.note || null,
-        approvals: request.approvals || [],
+        approvals: recordedApprovals(request),
         safetyClassChanges: changes,
         launchGateFindings: result.launchGate,
       },
@@ -761,6 +834,8 @@ module.exports = {
   validateCandidate,
   safetyClassChanges,
   checkSafetyApproval,
+  checkApprovalIdentities,
+  recordedApprovals,
   publishPayload,
   publish,
   pinVersion,

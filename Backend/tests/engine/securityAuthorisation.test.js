@@ -46,10 +46,15 @@ const app = require("../../src/app");
 
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "ops@robotx.test", role: "SUPER_ADMIN" };
 const VIEWER = { ...USER, role: "VIEWER" };
+// The second approver is a real account, resolved by id — a made-up identity is refused (see the
+// second-approver block below).
+const APPROVER = { id: "22222222-2222-4222-8222-222222222222", role: "SUPER_ADMIN" };
+const accounts = (...rows) => async ({ where }) => rows.find((row) => row.id === where.id) || null;
 const token = () => jwt.sign({ id: USER.id }, process.env.JWT_SECRET);
 
 beforeEach(() => {
-  mockPrismaClient.user.findUnique.mockResolvedValue(USER);
+  mockPrismaClient.user.findUnique.mockReset();
+  mockPrismaClient.user.findUnique.mockImplementation(accounts(USER, APPROVER));
   mockPrismaClient.auditEvent.findFirst.mockResolvedValue(null);
   mockPrismaClient.auditEvent.create.mockImplementation(async ({ data }) => ({ ...data }));
   mockPrismaClient.overrideAudit.create.mockResolvedValue({});
@@ -63,7 +68,7 @@ const clearFault = () => request(app).post("/api/robots/AGT-1/clear-fault").set(
 
 describe("§23.4 — QUARANTINE_OVERRIDE on the fault-recovery route", () => {
   test("it is refused with no recorded reason", async () => {
-    const response = await clearFault().set("X-Second-Approver", "ops-2").send({}).expect(400);
+    const response = await clearFault().set("X-Second-Approver", APPROVER.id).send({}).expect(400);
     expect(response.body.refusal).toBe(override.REFUSAL.NO_REASON);
     expect(mockPrismaClient.robot.update).not.toHaveBeenCalled();
   });
@@ -77,14 +82,14 @@ describe("§23.4 — QUARANTINE_OVERRIDE on the fault-recovery route", () => {
     mockPrismaClient.user.findUnique.mockResolvedValue(VIEWER);
     const response = await clearFault()
       .set("X-Override-Reason", "battery replaced on site")
-      .set("X-Second-Approver", "ops-2")
+      .set("X-Second-Approver", APPROVER.id)
       .send({})
       .expect(403);
     expect(response.body.refusal).toBe(override.REFUSAL.ROLE_NOT_ELEVATED);
   });
 
   test("with a reason and a distinct second approver it proceeds, and both audit records are written", async () => {
-    await clearFault().set("X-Override-Reason", "battery replaced on site").set("X-Second-Approver", "ops-2").send({}).expect(200);
+    await clearFault().set("X-Override-Reason", "battery replaced on site").set("X-Second-Approver", APPROVER.id).send({}).expect(200);
 
     expect(mockPrismaClient.auditEvent.create).toHaveBeenCalled();
     const audited = mockPrismaClient.auditEvent.create.mock.calls[0][0].data;
@@ -95,7 +100,7 @@ describe("§23.4 — QUARANTINE_OVERRIDE on the fault-recovery route", () => {
   });
 
   test("a REFUSED override is audited too", async () => {
-    await clearFault().set("X-Second-Approver", "ops-2").send({}).expect(400);
+    await clearFault().set("X-Second-Approver", APPROVER.id).send({}).expect(400);
 
     const row = mockPrismaClient.overrideAudit.create.mock.calls[0][0].data;
     // A stream holding only successes answers "nobody tried" to a question whose true
@@ -104,7 +109,7 @@ describe("§23.4 — QUARANTINE_OVERRIDE on the fault-recovery route", () => {
   });
 
   test("the reason lands on the Event row an operator already has open", async () => {
-    await clearFault().set("X-Override-Reason", "battery replaced on site").set("X-Second-Approver", "ops-2").send({}).expect(200);
+    await clearFault().set("X-Override-Reason", "battery replaced on site").set("X-Second-Approver", APPROVER.id).send({}).expect(200);
 
     const message = mockPrismaClient.event.create.mock.calls[0][0].data.message;
     expect(message).toMatch(/battery replaced on site/);
@@ -112,11 +117,102 @@ describe("§23.4 — QUARANTINE_OVERRIDE on the fault-recovery route", () => {
   });
 });
 
+describe("§23.4 — the second approver is an existing, authorised account, not a string", () => {
+  const REASON = "battery replaced on site";
+  const approverLookups = () => mockPrismaClient.user.findUnique.mock.calls.filter(([args]) => args.where.id !== USER.id);
+  const refusedAndNothingWritten = (response, refusal) => {
+    expect(response.body).toMatchObject({ ok: false, refusal });
+    expect(mockPrismaClient.robot.update).not.toHaveBeenCalled();
+    expect(mockPrismaClient.event.create).not.toHaveBeenCalled();
+    // Refused attempts stay audited, with the identity that was offered.
+    const row = mockPrismaClient.overrideAudit.create.mock.calls[0][0].data;
+    expect(row).toMatchObject({ granted: false, refusalReason: refusal, actionClass: "QUARANTINE_OVERRIDE" });
+  };
+
+  test("a valid second approver: the account is looked up by id and the fault is cleared", async () => {
+    await clearFault().send({ reason: REASON, secondApproverId: APPROVER.id }).expect(200);
+    expect(approverLookups()).toEqual([[{ where: { id: APPROVER.id }, select: { id: true, role: true } }]]);
+    expect(mockPrismaClient.robot.update).toHaveBeenCalledWith({ where: { robotId: "AGT-1" }, data: { status: "IDLE" } });
+    const row = mockPrismaClient.overrideAudit.create.mock.calls[0][0].data;
+    expect(row).toMatchObject({ granted: true, secondApproverId: APPROVER.id, refusalReason: null });
+  });
+
+  test("a well-formed id that names no account is refused", async () => {
+    const response = await clearFault().send({ reason: REASON, secondApproverId: "33333333-3333-4333-8333-333333333333" }).expect(400);
+    refusedAndNothingWritten(response, override.REFUSAL.SECOND_APPROVER_UNKNOWN);
+    expect(row(0).secondApproverId).toBe("33333333-3333-4333-8333-333333333333");
+  });
+
+  test.each([["an arbitrary string", "ops-2"], ["an email address", "approver@robotx.test"], ["a name", "Shift Lead"]])(
+    "%s is refused without querying the user table",
+    async (_label, identity) => {
+      const response = await clearFault().send({ reason: REASON, secondApproverId: identity }).expect(400);
+      refusedAndNothingWritten(response, override.REFUSAL.SECOND_APPROVER_UNKNOWN);
+      expect(approverLookups()).toHaveLength(0);
+    },
+  );
+
+  test("an account whose role the policy does not admit is refused (403)", async () => {
+    mockPrismaClient.user.findUnique.mockImplementation(accounts(USER, { ...APPROVER, role: "VIEWER" }));
+    const response = await clearFault().send({ reason: REASON, secondApproverId: APPROVER.id }).expect(403);
+    refusedAndNothingWritten(response, override.REFUSAL.SECOND_APPROVER_NOT_ELEVATED);
+  });
+
+  test("the approver's role is judged by the same configured list as the actor's", async () => {
+    // A deployment that elevates a second role admits an approver holding it — and only then.
+    mockPrismaClient.user.findUnique.mockImplementation(accounts(USER, { ...APPROVER, role: "SAFETY_LEAD" }));
+    await clearFault().send({ reason: REASON, secondApproverId: APPROVER.id }).expect(403);
+    jest.clearAllMocks();
+    mockPrismaClient.overrideAudit.create.mockResolvedValue({});
+    app.locals.config = { values: { "security.elevated_roles": ["SUPER_ADMIN", "SAFETY_LEAD"] } };
+    try {
+      await clearFault().send({ reason: REASON, secondApproverId: APPROVER.id }).expect(200);
+    } finally {
+      delete app.locals.config;
+    }
+  });
+
+  test("the caller cannot approve their own action", async () => {
+    const response = await clearFault().send({ reason: REASON, secondApproverId: USER.id }).expect(400);
+    refusedAndNothingWritten(response, override.REFUSAL.SECOND_APPROVER_NOT_DISTINCT);
+    expect(approverLookups()).toHaveLength(0);
+  });
+
+  test("a missing second approver is refused", async () => {
+    const response = await clearFault().send({ reason: REASON }).expect(400);
+    refusedAndNothingWritten(response, override.REFUSAL.SECOND_APPROVER_REQUIRED);
+  });
+
+  test("an unauthorised caller is refused before any approver lookup, even with a valid approver", async () => {
+    mockPrismaClient.user.findUnique.mockImplementation(accounts(VIEWER, APPROVER));
+    const response = await clearFault().send({ reason: REASON, secondApproverId: APPROVER.id }).expect(403);
+    refusedAndNothingWritten(response, override.REFUSAL.ROLE_NOT_ELEVATED);
+    expect(approverLookups()).toHaveLength(0);
+  });
+
+  test("an unauthenticated caller never reaches the gate", async () => {
+    await request(app).post("/api/robots/AGT-1/clear-fault").send({ reason: REASON, secondApproverId: APPROVER.id }).expect(401);
+    expect(mockPrismaClient.overrideAudit.create).not.toHaveBeenCalled();
+    expect(mockPrismaClient.robot.update).not.toHaveBeenCalled();
+  });
+
+  test("an approver lookup that fails refuses (503) — an unverified approver is not an approver", async () => {
+    mockPrismaClient.user.findUnique.mockImplementation(async ({ where }) => {
+      if (where.id === USER.id) return USER;
+      throw new Error("database unavailable");
+    });
+    const response = await clearFault().send({ reason: REASON, secondApproverId: APPROVER.id }).expect(503);
+    refusedAndNothingWritten(response, override.REFUSAL.SECOND_APPROVER_UNVERIFIABLE);
+  });
+
+  const row = (index) => mockPrismaClient.overrideAudit.create.mock.calls[index][0].data;
+});
+
 describe("§7.2 — the fault-recovery route is not a predicate waiver", () => {
   test("a request asking to waive a class I predicate is refused by name, before anything else", async () => {
     const response = await clearFault()
       .set("X-Override-Reason", "the customer is waiting")
-      .set("X-Second-Approver", "ops-2")
+      .set("X-Second-Approver", APPROVER.id)
       .send({ waivePredicate: "F8" })
       .expect(403);
 

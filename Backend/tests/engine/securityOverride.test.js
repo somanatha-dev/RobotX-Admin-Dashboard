@@ -182,6 +182,47 @@ describe("§23.4 — scoped RBAC/ABAC over the four high-privilege action classe
   });
 });
 
+describe("§23.4 — the second approver's account", () => {
+  const request = { actionClass: "QUARANTINE_OVERRIDE", actorId: "ops-1", actorRole: "SUPER_ADMIN", reason: "r", secondApproverId: "ops-2" };
+  const policy = { elevatedRoles: ["SUPER_ADMIN"] };
+
+  test("secondApproverRequired is the rule authoriseAction applies: the class's own, or added by configuration", () => {
+    expect(override.secondApproverRequired("QUARANTINE_OVERRIDE", { requireSecondApproverFor: [] })).toBe(true);
+    expect(override.secondApproverRequired("SAFETY_CONFIG_CHANGE", {})).toBe(true);
+    expect(override.secondApproverRequired("BULK_CANCELLATION", {})).toBe(false);
+    expect(override.secondApproverRequired("BULK_CANCELLATION", { requireSecondApproverFor: ["BULK_CANCELLATION"] })).toBe(true);
+    expect(override.secondApproverRequired("NOT_A_CLASS", {})).toBe(false);
+  });
+
+  test("waiverRequiresSecondApprover is the rule authoriseWaiver applies: class C only", () => {
+    expect(override.waiverRequiresSecondApprover("C")).toBe(true);
+    for (const constraintClass of ["P", "I", "R", "F", "NOT_A_CLASS", null]) {
+      expect(override.waiverRequiresSecondApprover(constraintClass)).toBe(false);
+    }
+  });
+
+  test("an existing account with an admitted role is accepted", () => {
+    expect(override.assessSecondApprover(request, { id: "ops-2", role: "SUPER_ADMIN" }, policy)).toMatchObject({ granted: true, refusal: null });
+  });
+
+  test("no account, or an account other than the one named, is SECOND_APPROVER_UNKNOWN", () => {
+    expect(override.assessSecondApprover(request, null, policy).refusal).toBe(override.REFUSAL.SECOND_APPROVER_UNKNOWN);
+    expect(override.assessSecondApprover(request, { id: "ops-3", role: "SUPER_ADMIN" }, policy).refusal).toBe(override.REFUSAL.SECOND_APPROVER_UNKNOWN);
+  });
+
+  test("a role outside the policy's elevated list is SECOND_APPROVER_NOT_ELEVATED — and an empty list admits no one", () => {
+    expect(override.assessSecondApprover(request, { id: "ops-2", role: "VIEWER" }, policy).refusal).toBe(override.REFUSAL.SECOND_APPROVER_NOT_ELEVATED);
+    expect(override.assessSecondApprover(request, { id: "ops-2", role: "SUPER_ADMIN" }, { elevatedRoles: [] }).refusal).toBe(
+      override.REFUSAL.SECOND_APPROVER_NOT_ELEVATED,
+    );
+  });
+
+  test("a refusal carries the action class, so its audit event keeps the class's event type", () => {
+    const decision = override.assessSecondApprover(request, null, policy);
+    expect(override.toAuditEvent(decision, request, {}).eventType).toBe(override.ACTION_CLASS.QUARANTINE_OVERRIDE.auditEventType);
+  });
+});
+
 describe("§7.2 — manual assignment does not bypass constraints", () => {
   test("a manual selection is a candidate set of one, run through the standard gate", () => {
     const selection = override.manualSelection({ agentId: "AGT-7", actorId: "ops-1", reason: "operator knows the site" });
