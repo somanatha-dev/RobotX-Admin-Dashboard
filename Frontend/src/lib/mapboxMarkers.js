@@ -82,6 +82,13 @@ export function injectPulseCSS() {
       70%  { transform: translate(-50%,-50%) scale(1.75); opacity: 0; }
       100% { transform: translate(-50%,-50%) scale(1.75); opacity: 0; }
     }
+    /* Reduced motion: the pulses are emphasis only — selection keeps its static ring and a
+       pin keeps its dot — so they are switched off rather than slowed. The inline
+       animation is overridden by !important, which a stylesheet rule needs to beat it. */
+    @media (prefers-reduced-motion: reduce) {
+      [data-rx-motion="pulse"] { animation: none !important; opacity: 0 !important; }
+    }
+    .robot-marker-car-dim { opacity: 0.45; filter: grayscale(0.6); }
   `;
   document.head.appendChild(s);
 }
@@ -187,6 +194,7 @@ export function createRobotMarkerElement(color, labelText) {
   // busy fleet. Animation is only attached while selected (see setMarkerSelected).
   const selectPulse = document.createElement('div');
   selectPulse.className = 'robot-marker-select-pulse';
+  selectPulse.dataset.rxMotion = 'pulse';
   selectPulse.style.cssText = [
     'position:absolute',
     'top:50%',
@@ -516,5 +524,38 @@ export function updateMarkerInfo(root, { battery, status } = {}) {
     } else {
       icon.style.display = 'none';
     }
+  }
+}
+
+/**
+ * The position on screen is not live: the unit is offline (its last known position), or no
+ * fresh sample has arrived for longer than its own telemetry cadence explains. The vehicle is
+ * dimmed — never the label, so the unit stays identifiable — and the hit target says why.
+ *
+ * Writes only on a change, so the once-a-second staleness check costs nothing while nothing
+ * changes.
+ */
+export function setMarkerFreshness(root, { stale = false, offline = false, ageSeconds = null, label = '' } = {}) {
+  if (!root) return;
+  const key = `${offline ? 'off' : stale ? `stale:${ageSeconds}` : 'live'}`;
+  if (root._freshnessKey === key) return;
+  root._freshnessKey = key;
+
+  const dim = Boolean(stale || offline);
+  root._carEl?.classList?.toggle('robot-marker-car-dim', dim);
+  root.dataset.rxFreshness = offline ? 'offline' : stale ? 'stale' : 'live';
+
+  const hit = root._hitEl;
+  if (hit) {
+    const name = label ? `Robot ${label}` : 'Robot';
+    const note = offline
+      ? 'offline — last known position'
+      : stale
+        ? `no telemetry for ${ageSeconds ?? '?'} s — last reported position`
+        : '';
+    const text = note ? `${name} — ${note}` : name;
+    hit.setAttribute('aria-label', text);
+    if (note) hit.setAttribute('title', text);
+    else hit.removeAttribute('title');
   }
 }

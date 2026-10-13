@@ -31,34 +31,42 @@ import {
   applyMarkerHeading,
   setMarkerSelected,
   setMarkerHovered,
+  setMarkerFreshness,
   markerScaleForZoom,
 } from '../../../../lib/mapboxMarkers.js';
+import { prefersReducedMotion, subscribeReducedMotion } from '../../../../lib/reducedMotion.js';
 import {
   anchorToLngLat,
   worldYawToScreenYaw,
 } from '../../world/robotWorldAnchor.js';
+import {
+  createMotionTrack,
+  displayedPose,
+  isTrackStale,
+  MOTION_MODE,
+  retargetTrack,
+  secondsSinceFresh,
+} from '../robotMotion.js';
 import { registerRobotRenderer } from '../robotRendererRegistry.js';
 import { ROBOT_REPRESENTATION } from '../robotVisual.js';
 
-// Telemetry arrives roughly every 2 000 ms. Interpolating over slightly less
-// than that lands the marker on its new position just before the next tick, so
-// motion reads as continuous rather than as a series of jumps.
-const POSITION_TWEEN_MS = 1800;
+// ── Motion (see `../robotMotion.js`) ─────────────────────────────────────────
+//
+// This used to be one ease-out tween per sample, a fixed 1 800 ms long, with
+// its own requestAnimationFrame chain per robot, and the heading written
+// instantly. Against a constant-speed robot that drew a surge at every sample
+// (ease-out starts at twice the mean speed), lagged at a 500 ms stream, parked
+// for seconds between samples at a 5 s one, and snapped the icon's rotation at
+// every tick. Now: one frame loop for every robot this renderer owns, linear
+// interpolation over the stream's measured interval, the heading turned along
+// the shorter arc over the same tween, and nothing ever drawn past the newest
+// sample.
 
-function easeOut(t) {
-  return t * (2 - t);
-}
+/** How often the freshness (stale / offline) state is re-evaluated. */
+const FRESHNESS_CHECK_MS = 1000;
 
-function cancelTween(handle) {
-  if (handle?.rafId) {
-    try {
-      cancelAnimationFrame(handle.rafId);
-    } catch {
-      // ignore
-    }
-    handle.rafId = null;
-  }
-}
+const now = () =>
+  typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
 
 /**
  * @param {object} context
@@ -70,6 +78,11 @@ export function createRobotMarker2dRenderer(context = {}) {
   const { getMap, onSelectRobot, onHoverRobot } = context;
 
   const liveHandles = new Set();
+  /** Handles whose drawn pose is still travelling toward their newest sample. */
+  const moving = new Set();
+  let rafId = null;
+  let freshnessTimer = null;
+  let reducedMotion = prefersReducedMotion();
 
   const currentCamera = () => {
     const map = getMap?.();
@@ -81,12 +94,114 @@ export function createRobotMarker2dRenderer(context = {}) {
     }
   };
 
-  /** Re-derive the icon's on-screen rotation from world yaw + camera bearing. */
+  const currentBearing = () => {
+    try {
+      return getMap?.()?.getBearing?.() ?? 0;
+    } catch {
+      return 0;
+    }
+  };
+
+  /** Re-derive the icon's on-screen rotation from the DRAWN world yaw + camera bearing. */
   const applyHeadingFor = (handle, bearing) => {
-    if (!handle?.hasHeading) return;
-    const screenYaw = worldYawToScreenYaw(handle.worldYaw, bearing);
+    if (!handle?.hasHeading || typeof handle.drawnYaw !== 'number') return;
+    const screenYaw = worldYawToScreenYaw(handle.drawnYaw, bearing);
     if (screenYaw !== null) applyMarkerHeading(handle.root, screenYaw);
   };
+
+  /** Draw one handle's pose at time `t`. Returns whether it has arrived. */
+  const drawPose = (handle, t, bearing) => {
+    const pose = displayedPose(handle.motion, t);
+    if (pose.lngLat) {
+      const [lng, lat] = pose.lngLat;
+      if (!handle.drawnLngLat || handle.drawnLngLat[0] !== lng || handle.drawnLngLat[1] !== lat) {
+        try {
+          handle.marker?.setLngLat?.(pose.lngLat);
+        } catch {
+          // ignore
+        }
+        handle.drawnLngLat = pose.lngLat;
+      }
+    }
+    if (typeof pose.heading === 'number' && pose.heading !== handle.drawnYaw) {
+      handle.drawnYaw = pose.heading;
+      applyHeadingFor(handle, bearing);
+    }
+    return pose.settled;
+  };
+
+  // ONE loop for the whole fleet. It runs only while some robot is between two
+  // samples and stops itself when the last one arrives, so a parked fleet costs
+  // no frames. A background tab gets no frames at all; on return the first frame
+  // draws every robot at its newest sample (the tween's clock kept running), so
+  // the missed motion is never replayed.
+  const frame = () => {
+    rafId = null;
+    const t = now();
+    const bearing = currentBearing();
+    for (const handle of [...moving]) {
+      if (!liveHandles.has(handle) || drawPose(handle, t, bearing)) moving.delete(handle);
+    }
+    if (moving.size > 0) rafId = requestAnimationFrame(frame);
+  };
+
+  const ensureLoop = () => {
+    if (rafId !== null || moving.size === 0) return;
+    if (typeof requestAnimationFrame !== 'function') {
+      // No frame clock in this host: draw where every tween ends.
+      const bearing = currentBearing();
+      for (const handle of moving) drawPose(handle, Number.POSITIVE_INFINITY, bearing);
+      moving.clear();
+      return;
+    }
+    rafId = requestAnimationFrame(frame);
+  };
+
+  const stopLoop = () => {
+    if (rafId !== null) {
+      try {
+        cancelAnimationFrame(rafId);
+      } catch {
+        // ignore
+      }
+      rafId = null;
+    }
+    moving.clear();
+  };
+
+  const applyFreshness = (handle, t) => {
+    setMarkerFreshness(handle.root, {
+      offline: handle.isOnline === false,
+      stale: handle.isOnline !== false && isTrackStale(handle.motion, t),
+      ageSeconds: secondsSinceFresh(handle.motion, t),
+      label: handle.label,
+    });
+  };
+
+  const checkFreshness = () => {
+    const t = now();
+    for (const handle of liveHandles) applyFreshness(handle, t);
+  };
+
+  const ensureFreshnessTimer = () => {
+    if (freshnessTimer !== null || typeof setInterval !== 'function') return;
+    freshnessTimer = setInterval(checkFreshness, FRESHNESS_CHECK_MS);
+  };
+
+  const stopFreshnessTimer = () => {
+    if (freshnessTimer === null) return;
+    clearInterval(freshnessTimer);
+    freshnessTimer = null;
+  };
+
+  // Turning reduced motion on mid-session finishes every tween where it was heading.
+  const unsubscribeReducedMotion = subscribeReducedMotion((reduced) => {
+    reducedMotion = reduced;
+    if (!reduced) return;
+    const bearing = currentBearing();
+    for (const handle of moving) drawPose(handle, Number.POSITIVE_INFINITY, bearing);
+    stopLoop();
+  });
 
   return {
     representation: ROBOT_REPRESENTATION.TWO_D,
@@ -101,24 +216,27 @@ export function createRobotMarker2dRenderer(context = {}) {
       // Appear animation and zoom scaling both drive `scaleWrap`, never `root`
       // — `root.style.transform` belongs to Mapbox, which rewrites its own
       // translate onto it every frame.
-      scaleWrap.style.opacity = '0';
-      scaleWrap.style.transform = 'scale(0.75)';
+      scaleWrap.style.opacity = reducedMotion ? '1' : '0';
+      if (!reducedMotion) scaleWrap.style.transform = 'scale(0.75)';
       scaleWrap.style.willChange = 'transform, opacity';
 
       const marker = new mapboxgl.Marker({ element: root, anchor: 'center' })
         .setLngLat(lngLat)
         .addTo(map);
 
+      const t = now();
+      const yaw = visual.anchor.hasHeading ? visual.anchor.rotation.yaw : null;
       const handle = {
         robotId: visual.id,
+        label: visual.label,
         marker,
         root,
         scaleWrap,
-        currentLngLat: lngLat,
-        targetLngLat: lngLat,
-        rafId: null,
-        worldYaw: visual.anchor.rotation.yaw,
+        motion: createMotionTrack({ lngLat, heading: yaw, sampleTime: visual.sampleTime ?? null, nowMs: t }),
+        drawnLngLat: lngLat,
+        drawnYaw: yaw,
         hasHeading: visual.anchor.hasHeading,
+        isOnline: visual.isOnline,
         listeners: [],
       };
 
@@ -163,18 +281,22 @@ export function createRobotMarker2dRenderer(context = {}) {
       applyHeadingFor(handle, camera.bearing);
       updateMarkerInfo(root, { battery: visual.battery, status: visual.status });
       setMarkerSelected(root, visual.selected);
+      applyFreshness(handle, t);
 
-      try {
-        animate(
-          scaleWrap,
-          { opacity: [0, 1], transform: ['scale(0.75)', `scale(${markerScaleForZoom(camera.zoom)})`] },
-          { duration: 0.35, ease: 'easeOut' }
-        );
-      } catch {
-        // ignore animation errors (element removed before the animation ran)
+      if (!reducedMotion) {
+        try {
+          animate(
+            scaleWrap,
+            { opacity: [0, 1], transform: ['scale(0.75)', `scale(${markerScaleForZoom(camera.zoom)})`] },
+            { duration: 0.35, ease: 'easeOut' }
+          );
+        } catch {
+          // ignore animation errors (element removed before the animation ran)
+        }
       }
 
       liveHandles.add(handle);
+      ensureFreshnessTimer();
       return handle;
     },
 
@@ -183,64 +305,34 @@ export function createRobotMarker2dRenderer(context = {}) {
       const to = anchorToLngLat(visual?.anchor);
       if (!to) return;
 
-      handle.worldYaw = visual.anchor.rotation.yaw;
-      handle.hasHeading = visual.anchor.hasHeading;
-      applyHeadingFor(handle, currentCamera().bearing);
+      // A sample without a heading keeps the last one rather than losing the arrow.
+      handle.hasHeading = visual.anchor.hasHeading || handle.hasHeading;
+      handle.isOnline = visual.isOnline;
+      handle.label = visual.label;
 
       updateMarkerInfo(handle.root, { battery: visual.battery, status: visual.status });
       setMarkerSelected(handle.root, visual.selected);
 
-      if (!handle.currentLngLat) {
-        try {
-          handle.marker?.setLngLat?.(to);
-        } catch {
-          // ignore
-        }
-        handle.currentLngLat = to;
-        handle.targetLngLat = to;
-        return;
+      const t = now();
+      const mode = retargetTrack(
+        handle.motion,
+        {
+          lngLat: to,
+          heading: visual.anchor.hasHeading ? visual.anchor.rotation.yaw : null,
+          sampleTime: visual.sampleTime ?? null,
+        },
+        t,
+        { reducedMotion }
+      );
+      applyFreshness(handle, t);
+
+      if (mode === MOTION_MODE.PLACE) {
+        moving.delete(handle);
+        drawPose(handle, t, currentBearing());
+      } else if (mode === MOTION_MODE.ANIMATE) {
+        moving.add(handle);
+        ensureLoop();
       }
-
-      // Compare against where the marker is HEADING, not where the last tween ended.
-      // Comparing against the last completed position let a repeat of that position
-      // return early without cancelling a tween already running elsewhere, so of two
-      // alternating targets the stale one could win (FE-10, measured on the live map).
-      const target = handle.targetLngLat || handle.currentLngLat;
-      if (target[0] === to[0] && target[1] === to[1]) return;
-
-      cancelTween(handle);
-
-      // Start from where the marker is drawn now, so a retarget mid-tween continues
-      // from the screen rather than jumping back to the previous tween's origin.
-      let from = handle.currentLngLat;
-      try {
-        const shown = handle.marker?.getLngLat?.();
-        if (shown && Number.isFinite(shown.lng) && Number.isFinite(shown.lat)) from = [shown.lng, shown.lat];
-      } catch {
-        // keep the last completed position
-      }
-      handle.targetLngLat = to;
-
-      const start = performance.now();
-      const step = (now) => {
-        const t = Math.min(1, (now - start) / POSITION_TWEEN_MS);
-        const e = easeOut(t);
-        try {
-          handle.marker?.setLngLat?.([
-            from[0] + (to[0] - from[0]) * e,
-            from[1] + (to[1] - from[1]) * e,
-          ]);
-        } catch {
-          // ignore
-        }
-        if (t < 1) {
-          handle.rafId = requestAnimationFrame(step);
-        } else {
-          handle.rafId = null;
-          handle.currentLngLat = to;
-        }
-      };
-      handle.rafId = requestAnimationFrame(step);
     },
 
     setSelected(handle, selected) {
@@ -261,7 +353,7 @@ export function createRobotMarker2dRenderer(context = {}) {
 
     destroy(handle) {
       if (!handle) return;
-      cancelTween(handle);
+      moving.delete(handle);
       for (const [el, type, fn] of handle.listeners || []) {
         try {
           el.removeEventListener(type, fn);
@@ -276,6 +368,10 @@ export function createRobotMarker2dRenderer(context = {}) {
         // ignore
       }
       liveHandles.delete(handle);
+      if (liveHandles.size === 0) {
+        stopLoop();
+        stopFreshnessTimer();
+      }
     },
 
     dispose() {
@@ -283,6 +379,9 @@ export function createRobotMarker2dRenderer(context = {}) {
         this.destroy(handle);
       }
       liveHandles.clear();
+      stopLoop();
+      stopFreshnessTimer();
+      unsubscribeReducedMotion();
     },
   };
 }

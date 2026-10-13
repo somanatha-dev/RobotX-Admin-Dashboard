@@ -162,7 +162,7 @@ test('FE-10 the map shows every robot with reported coordinates — no filter ga
   assert.ok(effect, 'the robots → markers sync is intact');
 });
 
-test('FE-10 a moving robot\'s marker follows live telemetry, not the load-time snapshot', () => {
+test('FE-10 a moving robot\'s marker follows live telemetry, not the load-time snapshot', async () => {
   // Measured before the fix: a robot that drove and stopped had its marker settle 49.6 m
   // from the robot — 2.8 m from where it started — because the sync re-sent the REST
   // snapshot (`live`, never refreshed) on every tick, and the renderer let a repeat of an
@@ -171,8 +171,28 @@ test('FE-10 a moving robot\'s marker follows live telemetry, not the load-time s
   assert.match(stream, /upsertMarker\(r\?\.live && typeof r\.live === 'object' \? \{ \.\.\.r\.live, \.\.\.r \} : r\);/);
   assert.doesNotMatch(stream, /\{ \.\.\.r, \.\.\.r\.live \}/, 'the stale snapshot must not override the live row');
 
+  // The renderer's tween was replaced by the motion track (operational/robotMotion.js). The
+  // three properties this test pinned in the old tween's source are now asserted as behaviour
+  // of the code the renderer actually runs.
   const renderer = code(read('features/maps/operational/renderers/robotMarker2dRenderer.js'));
-  assert.match(renderer, /const target = handle\.targetLngLat \|\| handle\.currentLngLat;\s*if \(target\[0\] === to\[0\] && target\[1\] === to\[1\]\) return;\s*cancelTween\(handle\);/);
-  assert.match(renderer, /const shown = handle\.marker\?\.getLngLat\?\.\(\);/);
-  assert.match(renderer, /handle\.targetLngLat = to;/);
+  assert.match(renderer, /retargetTrack\(\s*handle\.motion,/);
+  assert.match(renderer, /displayedPose\(handle\.motion, t\)/);
+  const { createMotionTrack, retargetTrack, displayedPose, MOTION_MODE } = await mod('features/maps/operational/robotMotion.js');
+  // ~1.5 m apart per 2 s sample: walking-pace travel, not a jump the track would place.
+  const A = [77.51760, 12.90070];
+  const B = [77.51761, 12.90071];
+  const C = [77.51762, 12.90072];
+  const track = createMotionTrack({ lngLat: A, sampleTime: 0, nowMs: 0 });
+  retargetTrack(track, { lngLat: B, sampleTime: 2000 }, 2000);
+  // (1) Compared against where the marker is HEADING: a repeat of the target is a no-op…
+  assert.equal(retargetTrack(track, { lngLat: B, sampleTime: 2000 }, 2500), MOTION_MODE.UNCHANGED);
+  // (2) …a new target starts from where the marker is DRAWN, not from the previous origin…
+  const drawn = displayedPose(track, 3000).lngLat;
+  retargetTrack(track, { lngLat: C, sampleTime: 4000 }, 3000);
+  assert.deepEqual(displayedPose(track, 3000).lngLat, drawn);
+  // (3) …and the newest target is where the marker ends up. An OLDER position arriving later
+  // never reaches the track at all: ordering by sample time is the sample gate's job,
+  // upstream in useRobotStream (asserted in robotMotion.test.mjs).
+  assert.deepEqual(displayedPose(track, 1e9).lngLat, C);
+  assert.match(stream, /sampleGateRef\.current\.resolve\(robotKey,/);
 });

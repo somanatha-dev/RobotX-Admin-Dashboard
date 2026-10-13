@@ -234,3 +234,38 @@ export function staleMapRoutes({ rendered, records, localPaths }, cache) {
   }
   return [...stale.values()];
 }
+
+/** The action a `TASK_UPDATED` carries when the backend replanned one leg of a task. */
+export const REROUTED_ACTION = 'REROUTED';
+
+/**
+ * A replanned leg (`TASK_UPDATED` `REROUTED`, `task.service` / `routing.service`) written into
+ * the provider's task-route cache — the copy the map replays when it mounts.
+ *
+ * Only the map's own hook used to hear this, and it kept the new path in hook-local state.
+ * Leaving the map and coming back replayed the provider's copy, which still held the path the
+ * robot was no longer following. The provider is mounted for the whole session, so the cache it
+ * owns is where the replanned leg has to land.
+ *
+ * Applied only to a task the cache already holds (a reroute carries one leg, never a whole
+ * route), with a non-empty path, and never re-assigns the task to a different robot.
+ *
+ * @param {Map<string, object>} cache taskId → { robotId, pathToPickup, pathToDrop, pickup, drop }
+ * @param {{ taskId?: string, action?: string, segment?: string, newPath?: unknown[] }} data
+ * @returns {boolean} whether the cache changed
+ */
+export function applyRerouteToCache(cache, data) {
+  if (!cache || typeof cache.get !== 'function') return false;
+  if (data?.action !== REROUTED_ACTION) return false;
+  const taskId = trimmed(data?.taskId);
+  const newPath = Array.isArray(data?.newPath) && data.newPath.length > 0 ? data.newPath : null;
+  if (!taskId || !newPath) return false;
+  const entry = cache.get(taskId);
+  if (!entry) return false;
+  // The same reading as the map's own handler (`useRobotStream`): an absent segment is the
+  // approach leg, `toPickup` is the approach leg, any other stated segment is the delivery leg.
+  const segment = typeof data?.segment === 'string' ? data.segment : 'toPickup';
+  const leg = segment === 'toPickup' ? 'pathToPickup' : 'pathToDrop';
+  cache.set(taskId, { ...entry, [leg]: newPath });
+  return true;
+}

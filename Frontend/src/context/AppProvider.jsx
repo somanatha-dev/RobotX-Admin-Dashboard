@@ -30,10 +30,14 @@ import { STOP_ALL_WARNING, summariseStopAll } from '@/lib/robotCommands.js';
 import { reopensAssignment } from '@/features/tasks/taskLifecycle.js';
 import { CONNECTION, connectionStateOf } from '@/lib/connectionState.js';
 import { SESSION_CHECK, sessionCheckOutcome, sessionRetryDelayMs } from '@/lib/sessionCheck.js';
-import { applyRobotOffline, applyRobotOnline, applyTaskUpdate, evictOnStandDown, evictOnTerminalUpdate, evictTerminalRoutes } from '@/lib/liveState.js';
+import { applyRerouteToCache, applyRobotOffline, applyRobotOnline, applyTaskUpdate, evictOnStandDown, evictOnTerminalUpdate, evictTerminalRoutes } from '@/lib/liveState.js';
 import { obstacleAlertFrom, rerouteAlertLogLine } from '@/lib/obstacleAlert.js';
 import { DUPLICATE_OUTCOME, newIdempotencyKey } from '@/lib/idempotency.js';
 import { applyPairingRejection, connectPathFor } from '@/lib/robotEnrollment.js';
+import { createSimulatorStatusPoller, createSimulatorStatusSync } from '@/lib/simulatorStatusSync.js';
+
+/** How often the simulator's status (charging stages, ETAs, stations) is refreshed. */
+const SIMULATOR_STATUS_POLL_MS = 5000;
 
 export default function AppProvider({ children }) {
   const rrNavigate = useNavigate();
@@ -81,6 +85,10 @@ export default function AppProvider({ children }) {
   // questions: a robot row says a unit *is* simulated, and this says whether anything is
   // currently running it. `null` is rendered as "status unknown", never as "not running".
   const [simulatorStatus, setSimulatorStatus] = useState(null);
+  // Orders the two asynchronous writers of `simulatorStatus` — the full refresh and the poll —
+  // so an older response can never overwrite a newer one (lib/simulatorStatusSync.js).
+  const simulatorSyncRef = useRef(null);
+  if (simulatorSyncRef.current === null) simulatorSyncRef.current = createSimulatorStatusSync(setSimulatorStatus);
 
   const [tasks, setTasks] = useState([]);
   // Persistent cache of task route paths — survives re-renders and page navigation.
@@ -174,6 +182,7 @@ export default function AppProvider({ children }) {
     try {
       do {
         refreshQueuedRef.current = false;
+        const simulatorTicket = simulatorSyncRef.current.begin();
         const [robotsNext, tasksNext, simulatorNext] = await Promise.all([
           robotsApi.getRobotsState(),
           tasksApi.listTasks(),
@@ -187,7 +196,8 @@ export default function AppProvider({ children }) {
         // A task the backend lists as finished has no active route to replay on the map,
         // even if its terminal event never reached this page (lib/liveState.js).
         evictTerminalRoutes(taskPathCacheRef.current, tasksNext);
-        setSimulatorStatus(simulatorNext || null);
+        // Applied only if no poll that started later has already landed a newer report.
+        simulatorSyncRef.current.settle(simulatorTicket, simulatorNext || null);
       } while (refreshQueuedRef.current);
     } catch (err) {
       // The session ended under us (expired or revoked cookie). Sign out locally, so the
@@ -284,6 +294,8 @@ export default function AppProvider({ children }) {
     setPreferences({ ...DEFAULT_PREFERENCES });
     setRobots([]);
     setTasks([]);
+    // Nothing still in flight for the session that just ended may put its report back.
+    simulatorSyncRef.current.invalidate();
     setSimulatorStatus(null);
     setEvents([]);
     taskPathCacheRef.current.clear();
@@ -320,6 +332,30 @@ export default function AppProvider({ children }) {
   useEffect(() => {
     sessionExpiredRef.current = expireSession;
   }, [expireSession]);
+
+  // ── Simulator status, kept current (charging lifecycle) ───────────────────
+  //
+  // The simulator's report — each simulated robot's charging stage, destination, route, ETAs and
+  // queue place, and the charging stations — changes between robot events and was read only on a
+  // full refresh, so a charging stage could sit stale until a page action. Polled every
+  // `SIMULATOR_STATUS_POLL_MS` while signed in and the page is visible. Only `simulatorStatus` is
+  // written: robot rows stay with the live socket events. One poll at a time, ordered against the
+  // full refresh by `simulatorSyncRef`; a poll still in flight at teardown is never applied.
+  useEffect(() => {
+    if (!session.isAuthenticated) return undefined;
+    const poller = createSimulatorStatusPoller({
+      sync: simulatorSyncRef.current,
+      fetchStatus: () => simulatorApi.getSimulatorStatus(),
+      isVisible: () => typeof document === 'undefined' || document.visibilityState !== 'hidden',
+    });
+    const timer = setInterval(() => {
+      poller.tick();
+    }, SIMULATOR_STATUS_POLL_MS);
+    return () => {
+      poller.stop();
+      clearInterval(timer);
+    };
+  }, [session.isAuthenticated]);
 
   // Read by the session restore below, which must not re-run when `navigate` changes.
   const navigateRef = useRef(navigate);
@@ -838,6 +874,10 @@ export default function AppProvider({ children }) {
             ...(typeof data.isOnline === 'boolean' ? { isOnline: data.isOnline } : {}),
             ...(typeof data.distanceTravelled === 'number' ? { distanceTravelled: data.distanceTravelled } : {}),
             ...(typeof data.heading === 'number' ? { heading: data.heading } : {}),
+            // When the server received the sample these fields came from. The map orders
+            // positions by it, so a REST snapshot older than this row cannot move a marker
+            // backwards. Kept apart from `lastSeenAt`, which is the Robot row's own column.
+            ...(Number.isFinite(data.lastSeenAt) ? { telemetryAt: data.lastSeenAt } : {}),
           };
         })
       );
@@ -969,6 +1009,9 @@ export default function AppProvider({ children }) {
       // A unit that acknowledged a RECALL / WITHDRAW no longer drives this route; the task
       // returns to the queue and its next assignment brings its own route.
       evictOnStandDown(taskPathCacheRef.current, data);
+      // A replanned leg replaces the cached one, so the map — which replays this cache when it
+      // mounts — draws the route the robot is now following, not the one it left.
+      applyRerouteToCache(taskPathCacheRef.current, data);
       // The backend re-bound `Robot.currentTaskId` (and unbound the previous robot on a
       // reassignment) before emitting this, and nothing on the socket carries that. It used
       // to be picked up only by the refetch every page navigation triggered (FS-03); now the
@@ -977,12 +1020,15 @@ export default function AppProvider({ children }) {
         // a 401 here already signed the page out (see refreshDbState)
       });
       // Release robot from task on any terminal status so the UI never shows stale task.
+      // Charging audit U-6 — the task fields only. The robot's STATUS is the backend's: forcing
+      // IDLE here showed a held (PAUSED) or degraded robot as idle until the next frame, and the
+      // refetch above brings the authoritative status.
       if (TERMINAL_STATUSES.has(data?.status) && data?.robotId) {
         const rid = String(data.robotId).trim();
         setRobots((prev) =>
           prev.map((r) => {
             if (String(r.robotId || '').trim() !== rid) return r;
-            return { ...r, status: 'IDLE', currentTaskId: null, currentTask: null, speed: 0 };
+            return { ...r, currentTaskId: null, currentTask: null };
           })
         );
       }

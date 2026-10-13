@@ -2,8 +2,10 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
+  Ban,
   BatteryCharging,
   MapPin,
+  Navigation,
   Pause,
   RefreshCw,
   Search,
@@ -17,7 +19,14 @@ import { useAppActions, useAppState } from '@/context/appContext.js';
 import useRobotCommand from '@/hooks/useRobotCommand.js';
 import { returnAvailability } from '@/lib/robotCommands.js';
 import { RobotIdentityBadge, SimulatorRuntimeBadge } from '@/components/system/RobotIdentity.jsx';
-import { normalizeStatus, isActive, isIdle, isIssues, isCharging } from '@/lib/robotStatus.js';
+import { normalizeStatus, isActive, isIdle, isIssues } from '@/lib/robotStatus.js';
+import {
+  chargingDetails,
+  isInChargingLifecycle,
+  robotDisplayClass,
+  simulatorEntryFor,
+  unavailabilityReason,
+} from '@/lib/robotCharging.js';
 import {
   CHASSIS_LABEL,
   SPECIFICATION_FIELDS,
@@ -29,6 +38,50 @@ function formatLocationName(name) {
   if (!name) return '—';
   const first = name.split(',')[0].trim();
   return first || name;
+}
+
+/** The badge colours for each display class (charging audit U-1/U-3). */
+const STATUS_BADGE = {
+  active: 'bg-emerald-100 text-emerald-700',
+  charging: 'bg-sky-100 text-sky-700',
+  toCharger: 'bg-indigo-100 text-indigo-700',
+  paused: 'bg-slate-200 text-slate-700',
+  blocked: 'bg-orange-100 text-orange-700',
+  idle: 'bg-amber-100 text-amber-700',
+  issues: 'bg-rose-100 text-rose-700',
+};
+
+/**
+ * The charging session as the backend reports it, or nothing. Every value is the simulator's;
+ * a value it could not compute reads "unavailable".
+ */
+function ChargingSummary({ details, compact = false }) {
+  if (!details) return null;
+  const rows = [
+    ['Stage', details.label],
+    ['Charger', details.stationName || 'not yet chosen'],
+  ];
+  if (details.stage === 'TO_CHARGER') {
+    rows.push(['Route left', details.remainingRouteM === null ? 'unavailable' : `${Math.round(details.remainingRouteM)} m`]);
+    rows.push(['Arrives in', details.etaArrival]);
+  }
+  if (details.stage === 'QUEUED') {
+    rows.push(['Queue position', details.queuePosition === null ? 'unavailable' : String(details.queuePosition)]);
+    rows.push(['Expected wait', details.estimatedWait]);
+  }
+  if (details.targetPct !== null) rows.push(['Target', `${details.targetPct}%`]);
+  if (details.stage === 'CHARGING') rows.push(['Full to target in', details.etaComplete]);
+  const shown = compact ? rows.slice(0, 3) : rows;
+  return (
+    <div className="space-y-1" data-charging-stage={details.stage}>
+      {shown.map(([label, value]) => (
+        <div key={label} className="flex justify-between items-start gap-2 text-xs">
+          <span className="text-slate-500 shrink-0">{label}</span>
+          <span className="font-medium text-slate-700 text-right">{value}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function batteryColors(pct) {
@@ -52,6 +105,12 @@ export default function RobotsPage() {
     tasks,
   );
 
+  // The panel shows the LIVE row (the click captured a snapshot): list and panel never disagree.
+  const panelRobot = selectedRobot ? robots.find((r) => r.robotId === selectedRobot.robotId) || selectedRobot : null;
+  const panelEntry = panelRobot ? simulatorEntryFor(simulatorStatus, panelRobot.robotId) : null;
+  const panelCharging = chargingDetails(panelEntry);
+  const panelReason = panelRobot ? unavailabilityReason(panelRobot, panelEntry) : null;
+
   const filteredRobots = robots.filter((r) => {
     const q = String(search || '').trim().toLowerCase();
     if (q) {
@@ -64,6 +123,7 @@ export default function RobotsPage() {
     if (filter === 'Idle') return isIdle(r.status);
     if (filter === 'Issues') return isIssues(r.status);
     if (filter === 'Low Battery') return (Number(r.battery) || 0) > 0 && Number(r.battery) < 25;
+    if (filter === 'Charging') return isInChargingLifecycle(r, simulatorEntryFor(simulatorStatus, r.robotId));
     return true;
   });
 
@@ -88,7 +148,7 @@ export default function RobotsPage() {
         </div>
 
         <div className="hidden md:flex items-center gap-2">
-          {['All', 'Active', 'Idle', 'Issues', 'Low Battery'].map((f) => (
+          {['All', 'Active', 'Idle', 'Charging', 'Issues', 'Low Battery'].map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
@@ -128,6 +188,24 @@ export default function RobotsPage() {
                     bg: 'bg-gradient-to-br from-sky-100/60 via-sky-50 to-white',
                     watermark: BatteryCharging,
                   },
+                  toCharger: {
+                    text: 'text-indigo-700',
+                    border: 'border-indigo-100',
+                    bg: 'bg-gradient-to-br from-indigo-100/60 via-indigo-50 to-white',
+                    watermark: Navigation,
+                  },
+                  paused: {
+                    text: 'text-slate-700',
+                    border: 'border-slate-200',
+                    bg: 'bg-gradient-to-br from-slate-100/60 via-slate-50 to-white',
+                    watermark: Pause,
+                  },
+                  blocked: {
+                    text: 'text-orange-700',
+                    border: 'border-orange-100',
+                    bg: 'bg-gradient-to-br from-orange-100/60 via-orange-50 to-white',
+                    watermark: Ban,
+                  },
                   issues: {
                     text: 'text-rose-700',
                     border: 'border-rose-100',
@@ -135,13 +213,11 @@ export default function RobotsPage() {
                     watermark: AlertTriangle,
                   },
                 };
-                const statusKey = isActive(r.status)
-                  ? 'active'
-                  : isCharging(r.status)
-                    ? 'charging'
-                    : isIssues(r.status)
-                      ? 'issues'
-                      : 'idle';
+                // Charging audit U-1/U-3 — only a genuine charging stage reads as charging.
+                const simEntry = simulatorEntryFor(simulatorStatus, r.robotId);
+                const statusKey = robotDisplayClass(r, simEntry);
+                const charging = chargingDetails(simEntry);
+                const reason = unavailabilityReason(r, simEntry);
                 const cardTone = tones[statusKey] || {
                   text: 'text-blue-700',
                   border: 'border-blue-100',
@@ -174,6 +250,11 @@ export default function RobotsPage() {
                         <div className="text-xs text-slate-500 font-medium mt-0.5 uppercase tracking-wide">
                           {normalizeStatus(r.status)}
                         </div>
+                        {reason ? (
+                          <div className={`text-xs font-medium mt-0.5 ${cardTone.text}`} data-unavailable-reason>
+                            {reason}
+                          </div>
+                        ) : null}
                         {/* What the unit IS, and — only for a simulated one — what is
                             currently running it. Two separate facts: the green dot above
                             is liveness (`isOnline`), which the fleet reports by
@@ -206,6 +287,11 @@ export default function RobotsPage() {
                           {r.currentTask?.taskId || 'None'}
                         </span>
                       </div>
+                      {charging ? (
+                        <div className="pt-1 pb-1 border-b border-slate-200/70">
+                          <ChargingSummary details={charging} compact />
+                        </div>
+                      ) : null}
                       <div className="flex justify-between items-start gap-2">
                         <span className="text-slate-500 text-xs shrink-0">Location</span>
                         <span className="font-medium text-slate-700 text-right text-xs max-w-[65%] leading-snug">
@@ -282,16 +368,10 @@ export default function RobotsPage() {
                   </div>
                   <span
                     className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${
-                      isActive(selectedRobot.status)
-                        ? 'bg-emerald-100 text-emerald-700'
-                        : isCharging(selectedRobot.status)
-                          ? 'bg-sky-100 text-sky-700'
-                          : isIdle(selectedRobot.status)
-                            ? 'bg-amber-100 text-amber-700'
-                            : 'bg-rose-100 text-rose-700'
+                      STATUS_BADGE[robotDisplayClass(panelRobot, panelEntry)] || STATUS_BADGE.issues
                     }`}
                   >
-                    {normalizeStatus(selectedRobot.status)}
+                    {normalizeStatus(panelRobot.status)}
                   </span>
                 </div>
                 <button
@@ -352,6 +432,28 @@ export default function RobotsPage() {
 
                 <div className="h-px bg-slate-100 w-full" />
 
+                {panelReason ? (
+                  <div className="text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2" data-unavailable-reason>
+                    Not available for work: {panelReason}
+                  </div>
+                ) : null}
+
+                {panelCharging ? (
+                  <div>
+                    <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Charging</h3>
+                    <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 shadow-sm">
+                      <ChargingSummary details={panelCharging} />
+                    </div>
+                  </div>
+                ) : panelEntry?.charging?.blocked ? (
+                  <div>
+                    <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Charging</h3>
+                    <div className="bg-orange-50 rounded-xl border border-orange-200 p-4 text-xs text-orange-800 shadow-sm">
+                      Charging unavailable: {panelEntry.charging.blocked.detail || panelEntry.charging.blocked.code}
+                    </div>
+                  </div>
+                ) : null}
+
                 <div>
                   <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Live State</h3>
                   <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3 text-sm shadow-sm">
@@ -360,25 +462,34 @@ export default function RobotsPage() {
                       <div className="flex items-center gap-3">
                         <div className="w-24 h-2 bg-slate-200 rounded-full overflow-hidden">
                           <div
-                            className={`h-full ${batteryColors(Number(selectedRobot.battery || 0)).bar}`}
-                            style={{ width: `${Number(selectedRobot.battery || 0)}%` }}
+                            className={`h-full ${batteryColors(Number(panelRobot.battery || 0)).bar}`}
+                            style={{ width: `${Number(panelRobot.battery || 0)}%` }}
                           />
                         </div>
-                        <span className={`font-mono font-bold w-9 text-right ${batteryColors(Number(selectedRobot.battery || 0)).text}`}>
-                          {Number(selectedRobot.battery || 0).toFixed(0)}%
+                        <span className={`font-mono font-bold w-9 text-right ${batteryColors(Number(panelRobot.battery || 0)).text}`}>
+                          {Number(panelRobot.battery || 0).toFixed(0)}%
                         </span>
                       </div>
                     </div>
+                    {typeof panelEntry?.capacityWh === 'number' && typeof panelEntry?.energyWh === 'number' ? (
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500 font-medium">Energy</span>
+                        <span className="font-mono font-bold text-slate-700 text-right">
+                          {panelEntry.energyWh.toFixed(1)} / {panelEntry.capacityWh} Wh
+                          {typeof panelEntry.reserveWh === 'number' ? ` · reserve ${panelEntry.reserveWh.toFixed(1)}` : ''}
+                        </span>
+                      </div>
+                    ) : null}
                     <div className="flex justify-between items-center">
                       <span className="text-slate-500 font-medium">Speed</span>
                       <span className="font-mono font-bold text-slate-700">
-                        {selectedRobot.speed ?? '—'}{selectedRobot.speed == null ? '' : ' m/s'}
+                        {panelRobot.speed ?? '—'}{panelRobot.speed == null ? '' : ' m/s'}
                       </span>
                     </div>
                     <div className="flex justify-between items-center">
                       <span className="text-slate-500 font-medium">Task</span>
                       <span className="font-mono font-bold text-blue-600">
-                        {selectedRobot.currentTask?.taskId || 'None'}
+                        {panelRobot.currentTask?.taskId || 'None'}
                       </span>
                     </div>
                   </div>

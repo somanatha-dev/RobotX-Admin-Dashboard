@@ -32,6 +32,16 @@ import {
   lineCollection,
 } from '@/features/maps/operational/routeGeometry.js';
 import { summariseRouteFindings, validateRoute } from '@/features/maps/operational/routeValidation.js';
+import {
+  createFlowAnimator,
+  ensureLineLayer,
+  routeLayersPresent,
+  safeRemoveLayerAndSource,
+  shouldRedrawRoute,
+} from '@/features/maps/operational/routeOverlay.js';
+import { createSampleGate, sampleTimeOf } from '@/features/maps/operational/robotMotion.js';
+import { CHARGING_STATION_FLOOR_LAYER } from '@/features/maps/charging/stationLayers.js';
+import { documentVisible, prefersReducedMotion, subscribeReducedMotion } from '@/lib/reducedMotion.js';
 import { comfortableFollowPitch, createFollowCameraState, stepFollowCamera } from '@/features/maps/camera/followCamera.js';
 
 function toLngLat(point) {
@@ -92,259 +102,6 @@ function fitRouteBounds(map, points, opts = {}) {
     return true;
   } catch {
     return false;
-  }
-}
-
-function safeRemoveLayerAndSource(map, layerId, sourceId) {
-  if (!map) return;
-  // Remove glow/casing/flow sublayers first (added around the main layer, and
-  // all of them must be gone before the source can be removed).
-  try {
-    if (layerId && map.getLayer(`${layerId}-flow`)) map.removeLayer(`${layerId}-flow`);
-  } catch {
-    // ignore
-  }
-  try {
-    if (layerId && map.getLayer(`${layerId}-glow`)) map.removeLayer(`${layerId}-glow`);
-  } catch {
-    // ignore
-  }
-  try {
-    if (layerId && map.getLayer(`${layerId}-casing`)) map.removeLayer(`${layerId}-casing`);
-  } catch {
-    // ignore
-  }
-  try {
-    if (layerId && map.getLayer(layerId)) map.removeLayer(layerId);
-  } catch {
-    // ignore
-  }
-  try {
-    if (sourceId && map.getSource(sourceId)) map.removeSource(sourceId);
-  } catch {
-    // ignore
-  }
-}
-
-// Ground-proportionate widths — plain `line-width` numbers are constant
-// SCREEN pixels regardless of zoom, so a fixed 12px glow represents ~1m of
-// road at zoom 18 but hundreds of metres at zoom 10. These zoom expressions
-// keep the line's apparent ground-width close to a real road/lane at every
-// zoom, which is what makes it read as "on the road" instead of a fixed-size
-// ribbon that swamps the map when zoomed out.
-function zoomLineWidth(dashed) {
-  return dashed
-    ? ['interpolate', ['linear'], ['zoom'], 10, 1, 14, 2, 18, 3.2]
-    : ['interpolate', ['linear'], ['zoom'], 10, 1.4, 14, 2.6, 18, 5];
-}
-
-function zoomGlowWidth(dashed) {
-  return dashed
-    ? ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 4, 18, 7]
-    : ['interpolate', ['linear'], ['zoom'], 10, 3, 14, 6, 18, 12];
-}
-
-function zoomCasingWidth(dashed) {
-  return dashed
-    ? ['interpolate', ['linear'], ['zoom'], 10, 1.6, 14, 2.8, 18, 4.2]
-    : ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 3.4, 18, 6.2];
-}
-
-/**
- * A route is drawn ON the world, not lit by it.
- *
- * Mapbox Standard is a lit style, and `line-emissive-strength` defaults to 0 —
- * meaning "multiply this colour by whatever light is falling here". Left at the
- * default, a route line is dimmed by the night lighting exactly like a road
- * surface is, which is backwards: the route is operational overlay, the same
- * category of thing as the robot marker, and a marker is a DOM element that the
- * scene's lighting never touches at all. Fully self-lit is what makes the route
- * read identically at every hour, which is precisely what §19 asks for — night
- * is when an operator most needs the operational layer to separate cleanly.
- */
-const ROUTE_EMISSIVE = 1;
-
-// ── Directional flow (§13) ───────────────────────────────────────────────────
-//
-// A thin bright dash travelling ALONG the route, over the route's own colour.
-// It is animation that carries information — which way the unit is going —
-// rather than decoration, which is the bar §50 sets. Only "ahead" segments get
-// it; a travelled segment has no direction left to communicate.
-//
-// The dash pattern is stepped rather than interpolated because `line-dasharray`
-// is not an interpolatable paint property. This is the standard Mapbox
-// technique and costs one `setPaintProperty` per visible ahead-route per tick.
-const FLOW_DASH_STEPS = Object.freeze([
-  [0, 4, 3], [0.5, 4, 2.5], [1, 4, 2], [1.5, 4, 1.5], [2, 4, 1], [2.5, 4, 0.5],
-  [3, 4, 0], [0, 0.5, 3, 3.5], [0, 1, 3, 3], [0, 1.5, 3, 2.5], [0, 2, 3, 2],
-  [0, 2.5, 3, 1.5], [0, 3, 3, 1],
-]);
-
-const FLOW_STEP_MS = 70;
-
-/**
- * Drives the flow dash for every ahead-route currently on the map.
- *
- * Runs only while at least one flow layer exists, and stops itself when the
- * last route is removed — an idle fleet costs nothing. It writes one paint
- * property per layer per tick and never touches geometry, so it cannot
- * interact with telemetry, the camera or the campus layer.
- */
-function createFlowAnimator(getMap, getLayerIds) {
-  let timer = null;
-  let step = 0;
-
-  const tick = () => {
-    const map = getMap();
-    const ids = getLayerIds();
-    if (!map || ids.length === 0) {
-      stop();
-      return;
-    }
-    step = (step + 1) % FLOW_DASH_STEPS.length;
-    const dash = FLOW_DASH_STEPS[step];
-    for (const id of ids) {
-      try {
-        if (map.getLayer(id)) map.setPaintProperty(id, 'line-dasharray', dash);
-      } catch {
-        // ignore
-      }
-    }
-  };
-
-  function start() {
-    if (timer !== null) return;
-    if (typeof window === 'undefined') return;
-    timer = window.setInterval(tick, FLOW_STEP_MS);
-  }
-
-  function stop() {
-    if (timer === null) return;
-    try {
-      window.clearInterval(timer);
-    } catch {
-      // ignore
-    }
-    timer = null;
-  }
-
-  return { start, stop };
-}
-
-function ensureLineLayer({ map, sourceId, layerId, data, color, dashed, opacity, theme, flow }) {
-  if (!map || !data) return;
-
-  // Update existing source or create it
-  const src = map.getSource(sourceId);
-  if (src && typeof src.setData === 'function') {
-    try {
-      src.setData(data);
-    } catch {
-      // ignore
-    }
-  } else {
-    try {
-      map.addSource(sourceId, { type: 'geojson', data });
-    } catch {
-      // ignore
-    }
-  }
-
-  // Subtle glow — just enough to stand out on dark map, not so wide it hides roads
-  const glowLayerId = `${layerId}-glow`;
-  if (!map.getLayer(glowLayerId)) {
-    try {
-      map.addLayer({
-        id: glowLayerId,
-        type: 'line',
-        source: sourceId,
-        layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: {
-          'line-color': color,
-          'line-width': zoomGlowWidth(dashed),
-          'line-opacity': 0.10,
-          'line-blur': 3,
-          'line-emissive-strength': ROUTE_EMISSIVE,
-        },
-      });
-    } catch {
-      // ignore
-    }
-  }
-
-  // Casing — thin halo under the main line so the small, expected divergence
-  // between our full-precision route and the basemap's zoom-simplified road
-  // geometry reads as an intentional "route corridor" instead of visual
-  // misalignment. Theme-coloured, because a dark casing that disappears into a
-  // Day basemap does not separate the route from the road it follows.
-  const casingLayerId = `${layerId}-casing`;
-  if (!map.getLayer(casingLayerId)) {
-    try {
-      map.addLayer({
-        id: casingLayerId,
-        type: 'line',
-        source: sourceId,
-        layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: {
-          'line-color': theme?.routes?.halo || '#0b1220',
-          'line-width': zoomCasingWidth(dashed),
-          'line-opacity': (dashed ? 0.35 : 0.55) * ((theme?.routes?.haloOpacity ?? 0.3) / 0.3),
-          'line-emissive-strength': ROUTE_EMISSIVE,
-        },
-      });
-    } catch {
-      // ignore
-    }
-  }
-
-  // Main line layer
-  if (!map.getLayer(layerId)) {
-    try {
-      map.addLayer({
-        id: layerId,
-        type: 'line',
-        source: sourceId,
-        layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: {
-          'line-color': color,
-          // dashed = robot→pickup (approaching); solid = pickup→drop (delivery route)
-          'line-width': zoomLineWidth(dashed),
-          'line-opacity': typeof opacity === 'number' ? opacity : dashed ? 0.85 : 0.95,
-          'line-emissive-strength': ROUTE_EMISSIVE,
-          ...(dashed ? { 'line-dasharray': [8, 5] } : {}),
-        },
-      });
-    } catch {
-      // ignore
-    }
-  }
-
-  // Flow overlay — only on segments the unit has yet to travel.
-  const flowLayerId = `${layerId}-flow`;
-  if (flow && !map.getLayer(flowLayerId)) {
-    try {
-      map.addLayer({
-        id: flowLayerId,
-        type: 'line',
-        source: sourceId,
-        layout: { 'line-join': 'round', 'line-cap': 'butt' },
-        paint: {
-          'line-color': theme?.routes?.flow || '#ffffff',
-          'line-width': zoomLineWidth(dashed),
-          'line-opacity': theme?.routes?.flowOpacity ?? 0.55,
-          'line-dasharray': FLOW_DASH_STEPS[0],
-          'line-emissive-strength': ROUTE_EMISSIVE,
-        },
-      });
-    } catch {
-      // ignore
-    }
-  } else if (!flow && map.getLayer(flowLayerId)) {
-    try {
-      map.removeLayer(flowLayerId);
-    } catch {
-      // ignore
-    }
   }
 }
 
@@ -416,6 +173,7 @@ function createMissionMarkerEl({ color, label }) {
     'pointer-events:none',
     'z-index:0',
   ].join(';');
+  pulse.dataset.rxMotion = 'pulse';
 
   // Main dot — absolutely centered
   const dot = document.createElement('div');
@@ -469,6 +227,12 @@ export function useRobotStream({
   campusId,
   mapRef,
   markersRef,
+  /**
+   * The map's `load` has fired. A map built on returning to this page is not
+   * ready for layers when the cached routes first replay; this is one of the
+   * two moments they are restored (the other is `style.load`).
+   */
+  isMapLoaded = false,
   // Operational overlay inputs — all application state, none renderer state.
   representation = ROBOT_REPRESENTATION.TWO_D,
   selectedRobotId = null,
@@ -514,6 +278,18 @@ export function useRobotStream({
    * says so: a terminal `TASK_UPDATED`, or the robot leaving the visible set.
    */
   const robotTasksRef = useRef(new Map());
+
+  /**
+   * The newest position per robot, ordered by the server's receipt time. Two
+   * routes bring a position here — the `robot:update` handler below and the
+   * provider's rows, which a REST refetch replaces wholesale — and a refetch
+   * answered after a newer socket sample used to move the marker backwards for
+   * one tick. See `operational/robotMotion.js`.
+   */
+  const sampleGateRef = useRef(null);
+  if (sampleGateRef.current === null) sampleGateRef.current = createSampleGate();
+  /** robotId → the provider row object the sync pass last handed to `upsertMarker`. */
+  const lastSyncedRowRef = useRef(new Map());
   /** taskId → the progress state machine's carry-over (see `advanceRouteState`). */
   const routeStateRef = useRef(new Map());
   /** robotId → the findings last computed for its route. */
@@ -877,7 +653,8 @@ export function useRobotStream({
         Math.round((state.fraction ?? 0) * 4000),
       ].join('|');
 
-      if (existing && existing.signature === signature) return;
+      // Same route, same split, and its layers really are in the style: nothing to do.
+      if (!shouldRedrawRoute(existing, signature, map)) return;
 
       const pickupDone = lineCollection(state.pickup?.travelled);
       const pickupTodo = lineCollection(state.pickup?.ahead);
@@ -895,16 +672,29 @@ export function useRobotStream({
       const todoOpacity = theme?.routes?.todoOpacity ?? 0.95;
       const doneOpacity = theme?.routes?.doneOpacity ?? 0.3;
 
-      if (pickupTodo) ensureLineLayer({ map, sourceId: pickupTodoSourceId, layerId: pickupTodoLayerId, data: pickupTodo, color, dashed: true, opacity: todoOpacity * 0.8, theme, flow: true });
-      if (pickupDone) ensureLineLayer({ map, sourceId: pickupDoneSourceId, layerId: pickupDoneLayerId, data: pickupDone, color, dashed: true, opacity: doneOpacity * 0.75, theme, flow: false });
-      if (dropTodo) ensureLineLayer({ map, sourceId: dropTodoSourceId, layerId: dropTodoLayerId, data: dropTodo, color, dashed: false, opacity: todoOpacity, theme, flow: true });
-      if (dropDone) ensureLineLayer({ map, sourceId: dropDoneSourceId, layerId: dropDoneLayerId, data: dropDone, color, dashed: false, opacity: doneOpacity, theme, flow: false });
+      // Beneath the charging stations, so a station a route ends at stays readable on top of it.
+      const beforeId = CHARGING_STATION_FLOOR_LAYER;
+      if (pickupTodo) ensureLineLayer({ map, sourceId: pickupTodoSourceId, layerId: pickupTodoLayerId, data: pickupTodo, color, dashed: true, opacity: todoOpacity * 0.8, theme, flow: true, beforeId });
+      if (pickupDone) ensureLineLayer({ map, sourceId: pickupDoneSourceId, layerId: pickupDoneLayerId, data: pickupDone, color, dashed: true, opacity: doneOpacity * 0.75, theme, flow: false, beforeId });
+      if (dropTodo) ensureLineLayer({ map, sourceId: dropTodoSourceId, layerId: dropTodoLayerId, data: dropTodo, color, dashed: false, opacity: todoOpacity, theme, flow: true, beforeId });
+      if (dropDone) ensureLineLayer({ map, sourceId: dropDoneSourceId, layerId: dropDoneLayerId, data: dropDone, color, dashed: false, opacity: doneOpacity, theme, flow: false, beforeId });
 
       // If any segment is absent, remove its layer/source.
       if (!pickupTodo) safeRemoveLayerAndSource(map, pickupTodoLayerId, pickupTodoSourceId);
       if (!pickupDone) safeRemoveLayerAndSource(map, pickupDoneLayerId, pickupDoneSourceId);
       if (!dropTodo) safeRemoveLayerAndSource(map, dropTodoLayerId, dropTodoSourceId);
       if (!dropDone) safeRemoveLayerAndSource(map, dropDoneLayerId, dropDoneSourceId);
+
+      // What this draw was supposed to leave in the style. If the style refused it (still
+      // loading), the signature is not recorded, so the next call — the restore on `load` /
+      // `style.load`, or the next tick — draws it instead of believing it is already there.
+      const drawnLayerIds = [
+        pickupTodo && pickupTodoLayerId,
+        pickupDone && pickupDoneLayerId,
+        dropTodo && dropTodoLayerId,
+        dropDone && dropDoneLayerId,
+      ].filter(Boolean);
+      const drawn = routeLayersPresent(map, drawnLayerIds);
 
       let pickupMarker = existing?.pickupMarker || null;
       let dropMarker = existing?.dropMarker || null;
@@ -1016,7 +806,8 @@ export function useRobotStream({
 
       routesRef.current.set(robotId, {
         taskId,
-        signature,
+        signature: drawn ? signature : null,
+        drawnLayerIds,
         validatedRevision: pathRevision,
         lastPoint: point,
         // The progress an operator can be shown, kept beside the geometry it
@@ -1041,6 +832,7 @@ export function useRobotStream({
   // Owns its own lifecycle: started by the first route drawn, stopped when the
   // last one is removed or the map unmounts.
   useEffect(() => {
+    let reduced = prefersReducedMotion();
     const animator = createFlowAnimator(
       () => mapRef?.current || null,
       () => {
@@ -1051,12 +843,19 @@ export function useRobotStream({
           }
         }
         return ids;
-      }
+      },
+      { reducedMotion: () => reduced, visible: documentVisible }
     );
     flowAnimatorRef.current = animator;
     if (routesRef.current.size > 0) animator.start();
+    const unsubscribe = subscribeReducedMotion((next) => {
+      reduced = next;
+      if (next) animator.stop();
+      else if (routesRef.current.size > 0) animator.start();
+    });
 
     return () => {
+      unsubscribe();
       animator.stop();
       flowAnimatorRef.current = null;
     };
@@ -1235,35 +1034,51 @@ export function useRobotStream({
     };
   }, [upsertRoutes, removeRouteForRobot, rememberTask, lastKnownPoint, mapRef, taskPathCacheRef]);
 
-  // Rebuild route layers after style changes.
+  /**
+   * Draw every held route that is not actually on the map.
+   *
+   * The routes are held in state (`robotTasksRef`, `taskPathsRef`, the
+   * provider's cache), never only in Mapbox, so a style that lost its layers
+   * — a fresh map on returning to this page, a style reload — is refilled
+   * from state. Routes already intact are skipped by the redraw guard, so
+   * this is safe to call at any time and costs nothing when nothing is
+   * missing. It waits for no telemetry: a robot standing still gets its route
+   * back as soon as the style can take it.
+   */
+  const restoreRoutes = useCallback(() => {
+    const map = mapRef?.current;
+    if (!map) return;
+    for (const robotId of [...robotTasksRef.current.keys()]) {
+      if (!activeRobotIdsRef.current.has(robotId)) continue;
+      upsertRoutes(robotId, lastKnownPoint(robotId));
+    }
+  }, [mapRef, upsertRoutes, lastKnownPoint]);
+
+  // `style.load` — the style can take layers (the first load on a new map, or after any
+  // `setStyle`, which discards every source and layer this hook added).
   useEffect(() => {
     const map = mapRef?.current;
     if (!map) return;
 
-    const onStyleLoad = () => {
-      for (const id of activeRobotIdsRef.current) {
-        const overlay = routesRef.current.get(id);
-        // overlays will be recreated on next upsertRoutes call;
-        // do a best-effort refresh now if we still have lines cached.
-        if (!overlay) continue;
-        // Nothing to do here: the next socket tick will refresh.
-      }
-    };
-
     try {
-      map.on('style.load', onStyleLoad);
+      map.on('style.load', restoreRoutes);
     } catch {
       // ignore
     }
 
     return () => {
       try {
-        map.off('style.load', onStyleLoad);
+        map.off('style.load', restoreRoutes);
       } catch {
         // ignore
       }
     };
-  }, [mapRef]);
+  }, [mapRef, restoreRoutes]);
+
+  // `load` — the second chance, for a style whose `style.load` fired before this hook listened.
+  useEffect(() => {
+    if (isMapLoaded) restoreRoutes();
+  }, [isMapLoaded, restoreRoutes]);
 
   // ── Camera → overlay reprojection ──────────────────────────────────────────
   //
@@ -1350,14 +1165,31 @@ export function useRobotStream({
       const store = markersRef?.current;
       if (!map || !store) return;
 
+      // Newest position wins (see `sampleGateRef`). The rest of this state — status,
+      // battery, task — is applied as it is: a REST row can be older in position and newer
+      // in status, which is the database's to say.
+      const robotKey = String(robot?.robotId || '').trim();
+      const resolved = sampleGateRef.current.resolve(robotKey, {
+        t: sampleTimeOf(robot),
+        lngLat: [robot?.lon, robot?.lat],
+        heading: robot?.heading,
+      });
+      // No usable position, now or before — deliberately not placed. Never fall back to an
+      // origin coordinate, which would draw a robot in the Gulf of Guinea.
+      if (!resolved.lngLat) return;
+      const positioned =
+        resolved.lngLat[0] === robot.lon && resolved.lngLat[1] === robot.lat && resolved.heading === robot.heading
+          ? robot
+          : { ...robot, lon: resolved.lngLat[0], lat: resolved.lngLat[1], heading: resolved.heading };
+
       // The ONE transform from robot state to world position and semantics.
-      const visual = toRobotVisual(robot, {
+      const visual = toRobotVisual(positioned, {
         selectedRobotId: selectedRobotIdRef.current,
         representation,
       });
-      // No usable position — deliberately not placed. Never fall back to an
-      // origin coordinate, which would draw a robot in the Gulf of Guinea.
       if (!visual) return;
+      // When the server received this position — the renderer measures the stream's cadence from it.
+      visual.sampleTime = resolved.t;
 
       const renderer = getRenderer();
       let entry = store.get(visual.id);
@@ -1421,6 +1253,11 @@ export function useRobotStream({
         const robotId = String(r?.robotId || '').trim();
         if (!robotId) continue;
         nextIds.add(robotId);
+        // The provider replaces only the row that changed (`prev.map`), so an identical
+        // object means nothing new for this robot. Every telemetry tick used to re-run the
+        // marker and route projection for EVERY robot here; now it is the one that moved.
+        if (store.has(robotId) && lastSyncedRowRef.current.get(robotId) === r) continue;
+        lastSyncedRowRef.current.set(robotId, r);
         // The row's own fields win over `live`. `live` is the telemetry snapshot the
         // REST load carried and nothing refreshes it afterwards, while the row's
         // lat/lon/battery/status are kept current by every `robot:update`. Letting the
@@ -1443,6 +1280,8 @@ export function useRobotStream({
           // ignore
         }
         store.delete(id);
+        lastSyncedRowRef.current.delete(id);
+        sampleGateRef.current.forget(id);
         // Out of the visible set: forget the task too, or the next cache replay
         // would redraw a route for a unit that is no longer on the map.
         robotTasksRef.current.delete(id);

@@ -56,6 +56,7 @@ import {
   campusStyleForTheme,
   selectedLabelFilter,
 } from './campusLayers.js';
+import { TASK_ROUTE_LAYER_PREFIX } from '../charging/stationLayers.js';
 
 /** How long the campus geometry takes to fade in on arrival (§25, stage 6). */
 const REVEAL_MS = 700;
@@ -73,9 +74,24 @@ const EMPHASIS_MS = 900;
 /** Sources that carry clickable features, so they need stable feature ids. */
 const PROMOTED_SOURCES = new Set([CAMPUS_SOURCE.AREAS, CAMPUS_SOURCE.POINTS]);
 
-function firstSymbolLayerId(map) {
+/** Prefixes of the operational overlay — charger routes, stations, task routes. */
+const OPERATIONAL_OVERLAY_PREFIXES = Object.freeze(['robotx-charging-', TASK_ROUTE_LAYER_PREFIX]);
+
+/**
+ * The layer campus geometry is inserted beneath.
+ *
+ * The lowest operational-overlay layer when there is one, otherwise the first text symbol.
+ * Mapbox Standard keeps its own layers inside imports, so the first top-level text symbol is
+ * one of OURS — the charging station label — and inserting beneath it put the campus fills,
+ * roads and buildings ABOVE the stations and above every task route (observed in the
+ * browser, 2026-10-13: the depot's 3D model invisible under the campus ground fill). Routes
+ * and stations are the operational layer and belong on top of the campus they run across.
+ */
+function campusAnchorLayerId(map) {
   try {
     const layers = map.getStyle()?.layers || [];
+    const overlay = layers.find((l) => OPERATIONAL_OVERLAY_PREFIXES.some((prefix) => String(l.id).startsWith(prefix)));
+    if (overlay) return overlay.id;
     return layers.find((l) => l.type === 'symbol' && l.layout?.['text-field'])?.id;
   } catch {
     return undefined;
@@ -155,7 +171,7 @@ export function installSourcesAndLayers(map) {
     }
   }
 
-  const beneath = firstSymbolLayerId(map);
+  const beneath = campusAnchorLayerId(map);
 
   for (const spec of campusLayerSpecs()) {
     try {
@@ -271,6 +287,56 @@ function applyStyle(map, theme, reveal, emphasis) {
  * but they are not an RNSIT survey, and the card built from this says so. Only
  * fields that are actually present are returned; nothing is filled in.
  */
+/**
+ * What a map point selects on the campus layer: a campus feature of ours (our own data always
+ * outranks the vendor's), else an identifiable basemap feature (clearly attributed), else null.
+ * The campus click handler answers with this; `mapControl/stationClickArbiter.js` decides
+ * whether a station on the same click outranks it.
+ *
+ * @param {object} map
+ * @param {{ x: number, y: number }} point
+ * @param {object|null} definition the campus definition (`features`)
+ * @returns {object|null}
+ */
+export function campusFeatureAtPoint(map, point, definition) {
+  if (!map) return null;
+  const ourLayers = CAMPUS_INTERACTIVE_LAYERS.filter((id) => {
+    try {
+      return Boolean(map.getLayer(id));
+    } catch {
+      return false;
+    }
+  });
+
+  let hits = [];
+  try {
+    hits = ourLayers.length ? map.queryRenderedFeatures(point, { layers: ourLayers }) : [];
+  } catch {
+    hits = [];
+  }
+
+  if (hits.length > 0) {
+    const props = hits[0].properties || {};
+    const id = typeof props.id === 'string' ? props.id : null;
+    const known = (definition?.features || []).find((f) => f.id === id) || null;
+    return known ? { ...known, isVendor: false } : null;
+  }
+
+  // Nothing of ours was clicked. Fall back to the basemap so an operator
+  // can still identify what they are looking at — clearly attributed.
+  let vendorHits = [];
+  try {
+    vendorHits = map.queryRenderedFeatures(point) || [];
+  } catch {
+    vendorHits = [];
+  }
+  for (const [i, f] of vendorHits.entries()) {
+    const read = readVendorFeature(f, i);
+    if (read) return read;
+  }
+  return null;
+}
+
 function readVendorFeature(feature, index) {
   const props = feature?.properties || {};
   const name = typeof props.name === 'string' && props.name.trim() ? props.name.trim() : null;
@@ -579,47 +645,7 @@ export function useCampusLayer(
     const onClick = (event) => {
       const handler = onSelectFeatureRef.current;
       if (!handler) return;
-
-      // Campus features first: our own data always outranks the vendor's.
-      const ourLayers = CAMPUS_INTERACTIVE_LAYERS.filter((id) => {
-        try {
-          return Boolean(map.getLayer(id));
-        } catch {
-          return false;
-        }
-      });
-
-      let hits = [];
-      try {
-        hits = ourLayers.length ? map.queryRenderedFeatures(event.point, { layers: ourLayers }) : [];
-      } catch {
-        hits = [];
-      }
-
-      if (hits.length > 0) {
-        const props = hits[0].properties || {};
-        const id = typeof props.id === 'string' ? props.id : null;
-        const known = (definitionRef.current?.features || []).find((f) => f.id === id) || null;
-        handler(known ? { ...known, isVendor: false } : null);
-        return;
-      }
-
-      // Nothing of ours was clicked. Fall back to the basemap so an operator
-      // can still identify what they are looking at — clearly attributed.
-      let vendorHits = [];
-      try {
-        vendorHits = map.queryRenderedFeatures(event.point) || [];
-      } catch {
-        vendorHits = [];
-      }
-      for (const [i, f] of vendorHits.entries()) {
-        const read = readVendorFeature(f, i);
-        if (read) {
-          handler(read);
-          return;
-        }
-      }
-      handler(null);
+      handler(campusFeatureAtPoint(map, event.point, definitionRef.current));
     };
 
     try {

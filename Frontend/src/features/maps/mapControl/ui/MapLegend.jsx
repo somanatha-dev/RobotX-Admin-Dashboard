@@ -1,5 +1,9 @@
 import React, { useState } from 'react';
 
+import { STATION_STATE, STATION_STATE_META } from '../../charging/stationModel.js';
+
+const STATION_KEY = [STATION_STATE.AVAILABLE, STATION_STATE.OCCUPIED, STATION_STATE.QUEUED, STATION_STATE.INACTIVE, STATION_STATE.UNAVAILABLE];
+
 /**
  * UI LAYER — reads the visual hierarchy back to the operator, and reports what
  * the environment layer actually managed to install (§23: a silently flat map
@@ -21,6 +25,12 @@ export function MapLegend({
   geometrySource,
   /** e.g. "verified by owner" — the calm form, not a warning (§3A). */
   verificationLabel,
+  /** Every station the simulator reports (`stationSummaries`), or [] — see ChargingStationCard. */
+  stations = [],
+  /** False when there is no simulator charging report at all (not a simulated deployment, or not loaded). */
+  chargingReported = false,
+  selectedStationId = null,
+  onPickStation,
 }) {
   const [open, setOpen] = useState(false);
   const hasCampusGeometry = campusFeatureCount > 1; // the centre point alone is not geometry
@@ -52,6 +62,56 @@ export function MapLegend({
             <span className="map-legend__swatch map-legend__swatch--pin" />
             <span>Pickup / drop</span>
           </div>
+
+          <div className="map-legend__divider" />
+          {chargingReported ? (
+            <>
+              <div className="map-legend__row">
+                <span className="map-legend__swatch map-legend__swatch--charger-route" />
+                <span>Route to charger (simulated robot)</span>
+              </div>
+              {STATION_KEY.map((state) => (
+                <div className="map-legend__row" key={state}>
+                  <span
+                    className="map-legend__station-dot"
+                    style={{ '--station-state': STATION_STATE_META[state].color }}
+                  />
+                  <span>Charging station — {STATION_STATE_META[state].label.toLowerCase()}</span>
+                </div>
+              ))}
+              {stations.length > 0 && (
+                <div className="map-legend__stations" role="list" aria-label="Charging stations">
+                  {stations.map((station) => (
+                    <div role="listitem" key={station.chargerId}>
+                      <button
+                        type="button"
+                        className="map-legend__station"
+                        aria-pressed={station.chargerId === selectedStationId}
+                        disabled={!station.lngLat}
+                        title={station.lngLat ? 'Show this station' : 'No coordinate supplied — not on the map'}
+                        onClick={() => onPickStation?.(station.chargerId)}
+                      >
+                        <span
+                          className="map-legend__station-dot"
+                          style={{ '--station-state': (STATION_STATE_META[station.state] || STATION_STATE_META.INACTIVE).color }}
+                        />
+                        <span className="map-legend__station-text">
+                          <span className="map-legend__station-name">{station.name}</span>
+                          <span className="map-legend__station-status">
+                            {station.lngLat ? station.status : `${station.status} · not placed`}
+                          </span>
+                        </span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="map-legend__row">
+              <span>Charging stations: no simulator charging report</span>
+            </div>
+          )}
 
           {hasCampusGeometry && (
             <>

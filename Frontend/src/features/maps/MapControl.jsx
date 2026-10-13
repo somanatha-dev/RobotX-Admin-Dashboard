@@ -31,6 +31,8 @@ import {
   EMPTY_CAMPUS_DEFINITION,
 } from './campus/campusRegistry.js';
 import { useCampusLayer } from './campus/useCampusLayer.js';
+import { useChargingLayer } from './charging/useChargingLayer.js';
+import { createStationClickArbiter } from './mapControl/stationClickArbiter.js';
 import {
   buildCampusFeatureIndex,
   buildCampusRegistryIndex,
@@ -50,6 +52,7 @@ import { MapThemeControl } from './mapControl/ui/MapThemeControl.jsx';
 import { MapGrade } from './mapControl/ui/MapGrade.jsx';
 import { CampusSearch } from './mapControl/ui/CampusSearch.jsx';
 import { CampusFeatureCard } from './mapControl/ui/CampusFeatureCard.jsx';
+import { ChargingStationCard } from './mapControl/ui/ChargingStationCard.jsx';
 import { CampusDataNotice } from './mapControl/ui/CampusDataNotice.jsx';
 import { RouteIssuesNotice } from './mapControl/ui/RouteIssuesNotice.jsx';
 import './mapControl/ui/campusUi.css';
@@ -84,7 +87,7 @@ function MapControlInner({ filtersHost }) {
     setFollowSelected,
     clearSelection,
   } = useMapContext();
-  const { robots: globalRobots, taskPathCacheRef } = useAppState();
+  const { robots: globalRobots, taskPathCacheRef, simulatorStatus } = useAppState();
 
   const overlayRef = useRef(null);
   const canvasRef = useRef(null);
@@ -326,6 +329,37 @@ function MapControlInner({ filtersHost }) {
   /** What the route validator has to say about the routes on screen (§3D). */
   const [routeFindings, setRouteFindings] = useState(null);
 
+  // ── CHARGING LAYER ─────────────────────────────────────────────────────────
+  // Charging stations — a miniature 3D installation at campus zoom, a badge below it — with
+  // their state (available / in use / queue / inactive / unavailable), and each simulated
+  // robot's route to its charger, from the simulator's report. A usable station is drawn at
+  // its operational coordinate; a declared-but-unusable one at its declared coordinate as
+  // INACTIVE or UNAVAILABLE, never in an operational colour.
+  const [selectedStationId, setSelectedStationId] = useState(null);
+  // A click that hits a station selects the station and not the building underneath it, in
+  // whichever order the two click listeners run (mapControl/stationClickArbiter.js). Created
+  // once (lazy state): its two answers are stable callbacks, and both setters are state setters.
+  const [clickArbiter] = useState(() =>
+    createStationClickArbiter({
+      selectStation: setSelectedStationId,
+      selectFeature: setSelectedFeature,
+    })
+  );
+  const onSelectStation = clickArbiter.station;
+  const onSelectCampusFeature = clickArbiter.feature;
+  const { stations: chargingStations } = useChargingLayer(mapRef, {
+    isMapLoaded,
+    simulatorStatus,
+    themeRef,
+    subscribeToTheme,
+    selectedStationId,
+    onSelectStation,
+  });
+  const selectedStation = useMemo(
+    () => (selectedStationId ? chargingStations.find((s) => s.chargerId === selectedStationId) || null : null),
+    [chargingStations, selectedStationId]
+  );
+
   // ── Operations mode (§3H) ──────────────────────────────────────────────────
   //
   // A single number, not a branch. Operations is a way of LOOKING at the campus,
@@ -343,7 +377,7 @@ function MapControlInner({ filtersHost }) {
     active: campusActive,
     subscribeToTheme,
     selectedFeatureId: selectedFeature && !selectedFeature.isVendor ? selectedFeature.id : null,
-    onSelectFeature: setSelectedFeature,
+    onSelectFeature: onSelectCampusFeature,
     operationsEmphasis,
   });
 
@@ -490,7 +524,16 @@ function MapControlInner({ filtersHost }) {
   if (campusIdAtSelection !== campusId) {
     setCampusIdAtSelection(campusId);
     setSelectedFeature(null);
+    setSelectedStationId(null);
     setCameraMode(CAMPUS_CAMERA_MODE.OVERVIEW);
+  }
+
+  // Selecting a robot closes the station card: one inspected object at a time. Adjusted during
+  // render, like the campus reset above, so no frame shows both.
+  const [robotIdAtStation, setRobotIdAtStation] = useState(selectedRobotId);
+  if (robotIdAtStation !== selectedRobotId) {
+    setRobotIdAtStation(selectedRobotId);
+    if (selectedRobotId) setSelectedStationId(null);
   }
 
   useEffect(() => {
@@ -636,6 +679,9 @@ function MapControlInner({ filtersHost }) {
     campusId,
     mapRef,
     markersRef,
+    // Routes are restored when the map can take layers — not on the next telemetry tick,
+    // which never comes for a robot standing still.
+    isMapLoaded,
     representation: ROBOT_REPRESENTATION.TWO_D,
     selectedRobotId,
     followSelected,
@@ -743,6 +789,7 @@ function MapControlInner({ filtersHost }) {
         setCampusId(entry.campusId);
         return;
       }
+      setSelectedStationId(null);
       if (entry.type === SEARCH_RESULT_TYPE.ROBOT) {
         setSelectedFeature(null);
         // `selectRobot` toggles, so a second search for the same unit would
@@ -760,6 +807,23 @@ function MapControlInner({ filtersHost }) {
     [focusLngLat, setSelectedRobotId, setCampusId, campusActive, cameraMode]
   );
 
+  /** A station picked from the legend's list: select it and bring it into view. */
+  const pickStation = useCallback(
+    (chargerId) => {
+      const station = chargingStations.find((s) => s.chargerId === chargerId);
+      if (!station?.lngLat) return;
+      clearSelection();
+      setSelectedFeature(null);
+      setSelectedStationId(chargerId);
+      focusLngLat(station.lngLat[0], station.lngLat[1], 18.2);
+    },
+    [chargingStations, clearSelection, focusLngLat]
+  );
+
+  const focusSelectedStation = useCallback(() => {
+    if (selectedStation?.lngLat) focusLngLat(selectedStation.lngLat[0], selectedStation.lngLat[1], 18.2);
+  }, [selectedStation, focusLngLat]);
+
   const focusSelectedFeature = useCallback(() => {
     const anchor = labelAnchorFor(selectedFeature?.geometry);
     if (anchor) focusLngLat(anchor[0], anchor[1]);
@@ -772,6 +836,7 @@ function MapControlInner({ filtersHost }) {
   const resetEverything = useCallback(() => {
     sequencerRef.current.cancel();
     setSelectedFeature(null);
+    setSelectedStationId(null);
     setCameraMode(CAMPUS_CAMERA_MODE.OVERVIEW);
     clearSelection();
     resetAll();
@@ -895,7 +960,15 @@ function MapControlInner({ filtersHost }) {
           reported, never rendered away. */}
       {!mapFailure && <RouteIssuesNotice summary={routeFindings} />}
 
-      {!mapFailure && selectedFeature && (
+      {!mapFailure && selectedStation && (
+        <ChargingStationCard
+          station={selectedStation}
+          onClose={() => setSelectedStationId(null)}
+          onFocus={focusSelectedStation}
+        />
+      )}
+
+      {!mapFailure && selectedFeature && !selectedStation && (
         <CampusFeatureCard
           feature={selectedFeature}
           onClose={() => setSelectedFeature(null)}
@@ -913,6 +986,10 @@ function MapControlInner({ filtersHost }) {
           campusName={campusDefinition.name}
           geometrySource={campusDefinition.geometrySource}
           verificationLabel={campusDefinition.verificationRecord ? 'verified by owner' : 'unverified'}
+          stations={chargingStations}
+          chargingReported={Boolean(simulatorStatus?.charging)}
+          selectedStationId={selectedStationId}
+          onPickStation={pickStation}
         />
       )}
 
