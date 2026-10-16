@@ -94,7 +94,7 @@
  * the same coordinate on every host and in every replay.
  */
 
-const { centreOfCell, resolutionOfH3Cell, RESOLUTION } = require("../spatial/cells");
+const { cellForPoint, centreOfCell, normaliseCellId, resolutionOfH3Cell, RESOLUTION } = require("../spatial/cells");
 const { SERVICEABILITY } = require("./campusServiceability");
 
 /**
@@ -110,6 +110,10 @@ const PROJECTION_REFUSAL = Object.freeze({
   NO_REGION: "NO_REGION",
   /** A supplied representative point is not a usable coordinate. */
   MALFORMED_REPRESENTATIVE_POINT: "MALFORMED_REPRESENTATIVE_POINT",
+  /** An exact endpoint is not a usable WGS-84 coordinate. */
+  MALFORMED_EXACT_POINT: "MALFORMED_EXACT_POINT",
+  /** An exact endpoint does not lie in the fine cell the request names for it. */
+  EXACT_POINT_NOT_IN_CELL: "EXACT_POINT_NOT_IN_CELL",
 });
 
 /**
@@ -121,6 +125,8 @@ const PROJECTION_SOURCE = Object.freeze({
   CELL_CENTRE: "CELL_CENTRE",
   /** A representative point supplied by the deployment. */
   SUPPLIED_REPRESENTATIVE_POINT: "SUPPLIED_REPRESENTATIVE_POINT",
+  /** The request's own exact coordinate — the point a route between exact endpoints starts or ends at. */
+  EXACT_POINT: "EXACT_POINT",
 });
 
 /**
@@ -157,7 +163,7 @@ function isFiniteNumber(value) {
  *     destination: that is the intake-pinned `Stop.geofenceResult` (D1 / ADR-28).
  *   * `representativePoints` — optional `Map` or plain object of `cellId -> { lat, lon }`,
  *     supplied by the deployment. Never fabricated here.
- * @returns {object} `{ project, projectCell, describe }`
+ * @returns {object} `{ project, projectExactPoint, projectCell, describe }`
  */
 function createCellProjection(input) {
   const source = input || {};
@@ -242,6 +248,81 @@ function createCellProjection(input) {
       }
 
       return Object.freeze({ lat: point.lat, lon: point.lon, source: projectionSource, cellId });
+    },
+
+    /**
+     * Check one EXACT endpoint for routing, or refuse.
+     *
+     * For a request routed between exact coordinates (`cellPairCache` `EXACT_POINTS`) the
+     * point routed is the coordinate itself, not its cell's centre, so the containment that
+     * matters is the coordinate's. Testing the centre instead was wrong both ways near the
+     * boundary: under FINE = H3 resolution 11 a cell can straddle the boundary, so a robot
+     * standing inside the campus in a cell whose centre is outside was refused (incident
+     * 2026-10-13: SIM-C1E3C3312B23, cell 8b601451284cfff, centre 17 m from the robot and
+     * outside), and a point outside the campus in a cell whose centre is inside would have
+     * been routed. This checks the routed point with the same oracle `project` uses — the
+     * boundary is not widened, no containment mode changes, and no representative point is
+     * chosen: the point checked is the one the request routes.
+     *
+     * The point must also lie in the fine cell the request names for it, so a cell-keyed
+     * cache entry can never carry a route for a coordinate somewhere else.
+     *
+     * @param {string} cellId the fine H3 cell the request names for this endpoint
+     * @param {{ lat: number, lon: number }} point the exact coordinate routed
+     * @returns {{ lat: number, lon: number, source: string, cellId: string }}
+     * @throws {ProjectionError}
+     */
+    projectExactPoint(cellId, point) {
+      if (!oracle || typeof oracle.assess !== "function") {
+        throw new ProjectionError(
+          PROJECTION_REFUSAL.NO_REGION,
+          "no serviceability oracle was supplied to the cell projection. A coordinate that has not been shown to " +
+            "lie inside the serviceable region must not be handed to a routing engine as an origin or a " +
+            "destination — unknown is DENY",
+        );
+      }
+      // `cellForPoint` is the one WGS-84 range check (`spatial/cells.isFiniteCoordinate`); it throws on
+      // anything that is not a finite, in-range coordinate, so the bounds are not restated here.
+      let containing;
+      try {
+        if (!point || !isFiniteNumber(point.lat) || !isFiniteNumber(point.lon)) throw new Error("not a { lat, lon } pair");
+        containing = cellForPoint(point.lat, point.lon, RESOLUTION.FINE);
+      } catch {
+        throw new ProjectionError(
+          PROJECTION_REFUSAL.MALFORMED_EXACT_POINT,
+          `the exact endpoint for cell "${String(cellId)}" is not a { lat, lon } pair of finite WGS-84 degrees`,
+        );
+      }
+      if (resolutionOfH3Cell(cellId) !== RESOLUTION.FINE) {
+        throw new ProjectionError(
+          PROJECTION_REFUSAL.NOT_A_CELL,
+          `"${String(cellId)}" is not a fine-resolution H3 cell id, so an exact endpoint cannot be shown to lie in it`,
+        );
+      }
+      if (containing !== normaliseCellId(cellId)) {
+        throw new ProjectionError(
+          PROJECTION_REFUSAL.EXACT_POINT_NOT_IN_CELL,
+          `the exact endpoint (${point.lat}, ${point.lon}) lies in fine cell "${containing}", not in the cell the ` +
+            `request names for it ("${String(cellId)}"). Refused rather than routed: the route would be keyed by one ` +
+            "cell and computed from a point in another",
+        );
+      }
+
+      const verdict = oracle.assess(point.lat, point.lon);
+      if (verdict.status !== SERVICEABILITY.INSIDE) {
+        throw new ProjectionError(
+          verdict.status === SERVICEABILITY.NOT_CONFIGURED || verdict.status === SERVICEABILITY.INVALID_BOUNDARY
+            ? PROJECTION_REFUSAL.NO_REGION
+            : PROJECTION_REFUSAL.OUTSIDE_SERVICEABLE_REGION,
+          `the exact endpoint (${point.lat}, ${point.lon}) in cell "${cellId}" is ${verdict.status} relative to the ` +
+            `serviceable region. ${verdict.reason}\n` +
+            "This is refused rather than routed: a route to or from a point off the committed serviceable area is a " +
+            "plausible wrong answer. Delivery-domain membership for the order's own destination is the " +
+            "intake-pinned Stop.geofenceResult, never this verdict",
+        );
+      }
+
+      return Object.freeze({ lat: point.lat, lon: point.lon, source: PROJECTION_SOURCE.EXACT_POINT, cellId });
     },
 
     /**

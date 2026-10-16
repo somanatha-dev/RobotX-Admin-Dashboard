@@ -498,11 +498,31 @@ function createSimulationRouter(config) {
 
       const request = normaliseRouteRequest(parts);
 
+      // Containment is checked on the points that are actually routed. A request between
+      // exact endpoints routes the coordinates themselves, so each coordinate must be inside
+      // the serviceable region and lie in the cell the request names for it
+      // (`projectExactPoint`). A cell-only request (the return leg to a charger) routes the
+      // cells' representative points and keeps the cell-centre check unchanged. Testing a
+      // cell's centre for an exact endpoint refused robots standing inside the campus in a
+      // boundary cell (incident 2026-10-13, SIM-C1E3C3312B23 → MISSING_HOP on every round).
+      const exact = hasExactEndpoints(parts);
+      if (exact && typeof projection.projectExactPoint !== "function") {
+        throw new RouteRefusedError(
+          ROUTE_REFUSAL.MALFORMED_REQUEST,
+          "this request routes exact endpoints and the composed projection cannot check an exact point " +
+            "(no projectExactPoint) — refused rather than checked against the cell centre, which is not the point routed",
+        );
+      }
+
       let origin;
       let destination;
       try {
-        origin = projection.project(request.originCell);
-        destination = projection.project(request.destCell);
+        origin = exact
+          ? projection.projectExactPoint(request.originCell, parts.originPoint)
+          : projection.project(request.originCell);
+        destination = exact
+          ? projection.projectExactPoint(request.destCell, parts.destPoint)
+          : projection.project(request.destCell);
       } catch (error) {
         if (error instanceof ProjectionError) {
           throw new RouteRefusedError(
