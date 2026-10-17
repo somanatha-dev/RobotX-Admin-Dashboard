@@ -263,3 +263,50 @@ describe("awaitingResponse reads §4.4's table", () => {
     expect(state.leg.state).toBe("OFFERED");
   });
 });
+
+describe("a refusal carries its reason, classified (agent readiness vs this Leg)", () => {
+  async function connectWithIo(prisma) {
+    const { kv } = await createTestKv();
+    const io = createFakeIo();
+    const socket = createFakeSocket();
+    socket.data.robotId = "RBT-1";
+    socket.data.isAuthed = true;
+    agentGate.bind(socket, { agentId: "RBT-1", shardId: "SHARD-1", regionId: "RGN-1", resolvedAtMs: Date.now() });
+    registerOfferHandlers(io, socket, {
+      prisma,
+      kv,
+      logger: silentLogger,
+      config: { leaseDurationSeconds: 60, nackCooloffSeconds: 120 },
+      appLocals: { config: liveSnapshot() },
+    });
+    return { socket, io };
+  }
+
+  test.each([
+    ["NO_MOTOR_LINK", "NO_MOTOR_LINK", "AGENT_READINESS"],
+    ["NO_POSITION_FIX", "NO_POSITION_FIX", "AGENT_READINESS"],
+    ["NO_EXECUTABLE_PATH:pathToPickup", "NO_EXECUTABLE_PATH", "LEG"],
+    ["AGENT_HELD:PAUSED", "AGENT_HELD", "UNCLASSIFIED"],
+  ])("OFFER_REJECT %s: recorded with code and scope; the dashboard is told why", async (reason, code, scope) => {
+    const { state, prisma } = world();
+    const { socket, io } = await connectWithIo(prisma);
+
+    await respond(socket, "OFFER_REJECT", { commitmentId: "CMT-1", fence: "5", reason });
+
+    expect(state.leg.state).toBe("QUEUED");
+    const [{ data }] = prisma.observation.create.mock.calls[0];
+    expect(data).toMatchObject({ kind: "offer_rejection", value: { commitmentId: "CMT-1", reason, code, scope } });
+    expect(io.emittedTo("dashboard", "OFFER_RESPONSE")).toEqual([
+      expect.objectContaining({ response: "OFFER_REJECT", reason, refusalCode: code, refusalScope: scope, legState: "QUEUED" }),
+    ]);
+  });
+
+  test("an ACCEPT carries no refusal fields", async () => {
+    const { prisma } = world();
+    const { socket, io } = await connectWithIo(prisma);
+    await respond(socket, "OFFER_ACCEPT", { commitmentId: "CMT-1", fence: "5" });
+    const [event] = io.emittedTo("dashboard", "OFFER_RESPONSE");
+    expect(event).toMatchObject({ response: "OFFER_ACCEPT" });
+    expect(event).not.toHaveProperty("refusalScope");
+  });
+});

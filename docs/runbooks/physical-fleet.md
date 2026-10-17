@@ -52,6 +52,22 @@ The robot becomes a candidate once all of these are live: a fresh SoC declaratio
 declaration accepts within 5 m of a permitted campus way, an unengaged stop latch, and a
 recent probe answer on its current socket.
 
+## Readiness and diagnosis (2026-10-18)
+
+- **See every blocker at once:** `GET /api/diagnostics/readiness/<robotId>` (operator login).
+  It reports visible / connected / lifecycle / indexed / position freshness / the Pi's readiness
+  report / battery provenance, and evaluates every agent-level predicate with `collectAll`.
+  Assignment itself still stops at the first denial, so a task card shows only the first.
+- **The Pi's readiness report** (TELEMETRY `readiness: {blockers: [...]}`, see the contract §4)
+  restricts eligibility whenever it is sent. To make a missing report blocking, add
+  `"readiness": { "policy": "AGENT_REPORT_REQUIRED" }` to the declaration. Do this only once the
+  deployed Pi sends the block, or the robot becomes unassignable by design.
+- **A readiness refusal** (`NO_MOTOR_LINK`, `NO_POSITION_FIX`, `NO_CUSTODY_SENSING`,
+  `ESTOP_LATCHED`, `AGENT_ERROR`) holds the robot from every Leg for `dispatch.nack_cooloff`, or
+  until it reports `blockers: []`.
+- **A demo battery** must be labelled `energy.batterySource: "DEMO_SIMULATION"`. It is shown as
+  such and never planned with. An operator SoC declaration is still the only SoC the engine uses.
+
 ## Proof
 
 `node tools/verify/gate1PhysicalOffer.js --database-url <disposable local db>` seeds a mixed fleet,

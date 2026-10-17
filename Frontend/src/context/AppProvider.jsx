@@ -1216,7 +1216,10 @@ export default function AppProvider({ children }) {
       if (!response) return;
       if (reopensAssignment(data)) setAssignmentSignal((n) => n + 1);
       if (response === 'OFFER_REJECT') {
-        addEvent(`Robot ${robotId || 'unknown'} rejected an offer — re-planning`, 'warning');
+        // The robot's own reason, and whether it is about the robot (not ready) or this task.
+        const reason = typeof data?.reason === 'string' && data.reason.trim() ? data.reason.trim() : null;
+        const scope = data?.refusalScope === 'AGENT_READINESS' ? ', robot not ready' : data?.refusalScope === 'LEG' ? ', this task' : '';
+        addEvent(`Robot ${robotId || 'unknown'} rejected an offer${reason ? ` (${reason}${scope})` : ''} — re-planning`, 'warning');
       } else if (response === 'OFFER_DEFER') {
         addEvent(`Robot ${robotId || 'unknown'} deferred an offer`, 'warning');
       }

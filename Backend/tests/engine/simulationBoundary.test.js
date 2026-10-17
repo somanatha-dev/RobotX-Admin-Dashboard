@@ -156,6 +156,13 @@ describe("Test G — the assignment engine cannot see the simulation discriminat
       //
       // Registered here rather than evaded, for the reason given above.
       "services/robotRecommission.service.js",
+      // READINESS DIAGNOSTIC (2026-10-18) — a *reporting* reader, the same category as
+      // `robotProjection.js`: it labels its operator report PHYSICAL or SIMULATED, through
+      // `simulationPolicy.isSimulatedRobot`. It decides nothing — the assignment path never
+      // calls it, and its engine section reads the agent through the round's own mapper.
+      //
+      // Registered here rather than evaded, for the reason given above.
+      "services/robotDispatchReadiness.service.js",
     ]);
 
     const unexpected = discriminatorReferences(filesUnder(SRC)).filter(

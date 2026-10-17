@@ -41,6 +41,7 @@ const POLICY = Object.freeze({
   SOFTWARE_STOP_LATCH: "SOFTWARE_STOP_LATCH",
   FLAT_DECLARED: "FLAT_DECLARED",
   NONE_DECLARED: "NONE_DECLARED",
+  AGENT_REPORT_REQUIRED: "AGENT_REPORT_REQUIRED",
 });
 
 /** @structural the backend's fix vocabulary (positionObservation.FIX_TYPES) */
@@ -187,6 +188,18 @@ function fromDeclaration(raw) {
   const routeHazardCu = isNumber(risk.routeHazardCu) && risk.routeHazardCu >= 0 ? risk.routeHazardCu : null;
   if (routeHazardCu === null) problems.push("risk.routeHazardCu must be a non-negative number");
 
+  // Optional, and off when absent: the agent's TELEMETRY `readiness` report
+  // (`agentReadiness.service`) is then required — missing, stale or another socket's report is a
+  // BLOCKING fault. A section that is present but names any other policy is read as REQUIRED,
+  // never as off: a typo here must not be what makes an unready robot assignable.
+  let readiness = null;
+  if (source.readiness !== undefined) {
+    readiness = POLICY.AGENT_REPORT_REQUIRED;
+    if (!source.readiness || source.readiness.policy !== POLICY.AGENT_REPORT_REQUIRED) {
+      problems.push(`readiness.policy is not "${POLICY.AGENT_REPORT_REQUIRED}": the readiness report is treated as required`);
+    }
+  }
+
   const robots = new Map();
   for (const entry of Array.isArray(source.robots) ? source.robots : []) {
     const normalised = normaliseRobot(entry);
@@ -203,6 +216,7 @@ function fromDeclaration(raw) {
     emergencyStop: estop,
     site: Object.freeze({ ambientC, terrain, connectivityDeadZones: deadZones, constrictions, stopStartCyclesPerHop, snapRadiusM }),
     localisation,
+    readiness,
     risk: Object.freeze({ failureProbabilityPrior, routeHazardCu }),
     robots,
     robotFor: (robotId) => robots.get(robotId) || null,

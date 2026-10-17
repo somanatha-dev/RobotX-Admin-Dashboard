@@ -3994,6 +3994,9 @@ module.exports = {
   AGENT_FACT_FIELDS,
   PLANNING_FACTS_CONCURRENCY,
   agentSnapshotInclude,
+  // The row → snapshot mapping, for the readiness diagnostic (`robotDispatchReadiness.service`),
+  // which must read an agent exactly as the round does.
+  agentSnapshotFrom,
   AGENT_GRAPH_RELATIONS,
   readAgentGraph,
   freshAgentSnapshotLoaderFor,

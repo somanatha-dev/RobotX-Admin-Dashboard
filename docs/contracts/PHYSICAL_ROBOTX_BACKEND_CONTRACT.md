@@ -96,6 +96,25 @@ On reconnect: re-AUTH, then resume `HEARTBEAT{commitmentId,fence}` immediately i
   "battery": 71.5,                           // PERCENT 0..100. Send ONLY a measured SoC, else omit.
   "energy": { "socMethod": "BMS", "packVoltageV": 7.02, "packCurrentA": -1.4 },
                                              // socMethod: BMS | COULOMB_COUNTING | VOLTAGE_CURVE_CALIBRATED
+                                             // A DEMO (simulated) battery value must say so:
+                                             //   "energy": { "batterySource": "DEMO_SIMULATION" }   ← backend SUPPORTED 2026-10-18
+                                             // It is shown on the dashboard labelled DEMO_SIMULATED and is never
+                                             // written to BatteryState, even beside a socMethod. Unlabelled and
+                                             // basis-less, a physical `battery` is shown as UNVERIFIED and is
+                                             // likewise never planned with.
+
+  // ── readiness: could I execute a mission right now? ──── backend SUPPORTED 2026-10-18
+  "readiness": { "blockers": ["NO_MOTOR_LINK", "NO_POSITION_FIX"] },
+                                             // The reasons you would refuse an OFFER now, in the OFFER_REJECT
+                                             // vocabulary (§5): ESTOP_LATCHED | AGENT_ERROR | NO_MOTOR_LINK |
+                                             // NO_POSITION_FIX | NO_CUSTODY_SENSING. [] = nothing blocking. Omit =
+                                             // not reported. Every frame, stamped by `timestamp`.
+                                             // `status` (IDLE) is your operating mode, NOT readiness.
+                                             // Each blocker is a BLOCKING fault (F8) — it only ever restricts.
+                                             // A malformed block is ignored (reads as not reported, never ready).
+                                             // When the owner's declaration sets
+                                             //   "readiness": { "policy": "AGENT_REPORT_REQUIRED" }
+                                             // a missing, stale (> 10 s) or other-socket report is itself BLOCKING.
 
   // ── optional ─────────────────────────────────────────── EXISTS
   "speed": 0.0,                              // m/s
@@ -103,6 +122,13 @@ On reconnect: re-AUTH, then resume `HEARTBEAT{commitmentId,fence}` immediately i
   "distanceTravelled": 1423                  // cumulative metres
 }
 ```
+
+**Omitted coordinates (backend 2026-10-18).** A frame without `lat`/`lon` changes nothing about the robot's position:
+- `Robot.lat/lon` and the `Telemetry` history are not rewritten from the previous value.
+- No Observation is made.
+- `robot:update` and `GET /api/robots/state` carry a `position` object: `status` LIVE | STALE | UNKNOWN, the newest measured fix's own `observedAt`, `fixType`, `hAccM`, `provenance`, `fresh` against the 10 s budget below, and `qualified`.
+- `lat`/`lon` remain the last *known* coordinates.
+- Completion and arrival evidence count a **physical** fix only with a declared `fixType` and `hAccM`. A bare `lat`/`lon` is not travel evidence.
 
 **Freshness.** The backend judges freshness against **its** decision time, using your `timestamp`.
 
@@ -140,6 +166,11 @@ Missions arrive as signed **command envelopes**. The Socket.IO event name is the
 3. **Answer the OFFER before `offerExpiry`** (20 s). An unanswered offer is withdrawn and the robot is excluded.
    - `OFFER_ACCEPT {"commitmentId":"…","fence":"42"}`
    - `OFFER_REJECT {"commitmentId":"…","fence":"42","reason":"BATTERY_BELOW_MISSION_NEED"}`. **Reject whenever you cannot execute the mission safely.** A rejection is a safety signal, not a failure.
+     - The reason's code (the part before any `:`) decides its scope (backend 2026-10-18):
+       - `ESTOP_LATCHED`, `AGENT_ERROR`, `NO_MOTOR_LINK`, `NO_POSITION_FIX` and `NO_CUSTODY_SENSING` are **agent readiness**. You are not offered any other Leg for `dispatch.nack_cooloff` (120 s). The hold ends early once a `readiness` report measured after the refusal shows `blockers: []`.
+       - `NO_EXECUTABLE_PATH` is about **this Leg** only. As before, you are excluded from that Leg for the cool-off.
+       - Any other reason is handled as before.
+     - The reason reaches the dashboard: the `OFFER_RESPONSE` event (`reason`, `refusalCode`, `refusalScope`) and the task explanation (`offerRefusals`).
    - `OFFER_DEFER {"commitmentId":"…","fence":"42","until":<epoch ms>,"reason":"…"}`
 4. **While executing:**
    - Send `HEARTBEAT{commitmentId,fence}` every 2 s.

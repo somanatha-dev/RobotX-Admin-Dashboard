@@ -64,7 +64,9 @@
  */
 
 const clock = require("../engine/commitment/clock");
+const availabilityIndex = require("../engine/candidates/availabilityIndex");
 const { LIFECYCLE_STATES } = require("../engine/domain/agent");
+const { indexRecordOf } = require("./robotRetirement.service");
 const { toStringOrNull } = require("../utils/parse");
 const policy = require("./robotRetirementPolicy");
 // The physical/simulated discriminator is read through the one predicate the simulator uses.
@@ -310,6 +312,12 @@ async function recommissionInTransaction(prisma, robotCode, options) {
 
       // Retirement revoked these; a session written by an AUTH that raced it is removed here.
       await tx.robotSession.deleteMany({ where: { robotDbId: robot.id } });
+      // Retirement removed the unit's index mirror row too. One that survived it (a sweep that
+      // raced the retirement, before the index maintainer took the lifecycle lock) would make a
+      // COMMISSIONED unit a candidate that F2 rejects in every round. Removed under this lock;
+      // the Redis half after the commit.
+      const cell = await tx.agentCellPosition.findUnique({ where: { agentId: agent.id } });
+      if (cell) await tx.agentCellPosition.deleteMany({ where: { agentId: agent.id } });
       await tx.robot.update({ where: { id: robot.id }, data: { isOnline: false, socketId: null } });
 
       await tx.event.create({
@@ -325,7 +333,7 @@ async function recommissionInTransaction(prisma, robotCode, options) {
         },
       });
 
-      return { ...base, outcome: OUTCOME.RECOMMISSIONED, lifecycleState: RECOMMISSIONED_LIFECYCLE_STATE, epochBefore, epochAfter };
+      return { ...base, outcome: OUTCOME.RECOMMISSIONED, lifecycleState: RECOMMISSIONED_LIFECYCLE_STATE, epochBefore, epochAfter, cell: cell || null };
     },
     { timeout: TRANSACTION_TIMEOUT_MS, maxWait: TRANSACTION_MAX_WAIT_MS },
   );
@@ -360,14 +368,26 @@ async function recommission(prisma, robotCode, body, options) {
   // Step 3. The revocation that matters already happened before the commit, so a failure here
   // is reported, never turned into an error for an operation that is durable.
   let postCommitRevocationFailed = false;
+  let indexEntryRemovalFailed = false;
+  const { cell, ...outcome } = result;
   if (result.outcome === OUTCOME.RECOMMISSIONED) {
     try {
       await revokeCredentials(settings.kv, code);
     } catch {
       postCommitRevocationFailed = true;
     }
+    // The Redis half of a leftover index entry whose mirror row went in the transaction.
+    if (cell && settings.kv) {
+      const removed = await availabilityIndex.removePosition({ kv: settings.kv }, indexRecordOf(cell));
+      indexEntryRemovalFailed = !removed || removed.ok !== true;
+    }
   }
-  return { ...result, postCommitRevocationFailed };
+  return {
+    ...outcome,
+    postCommitRevocationFailed,
+    indexEntryRemoved: Boolean(cell),
+    ...(indexEntryRemovalFailed ? { indexEntryRemovalFailed: true } : {}),
+  };
 }
 
 /**

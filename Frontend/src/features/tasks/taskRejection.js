@@ -54,6 +54,12 @@ export function explanationFromResponse(body) {
       ? { predicateId: waiting.bindingConstraint.predicateId, count: Number(waiting.bindingConstraint.count) || 0 }
       : null;
 
+  // The robots' own refusals of this task's offers (`offerRefusals`), with the reason they gave and
+  // whether it is about the robot (AGENT_READINESS) or this task (LEG). Absent or null: none shown.
+  const offerRefusals = (Array.isArray(body.offerRefusals) ? body.offerRefusals : [])
+    .filter((row) => row && text(row.robotId) && text(row.reason))
+    .map((row) => ({ robotId: row.robotId, reason: row.reason, scope: text(row.scope) || 'UNCLASSIFIED' }));
+
   return {
     decisionId: text(body.decisionId),
     outcome: text(waiting.outcome),
@@ -61,7 +67,15 @@ export function explanationFromResponse(body) {
     bindingConstraint: binding,
     histogram,
     candidates,
+    offerRefusals,
   };
+}
+
+/** What a refusal's scope means, for the operator. */
+function refusalScopeLabel(scope) {
+  if (scope === 'AGENT_READINESS') return 'robot not ready';
+  if (scope === 'LEG') return 'this task';
+  return null;
 }
 
 /** The outcome, in words, when it is the one an operator most needs named. */
@@ -127,6 +141,25 @@ export function TaskRejectionView({ state }) {
         )
       : null,
     e.sentence ? h('div', { className: 'text-[11px] text-muted-foreground' }, e.sentence) : null,
+    e.offerRefusals && e.offerRefusals.length > 0
+      ? h(
+          'div',
+          { className: 'space-y-0.5', 'data-offer-refusals': String(e.offerRefusals.length) },
+          h('div', { className: 'text-[10px] uppercase tracking-wide text-amber-700 font-bold' }, 'Refused by the robot'),
+          ...e.offerRefusals.map((r, i) =>
+            h(
+              'div',
+              { key: `${r.robotId}-${i}`, className: 'flex justify-between gap-3 text-xs', 'data-refusal-scope': r.scope },
+              h('span', { className: 'font-mono text-slate-800' }, r.robotId),
+              h(
+                'span',
+                { className: 'font-mono font-bold text-rose-700' },
+                refusalScopeLabel(r.scope) ? `${r.reason} (${refusalScopeLabel(r.scope)})` : r.reason,
+              ),
+            ),
+          ),
+        )
+      : null,
   );
 }
 

@@ -133,27 +133,49 @@ const OUTCOME = Object.freeze({
  * @structural a parameter name
  */
 const MAX_CLOCK_SKEW_PARAMETER = "time.max_clock_skew";
-let declaredSkewDefault;
-function declaredMaxClockSkewMs() {
-  if (declaredSkewDefault === undefined) {
-    declaredSkewDefault = null;
+/** parameter name → its register default (null when the register declares none). */
+const declaredDefaults = new Map();
+function declaredRegisterDefault(name) {
+  if (!declaredDefaults.has(name)) {
+    let found = null;
     try {
       const register = require("../engine/config/register/appendixA.json");
       const walk = (node) => {
-        if (declaredSkewDefault !== null || !node || typeof node !== "object") return;
+        if (found !== null || !node || typeof node !== "object") return;
         if (Array.isArray(node)) return node.forEach(walk);
-        if (node.name === MAX_CLOCK_SKEW_PARAMETER && Number.isFinite(node.default)) {
-          declaredSkewDefault = node.default;
+        if (node.name === name && Number.isFinite(node.default)) {
+          found = node.default;
           return;
         }
         Object.values(node).forEach(walk);
       };
       walk(register);
     } catch {
-      declaredSkewDefault = null;
+      found = null;
+    }
+    declaredDefaults.set(name, found);
+  }
+  return declaredDefaults.get(name);
+}
+
+/**
+ * A positive numeric parameter as it is in force: the pinned configuration's value, else the
+ * register's declared default. Null only if neither exists.
+ *
+ * @param {object|null} snapshot the pinned configuration, when the caller has one
+ * @param {string} name
+ * @returns {number|null}
+ */
+function resolvedPositiveParameter(snapshot, name) {
+  if (snapshot && typeof snapshot.resolve === "function") {
+    try {
+      const value = snapshot.resolve(name, {});
+      if (Number.isFinite(value) && value > 0) return value;
+    } catch {
+      // fall through to the declared default
     }
   }
-  return declaredSkewDefault;
+  return declaredRegisterDefault(name);
 }
 
 /**
@@ -165,15 +187,7 @@ function declaredMaxClockSkewMs() {
  * @returns {number|null}
  */
 function maxClockSkewMsFrom(snapshot) {
-  if (snapshot && typeof snapshot.resolve === "function") {
-    try {
-      const value = snapshot.resolve(MAX_CLOCK_SKEW_PARAMETER, {});
-      if (Number.isFinite(value) && value > 0) return value;
-    } catch {
-      // fall through to the declared default
-    }
-  }
-  return declaredMaxClockSkewMs();
+  return resolvedPositiveParameter(snapshot, MAX_CLOCK_SKEW_PARAMETER);
 }
 
 /** The fix types the P2A contract's optional `position` block may declare. @structural */
@@ -517,8 +531,58 @@ async function recordPositionObservation(prisma, input) {
     provenance: binding.provenance,
     agentRowId: binding.agentRowId,
     observedAtMs,
+    // What was stored, for a reader that keeps the robot's latest measured position beside it
+    // (`robotPosition.service`) without reading the row back.
+    position: { lat, lon, fixType, hAccM: uncertaintyRadiusM, deadReckoned },
     detail: null,
   };
+}
+
+/** The fix types that are a measured fix at all. @structural `FIX_TYPES` without NO_FIX */
+const MEASURED_FIX_TYPES = Object.freeze(FIX_TYPES.filter((type) => type !== "NO_FIX"));
+
+/**
+ * Does a stored position carry the quality evidence a **physical** fix needs to count as one?
+ *
+ * A declared fix type that is a measurement, a positive horizontal accuracy, and not
+ * dead-reckoned. A frame that sends lat/lon with no `position` block is stored with no fix type
+ * and no accuracy (the contract's block is optional, `recordPositionObservation` above): it is a
+ * report the server could not grade, and it does not qualify. When the owner's declaration names
+ * the accepted fix types, the fix must be one of them — the same rule F10's localisation input
+ * applies (`fleetProviders/physicalFacts.localisationFrom`).
+ *
+ * @param {{ fixType?: unknown, hAccM?: unknown, deadReckoned?: unknown }} fix
+ * @param {string[]|null} [acceptedFixTypes] the declaration's list, when one is loaded
+ * @returns {boolean}
+ */
+function isQualifiedPhysicalFix(fix, acceptedFixTypes) {
+  const source = fix || {};
+  if (source.deadReckoned === true) return false;
+  if (!MEASURED_FIX_TYPES.includes(source.fixType)) return false;
+  if (!(typeof source.hAccM === "number" && Number.isFinite(source.hAccM) && source.hAccM > 0)) return false;
+  if (Array.isArray(acceptedFixTypes) && !acceptedFixTypes.includes(source.fixType)) return false;
+  return true;
+}
+
+/**
+ * May this stored position count as evidence of travel or arrival — for completion grading
+ * (`dtaro.handler`) and for the departure/arrival transitions that can settle a Leg
+ * (`legProgress.service`)?
+ *
+ * A **physical** fix must be qualified (`isQualifiedPhysicalFix`): a bare lat/lon the server could
+ * not grade is not evidence that a real robot drove a route. Every other row — simulator output,
+ * and rows from before provenance was recorded — is admitted exactly as before.
+ *
+ * @param {{ value?: object, uncertaintyRadiusM?: unknown, deadReckoned?: unknown }} row an Observation row
+ * @param {string[]|null} [acceptedFixTypes] the physical declaration's list, when one is loaded
+ * @returns {boolean}
+ */
+function isAdmissibleTravelEvidence(row, acceptedFixTypes) {
+  if (!isPhysicalEvidence(row)) return true;
+  return isQualifiedPhysicalFix(
+    { fixType: row.value.fixType, hAccM: row.uncertaintyRadiusM, deadReckoned: row.deadReckoned },
+    acceptedFixTypes,
+  );
 }
 
 /**
@@ -598,7 +662,11 @@ module.exports = {
   POSITION_KIND,
   FIX_TYPES,
   MAX_CLOCK_SKEW_PARAMETER,
+  MEASURED_FIX_TYPES,
   maxClockSkewMsFrom,
+  resolvedPositiveParameter,
+  isQualifiedPhysicalFix,
+  isAdmissibleTravelEvidence,
   provenanceOf,
   PROVENANCE,
   OUTCOME,

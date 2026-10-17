@@ -73,7 +73,9 @@ function trackFixes({ spanS = 56, stepS = 2, endAgoS = 2, now = Date.now() } = {
   for (let i = 0; i < count; i += 1) {
     const t = i / (count - 1);
     const atMs = now - (endAgoS + spanS) * 1000 + i * stepS * 1000;
-    fixes.push({ observedAt: new Date(atMs), value: { ...lerp(t), provenance: "PHYSICAL" } });
+    // A physical fix as the contract states it: a declared fix type with its accuracy. A bare
+    // physical lat/lon is not travel evidence (`positionObservation.isAdmissibleTravelEvidence`).
+    fixes.push({ observedAt: new Date(atMs), value: { ...lerp(t), provenance: "PHYSICAL", fixType: "3D" }, uncertaintyRadiusM: 2.1, deadReckoned: false });
   }
   return fixes;
 }
@@ -165,7 +167,7 @@ describe("B — verification configured and failed: nothing is completed", () =>
 
   test("an implied speed above 8.33 m/s fails as kinematically impossible", async () => {
     const fixes = trackFixes();
-    fixes[14] = { ...fixes[14], value: { lat: fixes[14].value.lat + 0.0005, lon: fixes[14].value.lon, provenance: "PHYSICAL" } };
+    fixes[14] = { ...fixes[14], value: { ...fixes[14].value, lat: fixes[14].value.lat + 0.0005 } };
     const h = harness({ fixes });
     await claim(h);
     expect(completed(h.prisma)).toBe(false);

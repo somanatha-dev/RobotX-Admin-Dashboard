@@ -26,6 +26,12 @@ const positionObservation = require("../../services/positionObservation.service"
 const batteryObservation = require("../../services/batteryObservation.service");
 // Gate 1 — the Pi's software stop-latch report (F7 under SOFTWARE_STOP_LATCH).
 const stopLatchObservation = require("../../services/stopLatchObservation.service");
+// The robot's latest MEASURED position with its age/quality/provenance, and the agent's own
+// readiness report — what the dashboard shows beside `lat`/`lon` and `status`.
+const robotPosition = require("../../services/robotPosition.service");
+const agentReadiness = require("../../services/agentReadiness.service");
+const { POLICY: PHYSICAL_POLICY } = require("../../services/fleetProviders/physicalPolicy");
+const { safeJsonParse } = require("../../utils/json");
 
 // §23.5 — "Persistent implausibility triggers quarantine and a security event."
 //
@@ -666,13 +672,17 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
       const snapshotKey = `snapshotState:${robotId}`;
       const registryKeyStr = registryKey(robotId);
       const batteryPersistKey = `vr:batteryPersistAt:${robotId}`;
+      const positionKeyStr = robotPosition.positionKey(robotId);
+      const readinessKeyStr = agentReadiness.readinessKey(robotId);
 
-      const [rawPrevState, rawSnapshotPrev, rawRegistryExisting, rawLastPersist] = await kv
+      const [rawPrevState, rawSnapshotPrev, rawRegistryExisting, rawLastPersist, rawPosition, rawReadiness] = await kv
         .pipeline()
         .get(robotKey)
         .get(snapshotKey)
         .get(registryKeyStr)
         .get(batteryPersistKey)
+        .get(positionKeyStr)
+        .get(readinessKeyStr)
         .exec();
 
       const writes = kv.pipeline();
@@ -751,6 +761,23 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
 
       fullState.distanceTravelled = Math.round(distanceTravelled);
 
+      // Where the battery value shown came from (display only; the energy decision reads
+      // `BatteryState`, which a demo-labelled or basis-less physical value never reaches). A
+      // frame without `battery` carries the previous value forward, and its label with it.
+      const energyBlock = payload && payload.energy && typeof payload.energy === "object" ? payload.energy : null;
+      const robotProvenance = typeof battery === "number" ? await positionObservation.provenanceOf(prisma, robotId) : null;
+      fullState.batteryProvenance =
+        typeof battery === "number"
+          ? batteryObservation.batteryProvenanceOf({
+              provenance: robotProvenance,
+              batteryPct: battery,
+              socMethod: energyBlock ? energyBlock.socMethod : undefined,
+              batterySource: energyBlock ? energyBlock.batterySource : undefined,
+            })
+          : typeof prevState?.batteryProvenance === "string"
+            ? prevState.batteryProvenance
+            : null;
+
       // 2) Store in Redis (final format) — queued, flushed with the rest of
       // this tick's writes at the end of the handler (see `writes.exec()`).
       writes.set(
@@ -759,6 +786,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
           lat: fullState.lat,
           lon: fullState.lon,
           battery: fullState.battery,
+          batteryProvenance: fullState.batteryProvenance,
           status: fullState.status,
           speed: fullState.speed,
           lastSeenAt: fullState.lastSeenAt,
@@ -797,9 +825,12 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
       let superseded = false;
       if (statusChanged || reconnected || batteryChanged || timeDue) {
         try {
+          // Coordinates only from THIS frame's own report. `fullState.lat/lon` fall back to the
+          // previous tick's or the row's values; writing those back with a fresh `lastSeenAt`
+          // made a fix hours old indistinguishable from a live one. A frame without coordinates
+          // leaves the row's last known position exactly as it was.
           const data = {
-            ...(typeof fullState.lat === "number" ? { lat: fullState.lat } : {}),
-            ...(typeof fullState.lon === "number" ? { lon: fullState.lon } : {}),
+            ...(typeof lat === "number" && typeof lon === "number" ? { lat, lon } : {}),
             ...(typeof fullState.battery === "number" ? { battery: fullState.battery } : {}),
             lastSeenAt: now,
             isOnline: true,
@@ -850,8 +881,9 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
             robotStateCache.set(robotId, {
               status: statusUpdate.status || existing.status,
               isOnline: true,
-              lat: typeof fullState.lat === "number" ? fullState.lat : existing.lat,
-              lon: typeof fullState.lon === "number" ? fullState.lon : existing.lon,
+              // The row's values, as just written (see `data` above).
+              lat: typeof lat === "number" && typeof lon === "number" ? lat : existing.lat,
+              lon: typeof lat === "number" && typeof lon === "number" ? lon : existing.lon,
               battery: typeof fullState.battery === "number" ? fullState.battery : existing.battery,
             });
           }
@@ -892,7 +924,15 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
         { maxSeconds: 15, moveDegreesThreshold: 10 / 111320, batteryDelta: 2 }
       );
       if (shouldSnapshot) {
-        await telemetryService.saveTelemetry(prisma, existing.id, { lat: fullState.lat, lon: fullState.lon, speed: fullState.speed, battery: fullState.battery }, now);
+        // The history row records this frame's coordinates, or none: a carried-forward position
+        // stored under this frame's time would be a measurement that was never taken.
+        const reportedPosition = typeof lat === "number" && typeof lon === "number";
+        await telemetryService.saveTelemetry(
+          prisma,
+          existing.id,
+          { lat: reportedPosition ? lat : null, lon: reportedPosition ? lon : null, speed: fullState.speed, battery: fullState.battery },
+          now,
+        );
         writes.set(
           snapshotKey,
           JSON.stringify(buildSnapshotStateValue({ lat: fullState.lat, lon: fullState.lon, battery: fullState.battery })),
@@ -934,8 +974,9 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
       }
 
       // STEP 5 — the canonical position Observation (§2.7); see the note above.
+      let measuredPosition = null;
       if (!trustVerdict.refused) {
-        await writePositionObservation({
+        const positionResult = await writePositionObservation({
           prisma,
           log,
           robotId,
@@ -944,6 +985,11 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
           payload,
           snapshot: configOf(),
         });
+        // The robot's newest measured position, kept beside its Observation (`robotPosition`).
+        measuredPosition = robotPosition.recordFromWrite(robotId, positionResult);
+        if (measuredPosition) {
+          writes.set(positionKeyStr, JSON.stringify(measuredPosition), { ex: robotPosition.POSITION_STATE_TTL_SEC });
+        }
 
         // §14 — the charge the energy decision plans from is the charge the agent just
         // reported, not the one it was commissioned with. Update-only, contained: a failed
@@ -956,8 +1002,10 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
             // P2B-2 — a physical unit's SoC is written only with a declared measurement
             // basis (`energy.socMethod`); provenance from the same binding the position
             // writer uses.
-            provenance: typeof battery === "number" ? await positionObservation.provenanceOf(prisma, robotId) : null,
-            socMethod: payload && payload.energy && typeof payload.energy === "object" ? payload.energy.socMethod : undefined,
+            provenance: robotProvenance,
+            socMethod: energyBlock ? energyBlock.socMethod : undefined,
+            // A value the agent labels as demo-simulated is never written, whatever else it declares.
+            batterySource: energyBlock ? energyBlock.batterySource : undefined,
           });
         } catch (e) {
           log.warn?.("reported state of charge not recorded", { robotId, message: e?.message });
@@ -972,7 +1020,15 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
             if (agentRow) {
               // `io`/`kv`: a held custody release applied at this arrival can settle the Leg and
               // complete its Task (C5).
-              const advanced = await legProgress.onPositionFix({ prisma, agentRowId: agentRow.id, snapshot: configOf(), io, kv });
+              const declaredPolicy = appLocals?.physicalFleetPolicy ?? null;
+              const advanced = await legProgress.onPositionFix({
+                prisma,
+                agentRowId: agentRow.id,
+                snapshot: configOf(),
+                io,
+                kv,
+                acceptedFixTypes: declaredPolicy && declaredPolicy.localisation ? declaredPolicy.localisation.acceptedFixTypes : null,
+              });
               if (advanced && advanced.outcome) {
                 log.info?.("leg progress", { robotId, outcome: advanced.outcome, from: advanced.from, to: advanced.to, reason: advanced.reason || null, detail: advanced.detail || null });
               }
@@ -1076,6 +1132,20 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
         }
       }
 
+      // The agent's own readiness report (`agentReadiness`): only from an accepted frame, in its
+      // own key. It restricts eligibility; it never widens it.
+      let readinessState = safeJsonParse(rawReadiness);
+      if (!trustVerdict.refused) {
+        try {
+          const recorded = await agentReadiness.recordReadiness({ kv, robotId, payload, snapshot: configOf(), socket });
+          if (recorded.recorded) {
+            readinessState = { robotId, socketId: recorded.socketId, blockers: recorded.blockers, observedAtMs: recorded.observedAtMs };
+          }
+        } catch (e) {
+          log.warn?.("readiness report not recorded", { robotId, message: e?.message });
+        }
+      }
+
       // Sampled DEBUG-level telemetry log. Unconditional INFO-level logging
       // here was measured (2026-07-26 CPU profile) to be a meaningful share
       // of runtime cost for negligible operational value at fleet scale.
@@ -1104,11 +1174,39 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
       // against): the dashboard applies it as written, so a robot the server holds PAUSED or
       // ERROR is not shown IDLE because it still reports IDLE. Same rule as
       // `GET /api/robots/state` (`robotStatusPrecedence`). The raw report is `reportedStatus`.
+      //
+      // `lat`/`lon` are the last known coordinates (kept for existing clients). `position` says
+      // what they are: the newest MEASURED fix, its time, quality, provenance, and whether it is
+      // within the freshness budget the engine applies (`robotPosition`). `readiness` is the
+      // agent's own report, which `status` (an operating mode) is not.
       const serverStatus = (robotStateCache.get(robotId) || existing).status;
+      const freshnessBoundMs = robotPosition.freshnessBoundMsFrom(configOf());
+      const physicalPolicy = appLocals?.physicalFleetPolicy ?? null;
+      let positionRecord = measuredPosition;
+      if (!positionRecord) {
+        try {
+          positionRecord = await robotPosition.latestMeasuredPosition({ prisma, kv, robotId, nowMs, cached: rawPosition ?? null });
+        } catch {
+          positionRecord = null;
+        }
+      }
+      const readinessRequired =
+        physicalPolicy && typeof physicalPolicy.robotFor === "function" && physicalPolicy.robotFor(robotId)
+          ? physicalPolicy.readiness === PHYSICAL_POLICY.AGENT_REPORT_REQUIRED
+          : null;
       io.to("dashboard").emit("robot:update", {
         ...fullState,
         status: robotStatusPrecedence.displayedStatus(serverStatus, fullState.status),
         reportedStatus: fullState.status,
+        position: robotPosition.describePosition(positionRecord, {
+          nowMs,
+          freshnessBoundMs,
+          acceptedFixTypes: physicalPolicy && physicalPolicy.localisation ? physicalPolicy.localisation.acceptedFixTypes : null,
+        }),
+        readiness: agentReadiness.describeReadiness(
+          agentReadiness.assessReadiness({ state: readinessState, robotId, socketId: socket.id, asOfMs: nowMs, freshnessBoundMs }),
+          { required: readinessRequired },
+        ),
       });
 
       // PHASE 5 (§12.3) — feed progress supervision.

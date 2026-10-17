@@ -22,6 +22,8 @@ const mockPrismaClient = {
   task: { findUnique: jest.fn() },
   decisionRecordA: { findFirst: jest.fn() },
   calibrationObservation: { findMany: jest.fn() },
+  commitment: { findMany: jest.fn() },
+  observation: { findMany: jest.fn() },
 };
 
 jest.mock("../../src/db/prisma", () => ({
@@ -70,6 +72,8 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockPrismaClient.user.findUnique.mockResolvedValue(USER);
   mockPrismaClient.calibrationObservation.findMany.mockResolvedValue([]);
+  mockPrismaClient.commitment.findMany.mockResolvedValue([]);
+  mockPrismaClient.observation.findMany.mockResolvedValue([]);
   mockPrismaClient.task.findUnique.mockResolvedValue({ missions: [{ legs: [{ id: "leg-row-1" }] }] });
   mockPrismaClient.decisionRecordA.findFirst.mockImplementation(async (args) =>
     args.where && args.where.decisionId ? storedRow : { decisionId: DECISION_ID },
@@ -125,5 +129,34 @@ describe("GET /api/explain/task/:taskId", () => {
   test("the decision route is unchanged and still validates its query", async () => {
     await get(`/api/explain/${encodeURIComponent(DECISION_ID)}?query=bogus`).expect(400);
     await get("/api/explain/task/TSK-1?query=bogus").expect(400);
+  });
+});
+
+describe("GET /api/explain/task/:taskId — the robots' own refusals", () => {
+  test("lists the task's offer refusals, newest first, with the reason classified", async () => {
+    mockPrismaClient.commitment.findMany.mockResolvedValue([
+      { commitmentId: "CMT-1", agentId: "agent-pi", grantedAt: new Date(1790505000000) },
+      { commitmentId: "CMT-2", agentId: "agent-pi", grantedAt: new Date(1790505020000) },
+    ]);
+    mockPrismaClient.observation.findMany.mockResolvedValue([
+      { value: { commitmentId: "CMT-2", reason: "NO_POSITION_FIX" }, observedAt: new Date(1790505025000), agent: { agentId: "RBT-2000" } },
+      { value: { commitmentId: "CMT-OTHER-TASK", reason: "NO_MOTOR_LINK" }, observedAt: new Date(1790505024000), agent: { agentId: "RBT-2000" } },
+      { value: { commitmentId: "CMT-1", reason: "NO_EXECUTABLE_PATH:pathToPickup" }, observedAt: new Date(1790505005000), agent: { agentId: "RBT-2000" } },
+    ]);
+
+    const response = await get("/api/explain/task/TSK-1").expect(200);
+
+    expect(response.body.offerRefusals).toEqual([
+      { robotId: "RBT-2000", commitmentId: "CMT-2", reason: "NO_POSITION_FIX", code: "NO_POSITION_FIX", scope: "AGENT_READINESS", observedAt: new Date(1790505025000).toISOString() },
+      { robotId: "RBT-2000", commitmentId: "CMT-1", reason: "NO_EXECUTABLE_PATH:pathToPickup", code: "NO_EXECUTABLE_PATH", scope: "LEG", observedAt: new Date(1790505005000).toISOString() },
+    ]);
+    expect(mockPrismaClient.commitment.findMany.mock.calls[0][0].where).toEqual({ legId: { in: ["leg-row-1"] } });
+  });
+
+  test("a refusal read that fails leaves the explanation intact, with offerRefusals null", async () => {
+    mockPrismaClient.commitment.findMany.mockRejectedValue(new Error("db down"));
+    const response = await get("/api/explain/task/TSK-1").expect(200);
+    expect(response.body.offerRefusals).toBeNull();
+    expect(Array.isArray(response.body.answers)).toBe(true);
   });
 });

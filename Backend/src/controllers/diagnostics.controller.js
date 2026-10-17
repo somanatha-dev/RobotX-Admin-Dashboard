@@ -41,6 +41,7 @@
 
 const asyncHandler = require("../utils/asyncHandler");
 const { getPrisma } = require("../db/prisma");
+const robotDispatchReadiness = require("../services/robotDispatchReadiness.service");
 const { predicate, PREDICATES } = require("../engine/feasibility/register");
 const { TIERS } = require("../engine/feasibility/predicates/f34");
 const { bucketRange } = require("../engine/feasibility/rejectionTelemetry");
@@ -648,10 +649,31 @@ function readDelayParameters(snapshot) {
   };
 }
 
+/**
+ * GET /api/diagnostics/readiness/:robotId — every robot-level reason this robot would not be
+ * offered work now (`robotDispatchReadiness.service`). Read-only; the assignment path is untouched.
+ */
+const getRobotReadiness = asyncHandler(async (req, res) => {
+  const robotId = String(req.params.robotId || "").trim();
+  if (!robotId) return res.status(400).json({ error: "robotId is required" });
+  const locals = (req.app && req.app.locals) || {};
+  const report = await robotDispatchReadiness.assessDispatchReadiness({
+    prisma: getPrisma(),
+    kv: locals.kv || null,
+    snapshot: locals.config ?? null,
+    seams: locals.engineSeams ?? null,
+    physicalPolicy: locals.physicalFleetPolicy ?? null,
+    robotId,
+  });
+  if (!report) return res.status(404).json({ error: `no robot "${robotId}"` });
+  return res.json(report);
+});
+
 module.exports = {
   getRejections,
   getAgentEnergy,
   getLegCandidates,
+  getRobotReadiness,
   describe,
   DEFAULT_WINDOW_MS,
   MAX_WINDOW_MS,

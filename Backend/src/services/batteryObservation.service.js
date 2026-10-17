@@ -44,6 +44,45 @@ const SOC_METHODS = Object.freeze(["BMS", "COULOMB_COUNTING", "VOLTAGE_CURVE_CAL
 const PHYSICAL = "PHYSICAL";
 const SIMULATED = "SIMULATED";
 
+const isNumber = (value) => typeof value === "number" && Number.isFinite(value);
+
+/**
+ * The label a physical agent puts on a battery value it **simulates** for a demonstration
+ * (`energy.batterySource`; RobotX-Pi's opt-in demo battery). Never a measurement basis: a frame
+ * carrying it is not written to `BatteryState`, whatever else the frame declares. @structural
+ */
+const DEMO_BATTERY_SOURCE = "DEMO_SIMULATION";
+
+/**
+ * Where the battery percentage a client is shown came from. Display only — the energy decision
+ * reads `BatteryState`, never `Robot.battery`. @structural
+ */
+const BATTERY_PROVENANCE = Object.freeze({
+  /** A simulated unit: the simulator is the pack. */
+  SIMULATOR: "SIMULATOR",
+  /** A physical unit that labelled the value as simulated for a demonstration. */
+  DEMO_SIMULATED: "DEMO_SIMULATED",
+  /** A physical unit with a declared measurement basis (`energy.socMethod`). */
+  MEASURED: "MEASURED",
+  /** A physical unit that sent a percentage with no basis: shown, never planned with. */
+  UNVERIFIED: "UNVERIFIED",
+});
+
+/**
+ * @param {{ provenance?: string|null, batteryPct?: unknown, socMethod?: unknown, batterySource?: unknown }} input
+ * @returns {string|null} a `BATTERY_PROVENANCE` value, or null when the frame carried no battery
+ *   or the robot's kind is undetermined
+ */
+function batteryProvenanceOf(input) {
+  const { provenance, batteryPct, socMethod, batterySource } = input || {};
+  if (!isNumber(batteryPct)) return null;
+  if (provenance === SIMULATED) return BATTERY_PROVENANCE.SIMULATOR;
+  if (provenance !== PHYSICAL) return null;
+  if (batterySource === DEMO_BATTERY_SOURCE) return BATTERY_PROVENANCE.DEMO_SIMULATED;
+  if (measurementBasisEstablished(provenance, socMethod)) return BATTERY_PROVENANCE.MEASURED;
+  return BATTERY_PROVENANCE.UNVERIFIED;
+}
+
 /**
  * Is the reported SoC's measurement basis established?
  *
@@ -57,19 +96,19 @@ function measurementBasisEstablished(provenance, socMethod) {
   return false;
 }
 
-const isNumber = (value) => typeof value === "number" && Number.isFinite(value);
-
 /**
  * @param {object} prisma
  * @param {{ robotId: string, batteryPct: unknown, agentTimestampMs: unknown,
- *   provenance?: string|null, socMethod?: unknown }} input
+ *   provenance?: string|null, socMethod?: unknown, batterySource?: unknown }} input
  * @returns {Promise<{ written: boolean, reason: string|null }>}
  */
 async function recordReportedSoc(prisma, input) {
-  const { robotId, batteryPct, agentTimestampMs, provenance, socMethod } = input || {};
+  const { robotId, batteryPct, agentTimestampMs, provenance, socMethod, batterySource } = input || {};
   if (!prisma || typeof robotId !== "string" || robotId === "") return { written: false, reason: "NO_AGENT" };
   if (!isNumber(batteryPct) || batteryPct < 0 || batteryPct > PERCENT) return { written: false, reason: "NO_REPORTED_SOC" };
   if (!isNumber(agentTimestampMs) || agentTimestampMs <= 0) return { written: false, reason: "NO_AGENT_TIMESTAMP" };
+  // A value the agent itself labels as simulated is never a state of charge to plan from.
+  if (batterySource === DEMO_BATTERY_SOURCE) return { written: false, reason: "DEMO_SIMULATED_BATTERY" };
   if (provenance !== PHYSICAL && provenance !== SIMULATED) return { written: false, reason: "PROVENANCE_UNDETERMINED" };
   if (!measurementBasisEstablished(provenance, socMethod)) return { written: false, reason: "NO_MEASUREMENT_BASIS" };
 
@@ -87,4 +126,11 @@ async function recordReportedSoc(prisma, input) {
   return result && result.count > 0 ? { written: true, reason: null } : { written: false, reason: "NO_ROW_OR_NOT_NEWER" };
 }
 
-module.exports = { SOC_METHODS, measurementBasisEstablished, recordReportedSoc };
+module.exports = {
+  SOC_METHODS,
+  DEMO_BATTERY_SOURCE,
+  BATTERY_PROVENANCE,
+  measurementBasisEstablished,
+  batteryProvenanceOf,
+  recordReportedSoc,
+};

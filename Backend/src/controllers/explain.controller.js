@@ -43,6 +43,7 @@ const explanation = require("../engine/observability/explanation");
 const tierB = require("../engine/observability/tierB");
 const decisionRecord = require("../engine/observability/decisionRecord");
 const { defaultSnapshot } = require("../engine/config/service");
+const offerRefusal = require("../services/offerRefusal.service");
 
 const HTTP_NOT_FOUND = 404;
 const HTTP_BAD_REQUEST = 400;
@@ -110,8 +111,59 @@ const explainTask = asyncHandler(async (req, res) => {
   if (!latest) {
     return res.status(HTTP_NOT_FOUND).json({ error: `no decision has been recorded for task "${taskId}" yet`, taskId, reason: "NO_DECISION_YET" });
   }
-  return explainByDecisionId(req, res, latest.decisionId);
+  // The Leg's recent offer refusals with the robot's own reason: "rejected" alone does not
+  // tell an operator whether the robot cannot take this Leg or cannot take any (`offerRefusal`).
+  // Supplementary: a read that fails leaves the explanation intact, with `offerRefusals: null`.
+  let offerRefusals = null;
+  try {
+    offerRefusals = await offerRefusalsFor(prisma, legIds);
+  } catch {
+    offerRefusals = null;
+  }
+  return explainByDecisionId(req, res, latest.decisionId, { offerRefusals });
 });
+
+/** How many refusals the task explanation lists, newest first. @structural a display bound */
+const MAX_OFFER_REFUSALS = 10;
+
+/**
+ * The offer refusals recorded against these Legs' commitments, newest first. Each is the
+ * `offer_rejection` Observation `offer.handler` writes, with its reason classified.
+ *
+ * @param {object} prisma
+ * @param {string[]} legRowIds
+ * @returns {Promise<Array<{ robotId: string|null, commitmentId: string, reason: string|null, code: string|null, scope: string, observedAt: string }>>}
+ */
+async function offerRefusalsFor(prisma, legRowIds) {
+  if (legRowIds.length === 0) return [];
+  const commitments = await prisma.commitment.findMany({
+    where: { legId: { in: legRowIds } },
+    select: { commitmentId: true, agentId: true, grantedAt: true },
+  });
+  if (!Array.isArray(commitments) || commitments.length === 0) return [];
+  const ids = new Set(commitments.map((row) => row.commitmentId));
+  const since = new Date(Math.min(...commitments.map((row) => new Date(row.grantedAt).getTime())));
+  const rows = await prisma.observation.findMany({
+    where: { kind: offerRefusal.REFUSAL_KIND, agentId: { in: [...new Set(commitments.map((row) => row.agentId))] }, observedAt: { gte: since } },
+    orderBy: { observedAt: "desc" },
+    take: MAX_OFFER_REFUSALS * 5,
+    select: { value: true, observedAt: true, agent: { select: { agentId: true } } },
+  });
+  return (Array.isArray(rows) ? rows : [])
+    .filter((row) => row.value && ids.has(row.value.commitmentId))
+    .slice(0, MAX_OFFER_REFUSALS)
+    .map((row) => {
+      const classified = offerRefusal.classifyRefusal(row.value.reason);
+      return {
+        robotId: row.agent ? row.agent.agentId : null,
+        commitmentId: row.value.commitmentId,
+        reason: classified.reason,
+        code: classified.code,
+        scope: classified.scope,
+        observedAt: new Date(row.observedAt).toISOString(),
+      };
+    });
+}
 
 /**
  * The explanation of one decision, by id — the body both routes share.
@@ -120,7 +172,7 @@ const explainTask = asyncHandler(async (req, res) => {
  * @param {object} res
  * @param {string} decisionId
  */
-async function explainByDecisionId(req, res, decisionId) {
+async function explainByDecisionId(req, res, decisionId, extra) {
   const prisma = getPrisma();
 
   const query = req.query.query ? String(req.query.query) : null;
@@ -190,6 +242,7 @@ async function explainByDecisionId(req, res, decisionId) {
     // §21.4: "Explanation API answers served by source (TIER_A / TIER_B / RECONSTRUCTED)."
     sources: bySource,
     answers: result.answers,
+    ...(extra && "offerRefusals" in extra ? { offerRefusals: extra.offerRefusals } : {}),
   });
 }
 

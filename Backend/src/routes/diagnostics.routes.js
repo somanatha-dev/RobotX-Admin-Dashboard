@@ -28,4 +28,11 @@ const candidatesLimiter = createRateLimiter({ windowMs: 60_000, limit: 120, keyP
 
 router.get("/candidates/:legId", candidatesLimiter, diagnosticsController.getLegCandidates);
 
+// Why one robot is or is not ready to be offered work — visible, connected, lifecycle, indexed,
+// position freshness, its own readiness report, and every agent-level predicate (collectAll).
+// A point read, rate-limited like the two above.
+const readinessLimiter = createRateLimiter({ windowMs: 60_000, limit: 120, keyPrefix: "diag_readiness" });
+
+router.get("/readiness/:robotId", readinessLimiter, diagnosticsController.getRobotReadiness);
+
 module.exports = router;

@@ -28,6 +28,9 @@ const robotSpecification = require("../../src/services/robotSpecification");
 const { setRobotState } = require("../../src/services/robotRegistry.service");
 const agentProbe = require("../../src/services/agentProbe.service");
 const stopLatchObservation = require("../../src/services/stopLatchObservation.service");
+const agentReadiness = require("../../src/services/agentReadiness.service");
+const robotDispatchReadiness = require("../../src/services/robotDispatchReadiness.service");
+const offerRefusal = require("../../src/services/offerRefusal.service");
 const { RouteRefusedError, ROUTE_REFUSAL } = require("../../src/engine/routing/productionRouter");
 const { ENDPOINT_BASIS } = require("../../src/engine/routing/cellPairCache");
 
@@ -211,14 +214,14 @@ function physicalWorld(options) {
     availabilityClass: "IDLE_READY",
     capabilityClasses: [],
     containerClasses: [],
-    observedAtMs: BigInt(decisionTimeMs - 1_000),
+    observedAtMs: BigInt(decisionTimeMs - (opts.fixAgeMs === undefined ? 1_000 : opts.fixAgeMs)),
     agent,
   };
   const fix = {
     agentId: agent.id,
     kind: "position",
     value: { lat: at.lat, lon: at.lon, provenance: "PHYSICAL", ...(opts.fixType === null ? {} : { fixType: opts.fixType || "3D" }) },
-    observedAt: new Date(decisionTimeMs - 1_000),
+    observedAt: new Date(decisionTimeMs - (opts.fixAgeMs === undefined ? 1_000 : opts.fixAgeMs)),
     source: "AGENT_REPORT",
     deadReckoned: opts.deadReckoned === true,
     uncertaintyRadiusM: opts.hAccM === undefined ? 1.5 : opts.hAccM,
@@ -266,7 +269,18 @@ function physicalWorld(options) {
     },
     shard: { findUnique: async () => ({ regionId: "region-1" }) },
     observation: {
-      findFirst: async ({ where }) => (where.agentId === agent.id && where.kind === "position" ? fix : null),
+      findFirst: async ({ where }) => {
+        if (where.agentId !== agent.id) return null;
+        if (where.kind === "position") return fix;
+        // An `offer_rejection` row (`opts.refusal`), filtered as the real query filters it.
+        if (where.kind === "offer_rejection" && opts.refusal) {
+          const at = opts.refusal.observedAt;
+          const inWindow = (!where.observedAt || ((!where.observedAt.gte || at >= where.observedAt.gte) && (!where.observedAt.lte || at <= where.observedAt.lte)));
+          const scoped = !where.value || (opts.refusal.value && opts.refusal.value[where.value.path[0]] === where.value.equals);
+          return inWindow && scoped ? opts.refusal : null;
+        }
+        return null;
+      },
     },
     chargerReservation: { findMany: async () => [] },
     zone: { findMany: async () => [{ id: "zone-1" }] },
@@ -338,6 +352,17 @@ async function liveEvidence(kv, decisionTimeMs, overrides) {
     // real report: what the 2026-10-06 audit showed a registry writer could leave behind.
     const raw = JSON.parse((await kv.get(`registry:${ROBOT_ID}`)) || "{}");
     await kv.set(`registry:${ROBOT_ID}`, JSON.stringify({ ...raw, stopLatch: { engaged: false, observedAtMs: decisionTimeMs - 500 } }), { ex: 30 });
+  }
+  if (opts.readiness) {
+    // The agent's TELEMETRY `readiness` report through its own writer, on the unit's socket.
+    const socket = { id: opts.readiness.socketId || SOCKET_ID, data: { isAuthed: true, robotId: ROBOT_ID } };
+    await agentReadiness.recordReadiness({
+      kv,
+      robotId: ROBOT_ID,
+      payload: { timestamp: opts.readiness.observedAtMs || decisionTimeMs - 1_000, readiness: { blockers: opts.readiness.blockers } },
+      nowMs: decisionTimeMs,
+      socket,
+    });
   }
   if (!opts.noProbe) {
     // F7-A — the proof (and link quality 1, one probe answered of one) through the PROBE boundary.
@@ -609,5 +634,164 @@ describe("stop latch at the commit recheck (§10.3.2 step 3)", () => {
     await built.kv.set(`registry:${ROBOT_ID}`, JSON.stringify({ ...raw, stopLatch: { engaged: false, observedAtMs: now + 300 } }), { ex: 30 });
 
     expect(await f7AtCommit(built, now + 1_000)).toBe("VIOLATED");
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Physical safety pass (2026-10-18) — through the real round, the physical provider and the
+   38-predicate gate. Each control restricts; none relaxes a gate the robot already had.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe("safety pass — a stale position never qualifies a physical robot (F16)", () => {
+  test("the same declared robot, its newest fix 60 s old: not feasible, F16 named", async () => {
+    const now = Date.now();
+    const world = physicalWorld({ decisionTimeMs: now, fixAgeMs: 60_000 });
+    const { seen, verdicts } = await evaluateOnce(world, now);
+    expect(seen.length === 1 && seen[0].result.feasible === true).toBe(false);
+    expect(notSatisfied(verdicts).join(" ")).toMatch(/F16:/);
+  });
+});
+
+describe("safety pass — the agent's readiness report restricts eligibility (F8)", () => {
+  test("a current report naming a blocker: not feasible, F8 VIOLATED", async () => {
+    const now = Date.now();
+    const world = physicalWorld({ decisionTimeMs: now });
+    const { seen, verdicts } = await evaluateOnce(world, now, { live: { readiness: { blockers: ["NO_MOTOR_LINK"] } } });
+    expect(seen[0].result.feasible).toBe(false);
+    expect(notSatisfied(verdicts).join(" ")).toMatch(/F8:VIOLATED/);
+  });
+
+  test("a report from a replaced socket is no input: not required, so the robot is as before", async () => {
+    const now = Date.now();
+    const world = physicalWorld({ decisionTimeMs: now });
+    const { seen } = await evaluateOnce(world, now, { live: { readiness: { blockers: ["NO_MOTOR_LINK"], socketId: "old-socket" } } });
+    expect(seen[0].result.feasible).toBe(true);
+  });
+
+  test("declaration requires the report and none is on record: not feasible, F8 VIOLATED", async () => {
+    const now = Date.now();
+    const world = physicalWorld({ decisionTimeMs: now, declaration: declaration({ readiness: { policy: "AGENT_REPORT_REQUIRED" } }) });
+    const { seen, verdicts } = await evaluateOnce(world, now);
+    expect(seen[0].result.feasible).toBe(false);
+    expect(notSatisfied(verdicts).join(" ")).toMatch(/F8:VIOLATED/);
+  });
+
+  test("declaration requires the report and a current one says nothing blocks: feasible exactly as before", async () => {
+    const now = Date.now();
+    const world = physicalWorld({ decisionTimeMs: now, declaration: declaration({ readiness: { policy: "AGENT_REPORT_REQUIRED" } }) });
+    const { seen, verdicts } = await evaluateOnce(world, now, { live: { readiness: { blockers: [] } } });
+    expect(seen[0].result.feasible).toBe(true);
+    expect(notSatisfied(verdicts).map((line) => line.split(":").slice(0, 2).join(":"))).toEqual(["F11:INDETERMINATE"]);
+  });
+});
+
+describe("safety pass — a readiness refusal holds the agent from every Leg, bounded", () => {
+  // The refusal was for ANOTHER Leg's commitment: the hold is agent-level, which F20's per-Leg
+  // NACK cool-off is not — this Leg (leg-1) has no commitment history at all.
+  const refusalAt = (now, ageMs, reason = "NO_MOTOR_LINK") => {
+    const classified = offerRefusal.classifyRefusal(reason);
+    return {
+      agentId: "agent-pi",
+      kind: "offer_rejection",
+      value: { commitmentId: "CMT-OTHER-LEG", reason, code: classified.code, scope: classified.scope },
+      observedAt: new Date(now - ageMs),
+    };
+  };
+
+  test("refused 30 s ago with NO_MOTOR_LINK: not offered this unrelated Leg — F8, the hold named", async () => {
+    const now = Date.now();
+    const world = physicalWorld({ decisionTimeMs: now, refusal: refusalAt(now, 30_000) });
+    const { seen, verdicts } = await evaluateOnce(world, now);
+    expect(seen[0].result.feasible).toBe(false);
+    expect(notSatisfied(verdicts).join(" ")).toMatch(/F8:VIOLATED/);
+    expect(JSON.stringify(verdicts.F8)).toMatch(/OFFER_REFUSED_NOT_READY:NO_MOTOR_LINK/);
+  });
+
+  test("a LEG refusal (NO_EXECUTABLE_PATH) places no agent-level hold", async () => {
+    const now = Date.now();
+    const world = physicalWorld({ decisionTimeMs: now, refusal: refusalAt(now, 30_000, "NO_EXECUTABLE_PATH") });
+    const { seen } = await evaluateOnce(world, now);
+    expect(seen[0].result.feasible).toBe(true);
+  });
+
+  test("lifted when the agent reports ready AFTER the refusal", async () => {
+    const now = Date.now();
+    const world = physicalWorld({ decisionTimeMs: now, refusal: refusalAt(now, 30_000) });
+    const { seen } = await evaluateOnce(world, now, { live: { readiness: { blockers: [], observedAtMs: now - 1_000 } } });
+    expect(seen[0].result.feasible).toBe(true);
+  });
+
+  test("ended when the window (dispatch.nack_cooloff) has passed — never a permanent lockout", async () => {
+    const now = Date.now();
+    const holdMs = offerRefusal.holdMsFrom(snapshotFor([PICKUP, DROP]));
+    expect(holdMs).toBeGreaterThan(0);
+    const world = physicalWorld({ decisionTimeMs: now, refusal: refusalAt(now, holdMs + 5_000) });
+    const { seen } = await evaluateOnce(world, now);
+    expect(seen[0].result.feasible).toBe(true);
+  });
+});
+
+describe("safety pass — the readiness diagnostic (collectAll, read-only)", () => {
+  async function diagnose(world, now, extra) {
+    const built = await assemble(world, now, extra);
+    const prisma = {
+      ...world.prisma,
+      robot: { findUnique: async () => ({ ...world.robot, simulated: false, agent: world.agent }) },
+      agentCellPosition: { ...world.prisma.agentCellPosition, findUnique: async () => (extra && extra.notIndexed ? null : world.position) },
+      // `robotPosition.latestMeasuredPosition` reads through the Agent relation (`agent.agentId`).
+      observation: {
+        findFirst: async (args) =>
+          args.where.agent ? (args.where.agent.agentId === ROBOT_ID ? world.fix : null) : world.prisma.observation.findFirst(args),
+      },
+    };
+    return robotDispatchReadiness.assessDispatchReadiness({
+      prisma,
+      kv: built.kv,
+      snapshot: built.snapshot,
+      seams: built.fleet,
+      physicalPolicy: world.policy,
+      robotId: ROBOT_ID,
+      nowMs: now,
+    });
+  }
+
+  test("a ready declared robot: every agent-level gate passes, no blocker, per-task gates listed", async () => {
+    const now = Date.now();
+    const report = await diagnose(physicalWorld({ decisionTimeMs: now }), now);
+    expect(report.engine.evaluated).toBe(true);
+    expect(report.engine.agentGates.filter((gate) => !gate.passed && !gate.needsTask)).toEqual([]);
+    expect(report.engine.decidedPerTask).toEqual(expect.arrayContaining(["F28", "F34"]));
+    expect(report).toMatchObject({ visible: true, connected: true, lifecycleState: "ACTIVE", indexed: true, dispatchReady: true, blockers: [] });
+    expect(() => JSON.stringify(report)).not.toThrow();
+  });
+
+  test("visible and connected, but COMMISSIONED, unindexed and reporting NO_MOTOR_LINK: every blocker at once", async () => {
+    const now = Date.now();
+    const world = physicalWorld({ decisionTimeMs: now });
+    world.agent.lifecycleState = "COMMISSIONED";
+    const report = await diagnose(world, now, { notIndexed: true, live: { readiness: { blockers: ["NO_MOTOR_LINK"] } } });
+    expect(report).toMatchObject({ visible: true, connected: true, dispatchReady: false });
+    const codes = report.blockers.map((blocker) => blocker.code);
+    expect(codes).toEqual(expect.arrayContaining(["LIFECYCLE_NOT_ACTIVE", "NOT_INDEXED", "AGENT_NOT_READY:NO_MOTOR_LINK", "F2", "F8"]));
+    // collectAll: F2 did not stop the evaluation — F8 behind it is reported too.
+    expect(report.engine.agentGates.find((gate) => gate.predicateId === "F8").passed).toBe(false);
+  });
+
+  test("without an engine composition: the robot-level facts still answer, and the engine says why it could not", async () => {
+    const now = Date.now();
+    const world = physicalWorld({ decisionTimeMs: now });
+    const built = await assemble(world, now);
+    const report = await robotDispatchReadiness.assessDispatchReadiness({
+      prisma: { ...world.prisma, robot: { findUnique: async () => ({ ...world.robot, simulated: false, agent: world.agent }) }, agentCellPosition: { findUnique: async () => world.position } },
+      kv: built.kv,
+      snapshot: built.snapshot,
+      seams: null,
+      physicalPolicy: world.policy,
+      robotId: ROBOT_ID,
+      nowMs: now,
+    });
+    expect(report.engine).toMatchObject({ evaluated: false });
+    expect(report.engine.reason).toMatch(/composition/);
+    expect(report.dispatchReady).toBe(false);
   });
 });

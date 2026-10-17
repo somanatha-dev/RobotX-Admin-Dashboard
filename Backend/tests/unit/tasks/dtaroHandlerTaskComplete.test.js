@@ -114,15 +114,25 @@ describe("dtaro.handler — C5: the Task completes only after settlement", () =>
   };
 
   // An 80 m drive due north-east that ends at the drop, one fix every 2 s, ending 2 s ago.
+  // Physical fixes as the contract's `position` block states them (a declared 3D fix with its
+  // horizontal accuracy): a physical fix with no graded quality is not travel evidence
+  // (`positionObservation.isAdmissibleTravelEvidence`), which `qualified: false` exercises below.
   const START = Object.freeze({ lat: 12.9081, lon: 77.5012 });
   const DROP = Object.freeze({ lat: 12.90862, lon: 77.50172 });
-  function track(now = Date.now()) {
+  function track(now = Date.now(), { qualified = true } = {}) {
     const fixes = [];
     for (let i = 0; i <= 28; i += 1) {
       const t = i / 28;
       fixes.push({
         observedAt: new Date(now - 58_000 + i * 2000),
-        value: { lat: START.lat + (DROP.lat - START.lat) * t, lon: START.lon + (DROP.lon - START.lon) * t, provenance: "PHYSICAL" },
+        value: {
+          lat: START.lat + (DROP.lat - START.lat) * t,
+          lon: START.lon + (DROP.lon - START.lon) * t,
+          provenance: "PHYSICAL",
+          ...(qualified ? { fixType: "3D" } : {}),
+        },
+        ...(qualified ? { uncertaintyRadiusM: 2.1 } : {}),
+        deadReckoned: false,
       });
     }
     return fixes;
@@ -299,6 +309,23 @@ describe("dtaro.handler — C5: the Task completes only after settlement", () =>
     expect(h.s.robot).toMatchObject({ status: "IDLE", currentTaskId: null });
     expect(completedEvents(h)).toHaveLength(1);
     expect(completedEvents(h)[0]).toMatchObject({ robotId: "RBT-1", taskId: "TSK-1" });
+  });
+
+  test("1b — the same drive as UNQUALIFIED physical fixes (no fix type, no accuracy) completes nothing", async () => {
+    // Scope E: a physical robot's bare lat/lon — a frame with no `position` block — is a report the
+    // server could not grade. It is not evidence a real robot drove the route, so the claim is
+    // graded on an empty track, held as verifying, and the Task stays open.
+    const h = tracked(harness({ legState: "RELEASED", custodyState: "RELEASED" }));
+    h.s.fixes = track(Date.now(), { qualified: false });
+    const sock = await connect(h);
+
+    const ack = await claim(sock);
+
+    expect(ack).toMatchObject({ taskId: "TSK-1", verifying: true });
+    expect(h.s.evidence.map((row) => row.outcome)).toEqual(["INSUFFICIENT"]);
+    expect(h.s.task.status).not.toBe("COMPLETED");
+    expect(h.s.commitment.releasedAt).toBeNull();
+    expect(completedEvents(h)).toHaveLength(0);
   });
 
   test("2 — custody HELD: the claim is verified and held; nothing is completed and the commitment stays live", async () => {

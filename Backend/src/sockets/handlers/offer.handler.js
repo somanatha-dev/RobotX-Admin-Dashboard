@@ -63,6 +63,7 @@ const assignmentProjection = require("../../services/assignmentProjection.servic
 const legProgress = require("../../services/legProgress.service");
 // Commit-race closure, Gap A — whether the robot's PERSISTED state lets its ACCEPT bind it.
 const offerAcceptanceAdmission = require("../../services/offerAcceptanceAdmission.service");
+const offerRefusal = require("../../services/offerRefusal.service");
 // …and the physical robot's recorded software stop latch, the input F7 reads.
 const stopLatchObservation = require("../../services/stopLatchObservation.service");
 // §4.4's transition table — read, never extended. It is what says which Leg state an offer
@@ -454,6 +455,10 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
         return { ...applied, legRowId: leg.id };
       });
 
+      // A refusal's own reason, classified (`offerRefusal`): an operator reading "rejected" needs
+      // to know whether the robot cannot take *this* Leg or cannot take any.
+      const refusal = event === "OFFER_ACCEPT" ? null : offerRefusal.classifyRefusal(parsed.data.reason);
+
       if (result.outcome === offers.OUTCOME.APPLIED) {
         // The dashboard is the only listener; robots have no reason to receive it.
         io.to("dashboard").emit("OFFER_RESPONSE", {
@@ -461,6 +466,7 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
           commitmentId: parsed.data.commitmentId,
           response: event,
           legState: result.legState || null,
+          ...(refusal ? { reason: refusal.reason, refusalCode: refusal.code, refusalScope: refusal.scope } : {}),
         });
 
         // ── The legacy read model, and the route handoff ────────────────────
@@ -487,6 +493,7 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
         commitmentId: parsed.data.commitmentId,
         outcome: result.outcome,
         reason: result.reason || null,
+        ...(refusal ? { agentReason: refusal.reason, refusalScope: refusal.scope } : {}),
       });
     } catch (e) {
       log.error(`${event} handler failed`, { message: e?.message });
@@ -539,6 +546,10 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
       // place a fact about the physical world belongs; a log line would not be
       // reconcilable.
       if (result.outcome === offers.OUTCOME.APPLIED && result.feasibilityObservation) {
+        // `code`/`scope` (`offerRefusal`): an AGENT_READINESS refusal holds the agent from every
+        // Leg for the refusal window (read back by `physicalFacts` as an F8 fault), not only
+        // from this one (F20).
+        const classified = offerRefusal.classifyRefusal(result.feasibilityObservation.reason);
         await tx.observation.create({
           data: {
             agentId: context.agent.id,
@@ -546,6 +557,8 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
             value: {
               commitmentId: result.feasibilityObservation.commitmentId,
               reason: result.feasibilityObservation.reason,
+              code: classified.code,
+              scope: classified.scope,
             },
             observedAt: result.feasibilityObservation.observedAt,
             // §2.7's provenance vocabulary. `AGENT_REPORT` and not `SENSOR`: a

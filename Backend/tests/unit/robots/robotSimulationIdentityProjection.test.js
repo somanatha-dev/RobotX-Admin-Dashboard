@@ -252,3 +252,52 @@ describe("robotProjection — the one public shape of a Robot row", () => {
     expect(robotProjection.INTERNAL_ONLY_FIELDS).toEqual(["simulationOwnerId"]);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Stale location (2026-10-18) — `/api/robots/state` says what `lat`/`lon` are
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("GET /api/robots/state — position, readiness and battery provenance, additive", () => {
+  const HOURS_AGO = Date.now() - 3 * 3_600_000;
+
+  function appWith(entries) {
+    const app = makeApp();
+    app.locals.kv = { mget: async (keys) => keys.map((key) => (key in entries ? entries[key] : null)) };
+    return app;
+  }
+
+  test("an old measured fix: lat/lon kept for existing clients, position says STALE with the fix's own time", async () => {
+    const app = appWith({
+      "robot:RBT-1000": JSON.stringify({ lat: 12.8998974, lon: 77.5193889, battery: 99, batteryProvenance: "DEMO_SIMULATED", status: "IDLE" }),
+      "position:RBT-1000": JSON.stringify({ robotId: "RBT-1000", lat: 12.8998974, lon: 77.5193889, observedAtMs: HOURS_AGO, fixType: "3D", hAccM: 2.157, provenance: "PHYSICAL", deadReckoned: false }),
+      "readiness:RBT-1000": JSON.stringify({ robotId: "RBT-1000", socketId: "sock-x", blockers: ["NO_MOTOR_LINK"], observedAtMs: Date.now() - 1_000 }),
+    });
+
+    const response = await get(app, "/api/robots/state");
+
+    expect(response.status).toBe(200);
+    const robot = response.body.robots.find((r) => r.robotId === "RBT-1000");
+    expect(robot).toMatchObject({ lat: 12.8998974, lon: 77.5193889, battery: 99, batteryProvenance: "DEMO_SIMULATED" });
+    expect(robot.position).toMatchObject({ status: "STALE", measured: true, fresh: false, observedAtMs: HOURS_AGO, fixType: "3D" });
+    // The report is not from this robot's current connection (the row has none): reported, not current.
+    expect(robot.readiness).toMatchObject({ reported: true, current: false, ready: null, blockers: ["NO_MOTOR_LINK"] });
+  });
+
+  test("no measured fix: position UNKNOWN, readiness unreported — the live overlay's lat/lon are not a measurement", async () => {
+    const app = appWith({ "robot:RBT-1000": JSON.stringify({ lat: 1, lon: 2, battery: 50, status: "IDLE" }) });
+    const response = await get(app, "/api/robots/state");
+    const robot = response.body.robots.find((r) => r.robotId === "RBT-1000");
+    expect(robot.position).toMatchObject({ status: "UNKNOWN", measured: false, lat: null, lon: null });
+    expect(robot.readiness).toMatchObject({ reported: false, ready: null });
+    expect(robot.batteryProvenance).toBeNull();
+  });
+
+  test("without KV the same fields are present", async () => {
+    const response = await get(makeApp(), "/api/robots/state");
+    for (const robot of response.body.robots) {
+      expect(robot.position).toMatchObject({ status: "UNKNOWN" });
+      expect(robot.readiness).toMatchObject({ reported: false });
+      expect(robot).toHaveProperty("batteryProvenance", null);
+    }
+  });
+});

@@ -123,6 +123,7 @@ function createPhysicalProvider(settings) {
         agent: input && input.agent,
         asOfMs: input && input.asOfMs,
         placement: input && input.placement,
+        config: input && input.config,
       });
       if (!control) return facts;
       const { sessionOverlay, ...controlPlane } = control;

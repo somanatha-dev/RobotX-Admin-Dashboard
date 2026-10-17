@@ -172,3 +172,26 @@ test('the task card renders the panel with the task and its status', () => {
   assert.match(page, /<TaskRejectionPanel taskId=\{taskId\} status=\{status\} state=\{rejection\} \/>/);
   assert.match(page, /const rejection = useTaskRejection\(task\.taskId \|\| task\.id, \{ enabled: isPending, refreshKey: assignmentSignal \}\);/);
 });
+
+test('7: the robots\u2019 own refusals are shown with their reason and whether it is about the robot or this task', () => {
+  const body = {
+    ...explainBody(),
+    offerRefusals: [
+      { robotId: 'RBT-2000', commitmentId: 'CMT-2', reason: 'NO_MOTOR_LINK', code: 'NO_MOTOR_LINK', scope: 'AGENT_READINESS', observedAt: '2026-10-18T06:00:00.000Z' },
+      { robotId: 'RBT-2000', commitmentId: 'CMT-1', reason: 'NO_EXECUTABLE_PATH:pathToPickup', code: 'NO_EXECUTABLE_PATH', scope: 'LEG', observedAt: '2026-10-18T05:59:00.000Z' },
+    ],
+  };
+  const explanation = explanationFromResponse(body);
+  assert.equal(explanation.offerRefusals.length, 2);
+  const html = view({ status: 'ready', explanation });
+  assert.match(html, /data-offer-refusals="2"/);
+  assert.match(html, /NO_MOTOR_LINK \(robot not ready\)/);
+  assert.match(html, /NO_EXECUTABLE_PATH:pathToPickup \(this task\)/);
+});
+
+test('7b: no refusals (absent, null or empty) renders no refusal section', () => {
+  for (const offerRefusals of [undefined, null, []]) {
+    const html = view({ status: 'ready', explanation: explanationFromResponse({ ...explainBody(), offerRefusals }) });
+    assert.doesNotMatch(html, /data-offer-refusals/);
+  }
+});

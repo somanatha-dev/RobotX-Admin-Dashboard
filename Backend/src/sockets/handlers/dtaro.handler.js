@@ -28,6 +28,7 @@ const verification = require("../../engine/supervision/verification");
 const settlement = require("../../engine/lifecycle/settlement");
 // C5 — the Task's completion, reached only once the Leg is settled.
 const taskCompletion = require("../../services/taskCompletion.service");
+const positionObservation = require("../../services/positionObservation.service");
 const clockModule = require("../../engine/commitment/clock");
 // PHASE 14 remediation (P14-R14) — §23.5 row 3, the completion trust boundary.
 const trustBoundaries = require("../../engine/security/trustBoundaries");
@@ -190,7 +191,18 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       // resolved to none — the identifier as sent, which therefore names no Task and cannot
       // match the Leg's. Absent stays absent.
       const claimedTaskId = taskId !== null ? taskId : reportedId;
-      const verdict = await verifyCompletionClaim({ prisma, log, robotId, taskId, claimedTaskId, payload, config: configOf(), socket });
+      const physicalPolicy = appLocals?.physicalFleetPolicy ?? null;
+      const verdict = await verifyCompletionClaim({
+        prisma,
+        log,
+        robotId,
+        taskId,
+        claimedTaskId,
+        payload,
+        config: configOf(),
+        socket,
+        acceptedFixTypes: physicalPolicy && physicalPolicy.localisation ? physicalPolicy.localisation.acceptedFixTypes : null,
+      });
 
       // ── P2B-2 — no completion on the claim alone ─────────────────────────────
       //
@@ -453,7 +465,7 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
  * @param {object} input
  * @returns {Promise<object|null>}
  */
-async function verifyCompletionClaim({ prisma, log, robotId, taskId, claimedTaskId, payload, config, socket }) {
+async function verifyCompletionClaim({ prisma, log, robotId, taskId, claimedTaskId, payload, config, socket, acceptedFixTypes }) {
   // D-6: the process half alone used to gate this. During a staged rollout that graded
   // claims on every shard, including ones the staging order had not reached.
   if (!agentGate.mayAct({ socket, snapshot: config, nowMs: Date.now() })) {
@@ -495,7 +507,7 @@ async function verifyCompletionClaim({ prisma, log, robotId, taskId, claimedTask
     const thresholds = readVerificationThresholds();
     if (!thresholds) return unavailable(VERIFICATION_UNAVAILABLE.NOT_CONFIGURED);
 
-    const track = await readAcceptedTrack(prisma, agent.id, commitment.grantedAt);
+    const track = await readAcceptedTrack(prisma, agent.id, commitment.grantedAt, acceptedFixTypes);
     const lastFix = track.length > 0 ? track[track.length - 1] : null;
     const claimedByAgent =
       typeof payload?.lat === "number" && typeof payload?.lon === "number" ? { lat: payload.lat, lon: payload.lon } : null;
@@ -789,13 +801,16 @@ async function readCommandedCorridor(prisma, commitmentId) {
   return points;
 }
 
-async function readAcceptedTrack(prisma, agentRowId, since) {
+async function readAcceptedTrack(prisma, agentRowId, since, acceptedFixTypes) {
   const observations = await prisma.observation.findMany({
     where: { agentId: agentRowId, kind: "position", observedAt: { gte: since }, deadReckoned: false },
     orderBy: { observedAt: "asc" },
   });
 
   return observations
+    // A physical fix with no graded quality is not evidence a real robot drove the route
+    // (`positionObservation.isAdmissibleTravelEvidence`); simulator output is unchanged.
+    .filter((observation) => positionObservation.isAdmissibleTravelEvidence(observation, acceptedFixTypes || null))
     .map((observation) => ({
       at: observation.observedAt,
       lat: observation.value?.lat,

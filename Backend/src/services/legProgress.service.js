@@ -41,6 +41,7 @@ const clock = require("../engine/commitment/clock");
 const settlement = require("../engine/lifecycle/settlement");
 // C5 — the Task's completion, reached only once the Leg is settled.
 const taskCompletion = require("./taskCompletion.service");
+const positionObservation = require("./positionObservation.service");
 const { haversineMeters } = require("../utils/distance");
 
 const STATE = legMachine.LEG_STATE;
@@ -152,10 +153,11 @@ async function applyEvent(tx, { leg, event, context, data, snapshot, storeTime, 
  * @param {string} input.agentRowId `Agent.id`
  * @param {object} input.snapshot the pinned configuration (§4.5 deadlines)
  * @param {string} [input.shardId]
+ * @param {string[]|null} [input.acceptedFixTypes] the physical declaration's accepted fix types, when loaded
  * @returns {Promise<object|null>} the transition outcome, or null when nothing applied
  */
 async function onPositionFix(input) {
-  const { prisma, agentRowId, snapshot, shardId, io, kv } = input || {};
+  const { prisma, agentRowId, snapshot, shardId, io, kv, acceptedFixTypes } = input || {};
   if (!prisma || !agentRowId) return null;
 
   const commitment = await prisma.commitment.findFirst({
@@ -164,7 +166,7 @@ async function onPositionFix(input) {
   });
   if (!commitment) return null;
 
-  const advanced = await advanceOnFix({ prisma, agentRowId, snapshot, shardId, commitment });
+  const advanced = await advanceOnFix({ prisma, agentRowId, snapshot, shardId, commitment, acceptedFixTypes });
   // An arrival the server just verified admits the custody report the agent already sent.
   if (advanced && advanced.outcome === transitions.OUTCOME.APPLIED && (advanced.to === STATE.AT_PICKUP || advanced.to === STATE.AT_DROP)) {
     const custody = await applyHeldCustody({ prisma, commitmentId: commitment.commitmentId, snapshot, shardId, io, kv });
@@ -173,7 +175,7 @@ async function onPositionFix(input) {
   return advanced;
 }
 
-async function advanceOnFix({ prisma, agentRowId, snapshot, shardId, commitment }) {
+async function advanceOnFix({ prisma, agentRowId, snapshot, shardId, commitment, acceptedFixTypes }) {
   return prisma.$transaction(async (tx) => {
     const leg = await tx.leg.findUnique({ where: { id: commitment.legId }, include: { stops: true } });
     if (!leg) return null;
@@ -181,9 +183,14 @@ async function advanceOnFix({ prisma, agentRowId, snapshot, shardId, commitment 
     const fixes = await tx.observation.findMany({
       where: { agentId: agentRowId, kind: "position", observedAt: { gte: commitment.grantedAt }, deadReckoned: false },
       orderBy: { observedAt: "asc" },
-      select: { value: true },
+      select: { value: true, uncertaintyRadiusM: true, deadReckoned: true },
     });
-    const points = fixes.map((row) => row.value).filter((value) => value && isNumber(value.lat) && isNumber(value.lon));
+    // A physical fix with no graded quality is not evidence of a departure or an arrival — an
+    // arrival can release held custody and complete the Task (`positionObservation.isAdmissibleTravelEvidence`).
+    const points = fixes
+      .filter((row) => positionObservation.isAdmissibleTravelEvidence(row, acceptedFixTypes || null))
+      .map((row) => row.value)
+      .filter((value) => value && isNumber(value.lat) && isNumber(value.lon));
     if (points.length === 0) return null;
     const latest = points[points.length - 1];
     const storeTime = await clock.readStoreTime(tx);

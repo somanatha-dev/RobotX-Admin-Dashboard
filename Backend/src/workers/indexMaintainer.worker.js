@@ -342,6 +342,39 @@ function agentIsLifecycleEligible(lifecycleState) {
 }
 
 /**
+ * The agent's lifecycle state read under a `FOR SHARE` lock on its `Agent` row — the row
+ * retirement, recommissioning and `commit.js` lock `FOR UPDATE`.
+ *
+ * `assembleRecord` reads the lifecycle unlocked, which is right for deciding what to compute
+ * and wrong for deciding what to write: a retirement that commits between that read and the
+ * mirror write would find no row to delete, and the sweep would then create one for a
+ * DECOMMISSIONED agent. Holding this lock across the write orders the two — the retirement
+ * either commits first (and this read sees it) or waits until the write has committed (and
+ * deletes the row it then finds).
+ *
+ * A client without raw SQL (an in-memory store) has no row locks to take; the state is read
+ * plainly there.
+ *
+ * @param {object} tx a transaction client
+ * @param {string} agentRowId
+ * @returns {Promise<string|null>}
+ */
+async function lockedLifecycleState(tx, agentRowId) {
+  if (typeof tx.$queryRawUnsafe === "function") {
+    const rows = await tx.$queryRawUnsafe('SELECT "lifecycleState" FROM "Agent" WHERE "id" = $1 FOR SHARE', agentRowId);
+    if (!Array.isArray(rows)) throw new Error(`the lifecycle lock read for agent ${agentRowId} returned no row set`);
+    return rows.length > 0 ? rows[0].lifecycleState : null;
+  }
+  const agent = await tx.agent.findUnique({ where: { id: agentRowId }, select: { lifecycleState: true } });
+  return agent ? agent.lifecycleState : null;
+}
+
+/** `client.$transaction(fn)`, or `fn(client)` when the caller already holds a transaction. */
+function inTransaction(client, fn) {
+  return typeof client.$transaction === "function" ? client.$transaction(fn) : fn(client);
+}
+
+/**
  * One sweep: recompute and apply every given agent's index placement.
  *
  * @param {object} deps `{ prisma, kv, snapshot, now, chargingStatusFor,
@@ -381,47 +414,56 @@ async function sweepAgents(deps, agentIds) {
         continue;
       }
 
-      // eslint-disable-next-line no-await-in-loop
-      await availabilityIndex.applyPosition({ kv: deps.kv }, previous, next.record);
-
+      // The write is made only while the agent is still ACTIVE under its row lock (see
+      // `lockedLifecycleState`). The Redis half is applied inside the same window, so a
+      // retirement that waits on the lock removes an entry that is already there rather than
+      // one that is written after it.
+      let written = false;
       if (next.record) {
-        // STEP 5 — the Observation's own `observedAt`, not the sweep's clock.
-        //
-        // This read `BigInt(nowMs)` in both branches, so every mirror row claimed to have
-        // been measured at the instant the sweep happened to run. On a 5 s sweep that
-        // republished a five-minute-old fix as a five-second-old one every five seconds:
-        // the column can never have gone stale, because the loop refreshed it. Freshness
-        // is the one thing this column exists to record (§2.7), and a value that is
-        // renewed by the act of reading it is not a measurement.
-        const observedAtMs = BigInt(assembled.observedAtMs);
         // eslint-disable-next-line no-await-in-loop
-        await prisma.agentCellPosition.upsert({
-          where: { agentId },
-          create: {
-            agentId,
-            shardId: next.record.shardId,
-            lat: next.record.lat,
-            lon: next.record.lon,
-            fineCellId: next.record.fineCellId,
-            coarseCellId: next.record.coarseCellId,
-            availabilityClass: next.record.availabilityClass,
-            capabilityClasses: next.record.capabilityClasses,
-            containerClasses: next.record.containerClasses,
-            observedAtMs,
-          },
-          update: {
-            shardId: next.record.shardId,
-            lat: next.record.lat,
-            lon: next.record.lon,
-            fineCellId: next.record.fineCellId,
-            coarseCellId: next.record.coarseCellId,
-            availabilityClass: next.record.availabilityClass,
-            capabilityClasses: next.record.capabilityClasses,
-            containerClasses: next.record.containerClasses,
-            observedAtMs,
-          },
+        written = await inTransaction(prisma, async (tx) => {
+          if (!agentIsLifecycleEligible(await lockedLifecycleState(tx, agentId))) return false;
+          // STEP 5 — the Observation's own `observedAt`, not the sweep's clock.
+          //
+          // This read `BigInt(nowMs)` in both branches, so every mirror row claimed to have
+          // been measured at the instant the sweep happened to run. On a 5 s sweep that
+          // republished a five-minute-old fix as a five-second-old one every five seconds:
+          // the column can never have gone stale, because the loop refreshed it. Freshness
+          // is the one thing this column exists to record (§2.7), and a value that is
+          // renewed by the act of reading it is not a measurement.
+          const observedAtMs = BigInt(assembled.observedAtMs);
+          await tx.agentCellPosition.upsert({
+            where: { agentId },
+            create: {
+              agentId,
+              shardId: next.record.shardId,
+              lat: next.record.lat,
+              lon: next.record.lon,
+              fineCellId: next.record.fineCellId,
+              coarseCellId: next.record.coarseCellId,
+              availabilityClass: next.record.availabilityClass,
+              capabilityClasses: next.record.capabilityClasses,
+              containerClasses: next.record.containerClasses,
+              observedAtMs,
+            },
+            update: {
+              shardId: next.record.shardId,
+              lat: next.record.lat,
+              lon: next.record.lon,
+              fineCellId: next.record.fineCellId,
+              coarseCellId: next.record.coarseCellId,
+              availabilityClass: next.record.availabilityClass,
+              capabilityClasses: next.record.capabilityClasses,
+              containerClasses: next.record.containerClasses,
+              observedAtMs,
+            },
+          });
+          await availabilityIndex.applyPosition({ kv: deps.kv }, previous, next.record);
+          return true;
         });
+      }
 
+      if (written) {
         // §3.5's initial placement, at the moment the agent's shard is first established.
         // `shard/membership.place` existed and **had no caller**: no agent ever had a
         // `ShardMembership`, so `agentGate.resolveIdentity` bound no shard at AUTH and every
@@ -443,6 +485,9 @@ async function sweepAgents(deps, agentIds) {
         }
         indexed += 1;
       } else if (previousRow) {
+        // Not indexable — no position, no known charging state, or no longer ACTIVE.
+        // eslint-disable-next-line no-await-in-loop
+        await availabilityIndex.applyPosition({ kv: deps.kv }, previous, null);
         // eslint-disable-next-line no-await-in-loop
         await prisma.agentCellPosition.delete({ where: { agentId } });
         removed += 1;
@@ -457,18 +502,28 @@ async function sweepAgents(deps, agentIds) {
 }
 
 /**
- * One full sweep over every lifecycle-eligible agent.
+ * One full sweep over every lifecycle-eligible agent, and every agent that still holds a
+ * mirror row.
+ *
+ * The second half is what removes an entry whose agent left `ACTIVE` without the entry being
+ * removed with it: an agent this loop never visited kept its row (and, through
+ * `rebuildIndexFromMirror`, its Redis entry) indefinitely, and F2 then rejected it in every
+ * round it was found in — a rejection that names the wrong blocker for the task waiting.
  *
  * @param {object} deps as `sweepAgents`
  * @returns {Promise<object>}
  */
 async function sweepOnce(deps) {
   const prisma = deps.prisma || getPrisma();
-  const agents = await prisma.agent.findMany({
-    where: { lifecycleState: "ACTIVE" },
-    select: { id: true },
-  });
-  return sweepAgents(deps, agents.map((agent) => agent.id));
+  const [agents, mirrored] = await Promise.all([
+    prisma.agent.findMany({
+      where: { lifecycleState: "ACTIVE" },
+      select: { id: true },
+    }),
+    prisma.agentCellPosition.findMany({ select: { agentId: true } }),
+  ]);
+  const agentIds = [...new Set([...agents.map((agent) => agent.id), ...(mirrored || []).map((row) => row.agentId)])];
+  return sweepAgents(deps, agentIds);
 }
 
 /**
@@ -477,12 +532,15 @@ async function sweepOnce(deps) {
  * indexable record per agent, which is exactly what a Redis rebuild needs and is
  * cheaper than re-deriving every record from the raw observation log.
  *
+ * Only the rows of `ACTIVE` agents. A row left by an agent that has since left service is the
+ * sweep's to delete; restoring it to Redis here would make it a candidate again on every boot.
+ *
  * @param {object} deps `{ prisma, kv }`
  * @returns {Promise<{ ok: boolean, indexed: number, skipped: number, failed: number }>}
  */
 async function rebuildIndexFromMirror(deps) {
   const prisma = deps.prisma || getPrisma();
-  const rows = await prisma.agentCellPosition.findMany();
+  const rows = await prisma.agentCellPosition.findMany({ where: { agent: { is: { lifecycleState: "ACTIVE" } } } });
   const records = rows.map((row) =>
     Object.freeze({
       agentId: row.agentId,

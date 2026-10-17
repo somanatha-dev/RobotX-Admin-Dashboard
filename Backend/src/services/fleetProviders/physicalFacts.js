@@ -13,7 +13,11 @@
  *                            declaration admits that mechanism; carries `mechanism` so it is
  *                            never read as a hardware e-stop circuit
  *   F8  faults               `Robot.status` ERROR → BLOCKING, ISSUES → DEGRADED (ROBOT_FAULT
- *                            forces ERROR), exactly the mapping the status already encodes
+ *                            forces ERROR), exactly the mapping the status already encodes;
+ *                            plus, restricting only: each blocker in the agent's current
+ *                            TELEMETRY `readiness` report (`agentReadiness`), a missing report
+ *                            where the declaration requires one, and the agent-level hold after
+ *                            a readiness refusal of an offer (`offerRefusal`) — all BLOCKING
  *   F10 localisation         confidence from the latest fix's declared quality; corroborated by
  *                            MAP_MATCH (distance from the fix to the nearest permitted way)
  *   F11 reliability          left absent: F11 admits with the cohort-prior penalty
@@ -28,6 +32,9 @@
 
 const { getProbeProofAtOrBefore } = require("../agentProbe.service");
 const { getStopLatchState } = require("../stopLatchObservation.service");
+const agentReadiness = require("../agentReadiness.service");
+const offerRefusal = require("../offerRefusal.service");
+const robotPosition = require("../robotPosition.service");
 const physicalPolicy = require("./physicalPolicy");
 
 /** The provenance stamped on a declared physical robot's facts. @structural */
@@ -115,7 +122,17 @@ async function controlFactsFor(input) {
     }
   }
 
-  const [zones, fix, latchState, probe] = await Promise.all([
+  // The refusal hold's window and the readiness report's freshness budget, from the same config
+  // reader the derived facts use, else the register.
+  const config = input.config;
+  const holdMs = offerRefusal.holdMsFrom(config);
+  const decisionMs = isNumber(asOfMs) ? asOfMs : Date.now();
+  const freshnessBoundMs = (() => {
+    const seconds = typeof config === "function" ? config("connectivity.max_heartbeat_age") : undefined;
+    return isNumber(seconds) && seconds > 0 ? seconds * 1000 : robotPosition.freshnessBoundMsFrom(null);
+  })();
+
+  const [zones, fix, latchState, probe, readinessState, refusal] = await Promise.all([
     regionId ? prisma.zone.findMany({ where: { regionId }, select: { id: true } }) : [],
     prisma.observation.findFirst({
       where: { agentId: agent.id, kind: "position", ...(asOf ? { observedAt: { lte: asOf } } : {}) },
@@ -127,6 +144,9 @@ async function controlFactsFor(input) {
     // F7-B: the one measured with the proof F14 reads for this decision — never after it, as
     // for the fix and the stop latch.
     kv ? getProbeProofAtOrBefore(kv, robot.robotId, isNumber(asOfMs) ? asOfMs : undefined).catch(() => null) : null,
+    // The agent's own readiness report (restricting only) and its last readiness refusal.
+    kv ? agentReadiness.readReadiness(kv, robot.robotId).catch(() => null) : null,
+    holdMs === null ? null : offerRefusal.latestReadinessRefusal(prisma, agent.id, decisionMs, holdMs),
   ]);
 
   const permissionSet = agent.agentClass && agent.agentClass.mobilityModel ? agent.agentClass.mobilityModel.permissionSet : null;
@@ -134,6 +154,11 @@ async function controlFactsFor(input) {
   const divergenceM = router && point ? router.mapMatchDivergenceM(point, permissionSet) : null;
 
   const fault = FAULT_BY_STATUS[robot.status];
+  const readiness = agentReadiness.assessReadiness({ state: readinessState, robotId: robot.robotId, socketId: robot.socketId, asOfMs: decisionMs, freshnessBoundMs });
+  const readinessFaults = [
+    ...agentReadiness.readinessFaults(readiness, { required: policy.readiness === physicalPolicy.POLICY.AGENT_REPORT_REQUIRED }),
+    ...offerRefusal.refusalHoldFaults({ refusal, holdMs, readiness }),
+  ];
   // Only the robot's current socket speaks for its latch: a replaced socket's late report is no input.
   const latch = latchState && latchState.socketId && latchState.socketId === robot.socketId ? latchState : null;
   const probed = probe && isNumber(Number(probe.lastProbeAckAt)) && probe.lastProbeSocketId && probe.lastProbeSocketId === robot.socketId;
@@ -149,7 +174,7 @@ async function controlFactsFor(input) {
     firmwareVersionSource: "COMMISSIONING",
     calibrations: declared.control.calibrations.map((row) => ({ name: row.kind, validUntil: row.validUntil })),
     emergencyStop: emergencyStopFrom({ latch, policy, asOfMs }),
-    faults: fault ? [{ ...fault, active: true, provenance: "PHYSICAL" }] : [],
+    faults: [...(fault ? [{ ...fault, active: true, provenance: "PHYSICAL" }] : []), ...readinessFaults],
     localisation: localisationFrom({ fix, policy, divergenceM }),
     advisories: [...declared.control.advisories],
     authorisedZoneIds: declared.control.authorisation === "REGION" && zones.length > 0 ? zones.map((zone) => zone.id).sort() : undefined,

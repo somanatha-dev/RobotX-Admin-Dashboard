@@ -8,6 +8,10 @@ const robotSpecification = require("../services/robotSpecification");
 // say the unit is simulated, and does it leak who owns it).
 const robotProjection = require("../services/robotProjection");
 const robotStatusPrecedence = require("../services/robotStatusPrecedence");
+const robotPosition = require("../services/robotPosition.service");
+const agentReadiness = require("../services/agentReadiness.service");
+const { POLICY: PHYSICAL_POLICY } = require("../services/fleetProviders/physicalPolicy");
+const { safeJsonParse } = require("../utils/json");
 const { toStringOrNull } = require("../utils/parse");
 const crypto = require("crypto");
 const { dispatchCommand } = require("../services/commandDispatcher.service");
@@ -292,8 +296,13 @@ const getRobotsState = asyncHandler(async (req, res) => {
     orderBy: [{ isOnline: "desc" }, { lastSeenAt: "desc" }],
   });
 
+  const facts = await liveFactsFor(req, prisma, kv, robots);
+
   if (!kv) {
-    res.json({ ok: true, robots: robotProjection.toPublicRobots(robots) });
+    res.json({
+      ok: true,
+      robots: robotProjection.toPublicRobots(robots).map((r, i) => ({ ...r, ...facts[i], batteryProvenance: null })),
+    });
     return;
   }
 
@@ -313,7 +322,7 @@ const getRobotsState = asyncHandler(async (req, res) => {
       live = null;
     }
 
-    if (!live || typeof live !== "object") return withSpecification(r);
+    if (!live || typeof live !== "object") return { ...withSpecification(r), ...facts[i], batteryProvenance: null };
 
     // Overlay common live fields when available.
     const next = {
@@ -330,11 +339,66 @@ const getRobotsState = asyncHandler(async (req, res) => {
       live,
     };
 
-    return withSpecification(next);
+    return {
+      ...withSpecification(next),
+      ...facts[i],
+      batteryProvenance: typeof live.batteryProvenance === "string" ? live.batteryProvenance : null,
+    };
   });
 
   res.json({ ok: true, robots: merged });
 });
+
+/**
+ * Additive, per robot, for `GET /api/robots/state` — the same two objects `robot:update` carries:
+ *   `position`  the newest MEASURED fix with its time, quality, provenance and freshness
+ *               (`robotPosition.service`). `lat`/`lon` are only the last known coordinates.
+ *   `readiness` the agent's own readiness report (`agentReadiness.service`), which `status` (an
+ *               operating mode) is not.
+ * Descriptions only: neither decides anything.
+ *
+ * @returns {Promise<Array<{ position: object, readiness: object }>>}
+ */
+async function liveFactsFor(req, prisma, kv, robots) {
+  const nowMs = Date.now();
+  const physicalPolicy = req.app?.locals?.physicalFleetPolicy ?? null;
+  const freshnessBoundMs = robotPosition.freshnessBoundMsFrom(req.app?.locals?.config ?? null);
+  const acceptedFixTypes = physicalPolicy && physicalPolicy.localisation ? physicalPolicy.localisation.acceptedFixTypes : null;
+  const readKeys = async (keyOf) => {
+    if (!kv || robots.length === 0) return robots.map(() => null);
+    try {
+      return await kv.mget(robots.map((r) => keyOf(r.robotId)));
+    } catch {
+      return robots.map(() => null);
+    }
+  };
+  const [rawPositions, rawReadiness] = await Promise.all([readKeys(robotPosition.positionKey), readKeys(agentReadiness.readinessKey)]);
+
+  return Promise.all(
+    robots.map(async (r, i) => {
+      let record = null;
+      try {
+        record = await robotPosition.latestMeasuredPosition({ prisma, kv, robotId: r.robotId, nowMs, cached: (rawPositions && rawPositions[i]) ?? null });
+      } catch {
+        record = null;
+      }
+      const declared = physicalPolicy && typeof physicalPolicy.robotFor === "function" ? physicalPolicy.robotFor(r.robotId) : null;
+      return {
+        position: robotPosition.describePosition(record, { nowMs, freshnessBoundMs, acceptedFixTypes }),
+        readiness: agentReadiness.describeReadiness(
+          agentReadiness.assessReadiness({
+            state: safeJsonParse((rawReadiness && rawReadiness[i]) ?? null),
+            robotId: r.robotId,
+            socketId: r.socketId || null,
+            asOfMs: nowMs,
+            freshnessBoundMs,
+          }),
+          { required: declared ? physicalPolicy.readiness === PHYSICAL_POLICY.AGENT_REPORT_REQUIRED : null },
+        ),
+      };
+    }),
+  );
+}
 
 // GET /api/robots/:robotId/history
 // Returns last 50 telemetry snapshots (most recent first).

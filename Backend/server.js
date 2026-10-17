@@ -902,6 +902,21 @@ async function start() {
         });
       }
 
+      // The coordinator's input seams, composed once. Also kept on `app.locals` so the readiness
+      // diagnostic (`GET /api/diagnostics/readiness/:robotId`) evaluates an agent through the same
+      // facts provider the round uses, never a second copy of it.
+      const engineSeams =
+        fleetProviders.isDispatchEnabled(process.env) || physicalFleetProvider
+          ? fleetProviders.composeIfEnabled({
+              prisma,
+              kv,
+              snapshot: () => app.locals.config,
+              env: process.env,
+              ...(physicalFleetProvider ? { physical: physicalFleetProvider } : {}),
+            })
+          : v1DemonstrationComposition.composeIfEnabled({ prisma, kv, snapshot: () => app.locals.config, env: process.env });
+      app.locals.engineSeams = engineSeams || null;
+
       leaderLifecycle = leaderWorkers.create({
         prisma,
         // §7.7 — the process's rejection aggregator. The coordinator's gate folds into it;
@@ -986,15 +1001,7 @@ async function start() {
         //
         // GATE 1 — `PHYSICAL_FLEET_ENABLED=true` always goes through the boundary, with the
         // process's one physical provider; with no simulator it composes physical-only.
-        ...(fleetProviders.isDispatchEnabled(process.env) || physicalFleetProvider
-          ? fleetProviders.composeIfEnabled({
-              prisma,
-              kv,
-              snapshot: () => app.locals.config,
-              env: process.env,
-              ...(physicalFleetProvider ? { physical: physicalFleetProvider } : {}),
-            })
-          : v1DemonstrationComposition.composeIfEnabled({ prisma, kv, snapshot: () => app.locals.config, env: process.env })),
+        ...engineSeams,
       });
 
       shardCoordinator = shardSupervisor.start(
