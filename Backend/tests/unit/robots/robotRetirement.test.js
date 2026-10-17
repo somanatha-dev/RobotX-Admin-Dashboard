@@ -452,6 +452,7 @@ describe("E — a retired robot is refused by every per-robot operator endpoint 
         overrideReached(req.path);
         next();
       },
+      requireElevatedRole: () => (req, res, next) => next(),
       policyFor: () => ({}),
       recordAuthorisation: jest.fn(async () => {}),
       configValue: () => undefined,

@@ -75,6 +75,38 @@ export async function sendCommand(robotId, type) {
   return data;
 }
 
+/**
+ * The retired units an operator may choose to recommission. Identity and display fields only.
+ * @returns {Promise<Array<{ robotId: string, name: string|null, simulated: boolean, recommissionable: boolean, lastSeenAt: string|null, locationName: string|null, retiredAt: string|null }>>}
+ */
+export async function listRetiredRobots() {
+  const data = await requestJson('/api/robots/retired', { errorMessage: 'Could not load the retired robots' });
+  return Array.isArray(data?.robots) ? data.robots : [];
+}
+
+/**
+ * Recommission a retired robot (its own record, not a new unit). The body is exactly what the
+ * server accepts — `reason` and `confirmRobotId`; the server checks the role.
+ *
+ * @param {string} robotId
+ * @param {{ reason: string, confirmRobotId: string }} body
+ * @returns {Promise<{ robotId: string, alreadyRecommissioned: boolean, lifecycleState: string, releasedToService: boolean, pairingRequired: boolean }>}
+ */
+export async function recommissionRobot(robotId, body) {
+  const data = await requestJson(`/api/robots/${encodeURIComponent(robotId)}/recommission`, {
+    method: 'POST',
+    body,
+    errorMessage: 'Recommissioning failed',
+  });
+  return {
+    robotId: data?.robotId ?? robotId,
+    alreadyRecommissioned: data?.alreadyRecommissioned === true,
+    lifecycleState: data?.lifecycleState ?? null,
+    releasedToService: data?.releasedToService === true,
+    pairingRequired: data?.pairingRequired !== false,
+  };
+}
+
 export async function deleteRobot(robotId) {
   const data = await requestJson(`/api/robots/${encodeURIComponent(robotId)}`, { method: 'DELETE' });
   return data;

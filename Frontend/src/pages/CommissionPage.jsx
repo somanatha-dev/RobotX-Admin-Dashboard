@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { MapPin, ShieldCheck } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { MapPin, RotateCcw, ShieldCheck } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge.jsx';
 import { Button } from '@/components/ui/button.jsx';
@@ -25,6 +25,7 @@ import { LocationCombobox } from '@/components/system/LocationCombobox.jsx';
 import { RequiredMark } from '@/components/system/RequiredMark.jsx';
 import { useAppActions, useAppState } from '@/context/appContext.js';
 import { connectPathFor } from '@/lib/robotEnrollment.js';
+import { RecommissionRetiredUnit } from '@/features/robots/RecommissionRetiredUnit.jsx';
 import {
   CHASSIS_OPTIONS,
   INITIAL_BATTERY_FIELD,
@@ -38,6 +39,21 @@ export default function CommissionPage() {
   const rrNavigate = useNavigate();
   const { commission } = useAppActions();
   const { robots } = useAppState();
+
+  // Two distinct operations on one page, chosen explicitly: commissioning a new unit, or
+  // recommissioning a retired one (its own record). Held in the URL so a refusal can link
+  // straight to the second with the unit preselected, and a refresh keeps the choice.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const mode = searchParams.get('mode') === 'recommission' ? 'recommission' : 'new';
+  const preselectedRetiredId = String(searchParams.get('robotId') || '').trim();
+  const chooseMode = (next, robotId) => {
+    const params = new URLSearchParams();
+    if (next === 'recommission') {
+      params.set('mode', 'recommission');
+      if (robotId) params.set('robotId', robotId);
+    }
+    setSearchParams(params);
+  };
 
   // The chassis vocabulary is the backend's own — the value sent is the token the
   // `AgentClass` is keyed by, not a display string the server then has to guess at.
@@ -61,10 +77,14 @@ export default function CommissionPage() {
   // A unit with this identifier already exists: offer its Connect page instead of a second
   // commissioning, which the backend would refuse anyway.
   const [existingId, setExistingId] = useState('');
+  // The server refused the identifier because it belongs to a retired robot: offer the
+  // explicit recommissioning path for that unit (never taken automatically).
+  const [retiredId, setRetiredId] = useState('');
 
   const setSpecField = (key, value) => {
     setFormError('');
     setExistingId('');
+    setRetiredId('');
     setSpec((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -89,6 +109,7 @@ export default function CommissionPage() {
     e.preventDefault();
     setFormError('');
     setExistingId('');
+    setRetiredId('');
 
     const robotId = String(formData.id || '').trim();
     const name = String(formData.name || '').trim();
@@ -130,6 +151,12 @@ export default function CommissionPage() {
       zone,
       chassisType: formData.type,
       specification: validated.values,
+      onRetiredId: (id) => {
+        setFormError(
+          `"${id}" belongs to a retired robot, so a new unit cannot use it. If this is that same robot returning, recommission it instead.`,
+        );
+        setRetiredId(id);
+      },
     });
   };
 
@@ -140,8 +167,34 @@ export default function CommissionPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">Commission New Unit</h1>
-          <p className="text-sm text-muted-foreground mt-1">Register and authorize a new unit</p>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {mode === 'recommission' ? 'Recommission Retired Unit' : 'Commission New Unit'}
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            {mode === 'recommission'
+              ? 'Return a retired robot’s own record to the fleet'
+              : 'Register and authorize a new unit'}
+          </p>
+          <div className="mt-4 inline-flex rounded-lg border border-border/60 p-1" role="group" aria-label="Commissioning operation">
+            <Button
+              type="button"
+              size="sm"
+              variant={mode === 'new' ? 'default' : 'ghost'}
+              aria-pressed={mode === 'new'}
+              onClick={() => chooseMode('new')}
+            >
+              <ShieldCheck className="w-4 h-4" /> Commission new unit
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={mode === 'recommission' ? 'default' : 'ghost'}
+              aria-pressed={mode === 'recommission'}
+              onClick={() => chooseMode('recommission')}
+            >
+              <RotateCcw className="w-4 h-4" /> Recommission retired robot
+            </Button>
+          </div>
         </div>
 
         <div className="flex flex-col items-end gap-2">
@@ -149,27 +202,36 @@ export default function CommissionPage() {
             <Button type="button" variant="outline" onClick={handleCancel}>
               Cancel
             </Button>
-            <Button
-              type="submit"
-              form="commission-new-unit"
-              disabled={!canSubmit}
-              aria-describedby={missing.length > 0 ? 'commission-still-needed' : undefined}
-            >
-              <ShieldCheck className="w-4 h-4" /> Authorize Commissioning
-            </Button>
+            {mode === 'new' ? (
+              <Button
+                type="submit"
+                form="commission-new-unit"
+                disabled={!canSubmit}
+                aria-describedby={missing.length > 0 ? 'commission-still-needed' : undefined}
+              >
+                <ShieldCheck className="w-4 h-4" /> Authorize Commissioning
+              </Button>
+            ) : null}
           </div>
           {/* Guidance, not an error: an untouched form is incomplete, not wrong. */}
-          {missing.length > 0 ? (
-            <p id="commission-still-needed" aria-live="polite" className="max-w-sm text-right text-xs text-muted-foreground">
-              Complete the required fields (<span aria-hidden>*</span>) to continue. Still empty:{' '}
-              <span className="font-medium text-foreground">
-                {missing.map((input) => input.label).join(', ')}
-              </span>
-            </p>
+          {mode === 'new' ? (
+            <>
+              {missing.length > 0 ? (
+                <p id="commission-still-needed" aria-live="polite" className="max-w-sm text-right text-xs text-muted-foreground">
+                  Complete the required fields (<span aria-hidden>*</span>) to continue. Still empty:{' '}
+                  <span className="font-medium text-foreground">
+                    {missing.map((input) => input.label).join(', ')}
+                  </span>
+                </p>
+              ) : null}
+            </>
           ) : null}
         </div>
       </div>
 
+      {mode === 'recommission' ? (
+        <RecommissionRetiredUnit key={preselectedRetiredId} initialRobotId={preselectedRetiredId} />
+      ) : (
       <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left: form (2/3) */}
         <div className="lg:col-span-2">
@@ -404,6 +466,13 @@ export default function CommissionPage() {
                         </Button>
                       </div>
                     ) : null}
+                    {retiredId ? (
+                      <div className="mt-2">
+                        <Button type="button" size="sm" variant="outline" onClick={() => chooseMode('recommission', retiredId)}>
+                          <RotateCcw className="w-4 h-4" /> Recommission {retiredId} instead
+                        </Button>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </CardContent>
@@ -437,6 +506,7 @@ export default function CommissionPage() {
                   <div className="text-sm font-medium text-foreground">Tips</div>
                   <ul className="mt-2 list-disc pl-5 space-y-2">
                     <li>Make sure the identifier is unique and stable.</li>
+                    <li>A retired robot’s identifier cannot be used for a new unit. To bring that same robot back, choose “Recommission retired robot” above.</li>
                     <li>Choosing a suggestion helps keep coordinates consistent.</li>
                   </ul>
                 </div>
@@ -445,6 +515,7 @@ export default function CommissionPage() {
           </Card>
         </aside>
       </div>
+      )}
     </div>
   );
 }

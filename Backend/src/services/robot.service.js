@@ -171,16 +171,20 @@ async function createRobotWithProjection(prisma, body, identity) {
   }
 
   // Reject duplicate robot IDs — each unit must have a unique identifier.
-  // A retired robot keeps its row, so its identifier stays taken: there is no un-retire, and
-  // a reused id would attach a new unit to the old one's tasks, events and engine history.
+  // A retired robot keeps its row, so its identifier stays taken for a *new* unit: a reused id
+  // would attach the new unit to the old one's tasks, events and engine history. Bringing the
+  // same robot back is a different, explicit operation (`robotRecommission.service`), which
+  // reuses its rows rather than creating new ones.
   const duplicate = await prisma.robot.findUnique({
     where: { robotId: robotCode },
     select: { id: true, ...robotRetirementPolicy.lifecycleSelect() },
   });
   if (duplicate) {
+    const retired = robotRetirementPolicy.isRetiredRobot(duplicate);
     const err = new Error(
-      robotRetirementPolicy.isRetiredRobot(duplicate)
-        ? `The ID "${robotCode}" belongs to a retired robot and cannot be reused. Choose a different identifier.`
+      retired
+        ? `The ID "${robotCode}" belongs to a retired robot and cannot be reused for a new unit. ` +
+            "To return that same robot to service, recommission it instead; otherwise choose a different identifier."
         : `A robot with ID "${robotCode}" is already commissioned. Choose a different identifier.`,
     );
     err.status = 409;
@@ -189,6 +193,9 @@ async function createRobotWithProjection(prisma, body, identity) {
     // (it draws another and retries); matching on the message instead would be matching on
     // prose that a translation or a reword would break.
     err.code = "ROBOT_ID_TAKEN";
+    // Which kind of taken: the physical commissioning endpoint answers a retired id with its
+    // own code, so the dashboard can offer recommissioning instead of a dead end.
+    err.retired = retired;
     throw err;
   }
 

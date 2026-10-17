@@ -21,6 +21,8 @@ const logger = require("../config/logger");
 // service's `releaseRuntimeState` now, beside the transaction it follows.
 const robotRetirement = require("../services/robotRetirement.service");
 const robotRetirementPolicy = require("../services/robotRetirementPolicy");
+// Authorised recommissioning of a retired robot (`POST /:robotId/recommission`).
+const robotRecommission = require("../services/robotRecommission.service");
 const physicalDeclaration = require("../services/physicalDeclaration.service");
 // PHASE 14 — §23.6's override discipline. The rules live in the engine module; this
 // controller applies them at the one operator surface that returns a withdrawn agent to
@@ -83,7 +85,25 @@ const commissionRobot = asyncHandler(async (req, res) => {
   const prisma = getPrisma();
   const kv  = req.app?.locals?.kv;
   const io  = req.app?.locals?.io;
-  const robot = await robotService.commissionRobot(prisma, req.body);
+  let robot;
+  try {
+    robot = await robotService.commissionRobot(prisma, req.body);
+  } catch (error) {
+    // A taken id is answered here rather than by the error middleware, which sends only the
+    // sentence: the dashboard needs to tell a retired id (which it can offer to recommission)
+    // from an active duplicate (which it cannot) without matching on prose.
+    if (error?.code === "ROBOT_ID_TAKEN" && error?.status === 409) {
+      res.status(409).json({
+        ok: false,
+        error: "Conflict",
+        code: error.retired === true ? "ROBOT_ID_RETIRED" : "ROBOT_ID_TAKEN",
+        retired: error.retired === true,
+        message: error.message,
+      });
+      return;
+    }
+    throw error;
+  }
 
   // Make the commissioned robot instantly visible via Redis + dashboard socket.
   try {
@@ -831,6 +851,76 @@ const deleteRobot = asyncHandler(async (req, res) => {
   });
 });
 
+// GET /api/robots/retired
+//
+// The retired units an operator can choose to recommission. Identity and display fields only;
+// no credential, session or pairing state.
+const listRetiredRobots = asyncHandler(async (req, res) => {
+  const robots = await robotRecommission.listRetiredRobots(getPrisma());
+  res.json({ ok: true, robots });
+});
+
+// POST /api/robots/:robotId/recommission   { reason, confirmRobotId }
+//
+// Return a retired robot's own record to the fleet — see services/robotRecommission.service.js.
+// The route requires an elevated role; the service requires a reason and a confirmation that
+// repeats the id. The unit comes back COMMISSIONED: not eligible for work until its physical
+// fleet declaration is applied, and with no credential until it is paired again.
+//
+//   200 { ok, robotId, recommissioned: true, alreadyRecommissioned, lifecycleState,
+//         releasedToService: false, pairingRequired: true }
+//   400 INVALID_REQUEST   404 ROBOT_NOT_FOUND
+//   409 ROBOT_NOT_RETIRED | SIMULATED_NOT_RECOMMISSIONABLE
+//   503 CREDENTIAL_REVOCATION_UNAVAILABLE (nothing changed)
+const recommissionRobot = asyncHandler(async (req, res) => {
+  const prisma = getPrisma();
+  const robotCode = toStringOrNull(req.params?.robotId);
+  const actorId = req.user?.id ?? null;
+
+  let result;
+  try {
+    result = await robotRecommission.recommission(prisma, robotCode, req.body, {
+      actorId,
+      kv: req.app?.locals?.kv,
+    });
+  } catch (error) {
+    if (error instanceof robotRecommission.RecommissionRefused) {
+      // A refusal is part of the audit picture too. Ids and codes only: the body may carry an
+      // operator's free text, which is not logged.
+      logger.warn("[recommission] refused", { robotId: robotCode, actorId, code: error.code, status: error.status });
+      res.status(error.status).json(error.toBody());
+      return;
+    }
+    throw error;
+  }
+
+  const recommissioned = result.outcome === robotRecommission.OUTCOME.RECOMMISSIONED;
+  if (recommissioned) {
+    logger.info("[recommission] retired robot recommissioned", {
+      robotId: result.robotId,
+      actorId,
+      epochAfter: String(result.epochAfter),
+      ...(result.postCommitRevocationFailed ? { postCommitRevocationFailed: true } : {}),
+    });
+    // Every dashboard: the unit is back in the lists (offline, until it pairs).
+    try {
+      req.app?.locals?.io?.to("dashboard")?.emit("robot_recommissioned", { robotId: result.robotId, timestamp: Date.now() });
+    } catch {
+      // ignore
+    }
+  }
+
+  res.json({
+    ok: true,
+    robotId: result.robotId,
+    recommissioned: true,
+    alreadyRecommissioned: !recommissioned,
+    lifecycleState: result.lifecycleState,
+    releasedToService: false,
+    pairingRequired: true,
+  });
+});
+
 // POST /api/robots/:robotId/command
 // Creates a persisted command row and (if online) emits it to the robot socket.
 const sendRobotCommand = asyncHandler(async (req, res) => {
@@ -1069,4 +1159,6 @@ module.exports = {
   sendRobotCommand,
   clearRobotFault,
   deleteRobot,
+  listRetiredRobots,
+  recommissionRobot,
 };

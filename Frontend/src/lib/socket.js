@@ -133,6 +133,12 @@ export const DASHBOARD_EVENTS = Object.freeze({
 	 */
 	ROBOT_RETIRED: "robot_retired",
 	/**
+	 * A retired unit was recommissioned (`POST /api/robots/:robotId/recommission`). `{ robotId,
+	 * timestamp }` only. The unit is back in the backend's lists — offline, unpaired and not yet
+	 * in service — so every dashboard refetches rather than inventing its row.
+	 */
+	ROBOT_RECOMMISSIONED: "robot_recommissioned",
+	/**
 	 * A commissioned robot reached the server and was refused in the pairing branch (H4): a
 	 * wrong or expired code, or a stored token that is no longer valid (it falls through to
 	 * that branch and counts toward the same lockout). `{ robotId, failedAttempts, locked }` only; never a code. Not emitted for a

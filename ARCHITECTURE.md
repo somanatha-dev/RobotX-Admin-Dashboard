@@ -371,6 +371,7 @@ Backend/
 | Module | Responsibility | Called by | Calls |
 |---|---|---|---|
 | `robot.service.js` | Commission, list, update specification, retire | `robots.controller` | Prisma, `robotSpecification` |
+| `robotRecommission.service.js` | Authorised recommissioning of a retired robot: same Robot/Agent rows, `DECOMMISSIONED → COMMISSIONED`, epoch +1, old credentials revoked under the Agent lock; never releases into service ([runbook](docs/runbooks/robot-recommissioning.md)) | `robots.controller` | Prisma, `kv` |
 | `robotSpecification.js` | **Pure.** Chassis vocabulary (ROVER/DRONE) → `AgentClass` + Mobility/Energy/Container models + `chassis_type` capability | `robot.service`, `task.service` | nothing |
 | `task.service.js` | §3.4 request path: validate → payload spec → cutover gate → `Task` → `admitToRound` | `tasks.controller`, `socket.server` | `engine/intake`, `engine/domain/mappers` |
 | `telemetry.service.js` | Persist a `Telemetry` snapshot row | `telemetry.handler` | Prisma |

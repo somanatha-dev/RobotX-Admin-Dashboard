@@ -147,6 +147,15 @@ describe("Test G — the assignment engine cannot see the simulation discriminat
       // Registered here rather than evaded, for the reason given for the entry above.
       "services/agentFacts.service.js",
       "services/v1DemonstrationComposition.js",
+      // RECOMMISSIONING (2026-10-17) — a *lifecycle-boundary* reader, the same category as
+      // `robot.service.js` (creation) above. It reads the discriminator for one purpose: to
+      // refuse recommissioning a retired simulated unit (the simulator dropped it at
+      // retirement; a new simulated robot is the supported path), and to label the retired
+      // list. It reads the flag through `simulationPolicy.isSimulatedRobot`, and it is not in
+      // the decision path: a recommissioned unit is COMMISSIONED, which F2 refuses either way.
+      //
+      // Registered here rather than evaded, for the reason given above.
+      "services/robotRecommission.service.js",
     ]);
 
     const unexpected = discriminatorReferences(filesUnder(SRC)).filter(

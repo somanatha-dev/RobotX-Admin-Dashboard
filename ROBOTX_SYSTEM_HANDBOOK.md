@@ -633,6 +633,13 @@ does.
 6. DISCONNECT   mark offline, SREM robots:all, tell the dashboard
 ```
 
+A **retired** robot (`Agent.lifecycleState = DECOMMISSIONED`) is refused at step 1 and at AUTH.
+To bring the same robot back, an elevated administrator calls
+`POST /api/robots/:robotId/recommission` (reason + typed confirmation). It reuses the robot's rows,
+moves it to `COMMISSIONED`, revokes every old credential, and leaves it out of service until its
+physical fleet declaration is applied; it then re-enters this sequence at step 1 for a fresh code.
+See [docs/runbooks/robot-recommissioning.md](docs/runbooks/robot-recommissioning.md).
+
 ### 10.2 The three authentication states
 
 | State | When | What happens |

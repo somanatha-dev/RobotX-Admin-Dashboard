@@ -1,7 +1,7 @@
 const express = require("express");
 const robotsController = require("../controllers/robots.controller");
 const { createRateLimiter } = require("../middlewares/rateLimitHttp");
-const { authUser, requireActionClass } = require("../middlewares/auth_middleware");
+const { authUser, requireActionClass, requireElevatedRole } = require("../middlewares/auth_middleware");
 // Soft retirement — a retired robot keeps its row, so each per-robot action refuses it by
 // name (409 ROBOT_RETIRED). Mounted after the rate limiter and before the override gate.
 const { refuseRetiredRobot } = require("../middlewares/refuseRetiredRobot");
@@ -36,9 +36,20 @@ const commissionLimiter = createRateLimiter({ windowMs: 60_000, limit: 30, keyPr
 const commandLimiter = createRateLimiter({ windowMs: 60_000, limit: 60, keyPrefix: "command" });
 const retireLimiter = createRateLimiter({ windowMs: 60_000, limit: 10, keyPrefix: "retire" });
 const legacyCommissionLimiter = createRateLimiter({ windowMs: 60_000, limit: 30, keyPrefix: "commission_legacy" });
+const recommissionLimiter = createRateLimiter({ windowMs: 60_000, limit: 10, keyPrefix: "recommission" });
 const notRetired = refuseRetiredRobot();
 
+// Recommissioning returns a withdrawn unit's record to the fleet, so it is gated server-side on
+// the elevated role (`security.elevated_roles`), like simulated-robot creation. It is not one of
+// §23.4's four action classes — it does not make the unit eligible for work, which stays the
+// physical fleet declaration's decision — so it is not routed through `requireActionClass`; the
+// service adds the mandatory reason and the typed confirmation, and records the Event.
+const elevatedOnly = requireElevatedRole();
+
 router.get("/", robotsController.listRobots);
+// Retired units, for the dashboard's "Recommission retired robot" choice. Declared before any
+// `/:robotId` route; identity and display fields only.
+router.get("/retired", robotsController.listRetiredRobots);
 // New: dashboard initial load (DB + Redis live state merge)
 router.get("/state", robotsController.getRobotsState);
 // Optional: telemetry history (last 50 snapshots)
@@ -69,6 +80,10 @@ router.patch("/:robotId", commandLimiter, notRetired, robotsController.updateRob
 // Agent becomes DECOMMISSIONED — see services/robotRetirement.service.js. Repeating it is
 // a success, so this route deliberately has no retired-robot refusal.
 router.delete("/:robotId", retireLimiter, robotsController.deleteRobot);
+// Recommission a retired robot: the same Robot/Agent rows, DECOMMISSIONED -> COMMISSIONED, old
+// credentials revoked — see services/robotRecommission.service.js. Deliberately no
+// `notRetired`: a retired unit is the only one this route acts on.
+router.post("/:robotId/recommission", recommissionLimiter, elevatedOnly, robotsController.recommissionRobot);
 router.post("/", legacyCommissionLimiter, robotsController.commissionRobot);
 
 module.exports = router;

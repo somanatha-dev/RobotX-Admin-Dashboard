@@ -80,6 +80,8 @@ function createRetirementStore(seed) {
     if (where.id !== undefined && robot.id !== where.id) return false;
     if (where.simulated !== undefined && robot.simulated !== where.simulated) return false;
     if (where.NOT?.agent?.is?.lifecycleState === "DECOMMISSIONED" && isRetiredRow(robot)) return false;
+    // The positive relation filter (`GET /api/robots/retired`).
+    if (where.agent?.is?.lifecycleState !== undefined && agentOf(robot.id)?.lifecycleState !== where.agent.is.lifecycleState) return false;
     return true;
   };
 
@@ -126,6 +128,13 @@ function createRetirementStore(seed) {
       if (existing) Object.assign(existing, update);
       else state.fenceAudits.push({ ...create });
     }),
+    findUnique: jest.fn(async ({ where }) => {
+      const row = state.fenceAudits.find((r) => r.agentId === where.agentId);
+      return row ? { ...row } : null;
+    }),
+    findMany: jest.fn(async ({ where } = {}) =>
+      state.fenceAudits.filter((r) => inList(r.agentId, where?.agentId)).map((r) => ({ ...r })),
+    ),
   };
 
   prisma.agentCellPosition.findUnique.mockImplementation(async ({ where }) => {

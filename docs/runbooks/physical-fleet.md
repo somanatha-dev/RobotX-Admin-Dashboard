@@ -37,7 +37,9 @@ section left out turns its policy off, and the engine keeps refusing the robot b
 ## Per unit, per shift
 
 1. Commission once: `POST /api/robots/commission` (or an existing unit: the same call re-mints
-   its 6-digit pairing code, valid 300 s).
+   its 6-digit pairing code, valid 300 s). A **retired** unit is refused here; bring it back with
+   `POST /api/robots/<robotId>/recommission` first (see [robot-recommissioning.md](robot-recommissioning.md)).
+   It returns as `COMMISSIONED` and is put back in service only by this declaration at the next boot.
 2. Declare its state of charge: `POST /api/robots/<robotId>/soc-declaration {"socPct": 85}`.
 3. The Pi connects and sends, every 2 s:
    - `HEARTBEAT` (`{commitmentId, fence}` while it holds a mission);

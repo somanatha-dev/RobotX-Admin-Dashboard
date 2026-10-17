@@ -34,6 +34,7 @@ import { applyRerouteToCache, applyRobotOffline, applyRobotOnline, applyTaskUpda
 import { obstacleAlertFrom, rerouteAlertLogLine } from '@/lib/obstacleAlert.js';
 import { DUPLICATE_OUTCOME, newIdempotencyKey } from '@/lib/idempotency.js';
 import { applyPairingRejection, connectPathFor } from '@/lib/robotEnrollment.js';
+import { buildRecommissionRequest, isRetiredIdRefusal, recommissionFailureMessage } from '@/lib/robotRecommission.js';
 import { createSimulatorStatusPoller, createSimulatorStatusSync } from '@/lib/simulatorStatusSync.js';
 
 /** How often the simulator's status (charging stages, ETAs, stations) is refreshed. */
@@ -513,21 +514,28 @@ export default function AppProvider({ children }) {
           lon,
         });
 
-        await robotsApi.commissionRobot({
-          robotId,
-          name: robotName,
-          locationId: location.id,
-          lat,
-          lon,
-          // The chassis the form collected. It used to be gathered and then dropped here,
-          // so every unit reached the backend with no type at all — and the backend, having
-          // never been told, could not key the unit's `AgentClass` and its model rows.
-          chassisType: robotData?.chassisType ?? robotData?.type ?? null,
-          // The six specification values plus the declared initial state of charge. Sent as
-          // one object so the server validates them as a set — a normal speed above the
-          // maximum is only wrong in combination.
-          specification: robotData?.specification ?? null,
-        });
+        try {
+          await robotsApi.commissionRobot({
+            robotId,
+            name: robotName,
+            locationId: location.id,
+            lat,
+            lon,
+            // The chassis the form collected. It used to be gathered and then dropped here,
+            // so every unit reached the backend with no type at all — and the backend, having
+            // never been told, could not key the unit's `AgentClass` and its model rows.
+            chassisType: robotData?.chassisType ?? robotData?.type ?? null,
+            // The six specification values plus the declared initial state of charge. Sent as
+            // one object so the server validates them as a set — a normal speed above the
+            // maximum is only wrong in combination.
+            specification: robotData?.specification ?? null,
+          });
+        } catch (err) {
+          // The id belongs to a retired robot. Still a refusal (the dialog shows the server's
+          // sentence), but the page can now offer the explicit recommissioning path for it.
+          if (isRetiredIdRefusal(err)) robotData?.onRetiredId?.(robotId);
+          throw err;
+        }
 
         await refreshDbState();
         addEvent(`Unit ${robotId} commissioned`, 'info');
@@ -640,6 +648,61 @@ export default function AppProvider({ children }) {
       return robot;
     },
     [addEvent]
+  );
+
+  /**
+   * Recommission a retired robot — its own record, not a new unit.
+   *
+   * Routed through `requestAuth` like commissioning and decommissioning: it changes what the
+   * fleet *is*. The server is what authorises it (elevated role, reason, typed confirmation)
+   * and what decides the outcome; nothing here is written until it answers. Success leads to
+   * the Connect page, because the unit's old credentials were revoked and it must pair again.
+   * A failure stays in the dialog as a sentence that says what to do next.
+   *
+   * @param {{ robotId: string, confirmRobotId: string, reason: string }} draft
+   */
+  const recommission = useCallback(
+    (draft) => {
+      const robotId = String(draft?.robotId || '').trim();
+      if (!robotId) return;
+      requestAuth(
+        `RECOMMISSION RETIRED UNIT: ${robotId}`,
+        async () => {
+          let result;
+          try {
+            result = await robotsApi.recommissionRobot(robotId, buildRecommissionRequest(draft));
+          } catch (err) {
+            if (err?.status === 401) sessionExpiredRef.current?.();
+            const wrapped = new Error(recommissionFailureMessage(err, robotId));
+            wrapped.status = err?.status;
+            wrapped.code = err?.code ?? null;
+            throw wrapped;
+          }
+          addEvent(
+            result.alreadyRecommissioned
+              ? `Unit ${robotId} was already recommissioned`
+              : `Unit ${robotId} recommissioned — pair it again before it can work`,
+            'warning'
+          );
+          // The server answered: the unit is recommissioned. A failed refetch is not a failed
+          // recommissioning, and must not invite a second request.
+          try {
+            await refreshDbState();
+          } catch {
+            // the list catches up on the next refresh
+          }
+          navigate(connectPathFor(robotId));
+        },
+        true,
+        {
+          warning:
+            'This returns the retired robot’s own record to the fleet. Its old credentials are revoked and it ' +
+            'must be paired again. It receives no work until its physical fleet declaration is applied and it is ' +
+            'online with a declared state of charge.',
+        }
+      );
+    },
+    [addEvent, navigate, refreshDbState, requestAuth]
   );
 
   const retire = useCallback(
@@ -961,6 +1024,16 @@ export default function AppProvider({ children }) {
       setRobots((prev) => prev.filter((r) => String(r.robotId || '').trim() !== robotId));
     };
 
+    // A retired unit was recommissioned (here or on another dashboard). It is back in the
+    // backend's lists, offline and unpaired; refetch rather than invent its row.
+    const onRobotRecommissioned = (data) => {
+      const robotId = String(data?.robotId || '').trim();
+      if (!robotId) return;
+      refreshDbState().catch(() => {
+        // a 401 here already signed the page out (see refreshDbState)
+      });
+    };
+
     // H4 — a commissioned robot reached the server and was refused while pairing. The robot
     // will not retry a refused code by itself, so the operator has to act: say so.
     const onRobotPairingRejected = (data) => {
@@ -1158,6 +1231,7 @@ export default function AppProvider({ children }) {
     socket.on(DASHBOARD_EVENTS.ROBOT_OFFLINE, onRobotOffline);
     socket.on(DASHBOARD_EVENTS.ROBOT_ONLINE, onRobotOnline);
     socket.on(DASHBOARD_EVENTS.ROBOT_RETIRED, onRobotRetired);
+    socket.on(DASHBOARD_EVENTS.ROBOT_RECOMMISSIONED, onRobotRecommissioned);
     socket.on(DASHBOARD_EVENTS.ROBOT_PAIRING_REJECTED, onRobotPairingRejected);
     socket.on(DASHBOARD_EVENTS.TASK_CREATED, onTaskCreated);
     socket.on(DASHBOARD_EVENTS.TASK_ACCEPTED, onTaskAccepted);
@@ -1175,6 +1249,7 @@ export default function AppProvider({ children }) {
       socket.off(DASHBOARD_EVENTS.ROBOT_OFFLINE, onRobotOffline);
       socket.off(DASHBOARD_EVENTS.ROBOT_ONLINE, onRobotOnline);
       socket.off(DASHBOARD_EVENTS.ROBOT_RETIRED, onRobotRetired);
+      socket.off(DASHBOARD_EVENTS.ROBOT_RECOMMISSIONED, onRobotRecommissioned);
       socket.off(DASHBOARD_EVENTS.ROBOT_PAIRING_REJECTED, onRobotPairingRejected);
       socket.off(DASHBOARD_EVENTS.TASK_CREATED, onTaskCreated);
       socket.off(DASHBOARD_EVENTS.TASK_ACCEPTED, onTaskAccepted);
@@ -1260,6 +1335,7 @@ export default function AppProvider({ children }) {
       commission,
       createSimulatedRobot,
       updateRobotSpecification,
+      recommission,
       retire,
       createTask,
       cancelTask,
@@ -1284,6 +1360,7 @@ export default function AppProvider({ children }) {
       commission,
       createSimulatedRobot,
       updateRobotSpecification,
+      recommission,
       retire,
       createTask,
       cancelTask,
