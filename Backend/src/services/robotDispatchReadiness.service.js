@@ -110,12 +110,17 @@ async function assessDispatchReadiness(input) {
 
   const lifecycleState = agent ? agent.lifecycleState : null;
   const connected = robot.isOnline === true && typeof robot.socketId === "string" && robot.socketId !== "";
+  const simulated = simulationPolicy.isSimulatedRobot(robot);
+  const declaration = simulated ? null : await describeDeclaration({ prisma, physicalPolicy, declared, robotId, agent });
   const blockers = [];
+  if (declaration) for (const blocker of declaration.blockers) blockers.push(blocker);
   if (!agent) blockers.push({ code: "NO_AGENT", detail: "the robot has no engine Agent row" });
   else if (lifecycleState !== "ACTIVE") {
     blockers.push({
       code: "LIFECYCLE_NOT_ACTIVE",
-      detail: `lifecycle ${lifecycleState}: only ACTIVE agents are considered (F2). A physical unit becomes ACTIVE only when the owner's physical fleet declaration is applied at boot`,
+      detail:
+        `lifecycle ${lifecycleState}: only ACTIVE agents are considered (F2). A physical unit is put in service by ` +
+        "its physical fleet declaration — at boot, or for one unit with POST /api/robots/:robotId/physical-declaration/apply",
     });
   }
   if (!connected) blockers.push({ code: "NOT_CONNECTED", detail: "no live authenticated connection" });
@@ -137,8 +142,11 @@ async function assessDispatchReadiness(input) {
 
   return {
     robotId,
-    simulated: simulationPolicy.isSimulatedRobot(robot),
+    simulated,
     asOf: new Date(nowMs).toISOString(),
+    // Physical units only: whether this process declares the unit, and whether that declaration
+    // reached its engine rows (the region binding only `applyRobotDeclaration` writes).
+    declaration: declaration ? declaration.summary : null,
     visible: !robotRetirementPolicy.isRetiredRobot(robot),
     connected,
     status: robot.status,
@@ -154,6 +162,84 @@ async function assessDispatchReadiness(input) {
     note:
       "dispatchReady means no robot-level blocker was found. Each offer is still decided per task by the " +
       "engine (route, energy, payload, timing), and the robot itself may refuse it.",
+  };
+}
+
+/**
+ * A physical unit's declaration standing, as blockers the operator can act on. Without a loaded
+ * declaration that names the unit, the physical provider answers nothing for it: it is never
+ * indexed (no availability policy) and every declared predicate is absent — which the gate list
+ * alone reports only as a scatter of F-numbers.
+ *
+ *   PHYSICAL_FLEET_DISABLED   this process loaded no physical fleet declaration
+ *   NOT_DECLARED              the declaration does not name the unit, or its entry is invalid
+ *   DECLARATION_NOT_APPLIED   declared, but the engine rows are not bound to the declared region
+ *                             (never applied, applied while the unit did not exist yet, or the
+ *                             region row is missing)
+ *
+ * @returns {Promise<{ summary: object, blockers: object[] }>}
+ */
+async function describeDeclaration({ prisma, physicalPolicy, declared, robotId, agent }) {
+  if (!physicalPolicy || typeof physicalPolicy.robotFor !== "function") {
+    return {
+      summary: { fleetEnabled: false, declared: false, applied: false, problems: [] },
+      blockers: [
+        {
+          code: "PHYSICAL_FLEET_DISABLED",
+          detail: "this backend loaded no physical fleet declaration (PHYSICAL_FLEET_ENABLED / PHYSICAL_FLEET_DECLARATION_FILE): no physical unit is indexed or evaluated",
+        },
+      ],
+    };
+  }
+  if (!declared) {
+    const problems = typeof physicalPolicy.problemsFor === "function" ? [...physicalPolicy.problemsFor(robotId)] : [];
+    // A declaration that declares nobody usually failed as a file (unset, unreadable, not JSON):
+    // name that, not only the absence of this unit.
+    const fileProblems =
+      physicalPolicy.robots && physicalPolicy.robots.size === 0 && Array.isArray(physicalPolicy.problems)
+        ? physicalPolicy.problems.filter((line) => !/^robots\[/.test(line) && /PHYSICAL_FLEET_DECLARATION_FILE|could not be read|robots must be a list/.test(line))
+        : [];
+    return {
+      summary: { fleetEnabled: true, declared: false, applied: false, problems: [...problems, ...fileProblems] },
+      blockers: [
+        {
+          code: "NOT_DECLARED",
+          detail:
+            problems.length > 0
+              ? `the physical fleet declaration names this unit but its entry is invalid: ${problems.join("; ")}`
+              : "the loaded physical fleet declaration does not name this unit; add it and restart the backend" +
+                (fileProblems.length > 0 ? ` (the declaration declares no unit: ${fileProblems.join("; ")})` : ""),
+        },
+      ],
+    };
+  }
+  const declaredRegionId = declared.control.regionId;
+  let regionRowId = null;
+  let regionLookupFailed = false;
+  try {
+    const region = prisma.region && typeof prisma.region.findFirst === "function"
+      ? await prisma.region.findFirst({ where: { regionId: declaredRegionId }, select: { id: true } })
+      : null;
+    regionRowId = region ? region.id : null;
+  } catch {
+    regionLookupFailed = true;
+  }
+  const applied = Boolean(agent) && regionRowId !== null && agent.regionId === regionRowId;
+  const summary = { fleetEnabled: true, declared: true, applied, regionId: declaredRegionId, problems: [] };
+  if (applied) return { summary, blockers: [] };
+  return {
+    summary,
+    blockers: [
+      {
+        code: "DECLARATION_NOT_APPLIED",
+        detail: regionLookupFailed
+          ? `the declared region "${declaredRegionId}" could not be read, so whether the declaration was applied is unknown`
+          : regionRowId === null
+            ? `the declared region "${declaredRegionId}" has no Region row, so the declaration cannot be applied`
+            : `the unit is declared for region "${declaredRegionId}" but its engine rows are not bound to it: the declaration ` +
+              "has not been applied to this unit (restart the backend, or POST /api/robots/:robotId/physical-declaration/apply)",
+      },
+    ],
   };
 }
 

@@ -84,6 +84,11 @@ router.delete("/:robotId", retireLimiter, robotsController.deleteRobot);
 // credentials revoked — see services/robotRecommission.service.js. Deliberately no
 // `notRetired`: a retired unit is the only one this route acts on.
 router.post("/:robotId/recommission", recommissionLimiter, elevatedOnly, robotsController.recommissionRobot);
+// Put one declared physical unit in service from the loaded physical fleet declaration — the
+// write the boot makes, for a unit commissioned or recommissioned after it. Elevated role here;
+// the service adds the reason, the typed confirmation and the Event. A retired unit is refused
+// (recommission first), so it shares recommissioning's limiter rather than `notRetired`'s 409.
+router.post("/:robotId/physical-declaration/apply", recommissionLimiter, elevatedOnly, robotsController.applyPhysicalDeclaration);
 router.post("/", legacyCommissionLimiter, robotsController.commissionRobot);
 
 module.exports = router;

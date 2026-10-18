@@ -1206,7 +1206,44 @@ const declareStateOfCharge = asyncHandler(async (req, res) => {
   res.status(201).json({ ok: true, declaration: declared });
 });
 
+// POST /api/robots/:robotId/physical-declaration/apply   { reason, confirmRobotId }
+//
+// Put ONE declared physical unit in service from the declaration this backend loaded at boot,
+// without restarting it — see physicalDeclaration.activateDeclaredRobot. Elevated role (route),
+// reason and typed confirmation (service), recorded as an Event. ACTIVE is not assignable: the
+// index and every safety predicate still decide.
+//
+//   200 { ok, robotId, activated: true, alreadyActive, lifecycleBefore, lifecycleState, assignable: "NOT_ESTABLISHED" }
+//   400 INVALID_REQUEST   404 ROBOT_NOT_FOUND
+//   409 PHYSICAL_FLEET_DISABLED | NOT_DECLARED | NOT_PHYSICAL | ROBOT_RETIRED | LIFECYCLE_HELD | NO_REGION | NOT_APPLIED
+const applyPhysicalDeclaration = asyncHandler(async (req, res) => {
+  const robotCode = toStringOrNull(req.params?.robotId);
+  const actorId = req.user?.id ?? null;
+  let result;
+  try {
+    result = await physicalDeclaration.activateDeclaredRobot(getPrisma(), robotCode, req.body, {
+      policy: req.app?.locals?.physicalFleetPolicy ?? null,
+      actorId,
+    });
+  } catch (error) {
+    if (error instanceof physicalDeclaration.DeclarationActivationRefused) {
+      logger.warn("[physical] declaration apply refused", { robotId: robotCode, actorId, code: error.code, status: error.status });
+      res.status(error.status).json(error.toBody());
+      return;
+    }
+    throw error;
+  }
+  logger.info("[physical] declaration applied on request", {
+    robotId: result.robotId,
+    actorId,
+    lifecycleBefore: result.lifecycleBefore,
+    lifecycleState: result.lifecycleState,
+  });
+  res.json({ ok: true, ...result, assignable: "NOT_ESTABLISHED" });
+});
+
 module.exports = {
+  applyPhysicalDeclaration,
   declareStateOfCharge,
   // Exported so `simulator.controller.js` writes the `robot:{id}` live-state key through
   // the same writer rather than a second one. The shape of that key is read by the list

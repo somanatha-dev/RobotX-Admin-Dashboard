@@ -200,12 +200,39 @@ function fromDeclaration(raw) {
     }
   }
 
+  // One entry per unit. An entry with problems declares nothing for its unit, and the problems are
+  // kept per robot id so the readiness diagnostic can name them for that unit. A robot id declared
+  // twice is refused outright: which entry the owner meant is not this module's to guess, and the
+  // last one silently winning would put an unreviewed set of values into service.
   const robots = new Map();
-  for (const entry of Array.isArray(source.robots) ? source.robots : []) {
+  const robotProblems = new Map();
+  if (source.robots !== undefined && !Array.isArray(source.robots)) {
+    problems.push("robots must be a list of robot declarations: no physical robot is declared");
+  }
+  const entries = Array.isArray(source.robots) ? source.robots : [];
+  const occurrences = new Map();
+  for (const entry of entries) {
+    const id = entry && isString(entry.robotId) ? entry.robotId : null;
+    if (id !== null) occurrences.set(id, (occurrences.get(id) || 0) + 1);
+  }
+  entries.forEach((entry, index) => {
+    const id = entry && isString(entry.robotId) ? entry.robotId : null;
+    const label = id === null ? `robots[${index}]` : `robots[${id}]`;
+    const noteFor = (unitProblems) => {
+      problems.push(`${label}: ${unitProblems.join("; ")}`);
+      if (id !== null) robotProblems.set(id, [...(robotProblems.get(id) || []), ...unitProblems]);
+    };
+    if (id !== null && occurrences.get(id) > 1) {
+      if (!robots.has(id) && !robotProblems.has(id)) {
+        noteFor([`robotId "${id}" is declared ${occurrences.get(id)} times; every entry for it is refused until there is exactly one`]);
+      }
+      return;
+    }
     const normalised = normaliseRobot(entry);
     if (normalised.robot) robots.set(normalised.robot.robotId, normalised.robot);
-    else problems.push(`robots[${entry && entry.robotId}]: ${normalised.problems.join("; ")}`);
-  }
+    else noteFor(normalised.problems);
+  });
+  const frozenRobotProblems = new Map([...robotProblems].map(([id, list]) => [id, Object.freeze([...list])]));
 
   return Object.freeze({
     provenance: PROVENANCE,
@@ -220,6 +247,8 @@ function fromDeclaration(raw) {
     risk: Object.freeze({ failureProbabilityPrior, routeHazardCu }),
     robots,
     robotFor: (robotId) => robots.get(robotId) || null,
+    /** Why a unit named in the file is not declared: its entry's problems, or `[]`. */
+    problemsFor: (robotId) => frozenRobotProblems.get(robotId) || Object.freeze([]),
     problems: Object.freeze(problems),
   });
 }

@@ -184,8 +184,10 @@ An ordinary commissioning attempt **never** recommissions anything.
 3. Enter the reason and type the ID to confirm.
 4. Pass the step-up challenge. On success the page goes to the unit's Connect page.
 5. Pair the Pi with the fresh code.
-6. Make sure the unit is in the physical fleet declaration, then restart the backend so the
-   declaration is applied.
+6. Make sure the unit is in the physical fleet declaration the backend loaded. Then apply it with
+   `POST /api/robots/<robotId>/physical-declaration/apply {"reason", "confirmRobotId"}`; this needs
+   the elevated role and no restart. A restart also works. If the unit is not yet in the file, add
+   it and restart, because the file is read at boot only. See [physical-fleet.md](physical-fleet.md).
 7. Declare its state of charge.
 
 **API** (the `TOKEN` placeholder stands for a session JWT; never paste real credentials into

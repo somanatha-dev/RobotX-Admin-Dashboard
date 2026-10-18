@@ -31,6 +31,15 @@ const physicalPolicy = require("./fleetProviders/physicalPolicy");
 /** @structural watts → Wh per second */
 const SECONDS_PER_HOUR = 3600;
 
+/**
+ * @structural the lifecycle states (§2.1) this module reads by name. The release-into-service
+ * write below keeps its own literal list: `robotRecommission.test.js` pins that literal as the
+ * only place a runtime module puts an existing Agent in service.
+ */
+const ACTIVE = "ACTIVE";
+const RETIRED = "DECOMMISSIONED";
+const ACTIVATABLE = Object.freeze(["COMMISSIONED", ACTIVE]);
+
 const isNumber = (value) => typeof value === "number" && Number.isFinite(value);
 
 class PhysicalDeclarationError extends Error {
@@ -114,11 +123,17 @@ async function loadPhysicalUnit(prisma, robotId) {
 /**
  * Write one robot's declaration onto its rows. Idempotent.
  *
+ * The result states the lifecycle the unit is in once the write has committed, and whether it is
+ * in service (`activated`). A held or retired unit has its declared rows written but is never
+ * re-activated, and the result says so rather than reporting the write alone as success.
+ *
  * @param {object} prisma
  * @param {object} declared one `policy.robotFor(robotId)` entry
  * @param {{ site: object }} policy the loaded physical policy (its site ambient bounds the derating curve)
+ * @param {{ audit?: (tx: object, change: { robotRowId: string, before: string|null, after: string|null }) => Promise<void> }} [options]
+ *   `audit` runs inside the same transaction, after the lifecycle write
  */
-async function applyRobotDeclaration(prisma, declared, policy) {
+async function applyRobotDeclaration(prisma, declared, policy, options) {
   if (!declared || !declared.robotId) throw new TypeError("applyRobotDeclaration requires a validated robot declaration");
   const unit = await loadPhysicalUnit(prisma, declared.robotId);
   const agentClass = unit.agent.agentClass;
@@ -131,7 +146,9 @@ async function applyRobotDeclaration(prisma, declared, policy) {
   const payloadCapacityKg = agentClass.containerModel ? agentClass.containerModel.totalMassLimitKg : null;
   const maxMassKg = isNumber(payloadCapacityKg) ? payloadCapacityKg : null;
 
-  await prisma.$transaction(async (tx) => {
+  const audit = options && typeof options.audit === "function" ? options.audit : null;
+  const lifecycle = await prisma.$transaction(async (tx) => {
+    const before = await tx.agent.findUnique({ where: { id: unit.agent.id }, select: { lifecycleState: true } });
     await agentEnergyProvisioning.provisionAgentEnergyState(tx, {
       agentRowId: unit.agent.id,
       agentClassRowId: agentClass.id,
@@ -189,13 +206,32 @@ async function applyRobotDeclaration(prisma, declared, policy) {
         hardwareRevision: declared.control.hardwareRevision,
       },
     });
+    const after = await tx.agent.findUnique({ where: { id: unit.agent.id }, select: { lifecycleState: true } });
+    const change = {
+      robotRowId: unit.id,
+      before: before ? before.lifecycleState : null,
+      after: after ? after.lifecycleState : null,
+    };
+    if (audit) await audit(tx, change);
+    return change;
   });
 
-  return { robotId: declared.robotId, agentRowId: unit.agent.id, coefficients, provenance: physicalPolicy.PROVENANCE, policyDeclaredBy: policy && policy.declaredBy };
+  return {
+    robotId: declared.robotId,
+    agentRowId: unit.agent.id,
+    lifecycleBefore: lifecycle.before,
+    lifecycleState: lifecycle.after,
+    activated: lifecycle.after === ACTIVE,
+    coefficients,
+    provenance: physicalPolicy.PROVENANCE,
+    policyDeclaredBy: policy && policy.declaredBy,
+  };
 }
 
 /**
  * Apply every robot in the declaration. One robot's failure is reported, never fatal to the rest.
+ * A unit whose rows were written but which stays out of service (held or retired) is reported
+ * `ok: true, activated: false` with its lifecycle, so the boot log does not read as "in service".
  */
 async function applyDeclaration(prisma, policy, { logger } = {}) {
   const results = [];
@@ -208,6 +244,179 @@ async function applyDeclaration(prisma, policy, { logger } = {}) {
     }
   }
   return results;
+}
+
+/** @structural the refusals `activateDeclaredRobot` answers with */
+const ACTIVATION_REFUSAL = Object.freeze({
+  INVALID_REQUEST: "INVALID_REQUEST",
+  PHYSICAL_FLEET_DISABLED: "PHYSICAL_FLEET_DISABLED",
+  NOT_DECLARED: "NOT_DECLARED",
+  ROBOT_NOT_FOUND: "ROBOT_NOT_FOUND",
+  NOT_PHYSICAL: "NOT_PHYSICAL",
+  ROBOT_RETIRED: "ROBOT_RETIRED",
+  LIFECYCLE_HELD: "LIFECYCLE_HELD",
+  NOT_APPLIED: "NOT_APPLIED",
+});
+
+/** @structural the fields an activation request may carry */
+const ACTIVATION_FIELDS = Object.freeze(["reason", "confirmRobotId"]);
+/** @structural the audit reason's length bound, as recommissioning's */
+const MAX_REASON_LENGTH = 500;
+
+class DeclarationActivationRefused extends Error {
+  constructor(status, code, message, extra) {
+    super(message);
+    this.name = "DeclarationActivationRefused";
+    this.status = status;
+    this.code = code;
+    this.extra = extra && typeof extra === "object" ? extra : {};
+  }
+
+  toBody() {
+    const error = { 400: "Bad Request", 404: "Not Found", 409: "Conflict" }[this.status] || "Error";
+    return { ok: false, error, code: this.code, refusal: this.code, message: this.message, ...this.extra };
+  }
+}
+
+function validateActivationRequest(robotId, body) {
+  const source = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+  const invalid = (message) => new DeclarationActivationRefused(400, ACTIVATION_REFUSAL.INVALID_REQUEST, message);
+  if (typeof robotId !== "string" || robotId.trim() === "") throw invalid("robotId is required");
+  const unknown = Object.keys(source).filter((key) => !ACTIVATION_FIELDS.includes(key));
+  if (unknown.length > 0) {
+    throw invalid(
+      `Applying a declaration accepts only ${ACTIVATION_FIELDS.join(" and ")}; refused: ${unknown.join(", ")}. ` +
+        "Every declared value comes from the loaded physical fleet declaration, never from a request.",
+    );
+  }
+  const confirm = typeof source.confirmRobotId === "string" ? source.confirmRobotId.trim() : "";
+  if (confirm !== robotId) {
+    throw invalid(`confirmRobotId must repeat the robot id exactly ("${robotId}") to confirm which unit is put in service.`);
+  }
+  const reason = typeof source.reason === "string" ? source.reason.trim() : "";
+  if (!reason) throw invalid("A reason is required to put a physical unit in service; it is recorded in the audit trail.");
+  if (reason.length > MAX_REASON_LENGTH) throw invalid(`The reason must be at most ${MAX_REASON_LENGTH} characters.`);
+  return reason;
+}
+
+/**
+ * Put ONE declared physical unit in service from the declaration this process already loaded —
+ * the same write the boot applies (`applyRobotDeclaration`), without a restart.
+ *
+ * Why it exists: the declaration is applied at boot only, so a unit commissioned after the boot
+ * (its Robot row did not exist yet) or recommissioned after it (it returns COMMISSIONED) stayed
+ * out of service until the next restart of the production backend. This is the explicit,
+ * operator-authorised path for those two cases. It adds no authority the boot does not already
+ * exercise, and it is narrower:
+ *
+ *   · only a unit the loaded declaration names, with no problems (the file is not re-read: what a
+ *     request can put in service is exactly what the process was started with);
+ *   · only a PHYSICAL unit (`Robot.simulated`, through `positionObservation.provenanceOf`);
+ *   · only from COMMISSIONED or ACTIVE — a retired unit is refused (recommission it first), and a
+ *     QUARANTINED or MAINTENANCE unit is refused by name rather than silently left as it is;
+ *   · a reason and a typed confirmation, recorded as an Event in the same transaction.
+ *
+ * It makes the unit ACTIVE and nothing more. Discovery still needs the index's own conditions (a
+ * measured position, a fresh operator SoC declaration, a shard), and every §7.5 predicate —
+ * fresh localisation, stop latch, readiness, energy, route containment — is still decided per
+ * round. Active is not assignable.
+ *
+ * @param {object} prisma
+ * @param {string} robotId
+ * @param {object} body `{ reason, confirmRobotId }`
+ * @param {{ policy: object|null, actorId?: string|null }} context `policy` is `app.locals.physicalFleetPolicy`
+ */
+async function activateDeclaredRobot(prisma, robotId, body, context) {
+  const code = typeof robotId === "string" ? robotId.trim() : "";
+  const reason = validateActivationRequest(code, body);
+  const policy = context && context.policy;
+  const actorId = context && typeof context.actorId === "string" ? context.actorId : null;
+
+  if (!policy || typeof policy.robotFor !== "function") {
+    throw new DeclarationActivationRefused(
+      409,
+      ACTIVATION_REFUSAL.PHYSICAL_FLEET_DISABLED,
+      "The physical fleet is not enabled in this backend (PHYSICAL_FLEET_ENABLED), so no physical unit can be put in service.",
+    );
+  }
+  const declared = policy.robotFor(code);
+  if (!declared) {
+    const problems = typeof policy.problemsFor === "function" ? [...policy.problemsFor(code)] : [];
+    throw new DeclarationActivationRefused(
+      409,
+      ACTIVATION_REFUSAL.NOT_DECLARED,
+      problems.length > 0
+        ? `Unit ${code} is named in the physical fleet declaration but its entry is invalid: ${problems.join("; ")}`
+        : `Unit ${code} is not in the physical fleet declaration this backend loaded. Add it to the file and restart the backend.`,
+      { problems },
+    );
+  }
+
+  const robot = await prisma.robot.findUnique({
+    where: { robotId: code },
+    select: { id: true, agent: { select: { id: true, lifecycleState: true } } },
+  });
+  if (!robot || !robot.agent) {
+    throw new DeclarationActivationRefused(404, ACTIVATION_REFUSAL.ROBOT_NOT_FOUND, `No commissioned robot "${code}" with an engine Agent.`);
+  }
+  if ((await positionObservation.provenanceOf(prisma, code)) !== "PHYSICAL") {
+    throw new DeclarationActivationRefused(409, ACTIVATION_REFUSAL.NOT_PHYSICAL, `Unit ${code} is not a physical unit.`);
+  }
+  const current = robot.agent.lifecycleState;
+  if (current === RETIRED) {
+    throw new DeclarationActivationRefused(
+      409,
+      ACTIVATION_REFUSAL.ROBOT_RETIRED,
+      `Unit ${code} is retired. Recommission it first (POST /api/robots/${code}/recommission).`,
+      { lifecycleState: current },
+    );
+  }
+  if (!ACTIVATABLE.includes(current)) {
+    throw new DeclarationActivationRefused(
+      409,
+      ACTIVATION_REFUSAL.LIFECYCLE_HELD,
+      `Unit ${code} is ${current}; only a COMMISSIONED or ACTIVE unit is put in service by its declaration.`,
+      { lifecycleState: current },
+    );
+  }
+
+  let result;
+  try {
+    result = await applyRobotDeclaration(prisma, declared, policy, {
+      audit: (tx, change) =>
+        tx.event.create({
+          data: {
+            robotId: change.robotRowId,
+            type: "INFO",
+            message:
+              `Unit ${code}: physical fleet declaration applied (lifecycle ${change.before} -> ${change.after})` +
+              (actorId ? ` by ${actorId}` : "") +
+              `: ${reason}. In service is not assignable: position, SoC, readiness and every safety gate are still required.`,
+          },
+        }),
+    });
+  } catch (error) {
+    if (error instanceof PhysicalDeclarationError) {
+      throw new DeclarationActivationRefused(error.status === 404 ? 404 : 409, error.code || ACTIVATION_REFUSAL.NOT_APPLIED, error.message);
+    }
+    throw error;
+  }
+  if (!result.activated) {
+    // A retirement or hold committed between the check above and the conditional write.
+    throw new DeclarationActivationRefused(
+      409,
+      ACTIVATION_REFUSAL.NOT_APPLIED,
+      `Unit ${code} was not put in service: its lifecycle is now ${result.lifecycleState}.`,
+      { lifecycleState: result.lifecycleState },
+    );
+  }
+  return {
+    robotId: code,
+    lifecycleBefore: result.lifecycleBefore,
+    lifecycleState: result.lifecycleState,
+    activated: true,
+    alreadyActive: result.lifecycleBefore === ACTIVE,
+  };
 }
 
 /**
@@ -251,6 +460,9 @@ async function declareStateOfCharge(prisma, input) {
 
 module.exports = {
   PhysicalDeclarationError,
+  DeclarationActivationRefused,
+  ACTIVATION_REFUSAL,
+  activateDeclaredRobot,
   declaredEnergyCoefficients,
   surfaceClassesFor,
   applyRobotDeclaration,

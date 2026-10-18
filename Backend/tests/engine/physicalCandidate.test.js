@@ -271,7 +271,7 @@ function physicalWorld(options) {
     observation: {
       findFirst: async ({ where }) => {
         if (where.agentId !== agent.id) return null;
-        if (where.kind === "position") return fix;
+        if (where.kind === "position") return opts.noFix ? null : fix;
         // An `offer_rejection` row (`opts.refusal`), filtered as the real query filters it.
         if (where.kind === "offer_rejection" && opts.refusal) {
           const at = opts.refusal.observedAt;
@@ -283,7 +283,8 @@ function physicalWorld(options) {
       },
     },
     chargerReservation: { findMany: async () => [] },
-    zone: { findMany: async () => [{ id: "zone-1" }] },
+    // The zones of the robot's own declared region (F27). `regionZones` puts it in another campus.
+    zone: { findMany: async () => (opts.regionZones || ["zone-1"]).map((id) => ({ id })) },
     charger: {
       findMany: async () => [{ chargerId: "charger-depot-1", cellId: depotCell, isDepot: true, chargerClass: "DEPOT", regionId: null }],
     },
@@ -642,6 +643,27 @@ describe("stop latch at the commit recheck (§10.3.2 step 3)", () => {
    38-predicate gate. Each control restricts; none relaxes a gate the robot already had.
    ═══════════════════════════════════════════════════════════════════════════ */
 
+describe("commissioning remediation — the pipeline still refuses a declared physical robot without its evidence", () => {
+  // The same harness as Gate 1: the real coordinator path, gate, Plan Builder and pricing. Each row
+  // removes ONE piece of evidence from an otherwise feasible declared unit.
+  test.each([
+    ["COMMISSIONED but found in the index (lifecycle)", (world) => { world.agent.lifecycleState = "COMMISSIONED"; }, {}, /F2:VIOLATED/],
+    ["no position fix on record at all", () => {}, { worldOptions: { noFix: true } }, /F10:|F16:/],
+    // No default SoC is substituted: the plan has no usable energy to start from and is refused.
+    ["no operator-declared state of charge (no trusted energy)", () => {}, { worldOptions: { soc: null } }, /PLAN_REFUSED.*startUsableWh/],
+    ["its declared region authorises none of the zones the route crosses (campus isolation)", () => {}, { worldOptions: { regionZones: ["zone-other-campus"] } }, /F27:VIOLATED/],
+  ])("%s: not feasible, named", async (_name, mutate, options, named) => {
+    const now = Date.now();
+    const world = physicalWorld({ decisionTimeMs: now, ...(options.worldOptions || {}) });
+    mutate(world);
+    const { seen, verdicts } = await evaluateOnce(world, now);
+    expect(seen.length === 1 && seen[0].result.feasible === true).toBe(false);
+    // A gate verdict when the pairing reached the gate; otherwise the pre-gate refusal (route, plan).
+    const failures = verdicts ? notSatisfied(verdicts).join(" ") : JSON.stringify(seen.map((row) => ({ refusal: row.result.refusal, problems: row.result.problems })));
+    expect(failures).toMatch(named);
+  });
+});
+
 describe("safety pass — a stale position never qualifies a physical robot (F16)", () => {
   test("the same declared robot, its newest fix 60 s old: not feasible, F16 named", async () => {
     const now = Date.now();
@@ -737,6 +759,8 @@ describe("safety pass — the readiness diagnostic (collectAll, read-only)", () 
     const prisma = {
       ...world.prisma,
       robot: { findUnique: async () => ({ ...world.robot, simulated: false, agent: world.agent }) },
+      // The declared region ("rnsit") is the Region row the agent is bound to: the declaration applied.
+      region: { findFirst: async ({ where }) => (where.regionId === "rnsit" ? { id: "region-1" } : null) },
       agentCellPosition: { ...world.prisma.agentCellPosition, findUnique: async () => (extra && extra.notIndexed ? null : world.position) },
       // `robotPosition.latestMeasuredPosition` reads through the Agent relation (`agent.agentId`).
       observation: {
