@@ -599,6 +599,60 @@ describe("Gate 1 — a declared physical robot is a feasible, priced candidate (
   });
 });
 
+// A physical-only process has no Charging Scheduler: only the simulator's development scheduler
+// publishes a `ChargerAvailabilityProjection`. §14.5's defined degradation is DEPOT_ONLY return
+// targets, so the declared depot Charger row is what the plan needs — not a projection.
+describe("energy without the simulator: no charger projection, DEPOT_ONLY (§14.5)", () => {
+  const withProjection = (world, findFirst) => ({ ...world, prisma: { ...world.prisma, chargerAvailabilityProjection: { findFirst } } });
+
+  test("no projection published: still 37 SATISFIED + F11, F35 on the DEPOT_ONLY basis", async () => {
+    const now = Date.now();
+    const world = withProjection(physicalWorld({ decisionTimeMs: now }), async () => null);
+    const { seen, verdicts } = await evaluateOnce(world, now);
+    expect(seen).toHaveLength(1);
+    expect(notSatisfied(verdicts).map((line) => line.split(":").slice(0, 2).join(":"))).toEqual(["F11:INDETERMINATE"]);
+    expect(seen[0].result.feasible).toBe(true);
+    expect(verdicts.F35.observed).toMatchObject({ basis: "DEPOT_ONLY" });
+    expect(verdicts.F34.outcome).toBe("SATISFIED");
+  });
+
+  test("a projection older than energy.charger_projection_max_age is not planned on either", async () => {
+    const now = Date.now();
+    const stale = async () => ({
+      version: 3,
+      publishedAt: new Date(now - 86_400_000),
+      horizonEnd: new Date(now + 7_200_000),
+      payload: { chargers: [{ chargerId: "charger-depot-1", isDepot: true, intervals: [{ fromMs: now - 60_000, untilMs: now + 7_200_000, state: "FREE" }] }] },
+    });
+    const { seen, verdicts } = await evaluateOnce(withProjection(physicalWorld({ decisionTimeMs: now }), stale), now);
+    expect(seen[0].result.feasible).toBe(true);
+    expect(verdicts.F35.observed).toMatchObject({ basis: "DEPOT_ONLY" });
+  });
+
+  test("negative control — no projection AND no depot charger row: not feasible, named (the real dependency)", async () => {
+    const now = Date.now();
+    const base = withProjection(physicalWorld({ decisionTimeMs: now }), async () => null);
+    const world = { ...base, prisma: { ...base.prisma, charger: { findMany: async () => [] } } };
+    const { seen, verdicts } = await evaluateOnce(world, now);
+    expect(seen).toHaveLength(1);
+    // No return target → no E_return → no plan energy: F34 cannot answer, and absence denies.
+    expect(seen[0].result).toMatchObject({ feasible: false, denials: ["F34"], deniedForIndeterminacyOnly: true });
+    expect(verdicts.F34.outcome).toBe("INDETERMINATE");
+  });
+
+  test("negative control — no projection and the declared SoC too low for the mission plus reserves: F34 denies, shortfall named", async () => {
+    const now = Date.now();
+    const world = withProjection(physicalWorld({ decisionTimeMs: now, soc: 0.02 }), async () => null);
+    const { seen, verdicts } = await evaluateOnce(world, now);
+    expect(seen).toHaveLength(1);
+    // The depot is reachable but the declared SoC cannot cover mission + floor + return, so the plan's
+    // energy projection is not built: F34 is INDETERMINATE, and its reason names the return shortfall.
+    expect(seen[0].result).toMatchObject({ feasible: false, denials: ["F34"] });
+    expect(verdicts.F34.outcome).toBe("INDETERMINATE");
+    expect(verdicts.F34.reason).toMatch(/insufficient energy to return to charger/);
+  });
+});
+
 describe("stop latch at the commit recheck (§10.3.2 step 3)", () => {
   // The commit path's own fresh read (`round.freshAgentSnapshot`, as `commitFor.buildContext`
   // calls it) re-evaluated by the volatile subset, exactly as `createVolatileRecheck` does.
