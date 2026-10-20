@@ -155,6 +155,8 @@ const EMPTY_DELEGATES = Object.freeze([
 /** Relations the decision path follows: delegate → field → how to find the related rows. */
 const RELATIONS = Object.freeze({
   agentCellPosition: { agent: { model: "agent", one: true, local: "agentId", foreign: "id" } },
+  // Charging-to-reassignment loop — the simulator's `addRobot` selects a Robot's Agent.
+  robot: { agent: { model: "agent", one: true, local: "id", foreign: "robotDbId" } },
   agent: {
     robot: { model: "robot", one: true, local: "robotDbId", foreign: "id" },
     batteryState: { model: "batteryState", one: true, local: "id", foreign: "agentId" },
@@ -191,7 +193,7 @@ const RELATIONS = Object.freeze({
   task: { payloadSpec: { model: "payloadSpec", one: true, local: "payloadSpecId", foreign: "id" } },
 });
 
-const SCALAR_OPERATORS = new Set(["equals", "in", "notIn", "not", "lt", "lte", "gt", "gte"]);
+const SCALAR_OPERATORS = new Set(["equals", "in", "notIn", "not", "lt", "lte", "gt", "gte", "contains"]);
 
 function comparable(value) {
   if (value instanceof Date) return value.getTime();
@@ -242,6 +244,7 @@ function createStore(seed) {
       if (operator === "equals" && !equal(value, operand)) return false;
       if (operator === "in" && !operand.some((item) => equal(value, item))) return false;
       if (operator === "notIn" && operand.some((item) => equal(value, item))) return false;
+      if (operator === "contains" && !(typeof value === "string" && value.includes(operand))) return false;
       if (operator === "not" && (isPlainObject(operand) ? matchScalar(value, operand) : equal(value, operand))) return false;
       if (value === null || value === undefined) {
         if (["lt", "lte", "gt", "gte"].includes(operator)) return false;
@@ -388,12 +391,69 @@ function createStore(seed) {
         writes.push({ model, op: "delete", row: copy(removed) });
         return copy(removed);
       },
+      // Charging-to-reassignment loop — the writes a persistent world needs (the decision-only
+      // scenarios above never issue them). Applied in place, like a committed row.
+      update: async ({ where, data, select, include }) => {
+        const row = rowsOf(model).find((entry) => matches(model, entry, where));
+        if (!row) {
+          const error = new Error(`phase7World store: ${model}.update matched nothing`);
+          error.code = "P2025";
+          throw error;
+        }
+        applyData(row, data);
+        writes.push({ model, op: "update", row: copy(row) });
+        return project(model, row, { select, include });
+      },
+      updateMany: async ({ where, data }) => {
+        const rows = rowsOf(model).filter((entry) => matches(model, entry, where));
+        for (const row of rows) {
+          applyData(row, data);
+          writes.push({ model, op: "update", row: copy(row) });
+        }
+        return { count: rows.length };
+      },
+      deleteMany: async ({ where } = {}) => {
+        const rows = rowsOf(model);
+        const removed = rows.filter((entry) => matches(model, entry, where));
+        tables.set(model, rows.filter((entry) => !removed.includes(entry)));
+        for (const row of removed) writes.push({ model, op: "delete", row: copy(row) });
+        return { count: removed.length };
+      },
+      createMany: async ({ data }) => {
+        for (const item of Array.isArray(data) ? data : [data]) {
+          const row = { id: crypto.randomUUID(), ...copy(item) };
+          rowsOf(model).push(row);
+          writes.push({ model, op: "create", row: copy(row) });
+        }
+        return { count: Array.isArray(data) ? data.length : 1 };
+      },
     };
+  }
+
+  /** Prisma's update data: plain values, or `{ set | increment | decrement }` operations. */
+  function applyData(row, data) {
+    for (const [field, value] of Object.entries(data || {})) {
+      if (value === undefined) continue;
+      if (isPlainObject(value) && ("increment" in value || "decrement" in value || "set" in value)) {
+        if ("set" in value) row[field] = copy(value.set);
+        const current = row[field] === null || row[field] === undefined ? 0 : row[field];
+        if ("increment" in value) row[field] = typeof current === "bigint" ? current + BigInt(value.increment) : current + value.increment;
+        if ("decrement" in value) row[field] = typeof current === "bigint" ? current - BigInt(value.decrement) : current - value.decrement;
+        continue;
+      }
+      row[field] = copy(value);
+    }
   }
 
   const prisma = {};
   for (const model of tables.keys()) prisma[model] = delegate(model);
-  return { prisma, tables, writes, rowsOf };
+  /** A delegate for a table the fixture does not carry, created empty on first use. */
+  const delegateFor = (model) => {
+    if (!tables.has(model)) tables.set(model, []);
+    if (!prisma[model]) prisma[model] = delegate(model);
+    return prisma[model];
+  };
+  return { prisma, tables, writes, rowsOf, delegateFor };
 }
 
 /**
@@ -1042,4 +1102,10 @@ module.exports = {
   createStore,
   decide,
   sim,
+  // Charging-to-reassignment loop (`chargingLoopWorld.js`) — the same row builders and
+  // environment the decision scenarios use.
+  ENV,
+  robotRows,
+  legRows,
+  sameRealm,
 };
