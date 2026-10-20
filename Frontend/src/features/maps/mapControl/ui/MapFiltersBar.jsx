@@ -29,7 +29,11 @@ function fromSelectableValue(v) {
   return String(v);
 }
 
-export function MapFiltersBar({
+// Memoised: every prop is a filter list, a selected id, a state setter or a stable callback,
+// so it changes only when the operator filters. Without it, every robot telemetry tick
+// re-rendered all five Radix selects and every option in them (measured ~80 component
+// renders a second at three robots).
+export const MapFiltersBar = React.memo(function MapFiltersBar({
   countries,
   states,
   cities,
@@ -140,4 +144,4 @@ export function MapFiltersBar({
       </Button>
     </div>
   );
-}
+});

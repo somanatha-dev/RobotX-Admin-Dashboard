@@ -22,9 +22,12 @@ import {
 } from './environment/environmentConfig.js';
 import { ROBOT_REPRESENTATION } from './operational/robotVisual.js';
 import { useAppState } from '@/context/appContext.js';
+import { acquireMap, releaseMap } from './mapControl/mapInstanceCache.js';
+import { initialBasemapConfig, setBasemapConfig } from './environment/basemapConfig.js';
+import { resolveMapTheme } from './theme/mapThemes.js';
 
 // ── The new layers this milestone adds ───────────────────────────────────────
-import { useMapTheme } from './theme/useMapTheme.js';
+import { readStoredTheme, useMapTheme } from './theme/useMapTheme.js';
 import {
   resolveCampusDefinition,
   campusRegistryEntry,
@@ -60,13 +63,14 @@ import './mapControl/ui/campusUi.css';
 // WORLD VIEW (strict)
 const WORLD_CENTER = [20, 0];
 
-// Module-level (not component state) so it survives MapControl unmounting —
-// navigating to another route tears down the whole Mapbox instance (see the
-// map-init effect below), so anything that needs to outlive that has to live
-// outside the component tree. Holds wherever the user last left the camera,
-// and whether the map has ever been opened before in this browser session —
-// used to skip the "earth → area" flyTo intro on every return visit and
-// just restore the exact last view instantly instead.
+// Module-level (not component state) so it survives MapControl unmounting.
+// Navigating away parks the Mapbox instance (mapControl/mapInstanceCache.js), and
+// a parked map keeps its camera — but one that was discarded (session end, lost
+// GPU context, parked too long) is rebuilt, and that rebuild must not replay the
+// intro either. Holds wherever the user last left the camera, and whether the map
+// has ever been opened before in this browser session — used to skip the
+// "earth → area" flyTo intro on every return visit and just restore the exact
+// last view instantly instead.
 let persistedMapCamera = null; // { lon, lat, zoom, pitch, bearing }
 let mapHasBeenOpenedBefore = false;
 
@@ -106,23 +110,26 @@ function MapControlInner({ filtersHost }) {
 
   const token = import.meta.env.VITE_MAPBOX_TOKEN;
 
-  // Initialize Mapbox once (no reloads)
+  // Take the page's map: the one parked on the last visit, or a new one.
   useEffect(() => {
     if (!token) return;
-    if (!mapContainerRef.current) return;
+    const host = mapContainerRef.current;
+    if (!host) return;
     if (mapRef.current) return;
 
     mapboxgl.accessToken = token;
 
-    // Returning visit: open exactly where the user left off, instantly —
-    // no world-view flash, no replayed flyTo animation.
+    // Returning visit with no parked map: open exactly where the user left off,
+    // instantly — no world-view flash, no replayed flyTo animation.
     const startCam = persistedMapCamera;
 
-    let map;
-    try {
-      map = new mapboxgl.Map({
-        container: mapContainerRef.current,
+    const createMap = (container) => {
+      const created = new mapboxgl.Map({
+        container,
         style: MAP_STYLE,
+        // The basemap is laid out once, with the values the environment and the
+        // theme are about to ask for — not with the style's defaults first.
+        config: initialBasemapConfig(resolveMapTheme(readStoredTheme()).basemap),
         center: startCam ? [startCam.lon, startCam.lat] : WORLD_CENTER,
         zoom: startCam ? startCam.zoom : CAMERA_PRESETS.WORLD.zoom,
         pitch: startCam ? startCam.pitch : CAMERA_PRESETS.WORLD.pitch,
@@ -134,28 +141,38 @@ function MapControlInner({ filtersHost }) {
         maxPitch: MAX_PITCH,
         antialias: true,
         attributionControl: false,
+        // Resizing is this page's (below). Mapbox's own observer would see a
+        // parked map's detached container as 0×0 and shrink the tile cache to
+        // match — discarding the tiles that parking it exists to keep.
+        trackResize: false,
       });
+      // Orbit / pan / zoom / tilt all belong to the map's own control surface.
+      // `visualizePitch` gives the compass a tilt readout, and a click on it
+      // resets bearing and pitch — that is the camera "reset" affordance.
+      // Added once per map: a reused map still has them.
+      created.addControl(new mapboxgl.NavigationControl({ showCompass: true, visualizePitch: true }), 'top-left');
+      // Vendor attribution is a licence condition of the basemap data, and this
+      // map now leans on that data explicitly as city context (§6). Compact so
+      // it does not compete with the operational overlay.
+      created.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
+      return created;
+    };
+
+    let map;
+    let reused = false;
+    try {
+      ({ map, reused } = acquireMap(host, createMap));
     } catch (err) {
       // No WebGL, no GPU, blocked context. Robots must still be visible (§23),
       // so the failure has to reach React state to swap in the fallback view.
       // This effect's whole job is standing up an external system; a
       // constructor that throws is that system reporting, not a cascading
       // render — and it happens at most once per mount.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMapFailure(err?.message || 'WebGL is unavailable in this browser.');
       return;
     }
 
     mapHasBeenOpenedBefore = true;
-
-    // Orbit / pan / zoom / tilt all belong to the map's own control surface.
-    // `visualizePitch` gives the compass a tilt readout, and a click on it
-    // resets bearing and pitch — that is the camera "reset" affordance.
-    map.addControl(new mapboxgl.NavigationControl({ showCompass: true, visualizePitch: true }), 'top-left');
-    // Vendor attribution is a licence condition of the basemap data, and this
-    // map now leans on that data explicitly as city context (§6). Compact so
-    // it does not compete with the operational overlay.
-    map.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
 
     mapRef.current = map;
 
@@ -176,8 +193,8 @@ function MapControlInner({ filtersHost }) {
     map.on('click', onMapClick);
 
     // Remember wherever the user leaves the camera, so the next time this
-    // page mounts (even after a full teardown from route navigation) it can
-    // reopen there instead of restarting the intro animation.
+    // page mounts (even on a rebuilt map, when the parked one was discarded) it
+    // can reopen there instead of restarting the intro animation.
     const onMoveEnd = () => {
       try {
         const c = map.getCenter();
@@ -195,12 +212,19 @@ function MapControlInner({ filtersHost }) {
     map.on('moveend', onMoveEnd);
 
     const onResize = () => {
+      // A host that has left the document (the page is unmounting) or has no size yet
+      // must not shrink the map to 0×0: the tile cache is sized from the viewport.
+      if (!host.isConnected || host.clientWidth === 0 || host.clientHeight === 0) return;
       try {
         map.resize();
       } catch {
         // ignore
       }
     };
+
+    // A reused map was parked at whatever size the page last had; this page may
+    // be a different size (the window or the sidebar changed in between).
+    if (reused) onResize();
 
     window.addEventListener('resize', onResize);
 
@@ -214,7 +238,7 @@ function MapControlInner({ filtersHost }) {
     let resizeObserver = null;
     if (typeof ResizeObserver !== 'undefined') {
       resizeObserver = new ResizeObserver(onResize);
-      resizeObserver.observe(mapContainerRef.current);
+      resizeObserver.observe(host);
     }
 
     const markers = markersRef.current;
@@ -243,11 +267,10 @@ function MapControlInner({ filtersHost }) {
         // ignore
       }
 
-      try {
-        map.remove();
-      } catch {
-        // ignore
-      }
+      // Parked, not removed: the next visit takes it back with its style, terrain
+      // and tiles intact. Each overlay hook removes what it added to it in its own
+      // cleanup (they hold the map they installed on, not `mapRef`).
+      releaseMap(map);
       mapRef.current = null;
     };
   }, [token, mapContainerRef, mapRef, markersRef, setSelectedRobotId]);
@@ -398,7 +421,7 @@ function MapControlInner({ filtersHost }) {
     const map = mapRef?.current;
     if (!map || !isMapLoaded || !environmentReady) return;
     try {
-      map.setConfigProperty?.('basemap', 'showPointOfInterestLabels', campusActive && !campusHasGeometry);
+      setBasemapConfig(map, 'showPointOfInterestLabels', campusActive && !campusHasGeometry);
     } catch {
       // A style without this knob keeps whatever it had.
     }

@@ -26,22 +26,20 @@ import '@/features/maps/operational/renderers/robotMarker2dRenderer.js';
 import { createRobotRenderer } from '@/features/maps/operational/robotRendererRegistry.js';
 import { ROBOT_REPRESENTATION, toRobotVisual, colorForRobot } from '@/features/maps/operational/robotVisual.js';
 import { anchorToLngLat } from '@/features/maps/world/robotWorldAnchor.js';
-import {
-  ROUTE_SEGMENT,
-  advanceRouteState,
-  lineCollection,
-} from '@/features/maps/operational/routeGeometry.js';
+import { ROUTE_SEGMENT, advanceRouteState } from '@/features/maps/operational/routeGeometry.js';
 import { summariseRouteFindings, validateRoute } from '@/features/maps/operational/routeValidation.js';
 import {
-  createFlowAnimator,
-  ensureLineLayer,
+  ROUTE_LAYER_ORDER,
+  applyRouteTheme,
+  createRouteFlusher,
+  ensureRouteLayers,
+  removeRouteLayers,
+  routeFeatures,
   routeLayersPresent,
-  safeRemoveLayerAndSource,
   shouldRedrawRoute,
 } from '@/features/maps/operational/routeOverlay.js';
 import { createSampleGate, sampleTimeOf } from '@/features/maps/operational/robotMotion.js';
 import { CHARGING_STATION_FLOOR_LAYER } from '@/features/maps/charging/stationLayers.js';
-import { documentVisible, prefersReducedMotion, subscribeReducedMotion } from '@/lib/reducedMotion.js';
 import { comfortableFollowPitch, createFollowCameraState, stepFollowCamera } from '@/features/maps/camera/followCamera.js';
 
 function toLngLat(point) {
@@ -102,39 +100,6 @@ function fitRouteBounds(map, points, opts = {}) {
     return true;
   } catch {
     return false;
-  }
-}
-
-/**
- * Re-colour every route layer currently on the map from a theme.
- *
- * Called on each frame of a theme transition. It writes paint properties onto
- * layers that already exist — no source is touched, no line is rebuilt, and
- * route progress (which segment is done vs ahead) is geometry, so it cannot be
- * disturbed by a colour change (§52).
- */
-function applyThemeToRouteLayers(map, routes, theme) {
-  if (!map || !theme) return;
-  const set = (layerId, prop, value) => {
-    try {
-      if (map.getLayer(layerId)) map.setPaintProperty(layerId, prop, value);
-    } catch {
-      // ignore
-    }
-  };
-
-  for (const entry of routes) {
-    for (const layerId of [
-      entry?.pickupTodoLayerId,
-      entry?.pickupDoneLayerId,
-      entry?.dropTodoLayerId,
-      entry?.dropDoneLayerId,
-    ]) {
-      if (!layerId) continue;
-      set(`${layerId}-casing`, 'line-color', theme.routes.halo);
-      set(`${layerId}-flow`, 'line-color', theme.routes.flow);
-      set(`${layerId}-flow`, 'line-opacity', theme.routes.flowOpacity);
-    }
   }
 }
 
@@ -252,12 +217,45 @@ export function useRobotStream({
   /** Called with the current route findings whenever they change. */
   onRouteFindings,
 }) {
-  const [robots, setRobots] = useState([]);
+  // ── The robots this overlay shows, derived — not copied into state per tick ──
+  //
+  // Only coordinates the backend actually reported — never a default position. The
+  // provider replaces a robot's row on each `robot:update`, so this list is current
+  // without a state write of its own. It used to be: the socket handler copied every
+  // tick into local state, and the sync effect copied the list again after commit —
+  // two extra renders of the whole map tree per robot per tick, to show the same data.
+  const listedRobots = useMemo(
+    () => (Array.isArray(globalRobots) ? globalRobots : []).filter((r) => Number.isFinite(r?.lat) && Number.isFinite(r?.lon)),
+    [globalRobots]
+  );
+  // A unit announced by `ROBOT_COMMISSIONED` before the provider's list has it. Held
+  // against the list it was announced over and dropped once that list changes — the
+  // same lifetime it had when the next sync overwrote the local copy.
+  const [commissioned, setCommissioned] = useState({ base: null, robots: [] });
+  const robots = useMemo(() => {
+    if (commissioned.base !== globalRobots || commissioned.robots.length === 0) return listedRobots;
+    const ids = new Set(listedRobots.map((r) => String(r?.robotId || '').trim()));
+    const extra = commissioned.robots.filter((r) => !ids.has(String(r?.robotId || '').trim()));
+    return extra.length > 0 ? [...listedRobots, ...extra] : listedRobots;
+  }, [listedRobots, commissioned, globalRobots]);
+  const globalRobotsRef = useRef(globalRobots);
+  useEffect(() => {
+    globalRobotsRef.current = globalRobots;
+  }, [globalRobots]);
 
   const activeRobotIdsRef = useRef(new Set());
   const routesRef = useRef(new Map());
   const taskPathsRef = useRef(new Map());
-  const flowAnimatorRef = useRef(null);
+  /** robotId → that robot's route as features of the one shared route source. */
+  const routeFeaturesRef = useRef(new Map());
+  /** Coalesces every robot's route changes into one `setData` (operational/routeOverlay.js). */
+  const routeFlusherRef = useRef(null);
+  if (routeFlusherRef.current === null) {
+    routeFlusherRef.current = createRouteFlusher({
+      getMap: () => mapRef?.current || null,
+      getFeatures: () => [...routeFeaturesRef.current.values()].flat(),
+    });
+  }
 
   /**
    * robotId → the task this unit is currently running.
@@ -464,22 +462,13 @@ export function useRobotStream({
 
   const removeRouteForRobot = useCallback(
     (robotId) => {
-      const map = mapRef?.current;
       const entry = routesRef.current.get(robotId);
-      if (!entry || !map) {
+      // Its features leave the shared source on the next push.
+      if (routeFeaturesRef.current.delete(robotId)) routeFlusherRef.current.schedule();
+      if (!entry) {
         routesRef.current.delete(robotId);
         return;
       }
-
-      // New progress layers
-      safeRemoveLayerAndSource(map, entry.pickupTodoLayerId, entry.pickupTodoSourceId);
-      safeRemoveLayerAndSource(map, entry.pickupDoneLayerId, entry.pickupDoneSourceId);
-      safeRemoveLayerAndSource(map, entry.dropTodoLayerId, entry.dropTodoSourceId);
-      safeRemoveLayerAndSource(map, entry.dropDoneLayerId, entry.dropDoneSourceId);
-
-      // Legacy layers (backward compatibility cleanup)
-      safeRemoveLayerAndSource(map, entry.pickupLayerId, entry.pickupSourceId);
-      safeRemoveLayerAndSource(map, entry.dropLayerId, entry.dropSourceId);
 
       try {
         entry.pickupMarker?.remove?.();
@@ -496,7 +485,7 @@ export function useRobotStream({
       routeStateRef.current.delete(entry.taskId);
       routeFindingsRef.current.delete(robotId);
     },
-    [mapRef]
+    []
   );
 
   /**
@@ -608,15 +597,6 @@ export function useRobotStream({
       }
 
       const color = colorForRobot(robotId);
-      const pickupTodoSourceId = `robot-route-pickup-todo-src-${robotId}`;
-      const pickupTodoLayerId = `robot-route-pickup-todo-layer-${robotId}`;
-      const pickupDoneSourceId = `robot-route-pickup-done-src-${robotId}`;
-      const pickupDoneLayerId = `robot-route-pickup-done-layer-${robotId}`;
-
-      const dropTodoSourceId = `robot-route-drop-todo-src-${robotId}`;
-      const dropTodoLayerId = `robot-route-drop-todo-layer-${robotId}`;
-      const dropDoneSourceId = `robot-route-drop-done-src-${robotId}`;
-      const dropDoneLayerId = `robot-route-drop-done-layer-${robotId}`;
 
       // ── Progress, from the unit's own position (§3D) ─────────────────────
       //
@@ -638,11 +618,11 @@ export function useRobotStream({
       routeStateRef.current.set(taskId, state);
 
       // ── The redraw guard (§3T) ───────────────────────────────────────────
-      // Everything below writes to Mapbox sources. A stationary unit produces
-      // an identical split every tick, and pushing identical GeoJSON into four
-      // sources twenty times a minute is work with no output. The signature
-      // covers everything that can change what is drawn; `pathRevision` covers
-      // a replan that keeps the same task id.
+      // Everything below writes to the route source. A stationary unit produces
+      // an identical split every tick, and re-pushing identical GeoJSON is a
+      // worker re-tile and a repaint with no output. The signature covers
+      // everything that can change what is drawn; `pathRevision` covers a
+      // replan that keeps the same task id.
       const signature = [
         taskId,
         record?.pathRevision || 0,
@@ -656,44 +636,23 @@ export function useRobotStream({
       // Same route, same split, and its layers really are in the style: nothing to do.
       if (!shouldRedrawRoute(existing, signature, map)) return;
 
-      const pickupDone = lineCollection(state.pickup?.travelled);
-      const pickupTodo = lineCollection(state.pickup?.ahead);
-      const dropDone = lineCollection(state.drop?.travelled);
-      const dropTodo = lineCollection(state.drop?.ahead);
+      // The overlay's layers are shared by every robot and installed once per
+      // style (re-added if a style switch discarded them). Beneath the charging
+      // stations, so a station a route ends at stays readable on top of it.
+      ensureRouteLayers(map, { theme: themeRef?.current || null, beforeId: CHARGING_STATION_FLOOR_LAYER });
 
-      // Remove legacy layers if they exist (so we don't double-draw after upgrading).
-      safeRemoveLayerAndSource(map, existing?.pickupLayerId, existing?.pickupSourceId);
-      safeRemoveLayerAndSource(map, existing?.dropLayerId, existing?.dropSourceId);
-
-      // Re-add if style switched (sources/layers removed by map.setStyle).
-      // `flow` marks the segments still ahead of the unit — the only ones with
-      // a direction left to communicate.
-      const theme = themeRef?.current || null;
-      const todoOpacity = theme?.routes?.todoOpacity ?? 0.95;
-      const doneOpacity = theme?.routes?.doneOpacity ?? 0.3;
-
-      // Beneath the charging stations, so a station a route ends at stays readable on top of it.
-      const beforeId = CHARGING_STATION_FLOOR_LAYER;
-      if (pickupTodo) ensureLineLayer({ map, sourceId: pickupTodoSourceId, layerId: pickupTodoLayerId, data: pickupTodo, color, dashed: true, opacity: todoOpacity * 0.8, theme, flow: true, beforeId });
-      if (pickupDone) ensureLineLayer({ map, sourceId: pickupDoneSourceId, layerId: pickupDoneLayerId, data: pickupDone, color, dashed: true, opacity: doneOpacity * 0.75, theme, flow: false, beforeId });
-      if (dropTodo) ensureLineLayer({ map, sourceId: dropTodoSourceId, layerId: dropTodoLayerId, data: dropTodo, color, dashed: false, opacity: todoOpacity, theme, flow: true, beforeId });
-      if (dropDone) ensureLineLayer({ map, sourceId: dropDoneSourceId, layerId: dropDoneLayerId, data: dropDone, color, dashed: false, opacity: doneOpacity, theme, flow: false, beforeId });
-
-      // If any segment is absent, remove its layer/source.
-      if (!pickupTodo) safeRemoveLayerAndSource(map, pickupTodoLayerId, pickupTodoSourceId);
-      if (!pickupDone) safeRemoveLayerAndSource(map, pickupDoneLayerId, pickupDoneSourceId);
-      if (!dropTodo) safeRemoveLayerAndSource(map, dropTodoLayerId, dropTodoSourceId);
-      if (!dropDone) safeRemoveLayerAndSource(map, dropDoneLayerId, dropDoneSourceId);
+      // This robot's segments replace its previous ones in the shared source; the
+      // push itself is coalesced with every other robot's (`createRouteFlusher`).
+      routeFeaturesRef.current.set(
+        robotId,
+        routeFeatures({ robotId, taskId, color, pickup: state.pickup, drop: state.drop })
+      );
+      routeFlusherRef.current.schedule();
 
       // What this draw was supposed to leave in the style. If the style refused it (still
       // loading), the signature is not recorded, so the next call — the restore on `load` /
       // `style.load`, or the next tick — draws it instead of believing it is already there.
-      const drawnLayerIds = [
-        pickupTodo && pickupTodoLayerId,
-        pickupDone && pickupDoneLayerId,
-        dropTodo && dropTodoLayerId,
-        dropDone && dropDoneLayerId,
-      ].filter(Boolean);
+      const drawnLayerIds = ROUTE_LAYER_ORDER;
       const drawn = routeLayersPresent(map, drawnLayerIds);
 
       let pickupMarker = existing?.pickupMarker || null;
@@ -737,8 +696,6 @@ export function useRobotStream({
           try { dropMarker.setLngLat(snapDropLL); } catch { /* ignore */ }
         }
       }
-
-      flowAnimatorRef.current?.start();
 
       // ── Validate the route against the campus, and REPORT (§3D) ──────────
       //
@@ -813,14 +770,6 @@ export function useRobotStream({
         // The progress an operator can be shown, kept beside the geometry it
         // was derived from so the panel reads state rather than re-deriving it.
         progress,
-        pickupTodoSourceId,
-        pickupTodoLayerId,
-        pickupDoneSourceId,
-        pickupDoneLayerId,
-        dropTodoSourceId,
-        dropTodoLayerId,
-        dropDoneSourceId,
-        dropDoneLayerId,
         pickupMarker,
         dropMarker,
       });
@@ -828,46 +777,45 @@ export function useRobotStream({
     [mapRef, removeRouteForRobot, themeRef, publishFindings]
   );
 
-  // ── Route flow animation ───────────────────────────────────────────────────
-  // Owns its own lifecycle: started by the first route drawn, stopped when the
-  // last one is removed or the map unmounts.
+  // ── The route overlay leaves with this hook ────────────────────────────────
+  // The map outlives the page now — it is parked between visits
+  // (mapControl/mapInstanceCache.js) — so nothing this hook drew may stay on it:
+  // a parked map holds no fleet routes and no mission pins, and the next visit
+  // redraws them from state. The map is captured at mount because the page's own
+  // cleanup clears `mapRef` before this one runs.
   useEffect(() => {
-    let reduced = prefersReducedMotion();
-    const animator = createFlowAnimator(
-      () => mapRef?.current || null,
-      () => {
-        const ids = [];
-        for (const entry of routesRef.current.values()) {
-          for (const layerId of [entry?.pickupTodoLayerId, entry?.dropTodoLayerId]) {
-            if (layerId) ids.push(`${layerId}-flow`);
-          }
-        }
-        return ids;
-      },
-      { reducedMotion: () => reduced, visible: documentVisible }
-    );
-    flowAnimatorRef.current = animator;
-    if (routesRef.current.size > 0) animator.start();
-    const unsubscribe = subscribeReducedMotion((next) => {
-      reduced = next;
-      if (next) animator.stop();
-      else if (routesRef.current.size > 0) animator.start();
-    });
-
+    const map = mapRef?.current || null;
+    const routes = routesRef.current;
+    const features = routeFeaturesRef.current;
+    const flusher = routeFlusherRef.current;
     return () => {
-      unsubscribe();
-      animator.stop();
-      flowAnimatorRef.current = null;
+      flusher.cancel();
+      for (const entry of routes.values()) {
+        try {
+          entry.pickupMarker?.remove?.();
+        } catch {
+          // ignore
+        }
+        try {
+          entry.dropMarker?.remove?.();
+        } catch {
+          // ignore
+        }
+      }
+      routes.clear();
+      features.clear();
+      removeRouteLayers(map);
     };
   }, [mapRef]);
 
   // ── Theme frames → route colours ───────────────────────────────────────────
   // Route GEOMETRY and route PROGRESS are untouched by this; only the corridor
-  // halo and the flow overlay are re-coloured, on layers that already exist.
+  // halo, the line opacities and the direction marks are re-coloured, on layers
+  // that already exist.
   useEffect(() => {
     if (typeof subscribeToTheme !== 'function') return;
     return subscribeToTheme((theme) => {
-      applyThemeToRouteLayers(mapRef?.current, routesRef.current.values(), theme);
+      applyRouteTheme(mapRef?.current, theme);
     });
   }, [subscribeToTheme, mapRef]);
 
@@ -1052,6 +1000,9 @@ export function useRobotStream({
       if (!activeRobotIdsRef.current.has(robotId)) continue;
       upsertRoutes(robotId, lastKnownPoint(robotId));
     }
+    // The source a style reload discarded is refilled at once, not on the next
+    // scheduled push — and a push the loading style refused is retried here.
+    if (routeFeaturesRef.current.size > 0) routeFlusherRef.current.flushNow();
   }, [mapRef, upsertRoutes, lastKnownPoint]);
 
   // `style.load` — the style can take layers (the first load on a new map, or after any
@@ -1329,13 +1280,8 @@ export function useRobotStream({
       }
     }
 
-    // Only coordinates the backend actually reported — never a default position.
-    const list = (Array.isArray(globalRobots) ? globalRobots : []).filter(
-      (r) => Number.isFinite(r?.lat) && Number.isFinite(r?.lon)
-    );
-
-    setRobots(list);
-    syncMarkersToRobots(list);
+    // Markers only — the list the page renders from is `robots`, derived above.
+    syncMarkersToRobots(listedRobots);
 
     // After markers are placed, draw any routes we have cached but haven't
     // drawn yet (e.g. TASK_ASSIGNED fired while user was on a different page).
@@ -1361,7 +1307,7 @@ export function useRobotStream({
     cityId,
     locationId,
     campusId,
-    globalRobots,
+    listedRobots,
     mapRef,
     syncMarkersToRobots,
     upsertRoutes,
@@ -1383,34 +1329,11 @@ export function useRobotStream({
       // One call. Battery, status, heading and position all travel on the
       // RobotVisual now, and the renderer updates them in place — no second
       // pass into marker internals, and no marker is ever recreated.
+      //
+      // Nothing is written to React state here. The panel, the search index and
+      // the counts read the provider's row, which the provider's own handler for
+      // this same event has already replaced (AppProvider `onRobotUpdate`).
       upsertMarker(data);
-
-      // Keep local list in sync (light update).
-      setRobots((prev) => {
-        const list = Array.isArray(prev) ? prev : [];
-        const idx = list.findIndex((r) => String(r?.robotId || '').trim() === robotId);
-        if (idx < 0) return list;
-
-        const current = list[idx];
-        const next = {
-          ...current,
-          lat: typeof data?.lat === 'number' ? data.lat : current.lat,
-          lon: typeof data?.lon === 'number' ? data.lon : current.lon,
-          // Heading is read back by the UI layer (the selected-robot panel), so
-          // it has to stay live here too — the marker gets it via the anchor,
-          // but this list is what the panel renders from.
-          heading: typeof data?.heading === 'number' ? data.heading : current.heading,
-          battery: typeof data?.battery === 'number' ? data.battery : current.battery,
-          speed: typeof data?.speed === 'number' ? data.speed : current.speed,
-          status: typeof data?.status === 'string' ? data.status : current.status,
-          isOnline: typeof data?.isOnline === 'boolean' ? data.isOnline : current.isOnline,
-          live: data,
-        };
-
-        const copy = list.slice();
-        copy[idx] = next;
-        return copy;
-      });
     };
 
     // Subscribe to the single canonical telemetry event only.
@@ -1436,11 +1359,13 @@ export function useRobotStream({
       // Create marker right away.
       upsertMarker(data);
 
-      // Seed the local robot list so the sidebar / counts reflect the new unit.
-      setRobots((prev) => {
-        const list = Array.isArray(prev) ? prev : [];
-        if (list.some((r) => String(r?.robotId || '').trim() === robotId)) return list;
-        return [...list, data];
+      // Seed the page's robot list so the panel / counts reflect the new unit
+      // until the provider's list carries it.
+      setCommissioned((prev) => {
+        const base = globalRobotsRef.current;
+        const held = prev.base === base ? prev.robots : [];
+        if (held.some((r) => String(r?.robotId || '').trim() === robotId)) return prev;
+        return { base, robots: [...held, data] };
       });
     };
 

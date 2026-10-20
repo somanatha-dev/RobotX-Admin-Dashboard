@@ -42,7 +42,9 @@ Mapbox GL scene
 │
 ├── OPERATIONAL LAYER          mapControl/hooks/useRobotStream.js
 │   ├── robot visuals ─────────► the renderer seam (below)
-│   ├── route lines (ahead / travelled + directional flow)
+│   ├── route lines (ahead / travelled + static direction chevrons)
+│   │     ONE source, 9 layers     operational/routeOverlay.js (any fleet size;
+│   │                              pushes coalesced, ≥ 250 ms apart)
 │   │     progress from position   operational/routeGeometry.js
 │   │     findings, reported       operational/routeValidation.js
 │   ├── mission pins (pickup / drop)
@@ -69,6 +71,32 @@ environment, and the environment has no dependency on robots existing at all.
 The campus and theme layers have no telemetry dependency either — asserted in
 `__architecture__/robotLayerUnchanged.test.mjs` against the source, so a robot
 moving cannot rebuild a campus layer or restart a theme transition.
+
+### Map lifecycle and what may repaint the scene
+
+One repaint of this scene (Standard style, terrain, 3D buildings, shadows) costs
+~25 ms of main thread on a typical laptop (measured 2026-10-20), so the rule is:
+**nothing repaints the map while nothing on it changed.**
+
+- **One map per session, parked between visits** (`mapControl/mapInstanceCache.js`).
+  Leaving `/map` detaches the map's container and keeps the instance; returning
+  re-attaches it. Each overlay hook still installs on mount and removes on
+  unmount — on the map it captured, since the page clears `mapRef` first — so a
+  parked map holds the style, environment and tile caches and nothing else. It is
+  discarded on logout (`AppProvider.clearSessionState`), on a lost GPU context,
+  or after 10 minutes unused. `trackResize` is off: the page resizes the map
+  itself and never to 0×0, which would shrink the tile cache.
+- **Basemap config is written only when it changes** (`environment/basemapConfig.js`),
+  and a new map is constructed with it: mapbox-gl re-lays out every dependent
+  basemap layer on each `setConfigProperty`, equal value or not.
+- **Robots move as DOM markers**, one shared frame loop; moving them does not
+  repaint the WebGL scene.
+- **Routes are one GeoJSON source**; progress changes are coalesced into at most
+  four pushes a second. Direction is a static chevron — `line-dasharray` is a
+  layout-time property in mapbox-gl v3, so animating it re-tiled every route
+  source on every step.
+- **Charging data is pushed only when its content changes**, not on every 5 s
+  simulator poll.
 
 ---
 

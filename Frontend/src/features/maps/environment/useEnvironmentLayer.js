@@ -37,6 +37,7 @@ import {
   FALLBACK_SKY_LAYER_ID,
   STANDARD_BASEMAP_CONFIG,
 } from './environmentConfig.js';
+import { setBasemapConfig } from './basemapConfig.js';
 
 /**
  * True when the loaded style is Mapbox Standard (or another style built on the
@@ -76,7 +77,9 @@ function applyStandardConfig(map) {
   let applied = 0;
   for (const [key, value] of Object.entries(STANDARD_BASEMAP_CONFIG)) {
     try {
-      map.setConfigProperty?.('basemap', key, value);
+      // Only a changed value is written: an unchanged one would still re-lay out the
+      // basemap (see `basemapConfig.js`).
+      setBasemapConfig(map, key, value);
       applied += 1;
     } catch {
       // A future style version may drop a knob — losing one is not a failure.

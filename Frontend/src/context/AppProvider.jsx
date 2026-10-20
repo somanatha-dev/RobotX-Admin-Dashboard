@@ -28,6 +28,7 @@ import {
 import { cancellationWarning, createSingleFlight, runTaskCancellation } from '@/lib/taskCancellation.js';
 import { STOP_ALL_WARNING, summariseStopAll } from '@/lib/robotCommands.js';
 import { reopensAssignment } from '@/features/tasks/taskLifecycle.js';
+import { evictParkedMap } from '@/features/maps/mapControl/mapInstanceCache.js';
 import { CONNECTION, connectionStateOf } from '@/lib/connectionState.js';
 import { SESSION_CHECK, sessionCheckOutcome, sessionRetryDelayMs } from '@/lib/sessionCheck.js';
 import { applyRerouteToCache, applyRobotOffline, applyRobotOnline, applyTaskUpdate, evictOnStandDown, evictOnTerminalUpdate, evictTerminalRoutes } from '@/lib/liveState.js';
@@ -300,6 +301,8 @@ export default function AppProvider({ children }) {
     setSimulatorStatus(null);
     setEvents([]);
     taskPathCacheRef.current.clear();
+    // The map page parks its Mapbox map between visits; a session that ended keeps none of it.
+    evictParkedMap();
     setTaskRoutes({});
     setDecisionRequest(null);
     setAuthRequest(null);

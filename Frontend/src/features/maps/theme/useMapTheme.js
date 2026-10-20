@@ -43,10 +43,12 @@ import {
   interpolateThemes,
   resolveMapTheme,
 } from './mapThemes.js';
+import { setBasemapConfig } from '../environment/basemapConfig.js';
 
 const STORAGE_KEY = 'robotx.map.theme';
 
-function readStoredTheme() {
+/** The theme id this browser last chose; read by the map constructor as well as the hook. */
+export function readStoredTheme() {
   if (typeof window === 'undefined') return DEFAULT_MAP_THEME;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -108,7 +110,8 @@ function applyAtmosphere(map, theme, isStandardStyle) {
 function applyBasemapConfig(map, theme) {
   for (const [key, value] of Object.entries(theme.basemap || {})) {
     try {
-      map.setConfigProperty?.('basemap', key, value);
+      // Unchanged keys are skipped: re-writing one re-lays out the basemap.
+      setBasemapConfig(map, key, value);
     } catch {
       // A style version without this knob loses one property, not the theme.
     }

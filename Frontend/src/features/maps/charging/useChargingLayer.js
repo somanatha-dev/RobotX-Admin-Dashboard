@@ -103,11 +103,27 @@ export function useChargingLayer(
     };
   }, [mapRef, isMapLoaded, themeRef]);
 
-  // ── Data (every report) ───────────────────────────────────────────────────
+  // ── Data (every report that changes it) ───────────────────────────────────
+  // The report is polled every 5 s and is a new object each time — it carries every
+  // simulated robot's live position — but the stations, their models and the charger
+  // routes derived from it are usually identical. Each `setData` is a worker re-tile and
+  // a repaint of the whole 3D scene, so a collection is pushed only when its content
+  // changed. `install` writes the current data itself after a style reload.
+  const pushedRef = useRef({ map: null, keys: {} });
   useEffect(() => {
     const map = mapRef?.current;
     if (!map || !isMapLoaded) return;
-    setChargingData(map, data);
+    if (pushedRef.current.map !== map) pushedRef.current = { map, keys: {} };
+    const pushed = pushedRef.current.keys;
+    const changed = {};
+    for (const name of ['stations', 'model', 'routes']) {
+      const key = JSON.stringify(data[name] ?? null);
+      if (key !== pushed[name]) {
+        changed[name] = data[name];
+        pushed[name] = key;
+      }
+    }
+    if (Object.keys(changed).length > 0) setChargingData(map, changed);
   }, [mapRef, isMapLoaded, data]);
 
   // ── Theme frames ──────────────────────────────────────────────────────────

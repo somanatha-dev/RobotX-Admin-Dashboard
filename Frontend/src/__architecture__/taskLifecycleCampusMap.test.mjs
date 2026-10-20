@@ -158,7 +158,10 @@ test('FE-10 the map shows every robot with reported coordinates — no filter ga
   const stream = code(read('features/maps/mapControl/hooks/useRobotStream.js'));
   assert.doesNotMatch(stream, /hasAnyFilter/);
   assert.match(stream, /\.filter\(\s*\(r\) => Number\.isFinite\(r\?\.lat\) && Number\.isFinite\(r\?\.lon\)\s*\)/);
-  const effect = stream.match(/const list = \(Array\.isArray\(globalRobots\)[\s\S]*?syncMarkersToRobots\(list\);/);
+  // The filtered list is derived once (a memo, not a state copy per tick) and the sync
+  // effect hands exactly that list to the markers.
+  assert.match(stream, /const listedRobots = useMemo\(\s*\(\) => \(Array\.isArray\(globalRobots\)/, 'the robots list is derived from the provider rows');
+  const effect = stream.match(/const stale = staleMapRoutes\([\s\S]*?syncMarkersToRobots\(listedRobots\);/);
   assert.ok(effect, 'the robots → markers sync is intact');
 });
 

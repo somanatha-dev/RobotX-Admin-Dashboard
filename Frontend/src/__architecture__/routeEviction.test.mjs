@@ -259,7 +259,7 @@ test('R4 — a held task the map could draw from later is dropped too; a path-le
 
 test('wiring — the sync pass reconciles first; only authoritative evictions leave the cache', () => {
   const map = code(read('features/maps/mapControl/hooks/useRobotStream.js'));
-  const effect = map.match(/const stale = staleMapRoutes\([\s\S]*?syncMarkersToRobots\(list\);/);
+  const effect = map.match(/const stale = staleMapRoutes\([\s\S]*?syncMarkersToRobots\(listedRobots\);/);
   assert.ok(effect, 'reconciliation runs in the sync effect, before the markers sync');
   assert.match(effect[0], /robotTasksRef\.current\.delete\(robotId\);\s*if \(finished\) taskPathsRef\.current\.delete\(taskId\);\s*removeRouteForRobot\(robotId\);/);
   // The reconciliation trusts "absent from the cache" to mean "finished", so nothing but the

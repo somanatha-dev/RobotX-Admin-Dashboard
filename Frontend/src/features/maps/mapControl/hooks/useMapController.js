@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import gsap from 'gsap';
 
+import { onMapLoaded } from '../mapInstanceCache.js';
+
 const DEFAULT_FLY = {
   speed: 0.8,
   curve: 1.4,
@@ -22,19 +24,10 @@ export function useMapController(mapRef, { overlayRef, canvasRef } = {}) {
       if (pending) pending();
     };
 
-    if (map.loaded?.()) {
-      onLoad();
-      return;
-    }
-
-    map.once('load', onLoad);
-    return () => {
-      try {
-        map.off('load', onLoad);
-      } catch {
-        // ignore
-      }
-    };
+    // A map reused from the page's last visit loaded long ago and will never fire `load`
+    // again — and `map.loaded()` is false whenever a tile is in flight, which is most of the
+    // time on a live map. The cache remembers that it loaded (mapInstanceCache.js).
+    return onMapLoaded(map, onLoad);
   }, [mapRef]);
 
   const gsapPulseOverlay = useCallback(() => {

@@ -11,6 +11,11 @@
  * standing still (waiting at a pickup, held, verifying) never got its route back, and a moving
  * one only when its progress happened to change. The `style.load` handler was an empty loop.
  *
+ * 2026-10-20: the overlay is one shared source and nine fixed layers for every robot
+ * (operational/routeOverlay.js), and the animated flow dash — a `line-dasharray` relayout every
+ * 70 ms — is a static direction mark. The guarantees below are unchanged; the layer ids are the
+ * shared ones.
+ *
  * The draw path below is the hook's own (`upsertRoutes`, reduced to its Mapbox half) driving
  * the real `routeOverlay.js` against a fake map that refuses layers until its style loads,
  * exactly as mapbox-gl 3.20 does.
@@ -22,9 +27,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  createFlowAnimator,
-  ensureLineLayer,
+  DIRECTION_KIND,
+  ROUTE_LAYER,
+  ROUTE_LAYER_ORDER,
+  ROUTE_SOURCE,
+  createRouteFlusher,
+  directionMarks,
+  ensureRouteLayers,
+  removeRouteLayers,
+  routeFeatures,
+  routeLayerSpecs,
   routeLayersPresent,
+  setRouteData,
   shouldRedrawRoute,
 } from '../operational/routeOverlay.js';
 import { CHARGING_LAYER, CHARGING_STATION_FLOOR_LAYER, installChargingLayers } from '../charging/stationLayers.js';
@@ -38,23 +52,22 @@ const code = (rel) =>
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 
-const LINE = { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'LineString', coordinates: [[77.5176, 12.9007], [77.5177, 12.9010]] }, properties: {} }] };
-const ids = (robotId) => ({
-  todo: { sourceId: `robot-route-drop-todo-src-${robotId}`, layerId: `robot-route-drop-todo-layer-${robotId}` },
-  done: { sourceId: `robot-route-drop-done-src-${robotId}`, layerId: `robot-route-drop-done-layer-${robotId}` },
-});
+const PATH = [[77.5176, 12.9007], [77.5177, 12.901], [77.5179, 12.9012]];
+const segmentsIn = (map) => map.getSource(ROUTE_SOURCE).data.features.filter((f) => f.properties.kind !== DIRECTION_KIND);
+const featuresFor = (robotId) =>
+  routeFeatures({ robotId, taskId: `T-${robotId}`, color: '#4f46e5', pickup: { travelled: PATH.slice(0, 2), ahead: PATH.slice(1) }, drop: { ahead: PATH } });
 
 /**
  * The Mapbox half of `upsertRoutes`, with the guard under test passed in. Returns whether it
- * drew. `routes` is the hook's `routesRef`.
+ * drew. `routes` is the hook's `routesRef`; `held` its per-robot features.
  */
-function upsert(map, routes, robotId, signature, { guard }) {
+function upsert(map, routes, robotId, signature, { guard, held = new Map() }) {
   const existing = routes.get(robotId) || null;
   if (!guard(existing, signature, map)) return false;
-  const { todo, done } = ids(robotId);
-  ensureLineLayer({ map, ...todo, data: LINE, color: '#4f46e5', dashed: false, opacity: 0.95, theme: null, flow: true, beforeId: CHARGING_STATION_FLOOR_LAYER });
-  ensureLineLayer({ map, ...done, data: LINE, color: '#4f46e5', dashed: false, opacity: 0.3, theme: null, flow: false, beforeId: CHARGING_STATION_FLOOR_LAYER });
-  const drawnLayerIds = [todo.layerId, done.layerId];
+  ensureRouteLayers(map, { theme: null, beforeId: CHARGING_STATION_FLOOR_LAYER });
+  held.set(robotId, featuresFor(robotId));
+  setRouteData(map, [...held.values()].flat());
+  const drawnLayerIds = ROUTE_LAYER_ORDER;
   const drawn = routeLayersPresent(map, drawnLayerIds);
   routes.set(robotId, { taskId: 'T1', signature: drawn ? signature : null, drawnLayerIds });
   return true;
@@ -72,7 +85,7 @@ test('BEFORE (reproduction): replay before style load + stationary robot → the
   OLD_RECORD(map, routes, 'SIM-1', 'T1|1|TO_DROP|1|0|3|1200'); // remount replay
   map.finishStyleLoad(); // the old style.load handler did nothing
   for (let tick = 0; tick < 30; tick += 1) OLD_RECORD(map, routes, 'SIM-1', 'T1|1|TO_DROP|1|0|3|1200'); // a minute standing still
-  assert.equal(map.getLayer(ids('SIM-1').todo.layerId), undefined, 'the defect: no route line after a minute of ticks');
+  assert.equal(map.getLayer(ROUTE_LAYER.DROP_TODO), undefined, 'the defect: no route line after a minute of ticks');
 });
 
 test('AFTER: a draw the style refused is not recorded as drawn; the restore on style.load draws it with no telemetry', () => {
@@ -85,7 +98,8 @@ test('AFTER: a draw the style refused is not recorded as drawn; the restore on s
   // `restoreRoutes` is registered on style.load: it re-runs upsert for every held route.
   map.on('style.load', () => upsert(map, routes, 'SIM-1', 'S', { guard: shouldRedrawRoute }));
   map.finishStyleLoad();
-  assert.ok(map.getLayer(ids('SIM-1').todo.layerId), 'route line present after style.load');
+  assert.ok(map.getLayer(ROUTE_LAYER.DROP_TODO), 'route line present after style.load');
+  assert.equal(segmentsIn(map).length, 3, "the robot's segments are in the source");
   assert.equal(routes.get('SIM-1').signature, 'S');
   // Further identical ticks are no-ops (no redundant source writes).
   assert.equal(upsert(map, routes, 'SIM-1', 'S', { guard: shouldRedrawRoute }), false);
@@ -103,15 +117,140 @@ test('a style reload (setStyle) that discards the route is redrawn — exactly o
   assert.deepEqual(map.errors, [], 'no duplicate-layer or missing-source errors');
 });
 
-test('ensureLineLayer is idempotent: repeated calls add nothing and only push data', () => {
+test('ensureRouteLayers is idempotent: repeated calls add nothing', () => {
   const map = createFakeMapboxMap({ loaded: true });
-  const { todo } = ids('SIM-2');
-  for (let i = 0; i < 5; i += 1) {
-    ensureLineLayer({ map, ...todo, data: LINE, color: '#000', dashed: true, opacity: 1, theme: null, flow: true });
-  }
-  assert.deepEqual(map.layerIds(), [`${todo.layerId}-glow`, `${todo.layerId}-casing`, todo.layerId, `${todo.layerId}-flow`]);
-  assert.equal(map.getSource(todo.sourceId).setDataCalls, 4);
+  for (let i = 0; i < 5; i += 1) ensureRouteLayers(map);
+  assert.deepEqual(map.layerIds(), [...ROUTE_LAYER_ORDER]);
+  assert.deepEqual(map.sourceIds(), [ROUTE_SOURCE]);
   assert.deepEqual(map.errors, []);
+});
+
+test('one source and nine layers at any fleet size (was four sources and up to sixteen layers PER robot)', () => {
+  const map = createFakeMapboxMap({ loaded: true });
+  const routes = new Map();
+  const held = new Map();
+  for (let i = 0; i < 20; i += 1) upsert(map, routes, `SIM-${i}`, 'S', { guard: shouldRedrawRoute, held });
+  assert.equal(map.sourceIds().length, 1);
+  assert.equal(map.layerIds().length, ROUTE_LAYER_ORDER.length);
+  assert.equal(segmentsIn(map).length, 20 * 3, "every robot's segments, in the one source");
+  const robots = new Set(map.getSource(ROUTE_SOURCE).data.features.map((f) => f.properties.robotId));
+  assert.equal(robots.size, 20);
+  // A robot's colour travels on its features, so twenty robots need no per-robot layer.
+  for (const spec of routeLayerSpecs()) {
+    // Casings take the theme's halo; the direction layer is drawn from its pattern.
+    if (spec.type === 'line' && ![ROUTE_LAYER.CASING_PICKUP, ROUTE_LAYER.CASING_DROP, ROUTE_LAYER.DIRECTION].includes(spec.id)) {
+      assert.deepEqual(spec.paint['line-color'], ['get', 'color'], `${spec.id} is coloured per feature`);
+    }
+  }
+});
+
+test('route features: four segments by leg and part, and a degenerate segment draws nothing', () => {
+  const f = routeFeatures({ robotId: 'R', taskId: 'T', color: '#123456', pickup: { travelled: PATH, ahead: PATH }, drop: { travelled: PATH, ahead: PATH } }).filter(
+    (x) => x.properties.kind !== DIRECTION_KIND
+  );
+  assert.deepEqual(f.map((x) => `${x.properties.leg}:${x.properties.part}`), ['pickup:done', 'pickup:todo', 'drop:done', 'drop:todo']);
+  for (const x of f) assert.deepEqual(x.geometry.coordinates, PATH, 'coordinates are the route data, untouched');
+  assert.equal(routeFeatures({ robotId: 'R', taskId: 'T', color: '#000', pickup: { travelled: [PATH[0]], ahead: [] }, drop: {} }).length, 0);
+});
+
+test('direction chevrons: on ahead segments only, pointing along the route, every ~9 m, route untouched', () => {
+  // A straight 100 m eastward segment at RNSIT's latitude.
+  const lat = 12.9023;
+  const lng0 = 77.5186;
+  const dLng = 100 / (111320 * Math.cos((lat * Math.PI) / 180));
+  const east = [[lng0, lat], [lng0 + dLng, lat]];
+  const marks = directionMarks(east);
+  assert.equal(marks.length, 11, 'first at 4.5 m, then every 9 m to 94.5 m');
+  for (const [armA, tip, armB] of marks) {
+    assert.ok(armA[0] < tip[0] && armB[0] < tip[0], 'both arms trail the tip: the chevron points east, the way the route runs');
+    assert.ok(armA[1] !== armB[1], 'one arm each side of the route');
+    assert.ok(Math.abs(tip[1] - lat) < 1e-12, 'the tip lies on the route');
+  }
+  // Reversed route → reversed chevrons.
+  const [[a, tip]] = directionMarks([...east].reverse());
+  assert.ok(a[0] > tip[0], 'westward route: the chevron points west');
+  assert.deepEqual(directionMarks([east[0]]), [], 'a degenerate segment has no direction');
+
+  const f = routeFeatures({ robotId: 'R', taskId: 'T', color: '#000', pickup: { travelled: east }, drop: { ahead: east } });
+  assert.equal(f.filter((x) => x.properties.kind === DIRECTION_KIND).length, 11, 'chevrons only on the segment still ahead');
+  assert.deepEqual(f.find((x) => x.properties.part === 'todo').geometry.coordinates, east, 'the route itself is unchanged');
+});
+
+test('direction is drawn, not animated: nothing writes to the style while nothing changes', async () => {
+  const map = createFakeMapboxMap({ loaded: true });
+  upsert(map, new Map(), 'SIM-1', 'S', { guard: shouldRedrawRoute });
+  const writes = map.paintWrites.length;
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(map.paintWrites.length, writes, 'no timer steps any paint property');
+  // `line-dasharray` is a layout-time property in mapbox-gl v3 (changing it re-tiles the source),
+  // so it is set once, on the approach leg, and never written again.
+  const dashed = routeLayerSpecs().filter((s) => s.paint?.['line-dasharray']).map((s) => s.id);
+  assert.deepEqual(dashed, [ROUTE_LAYER.PICKUP_DONE, ROUTE_LAYER.PICKUP_TODO]);
+  const direction = routeLayerSpecs().find((s) => s.id === ROUTE_LAYER.DIRECTION);
+  assert.deepEqual(direction.filter, ['==', ['get', 'kind'], DIRECTION_KIND]);
+  // Chevrons are geometry drawn by a line layer: a line-placed symbol is re-placed and faded in
+  // (a scene repaint per frame of the fade) every time the source changes.
+  assert.equal(direction.type, 'line');
+  assert.equal(routeLayerSpecs().some((s) => s.type === 'symbol'), false, 'the route overlay has no symbol layer');
+  // No route-line layer draws a chevron: every other layer selects by `leg`, which chevrons lack.
+  for (const spec of routeLayerSpecs()) {
+    if (spec.id === ROUTE_LAYER.DIRECTION) continue;
+    assert.ok(JSON.stringify(spec.filter).includes('"leg"'), `${spec.id} selects by leg`);
+  }
+  const marks = featuresFor('R').filter((f) => f.properties.kind === DIRECTION_KIND);
+  assert.ok(marks.length > 0);
+  for (const m of marks) assert.equal(m.properties.leg, undefined);
+  const hook = code('features/maps/mapControl/hooks/useRobotStream.js');
+  assert.doesNotMatch(hook, /line-dasharray|setInterval\(|createFlowAnimator/);
+});
+
+test('route pushes are coalesced: many robot updates between two pushes are one setData, at least the interval apart', async () => {
+  const map = createFakeMapboxMap({ loaded: true });
+  ensureRouteLayers(map);
+  const held = new Map();
+  let clock = 1000;
+  const flusher = createRouteFlusher({ getMap: () => map, getFeatures: () => [...held.values()].flat(), minIntervalMs: 50, now: () => clock });
+  for (let i = 0; i < 20; i += 1) {
+    held.set(`R${i}`, featuresFor(`R${i}`));
+    flusher.schedule();
+  }
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(map.getSource(ROUTE_SOURCE).setDataCalls, 1, 'twenty updates → one push');
+  assert.equal(segmentsIn(map).length, 60);
+
+  clock += 10; // 10 ms after the last push
+  flusher.schedule();
+  assert.equal(flusher.isPending(), true);
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(map.getSource(ROUTE_SOURCE).setDataCalls, 1, 'not before the interval');
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(map.getSource(ROUTE_SOURCE).setDataCalls, 2);
+  flusher.cancel();
+});
+
+test('a push the loading style refuses is retried, not lost', () => {
+  const map = createFakeMapboxMap({ loaded: false });
+  const held = new Map([['R1', featuresFor('R1')]]);
+  const flusher = createRouteFlusher({ getMap: () => map, getFeatures: () => [...held.values()].flat() });
+  assert.equal(flusher.flushNow(), false, 'no source yet');
+  assert.equal(flusher.isDirty(), true);
+  map.finishStyleLoad();
+  ensureRouteLayers(map);
+  assert.equal(flusher.flushNow(), true);
+  assert.equal(flusher.isDirty(), false);
+  assert.equal(segmentsIn(map).length, 3);
+});
+
+test('removeRouteLayers leaves nothing behind — a parked map carries no fleet routes', () => {
+  const map = createFakeMapboxMap({ loaded: true });
+  installChargingLayers(map);
+  const charging = map.layerIds();
+  upsert(map, new Map(), 'SIM-1', 'S', { guard: shouldRedrawRoute });
+  removeRouteLayers(map);
+  assert.deepEqual(map.layerIds(), charging, 'only the route overlay was removed');
+  assert.equal(map.getSource(ROUTE_SOURCE), undefined);
+  ensureRouteLayers(map);
+  assert.equal(map.layerIds().length, charging.length + ROUTE_LAYER_ORDER.length, 'and it can be installed again');
 });
 
 test('routes are stacked beneath the charging stations, in either install order', () => {
@@ -120,43 +259,17 @@ test('routes are stacked beneath the charging stations, in either install order'
   installChargingLayers(a);
   upsert(a, new Map(), 'SIM-1', 'S', { guard: shouldRedrawRoute });
   const la = a.layerIds();
-  assert.ok(la.indexOf(ids('SIM-1').todo.layerId) < la.indexOf(CHARGING_STATION_FLOOR_LAYER));
-  assert.ok(la.indexOf(CHARGING_LAYER.ROUTE) < la.indexOf(`${ids('SIM-1').todo.layerId}-glow`), 'charger route under task route');
+  assert.ok(la.indexOf(ROUTE_LAYER.DIRECTION) < la.indexOf(CHARGING_STATION_FLOOR_LAYER));
+  assert.ok(la.indexOf(CHARGING_LAYER.ROUTE) < la.indexOf(ROUTE_LAYER.GLOW_PICKUP), 'charger route under task route');
 
   // A route first, then stations: stations land on top, and the charger route goes beneath the task route.
   const b = createFakeMapboxMap({ loaded: true });
   upsert(b, new Map(), 'SIM-1', 'S', { guard: shouldRedrawRoute });
   installChargingLayers(b);
   const lb = b.layerIds();
-  assert.ok(lb.indexOf(ids('SIM-1').todo.layerId) < lb.indexOf(CHARGING_STATION_FLOOR_LAYER));
-  assert.ok(lb.indexOf(CHARGING_LAYER.ROUTE) < lb.indexOf(`${ids('SIM-1').todo.layerId}-glow`));
+  assert.ok(lb.indexOf(ROUTE_LAYER.DIRECTION) < lb.indexOf(CHARGING_STATION_FLOOR_LAYER));
+  assert.ok(lb.indexOf(CHARGING_LAYER.ROUTE) < lb.indexOf(ROUTE_LAYER.GLOW_PICKUP));
   assert.deepEqual([...a.errors, ...b.errors], []);
-});
-
-test('route flow animation: no timer under reduced motion, no paint writes in a background tab, stops with no routes', async () => {
-  const map = createFakeMapboxMap({ loaded: true });
-  const { todo } = ids('SIM-1');
-  ensureLineLayer({ map, ...todo, data: LINE, color: '#000', dashed: false, opacity: 1, theme: null, flow: true });
-  const flowIds = [`${todo.layerId}-flow`];
-
-  const reduced = createFlowAnimator(() => map, () => flowIds, { reducedMotion: () => true });
-  reduced.start();
-  assert.equal(reduced.isRunning(), false, 'reduced motion: never started');
-
-  let visible = false;
-  const hidden = createFlowAnimator(() => map, () => flowIds, { visible: () => visible });
-  hidden.start();
-  await new Promise((r) => setTimeout(r, 200));
-  assert.equal(map.paintWrites.length, 0, 'background tab: no repaint requests');
-  visible = true;
-  await new Promise((r) => setTimeout(r, 200));
-  assert.ok(map.paintWrites.length > 0, 'visible: the dash moves');
-  hidden.stop();
-
-  const empty = createFlowAnimator(() => map, () => []);
-  empty.start();
-  await new Promise((r) => setTimeout(r, 120));
-  assert.equal(empty.isRunning(), false, 'no flow layers → the timer stops itself');
 });
 
 test('a REROUTED leg lands in the provider cache, so the map replays the new path after navigation', () => {
@@ -186,6 +299,9 @@ test('wiring: the hook restores on style.load and on load, records only verified
   assert.match(hook, /if \(!shouldRedrawRoute\(existing, signature, map\)\) return;/);
   assert.match(hook, /signature: drawn \? signature : null,/);
   assert.doesNotMatch(hook, /existing\.signature === signature\) return/, 'the signature-only guard is gone');
+  // The restore pushes the refilled source at once, and the unmount takes the overlay with it.
+  assert.match(hook, /routeFlusherRef\.current\.flushNow\(\)/);
+  assert.match(hook, /removeRouteLayers\(map\);/);
   const control = code('features/maps/MapControl.jsx');
   assert.match(control, /useRobotStream\(\{[\s\S]*?isMapLoaded,[\s\S]*?\}\);/);
   // The provider writes reroutes into the shared cache.
@@ -233,6 +349,6 @@ test('campus geometry is installed BENEATH routes and stations (browser-observed
   for (const id of geometry) assert.ok(at(id) < lowestOverlay, `${id} must be beneath every route and station layer`);
   for (const id of labelIds) if (at(id) >= 0) assert.ok(at(id) > at(CHARGING_STATION_FLOOR_LAYER), `${id}: campus labels stay on top`);
   // And the route is still beneath the stations.
-  assert.ok(at(ids('SIM-1').todo.layerId) < at(CHARGING_STATION_FLOOR_LAYER));
+  assert.ok(at(ROUTE_LAYER.DROP_TODO) < at(CHARGING_STATION_FLOOR_LAYER));
   assert.deepEqual(map.errors, []);
 });

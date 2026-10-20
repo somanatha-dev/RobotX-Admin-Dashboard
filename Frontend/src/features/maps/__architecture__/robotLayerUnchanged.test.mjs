@@ -189,14 +189,18 @@ test('the theme decides route colour, never route geometry', () => {
   // Route progress is derived from the unit's position against real path
   // geometry. If a theme could reach that, a colour change could redraw where a
   // unit has been.
-  const start = ROBOT_STREAM.indexOf('function applyThemeToRouteLayers');
-  assert.ok(start > 0, 'applyThemeToRouteLayers must exist — it is the whole theme→route path');
+  // The theme reaches the route overlay through exactly one function, and the
+  // hook's theme subscription calls only that.
+  assert.match(ROBOT_STREAM, /subscribeToTheme\(\(theme\) => \{\s*applyRouteTheme\(mapRef\?\.current, theme\);\s*\}\)/);
+  const OVERLAY = readFileSync(fileURLToPath(new URL('../operational/routeOverlay.js', import.meta.url)), 'utf8');
+  const start = OVERLAY.indexOf('export function applyRouteTheme');
+  assert.ok(start > 0, 'applyRouteTheme must exist — it is the whole theme→route path');
 
   // Slice to the function's closing brace at column 0, which is where a
   // top-level function declaration ends in this file.
-  const end = ROBOT_STREAM.indexOf('\n}', start);
+  const end = OVERLAY.indexOf('\n}', start);
   assert.ok(end > start, 'could not delimit the function body');
-  const body = ROBOT_STREAM.slice(start, end);
+  const body = OVERLAY.slice(start, end);
 
   assert.ok(body.includes('setPaintProperty'), 'theme application writes paint properties only');
   assert.equal(body.includes('setData'), false, 'theme application must not touch route data');

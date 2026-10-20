@@ -143,6 +143,9 @@ export function createFakeMapboxMap({ loaded = false } = {}) {
       if (images.has(id)) throw new Error(`An image named "${id}" already exists.`);
       images.set(id, image);
     },
+    removeImage(id) {
+      images.delete(id);
+    },
 
     // ── camera / misc (enough for the overlays)
     getZoom: () => 18,
