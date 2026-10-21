@@ -35,6 +35,8 @@
  *   aliases            other names people type for it (§search)
  *   osm                { file, collection } — an Overpass extract, or null
  *   supplemental       { file, collection } — user-supplied points, or null
+ *   accessPoints       { file, collection } — the access-point register, or null;
+ *                      only its site-verified entries become features
  *
  * It may NOT contain geometry, a camera, a colour, a layer or a rendering
  * decision. If a campus ever needs one of those, the correct fix is a new
@@ -63,6 +65,10 @@ import {
 import { RNSIT_CAMPUS_OSM } from './data/rnsit/rnsitCampusOsm.js';
 import { RNSIT_CAMPUS_SUPPLEMENTAL } from './data/rnsit/rnsitCampusSupplemental.js';
 import { JSSATE_BENGALURU_CAMPUS_OSM } from './data/jssate-bengaluru/jssateBengaluruCampusOsm.js';
+import { RNSIT_CAMPUS_ACCESS_CANDIDATES } from './data/rnsit/rnsitCampusAccessCandidates.js';
+import { JSSATE_BENGALURU_CAMPUS_ACCESS_CANDIDATES } from './data/jssate-bengaluru/jssateBengaluruCampusAccessCandidates.js';
+import { accessPointDataset, importAccessPoints } from './access/accessPointImport.js';
+import { developmentCandidateBuildingsFor } from './access/developmentCandidates.js';
 import { importOsmCampus, osmDataset, pointInPolygon } from './osm/osmCampusImport.js';
 import {
   applyMergesToOsmFeatures,
@@ -75,6 +81,15 @@ import {
   campusVerificationFor,
   describeCampusVerification,
 } from './verification/campusVerification.js';
+
+// Vite's `import.meta.env` in the dashboard; `process.env` under plain Node (the audit command,
+// the architecture tests). Only development mode (`access/developmentCandidates.js`) reads it.
+const BUILD_ENV =
+  typeof import.meta !== 'undefined' && import.meta.env
+    ? import.meta.env
+    : typeof globalThis.process !== 'undefined' && globalThis.process.env
+      ? globalThis.process.env
+      : {};
 
 // ── The campuses, as data ────────────────────────────────────────────────────
 
@@ -106,6 +121,10 @@ const REGISTERED_CAMPUSES = Object.freeze([
     supplemental: Object.freeze({
       file: 'rnsit-campus-supplemental.geojson',
       collection: RNSIT_CAMPUS_SUPPLEMENTAL,
+    }),
+    accessPoints: Object.freeze({
+      file: 'rnsit-campus-access-candidates.geojson',
+      collection: RNSIT_CAMPUS_ACCESS_CANDIDATES,
     }),
   }),
   Object.freeze({
@@ -151,6 +170,14 @@ const REGISTERED_CAMPUSES = Object.freeze([
      * missing rather than filling them in.
      */
     supplemental: null,
+    /**
+     * Candidates are generated for JSSATE exactly as for RNSIT, so its review can start;
+     * a verified one still offers nothing while the campus has no operating region.
+     */
+    accessPoints: Object.freeze({
+      file: 'jssate-bengaluru-campus-access-candidates.geojson',
+      collection: JSSATE_BENGALURU_CAMPUS_ACCESS_CANDIDATES,
+    }),
   }),
 ]);
 
@@ -228,8 +255,27 @@ function buildCampus(entry) {
     entry.supplemental?.collection
   );
 
+  // Access points: only the register's site-verified entries become features. Imported
+  // against the OSM footprints they serve, after the merge, so `servesFeatureId` names a
+  // feature that exists.
+  const accessDs = entry.accessPoints ? accessPointDataset(entry.accessPoints.file, entry.id) : null;
+  const access = entry.accessPoints
+    ? importAccessPoints(entry.accessPoints.collection, {
+        campusId: entry.id,
+        osmFeatures,
+        boundary: osm.boundary,
+        dataset: accessDs,
+        // The declared point locations' names, which an access point may not repeat.
+        declaredNames: [...osmFeatures, ...supplemental.features]
+          .filter((f) => f?.geometry?.type === 'Point')
+          .map((f) => f.name),
+        // [] unless VITE_UNVERIFIED_CAMPUS_LOCATIONS=true in a non-production build.
+        developmentCandidateBuildings: developmentCandidateBuildingsFor(entry.id, BUILD_ENV),
+      })
+    : { features: [], pending: [], rejected: [], invalid: [] };
+
   const record = campusVerificationFor(entry.id);
-  const classified = applyOperationalProfiles([...osmFeatures, ...supplemental.features]);
+  const classified = applyOperationalProfiles([...osmFeatures, ...supplemental.features, ...access.features]);
   const verified = applyCampusVerification(classified, record);
 
   const dataset = entry.osm
@@ -257,8 +303,21 @@ function buildCampus(entry) {
       })
     : null;
 
+  const accessInfo = entry.accessPoints
+    ? Object.freeze({
+        ...accessDs,
+        sourceFeatureCount: (entry.accessPoints.collection?.features || []).length,
+        admittedFeatureCount: access.features.length,
+        unverifiedFeatureCount: access.features.filter((f) => f.unverifiedCandidate === true).length,
+        pending: Object.freeze(access.pending),
+        rejected: Object.freeze(access.rejected),
+        invalid: Object.freeze(access.invalid),
+      })
+    : null;
+
   return Object.freeze({
     features: Object.freeze(verified.features),
+    accessPoints: accessInfo,
     verification: Object.freeze({
       ...describeCampusVerification(verified.features, record),
       applied: verified.verified,
@@ -641,6 +700,7 @@ export function resolveCampusDefinition(campusRecord) {
     geometrySource: entry?.dataset?.origin || null,
     dataset: entry?.dataset || null,
     supplemental: entry?.supplemental || null,
+    accessPoints: entry?.accessPoints || null,
     // Who checked this campus and what that covers (§3A), and which of its
     // features the fleet actually operates on (§3C). Both are derived at import
     // time; a consumer never recomputes either.
@@ -674,6 +734,7 @@ export const EMPTY_CAMPUS_DEFINITION = Object.freeze({
   geometrySource: null,
   dataset: null,
   supplemental: null,
+  accessPoints: null,
   verification: null,
   verificationRecord: null,
   operational: null,

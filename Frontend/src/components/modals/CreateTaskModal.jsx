@@ -55,8 +55,11 @@ export default function CreateTaskModal({ onClose, onCreate }) {
   const [campusId, setCampusId] = useState(() => (offeredCampuses.length === 1 && offeredCampuses[0].regionId && session?.user?.role !== 'SUPER_ADMIN' ? offeredCampuses[0].id : ''));
 
   // Pickup and drop come from the selected campus's own locations, inside its boundary
-  // (see features/tasks/campusLocations.js) — never from a citywide search.
-  const { locations: campusLocations } = campusId ? campusTaskLocations(campusId) : { locations: [] };
+  // (see features/tasks/campusLocations.js) — never from a citywide search. Mapped
+  // destinations with no declared point are counted, so their absence is stated, not silent.
+  const { locations: campusLocations, withoutDeclaredPoint, unverifiedCount } = campusId
+    ? campusTaskLocations(campusId)
+    : { locations: [], withoutDeclaredPoint: [], unverifiedCount: 0 };
   const locationById = (id) => campusLocations.find((l) => l.id === id) || null;
   const chooseLocation = (setter) => (id) => {
     setError('');
@@ -233,6 +236,26 @@ export default function CreateTaskModal({ onClose, onCreate }) {
           {campusId && campusLocations.length > 0 ? (
             <div className="text-[10px] text-muted-foreground pl-1 -mt-2">
               Locations inside the campus boundary only.
+            </div>
+          ) : null}
+          {campusId && withoutDeclaredPoint.length > 0 ? (
+            <div
+              className="text-[10px] text-muted-foreground pl-1 -mt-2"
+              title={withoutDeclaredPoint.map((l) => l.name).join(', ')}
+              data-without-declared-point={withoutDeclaredPoint.length}
+            >
+              {withoutDeclaredPoint.length} mapped{' '}
+              {withoutDeclaredPoint.length === 1 ? 'destination has' : 'destinations have'} no declared
+              delivery point in the campus data, so {withoutDeclaredPoint.length === 1 ? 'it is' : 'they are'}{' '}
+              not offered.
+            </div>
+          ) : null}
+          {/* Development mode only (VITE_UNVERIFIED_CAMPUS_LOCATIONS): say plainly that some
+              options are unverified candidates, not checked delivery points. */}
+          {campusId && unverifiedCount > 0 ? (
+            <div className="text-[10px] text-amber-700 pl-1 -mt-2" data-unverified-locations={unverifiedCount}>
+              Development mode: {unverifiedCount} options marked &ldquo;(unverified)&rdquo; are generated
+              candidate points, not checked on site.
             </div>
           ) : null}
 

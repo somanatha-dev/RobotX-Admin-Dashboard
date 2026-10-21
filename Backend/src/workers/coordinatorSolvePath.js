@@ -1842,8 +1842,8 @@ async function chargerCandidatesFor(input) {
  *     bucket, not a claim about the ground it covers.
  *   · **inDeliveryDomain** — the **pinned** verdict on `Stop.geofenceResult`, taken at
  *     intake on the exact coordinate against the published domain geometry.
- *   · **routable** — whether the point reaches the routing graph. Depends on
- *     `snapRadiusM`, which is **R13**, an unresolved external input.
+ *   · **routable** — whether the point reaches the routing graph. For a physical agent
+ *     that depends on `site.snapRadiusM`, which is **R13**, an unresolved owner input.
  *
  * ── This function evaluates NO geometry, and that is load-bearing ──────────
  * It reads a verdict someone else computed at a lifecycle boundary. It does not call
@@ -1870,14 +1870,22 @@ async function chargerCandidatesFor(input) {
  * **Nothing here defaults an absent conjunct to true.** That is the single mutation this
  * seam most needs to be unable to survive, and `spatialMutants.js` asserts it.
  *
- * ── The standing consequence: F33 cannot be SATISFIED today ────────────────
- * `routable` has **no producer in `src/`**. `snapRadiusM` exists only in
- * `tools/routing/adapters/`, in a deployment module that is an external input B1 has not
- * supplied. So with a perfect index and a perfect delivery-domain declaration, this
- * function still returns an absent verdict and F33 still denies — **fail-closed, and
- * correct**. That is a real tightening in the conservative direction relative to the
- * previous behaviour, it is reported rather than hidden, and it is not to be relieved by
- * choosing a snap radius that looks reasonable. R13 is an owner input.
+ * ── Where `routable` comes from, and what R13 still withholds ───────────────
+ * This function never supplies `routable`; a caller that passes none gets an absent verdict
+ * and F33 denies. The round passes `routable: true` only for a pairing whose every hop the
+ * routing producer resolved (`planInputFor({ routable })`, from the traversal), so the
+ * conjunct is observed, never assumed. What that traversal requires depends on the fleet:
+ *
+ *   · a **simulated** agent is routed on the campus network with no bound on the access
+ *     connector (`campusTraversalNetwork` reports it and applies none);
+ *   · a **physical** agent is routed by `fleetProviders/physicalRouter`, which bounds every
+ *     access connector by the declared `site.snapRadiusM` (R13, `physicalPolicy`) and
+ *     refuses every route while none is declared — so the pairing ends MISSING_HOP before
+ *     F33 is reached. RD-2026-10-12-01 AC2 leaves the value pending.
+ *
+ * That refusal is **fail-closed, and correct**, and it is not to be relieved by choosing a
+ * snap radius that looks reasonable. R13 is an owner input. (`snapRadiusM` also appears in
+ * `tools/routing/adapters/`, as the B1 adapter contract's required field.)
  *
  * @param {object|null} snapshot the round's pinned configuration snapshot
  * @returns {(stops: object[]) => object[]}

@@ -153,6 +153,17 @@ export const PROVENANCE = Object.freeze({
    * a person supplying a coordinate is supplying a claim, not a measurement.
    */
   USER_SUPPLIED: 'USER_SUPPLIED',
+  /**
+   * An access point this repository COMPUTED from imported geometry — a building's
+   * frontage projected onto the sidewalk network (Backend
+   * `tools/campus/accessCandidates.js`) — and then confirmed on site by a named
+   * person. The computation is a suggestion, never a delivery point on its own: a
+   * candidate enters the campus only through `access/accessPointImport.js`, and only
+   * when its register entry is `verified` with a dated, attributed review. The campus
+   * verification record does not cover this provenance, so no blanket check can
+   * verify one.
+   */
+  DERIVED_ACCESS_POINT: 'DERIVED_ACCESS_POINT',
 });
 
 /**

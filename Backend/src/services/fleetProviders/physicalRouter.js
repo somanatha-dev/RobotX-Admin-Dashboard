@@ -172,11 +172,24 @@ function createPhysicalRouter(settings) {
       throw new RouteRefusedError(ROUTE_REFUSAL.NOT_ROUTABLE, error && error.message);
     }
 
+    // An exact-endpoint request routes the exact points, so those are what is checked:
+    // `projectExactPoint` requires each to be a valid coordinate, to lie in the fine cell the
+    // request names for it, and to be inside the region by the same oracle. Testing the cell's
+    // CENTRE instead refused points inside the campus in boundary cells (10.3 % of RNSIT) while
+    // the route between the exact points never left it — the defect de03788 fixed in the
+    // simulation router. A cell-only request keeps the cell-centre check. The contained network
+    // below still requires each exact point strictly inside, every access connector inside and
+    // within `site.snapRadiusM`, and the whole path inside.
+    const exact = hasExactEndpoints(source);
     let origin;
     let destination;
     try {
-      origin = world.projection.project(source.originCell);
-      destination = world.projection.project(source.destCell);
+      origin = exact
+        ? world.projection.projectExactPoint(source.originCell, source.originPoint)
+        : world.projection.project(source.originCell);
+      destination = exact
+        ? world.projection.projectExactPoint(source.destCell, source.destPoint)
+        : world.projection.project(source.destCell);
     } catch (error) {
       if (error instanceof cellProjection.ProjectionError) {
         throw new RouteRefusedError(
@@ -188,7 +201,6 @@ function createPhysicalRouter(settings) {
       throw error;
     }
 
-    const exact = hasExactEndpoints(source);
     const network = world.networkFor(parsed.roadClasses);
     const routed = network.route(exact ? source.originPoint : origin, exact ? source.destPoint : destination, {
       maxAccessM: site.snapRadiusM,

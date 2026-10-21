@@ -8,7 +8,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:arch": "node --test \"src/**/*.test.mjs\""
+    "test:arch": "node --test \"src/**/*.test.mjs\"",
+    "audit:locations": "node scripts/campusLocationAudit.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

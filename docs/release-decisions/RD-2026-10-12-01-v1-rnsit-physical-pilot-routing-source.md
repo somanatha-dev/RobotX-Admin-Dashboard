@@ -55,7 +55,7 @@ This record makes that decision explicit. It does not change what the code does.
 |---|---|
 | The declaration is loaded only under `PHYSICAL_FLEET_ENABLED=true` | [`Backend/server.js:666-670`](../../Backend/server.js#L666-L670) |
 | The physical provider builds the router | [`Backend/src/services/fleetProviders/physicalProvider.js:83`](../../Backend/src/services/fleetProviders/physicalProvider.js#L83) |
-| Route production (`route(parts)`) | [`Backend/src/services/fleetProviders/physicalRouter.js:117-194`](../../Backend/src/services/fleetProviders/physicalRouter.js#L117-L194) |
+| Route production (`route(parts)`) | [`Backend/src/services/fleetProviders/physicalRouter.js:140-245`](../../Backend/src/services/fleetProviders/physicalRouter.js#L140-L245) |
 | Network build and shortest path | [`Backend/src/simulation/campusTraversalNetwork.js:151`](../../Backend/src/simulation/campusTraversalNetwork.js#L151) (`createCampusTraversalNetwork`) |
 | Travel time | [`Backend/src/engine/routing/campusTravelModel.js`](../../Backend/src/engine/routing/campusTravelModel.js) (`travelTimeFor`) |
 | Endpoint serviceability | `Backend/src/engine/routing/cellProjection.js` with `campusServiceability.js` |
