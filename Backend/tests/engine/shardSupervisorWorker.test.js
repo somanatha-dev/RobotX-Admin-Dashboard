@@ -897,7 +897,8 @@ describe("the production composition in server.js", () => {
   test("`server.js` gives the two dashboard events a wire", () => {
     expect(call).toMatch(/onTick:/);
     expect(call).toMatch(/shardSupervisor\.socketMessages\(tick\)/);
-    expect(call).toMatch(/io\.to\("dashboard"\)\.emit/);
+    // Through the RBAC dashboard broadcaster (engine events reach SUPER_ADMIN sockets only).
+    expect(call).toMatch(/dashboardBroadcast\.emit\(io, /);
   });
 
   // §11.1 — an agent-scope command reaches its agent through the outbox, never a broadcast.

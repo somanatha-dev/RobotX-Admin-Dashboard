@@ -97,8 +97,9 @@ test('FE-02 logout closes the socket before calling the backend, and clears flee
 
 test('FE-02 a 401 from the backend signs the page out through the same path', () => {
   const src = code(read('context/AppProvider.jsx'));
-  assert.match(src, /if \(err\?\.status === 401\) sessionExpiredRef\.current\?\.\(\);/);
-  assert.match(src, /const expireSession = useCallback\(\(\) => \{[\s\S]*?clearSessionState\(\);/);
+  // The server's reason travels with it (RBAC: ACCOUNT_DISABLED shows "access revoked").
+  assert.match(src, /if \(err\?\.status === 401\) sessionExpiredRef\.current\?\.\(err\?\.code \|\| null\);/);
+  assert.match(src, /const expireSession = useCallback\(\(reason\) => \{[\s\S]*?clearSessionState\(\);/);
 });
 
 // ── FE-03: cancellation ──────────────────────────────────────────────────────

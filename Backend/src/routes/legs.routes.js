@@ -1,11 +1,13 @@
 const express = require("express");
 const legsController = require("../controllers/legs.controller");
 const { createRateLimiter } = require("../middlewares/rateLimitHttp");
-const { authUser } = require("../middlewares/auth_middleware");
+const { authUser, requireSuperAdmin } = require("../middlewares/auth_middleware");
 
 const router = express.Router();
 
 router.use(authUser);
+// RBAC — SUPER_ADMIN only: no route on this router is open to a campus administrator.
+router.use(requireSuperAdmin());
 
 // PHASE 5 — the operator-visibility surface for §4.5's durable timers. Read-only, and
 // rate-limited like every other authenticated read: an operator refreshing a stuck Leg

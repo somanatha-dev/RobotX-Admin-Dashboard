@@ -32,6 +32,20 @@ export async function pinAuth(pin) {
   });
 }
 
+// ── Step-up PIN: whether this account has one, and setting/changing it ───────
+// Set with the account's current password, re-verified by the server (stepUpPin.service.js).
+export async function pinStatus() {
+  return requestJson('/api/auth/pin');
+}
+
+export async function setPin({ currentPassword, pin }) {
+  return requestJson('/api/auth/pin', {
+    method: 'PUT',
+    body: { currentPassword, pin },
+    errorMessage: 'Could not save the PIN',
+  });
+}
+
 // ── WebAuthn / passkey (server-verified) ────────────────────────────────────
 export async function webauthnStatus() {
   return requestJson('/api/auth/webauthn/status', { errorMessage: 'Could not check passkey status' });

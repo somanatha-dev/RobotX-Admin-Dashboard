@@ -286,7 +286,8 @@ describe("§3.4 — the REST contract change is additive", () => {
     expect(source).not.toContain("assignTask(");
     for (const event of ["task_accepted", "task_assigned", "task_error"]) expect(source).not.toContain(`emit("${event}"`);
     const routes = fs.readFileSync(path.join(BACKEND_ROOT, "src", "routes", "tasks.routes.js"), "utf8");
-    expect(routes).toContain('router.post("/assign", assignLimiter, gateManualAssignment, tasksController.assignTask)');
+    // RBAC: the campus-scope gate runs after the §23.4 manual-assignment gate.
+    expect(routes).toContain('router.post("/assign", assignLimiter, gateManualAssignment, scoped, tasksController.assignTask)');
   });
 });
 

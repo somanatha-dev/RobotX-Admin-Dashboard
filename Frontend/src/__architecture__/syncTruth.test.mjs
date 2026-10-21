@@ -48,8 +48,8 @@ test('FS-01 the socket contract names the backend\'s own presence events', async
   assert.equal(DASHBOARD_EVENTS.ROBOT_ONLINE, 'robot_online');
   // Not invented: these are the names robot.handler.js emits to the dashboard room.
   const handler = fs.readFileSync(path.join(BACKEND, 'src/sockets/handlers/robot.handler.js'), 'utf8');
-  assert.match(handler, /io\.to\("dashboard"\)\.emit\("robot_offline", \{ robotId: boundRobotId \}\)/);
-  assert.match(handler, /io\.to\("dashboard"\)\.emit\("robot_online", \{ robotId \}\)/);
+  assert.match(handler, /dashboardBroadcast\.emit\(io, "robot_offline", \{ robotId: boundRobotId \}\)/);
+  assert.match(handler, /dashboardBroadcast\.emit\(io, "robot_online", \{ robotId \}\)/);
 });
 
 test('FS-01 robot_offline applies exactly what markRobotOffline wrote, to that robot only', async () => {

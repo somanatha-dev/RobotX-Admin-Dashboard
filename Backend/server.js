@@ -106,6 +106,8 @@ const degradedTransitions = require("./src/engine/degraded/transitions");
 const sli = require("./src/engine/observability/sli");
 const sampling = require("./src/engine/observability/sampling");
 const rejectionTelemetry = require("./src/engine/feasibility/rejectionTelemetry");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("./src/sockets/dashboardBroadcast");
 
 /**
  * PHASE 15 — start the workers `src/workers/registry.js` marks `SCHEDULED`.
@@ -187,7 +189,7 @@ function startScheduledWorkers(context) {
         emit: async (message) => {
           if (!io) return;
           try {
-            io.to("dashboard").emit(message.event, message.payload);
+            dashboardBroadcast.emit(io, message.event, message.payload);
           } catch (error) {
             // An emit that fails costs visibility, never correctness — the durable
             // `InvariantStatus` and `ExternalEscalation` rows are the authority and the two
@@ -509,6 +511,8 @@ async function start() {
         new Promise((resolve, reject) => { subClient.once("ready", resolve); subClient.once("error", reject); }),
       ]);
       io.adapter(createAdapter(pubClient, subClient));
+      // RBAC — campus rooms may now have members on other processes; relay regardless.
+      dashboardBroadcast.setCrossProcess(true);
       redisAdapterClients = { pubClient, subClient };
       logger.info("Socket.IO Redis adapter attached — broadcasts fan out across worker processes");
     } catch (e) {
@@ -1180,7 +1184,7 @@ async function start() {
 
             for (const message of shardSupervisor.socketMessages(tick)) {
               try {
-                io.to("dashboard").emit(message.event, message.payload);
+                dashboardBroadcast.emit(io, message.event, message.payload);
               } catch (error) {
                 // An emit that fails costs visibility, never correctness — the durable
                 // `ShardLeadership` and `ShardMembership` rows are the authority, and

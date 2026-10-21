@@ -29,6 +29,8 @@ const robotStateCache = require("../cache/robotStateCache");
 const { updateAssignedTask } = require("./robotRegistry.service");
 const settlement = require("../engine/lifecycle/settlement");
 const { TERMINAL_TASK_STATUSES } = require("./taskCancellation.service");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../sockets/dashboardBroadcast");
 
 /** The settlement outcomes after which the Task is complete. @structural */
 const SETTLED_OUTCOMES = Object.freeze([settlement.OUTCOME.SETTLED, settlement.OUTCOME.ALREADY_SETTLED]);
@@ -160,7 +162,7 @@ async function publish(input) {
   // terminal (CANCELLED, FAILED, REJECTED) still frees the robot, but telling the dashboard the
   // Task completed would be false, and its next refetch would contradict it.
   if (io && completion.taskCompleted === true) {
-    io.to("dashboard").emit("TASK_UPDATED", { robotId, taskId, status: "COMPLETED", timestamp: Date.now() });
+    dashboardBroadcast.emit(io, "TASK_UPDATED", { robotId, taskId, status: "COMPLETED", timestamp: Date.now() });
   }
   return true;
 }

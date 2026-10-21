@@ -29,6 +29,8 @@ export function MapLegend({
   stations = [],
   /** False when there is no simulator charging report at all (not a simulated deployment, or not loaded). */
   chargingReported = false,
+  /** True when this account may not read the simulator report at all (RBAC: SUPER_ADMIN only). */
+  chargingRestricted = false,
   selectedStationId = null,
   onPickStation,
 }) {
@@ -109,7 +111,7 @@ export function MapLegend({
             </>
           ) : (
             <div className="map-legend__row">
-              <span>Charging stations: no simulator charging report</span>
+              <span>{chargingRestricted ? 'Charging stations: visible to super administrators only' : 'Charging stations: no simulator charging report'}</span>
             </div>
           )}
 

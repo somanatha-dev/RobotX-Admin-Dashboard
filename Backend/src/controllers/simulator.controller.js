@@ -9,6 +9,8 @@ const robotProjection = require("../services/robotProjection");
 // One writer for the `robot:{id}` live-state key, shared with the physical commissioning
 // controller. Two writers of one key shape is one that drifts.
 const { writeRobotLiveState } = require("./robots.controller");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../sockets/dashboardBroadcast");
 
 function getSimulator(req, res) {
   const sim = req.app?.locals?.virtualSimulator;
@@ -225,7 +227,7 @@ const createSimulatedRobot = asyncHandler(async (req, res) => {
   };
 
   try {
-    io?.to("dashboard")?.emit("ROBOT_COMMISSIONED", {
+    dashboardBroadcast.emit(io, "ROBOT_COMMISSIONED", {
       ...livePayload,
       locationId: robot.locationId || null,
       campusId: robot.campusId || null,

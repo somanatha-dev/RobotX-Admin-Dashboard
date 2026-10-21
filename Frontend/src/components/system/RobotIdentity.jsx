@@ -1,6 +1,7 @@
 import React from 'react';
 
 import { Badge } from '@/components/ui/badge.jsx';
+import { SIMULATOR_RESTRICTED_NOTE } from '@/lib/access.js';
 import {
   IDENTITY,
   RUNTIME,
@@ -83,8 +84,17 @@ const RUNTIME_VARIANT = Object.freeze({
  *
  * @param {{ robot: object, simulatorStatus: object|null, className?: string }} props
  */
-export function SimulatorRuntimeBadge({ robot, simulatorStatus, className = '' }) {
+export function SimulatorRuntimeBadge({ robot, simulatorStatus, className = '', restricted = false }) {
   if (!isSimulated(robot)) return null;
+
+  // RBAC — the simulator report is SUPER_ADMIN-only; say so rather than "unknown".
+  if (restricted) {
+    return (
+      <Badge variant="outline" className={`text-[10px] px-2 py-0.5 font-mono ${className}`} title={SIMULATOR_RESTRICTED_NOTE} data-simulator-restricted>
+        RUNTIME RESTRICTED
+      </Badge>
+    );
+  }
 
   const status = runtimeStatusOf(robot, simulatorStatus);
   // The robot is passed so a held-but-stopped instance is described as one (STEP 4).

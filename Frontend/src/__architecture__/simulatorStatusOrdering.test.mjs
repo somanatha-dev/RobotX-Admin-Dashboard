@@ -207,6 +207,10 @@ test('wiring: both writers in AppProvider go through the one sync; sign-out inva
   assert.match(source, /poller\.stop\(\);/);
   // Sign-out invalidates before clearing; the clear is the only direct write left.
   assert.match(source, /simulatorSyncRef\.current\.invalidate\(\);\s*setSimulatorStatus\(null\);/);
+  // Direct writes are the two clears — sign-out, and an access change (RBAC) — and each is
+  // preceded by the invalidate, so nothing still in flight can put an old report back.
   const directWrites = source.match(/setSimulatorStatus\(/g) || [];
-  assert.equal(directWrites.length, 1, 'only the sign-out clear writes simulatorStatus directly');
+  assert.equal(directWrites.length, 2, 'only the sign-out and access-change clears write simulatorStatus directly');
+  const guardedClears = source.match(/simulatorSyncRef\.current\.invalidate\(\);\s*setSimulatorStatus\(null\);/g) || [];
+  assert.equal(guardedClears.length, 2, 'each direct write is an invalidate-then-clear');
 });

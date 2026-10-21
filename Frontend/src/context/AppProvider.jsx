@@ -28,6 +28,7 @@ import {
 import { cancellationWarning, createSingleFlight, runTaskCancellation } from '@/lib/taskCancellation.js';
 import { STOP_ALL_WARNING, summariseStopAll } from '@/lib/robotCommands.js';
 import { reopensAssignment } from '@/features/tasks/taskLifecycle.js';
+import { accessChanged, mayReadSimulator } from '@/lib/access.js';
 import { evictParkedMap } from '@/features/maps/mapControl/mapInstanceCache.js';
 import { CONNECTION, connectionStateOf } from '@/lib/connectionState.js';
 import { SESSION_CHECK, sessionCheckOutcome, sessionRetryDelayMs } from '@/lib/sessionCheck.js';
@@ -135,6 +136,16 @@ export default function AppProvider({ children }) {
     sessionRef.current = session;
   }, [session]);
 
+  // RBAC — whether this account may read the SUPER_ADMIN-only simulator report. Set
+  // synchronously wherever the signed-in user is established (sign-in, session restore, an
+  // access change, sign-out): `refreshDbState` runs before the effect above updates
+  // `sessionRef`, and a stale answer would either poll a refused endpoint or skip a permitted one.
+  const mayReadSimulatorRef = useRef(false);
+
+  // Why the last session ended, when the server said so: 'ACCOUNT_DISABLED' shows the
+  // sign-in page an "access revoked" notice instead of a bare sign-in form.
+  const [signedOutReason, setSignedOutReason] = useState(null);
+
   // Set below to `expireSession`, which is defined after `refreshDbState` but is what
   // `refreshDbState` calls when the backend answers 401.
   const sessionExpiredRef = useRef(null);
@@ -191,7 +202,9 @@ export default function AppProvider({ children }) {
           // Already failure-tolerant: it resolves to `null` rather than rejecting, so a
           // simulator that is unreachable cannot take the robot and task lists down with
           // it — and `null` is rendered honestly as "status unknown".
-          simulatorApi.getSimulatorStatus(),
+          // RBAC — a SUPER_ADMIN-only report: not requested for any other account, whose
+          // pages say the details are restricted rather than unknown.
+          mayReadSimulatorRef.current ? simulatorApi.getSimulatorStatus() : Promise.resolve(null),
         ]);
         setRobots(Array.isArray(robotsNext) ? robotsNext : []);
         setTasks(Array.isArray(tasksNext) ? tasksNext : []);
@@ -204,7 +217,7 @@ export default function AppProvider({ children }) {
     } catch (err) {
       // The session ended under us (expired or revoked cookie). Sign out locally, so the
       // page stops showing a fleet it is no longer allowed to read.
-      if (err?.status === 401) sessionExpiredRef.current?.();
+      if (err?.status === 401) sessionExpiredRef.current?.(err?.code || null);
       throw err;
     } finally {
       refreshingRef.current = false;
@@ -219,6 +232,8 @@ export default function AppProvider({ children }) {
       const identity = user?.email || fallbackIdentity;
 
       const next = { isAuthenticated: true, identity, user };
+      mayReadSimulatorRef.current = mayReadSimulator({ user: user });
+      setSignedOutReason(null);
       setSession(next);
       // A sign-in answers the session question even if the restore is still retrying an
       // unreachable backend (FS-03).
@@ -292,6 +307,7 @@ export default function AppProvider({ children }) {
     // backend's socket session outlives the cookie; only the client closing it ends it.
     disconnectDashboardSocket();
 
+    mayReadSimulatorRef.current = false;
     setSession({ isAuthenticated: false, identity: '', user: null });
     setPreferences({ ...DEFAULT_PREFERENCES });
     setRobots([]);
@@ -327,9 +343,12 @@ export default function AppProvider({ children }) {
   }, [clearSessionState, navigate]);
 
   // The backend answered 401 to a signed-in page: the cookie expired or was revoked.
-  const expireSession = useCallback(() => {
+  // `reason` is the server's code — 'ACCOUNT_DISABLED' when a super administrator disabled
+  // this account — and is shown on the sign-in page.
+  const expireSession = useCallback((reason) => {
     if (!sessionRef.current?.isAuthenticated) return;
     clearSessionState();
+    setSignedOutReason(reason === 'ACCOUNT_DISABLED' ? 'ACCOUNT_DISABLED' : null);
     navigate('/login');
   }, [clearSessionState, navigate]);
 
@@ -345,8 +364,10 @@ export default function AppProvider({ children }) {
   // `SIMULATOR_STATUS_POLL_MS` while signed in and the page is visible. Only `simulatorStatus` is
   // written: robot rows stay with the live socket events. One poll at a time, ordered against the
   // full refresh by `simulatorSyncRef`; a poll still in flight at teardown is never applied.
+  const pollsSimulator = session.isAuthenticated && mayReadSimulator(session);
   useEffect(() => {
-    if (!session.isAuthenticated) return undefined;
+    // RBAC — no SUPER_ADMIN-only polling from another account's page.
+    if (!pollsSimulator) return undefined;
     const poller = createSimulatorStatusPoller({
       sync: simulatorSyncRef.current,
       fetchStatus: () => simulatorApi.getSimulatorStatus(),
@@ -359,7 +380,7 @@ export default function AppProvider({ children }) {
       poller.stop();
       clearInterval(timer);
     };
-  }, [session.isAuthenticated]);
+  }, [pollsSimulator]);
 
   // Read by the session restore below, which must not re-run when `navigate` changes.
   const navigateRef = useRef(navigate);
@@ -392,6 +413,7 @@ export default function AppProvider({ children }) {
         const user = data?.user || null;
         const identity = user?.email || '';
         const next = { isAuthenticated: true, identity, user };
+        mayReadSimulatorRef.current = mayReadSimulator({ user: user });
         setSession(next);
 
         setPreferences(loadUserPreferences({ userId: user?.id, email: user?.email || identity }));
@@ -831,16 +853,39 @@ export default function AppProvider({ children }) {
     // The backend refused this socket's session and is about to disconnect it itself.
     // socket.io does not retry a server-side disconnect, so this cannot loop by itself;
     // the only reconnect is the single one below, and only while the REST session is valid.
-    const onUnauthorized = async () => {
+    const onUnauthorized = async (payload) => {
       if (!sessionRef.current?.isAuthenticated) return;
+      let current = null;
       try {
-        await authApi.me();
+        current = (await authApi.me())?.user || null;
       } catch (err) {
         // Only the backend saying "no session" ends it; an unreachable one does not (FS-03).
-        if (sessionCheckOutcome(err) === SESSION_CHECK.NO_SESSION) sessionExpiredRef.current?.();
+        if (sessionCheckOutcome(err) === SESSION_CHECK.NO_SESSION) {
+          sessionExpiredRef.current?.(err?.code || payload?.code || null);
+        }
         return;
       }
       if (!sessionRef.current?.isAuthenticated) return;
+      // RBAC — the account's role or campus changed. Everything on the page was read under the
+      // old scope: drop it before the reconnect below, so nothing of the old campus stays on
+      // screen while the new campus's data loads (`onConnect` refetches).
+      if (current && accessChanged(sessionRef.current.user, current)) {
+        mayReadSimulatorRef.current = mayReadSimulator({ user: current });
+        sessionRef.current = { ...sessionRef.current, user: current };
+        setSession((prev) => ({ ...prev, user: current }));
+        setRobots([]);
+        setTasks([]);
+        taskPathCacheRef.current.clear();
+        setTaskRoutes({});
+        simulatorSyncRef.current.invalidate();
+        setSimulatorStatus(null);
+        setNotice({
+          kind: 'warning',
+          title: 'Your access changed',
+          message: current.campus ? `You now manage ${current.campus.name}. The dashboard has reloaded for it.` : 'The dashboard has reloaded for your new access.',
+        });
+        unauthorizedRetriedRef.current = false;
+      }
       if (unauthorizedRetriedRef.current) {
         addEvent('Live updates stopped: the server refused the live connection. Reload the page.', 'warning');
         return;
@@ -1287,6 +1332,7 @@ export default function AppProvider({ children }) {
       notificationsRef,
       bellButtonRef,
       session,
+      signedOutReason,
       preferences,
       robots,
       simulatorStatus,
@@ -1310,6 +1356,7 @@ export default function AppProvider({ children }) {
       isSidebarOpen,
       isNotificationsOpen,
       session,
+      signedOutReason,
       preferences,
       robots,
       simulatorStatus,

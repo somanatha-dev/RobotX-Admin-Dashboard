@@ -619,7 +619,9 @@ async function readAgentProjection(prisma, robotCode) {
   return legacyRobotMapper.toAgentProjection(robot);
 }
 
-async function listRobots(prisma, query) {
+// `options.scopeWhere` — RBAC's robot filter for the caller (`accessScope.robotWhere`). The
+// query's `campusId` selects; it never authorises, so the scope is ANDed over everything.
+async function listRobots(prisma, query, options = {}) {
   const { locationId, includeDescendants, campusId, isOnline, status } = query || {};
 
   // Soft retirement — a retired unit is not part of the listed fleet (see
@@ -642,8 +644,9 @@ async function listRobots(prisma, query) {
   if (typeof isOnline === "string") where.isOnline = isOnline === "true";
   if (status) where.status = String(status);
 
+  const scopeWhere = options && options.scopeWhere;
   return prisma.robot.findMany({
-    where,
+    where: scopeWhere && Object.keys(scopeWhere).length > 0 ? { AND: [where, scopeWhere] } : where,
     include: {
       campus: true,
       location: true,

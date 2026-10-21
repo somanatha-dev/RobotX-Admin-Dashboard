@@ -51,10 +51,14 @@ export const MapFiltersBar = React.memo(function MapFiltersBar({
   setCampusId,
   loading,
   resetAll,
+  /** RBAC — a campus administrator's map: its one campus, no location hierarchy. */
+  campusLocked = false,
 }) {
   return (
     <div className="map-filters-bar" aria-label="Map location filters">
       <div className="map-filters-bar__group">
+        {campusLocked ? null : (
+        <>
         <Select value={toSelectableValue(countryId)} onValueChange={(v) => setCountryId(fromSelectableValue(v))}>
           <SelectTrigger className="map-filter-trigger">
             <SelectValue placeholder={loading.countries ? 'Loading…' : 'Country'} />
@@ -123,12 +127,15 @@ export const MapFiltersBar = React.memo(function MapFiltersBar({
           </SelectContent>
         </Select>
 
-        <Select value={toSelectableValue(campusId)} onValueChange={(v) => setCampusId(fromSelectableValue(v))}>
+        </>
+        )}
+
+        <Select value={toSelectableValue(campusId)} onValueChange={(v) => setCampusId(fromSelectableValue(v))} disabled={campusLocked}>
           <SelectTrigger className="map-filter-trigger">
             <SelectValue placeholder={loading.campuses ? 'Loading…' : 'Campus'} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="__none__">None</SelectItem>
+            {campusLocked ? null : <SelectItem value="__none__">None</SelectItem>}
             {Array.isArray(campuses) &&
               campuses.map((c) => (
                 <SelectItem key={c.id} value={String(c.id)}>

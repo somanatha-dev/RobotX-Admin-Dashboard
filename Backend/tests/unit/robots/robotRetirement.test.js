@@ -453,6 +453,9 @@ describe("E — a retired robot is refused by every per-robot operator endpoint 
         next();
       },
       requireElevatedRole: () => (req, res, next) => next(),
+      // RBAC — the real role and campus gates, evaluated against the SUPER_ADMIN set above.
+      requireScopedAccess: jest.requireActual("../../../src/middlewares/auth_middleware").requireScopedAccess,
+      requireSuperAdmin: jest.requireActual("../../../src/middlewares/auth_middleware").requireSuperAdmin,
       policyFor: () => ({}),
       recordAuthorisation: jest.fn(async () => {}),
       configValue: () => undefined,
@@ -740,7 +743,7 @@ describe("H — dashboard lists omit retired robots and keep robots with no Agen
     require("../../../src/db/prisma").getPrisma.mockReturnValue(world.prisma);
     const controller = require("../../../src/controllers/robots.controller");
     const res = { json: jest.fn() };
-    await controller.getRobotsState({ app: { locals: {} } }, res, jest.fn());
+    await controller.getRobotsState({ user: { id: "11111111-1111-4111-8111-111111111111", role: "SUPER_ADMIN" }, app: { locals: {} } }, res, jest.fn());
     await waitFor(() => res.json.mock.calls.length > 0);
 
     expect(world.prisma.robot.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: policy.notRetiredRobotWhere() }));

@@ -28,8 +28,8 @@ test('R1 robot_retired is a dashboard event, named as the backend emits it', asy
   const { DASHBOARD_EVENTS } = await load('lib/socket.js');
   assert.equal(DASHBOARD_EVENTS.ROBOT_RETIRED, 'robot_retired');
   const service = fs.readFileSync(path.join(BACKEND, 'src/services/robotRetirement.service.js'), 'utf8');
-  assert.match(service, /emit\("robot_retired"/);
-  assert.match(service, /emit\("robot_offline"/);
+  assert.match(service, /dashboardBroadcast\.emit\(io, "robot_retired"/);
+  assert.match(service, /dashboardBroadcast\.emit\(io, "robot_offline"/);
 });
 
 test('R2 the provider subscribes, unsubscribes, and removes the retired unit from the list', () => {

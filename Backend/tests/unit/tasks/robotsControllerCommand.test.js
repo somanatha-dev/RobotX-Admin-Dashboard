@@ -44,7 +44,7 @@ describe("robots.controller — sendRobotCommand (worker-safe dispatch)", () => 
   });
 
   function call(body = { type: "STOP" }, robotId = "R1") {
-    const req = { params: { robotId }, body, app: { locals: { kv, io } } };
+    const req = { params: { robotId }, body, user: { id: "11111111-1111-4111-8111-111111111111", role: "SUPER_ADMIN" }, app: { locals: { kv, io } } };
     const res = makeRes();
     sendRobotCommand(req, res, jest.fn());
     return res;
@@ -81,7 +81,7 @@ describe("robots.controller — sendRobotCommand (worker-safe dispatch)", () => 
   });
 
   test("rejects a command type outside the Prisma CommandType enum", async () => {
-    const req = { params: { robotId: "R1" }, body: { type: "LAUNCH" }, app: { locals: { kv, io } } };
+    const req = { params: { robotId: "R1" }, body: { type: "LAUNCH" }, user: { id: "11111111-1111-4111-8111-111111111111", role: "SUPER_ADMIN" }, app: { locals: { kv, io } } };
     const res = makeRes();
     const next = jest.fn();
     sendRobotCommand(req, res, next);
@@ -93,7 +93,7 @@ describe("robots.controller — sendRobotCommand (worker-safe dispatch)", () => 
 
   test("404s for an unknown robot before creating a Command row", async () => {
     prisma.robot.findUnique.mockResolvedValue(null);
-    const req = { params: { robotId: "NOPE" }, body: { type: "STOP" }, app: { locals: { kv, io } } };
+    const req = { params: { robotId: "NOPE" }, body: { type: "STOP" }, user: { id: "11111111-1111-4111-8111-111111111111", role: "SUPER_ADMIN" }, app: { locals: { kv, io } } };
     const res = makeRes();
     const next = jest.fn();
     sendRobotCommand(req, res, next);

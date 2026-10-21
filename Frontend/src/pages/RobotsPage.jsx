@@ -19,6 +19,7 @@ import { useAppActions, useAppState } from '@/context/appContext.js';
 import useRobotCommand from '@/hooks/useRobotCommand.js';
 import { returnAvailability } from '@/lib/robotCommands.js';
 import { RobotIdentityBadge, SimulatorRuntimeBadge } from '@/components/system/RobotIdentity.jsx';
+import { mayCommand, mayReadSimulator } from '@/lib/access.js';
 import { normalizeStatus, isActive, isIdle, isIssues } from '@/lib/robotStatus.js';
 import {
   chargingDetails,
@@ -91,7 +92,7 @@ function batteryColors(pct) {
 }
 
 export default function RobotsPage() {
-  const { robots, tasks, simulatorStatus } = useAppState();
+  const { robots, tasks, simulatorStatus, session } = useAppState();
   const { retire } = useAppActions();
   const navigate = useNavigate();
   const [filter, setFilter] = useState('All');
@@ -261,7 +262,7 @@ export default function RobotsPage() {
                             connecting, and neither of these badges substitutes for it. */}
                         <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
                           <RobotIdentityBadge robot={r} />
-                          <SimulatorRuntimeBadge robot={r} simulatorStatus={simulatorStatus} />
+                          <SimulatorRuntimeBadge robot={r} simulatorStatus={simulatorStatus} restricted={!mayReadSimulator(session)} />
                         </div>
                       </div>
 
@@ -363,7 +364,7 @@ export default function RobotsPage() {
                     <div className="font-mono text-xl font-bold text-slate-900">{selectedRobot.robotId}</div>
                     <div className="mt-1 flex items-center gap-1.5 flex-wrap">
                       <RobotIdentityBadge robot={selectedRobot} />
-                      <SimulatorRuntimeBadge robot={selectedRobot} simulatorStatus={simulatorStatus} />
+                      <SimulatorRuntimeBadge robot={selectedRobot} simulatorStatus={simulatorStatus} restricted={!mayReadSimulator(session)} />
                     </div>
                   </div>
                   <span
@@ -396,7 +397,9 @@ export default function RobotsPage() {
                   >
                     <Pause className="w-5 h-5" /> PAUSE
                   </button>
-                  {/* FS-05: not offered while the unit holds a task (see robotCommands.js). */}
+                  {/* FS-05: not offered while the unit holds a task (see robotCommands.js).
+                      RBAC: not offered to a campus administrator (STOP and PAUSE only). */}
+                  {mayCommand(session, 'RETURN') ? (
                   <button
                     type="button"
                     onClick={() => sendCommand(selectedRobot.robotId, 'RETURN')}
@@ -412,6 +415,7 @@ export default function RobotsPage() {
                   >
                     <RefreshCw className="w-5 h-5" /> RETURN
                   </button>
+                  ) : null}
                 </div>
                 {selectedReturn.reason ? (
                   <div className="text-[11px] text-muted-foreground" data-return-unavailable-reason>

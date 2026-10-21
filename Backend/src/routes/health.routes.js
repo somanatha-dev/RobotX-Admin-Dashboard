@@ -1,7 +1,7 @@
 const express = require("express");
 const healthController = require("../controllers/health.controller");
 const { createRateLimiter } = require("../middlewares/rateLimitHttp");
-const { authUser } = require("../middlewares/auth_middleware");
+const { authUser, requireSuperAdmin } = require("../middlewares/auth_middleware");
 
 const router = express.Router();
 
@@ -13,6 +13,8 @@ const router = express.Router();
 // currently unable to guarantee" — which names the invariants a shard has suspended and
 // the reason it entered a degraded mode. That is operational detail, not a liveness probe.
 router.use(authUser);
+// RBAC — SUPER_ADMIN only: no route on this router is open to a campus administrator.
+router.use(requireSuperAdmin());
 
 // A higher limit than the explanation API's: during an incident these two are the pages an
 // operator refreshes, and rate-limiting the register at the moment it matters would be the

@@ -4,6 +4,14 @@ const crypto = require("crypto");
 const { OAuth2Client } = require("google-auth-library");
 
 const { getPrisma } = require("../db/prisma");
+// RBAC — the account's campus, always from its own row; a disabled account never signs in.
+const accessScope = require("../services/accessScope.service");
+const stepUpPin = require("../services/stepUpPin.service");
+
+/** The account as the dashboard sees it: identity, role, and (for an ADMIN) its one campus. */
+function publicUser(user) {
+  return { id: user.id, email: user.email, role: user.role, campus: accessScope.publicCampus(accessScope.accessScopeFor(user)) };
+}
 
 let googleClient = null;
 function getGoogleClient() {
@@ -132,12 +140,7 @@ async function loginUser(req, res) {
   const prisma = getPrisma();
   const user = await prisma.user.findUnique({
     where: { email },
-    select: {
-      id: true,
-      email: true,
-      role: true,
-      password: true
-    }
+    select: { ...accessScope.USER_SCOPE_SELECT, password: true }
   });
 
   if (!user) {
@@ -151,6 +154,10 @@ async function loginUser(req, res) {
     return res.status(400).json({ message: "Invalid email or password" });
   }
 
+  if (user.disabledAt) {
+    return res.status(403).json({ message: "This account is disabled" });
+  }
+
   // Generate JWT
   const token = jwt.sign(
     { id: user.id, role: user.role },
@@ -162,11 +169,7 @@ async function loginUser(req, res) {
 
   return res.status(200).json({
     message: "User logged in successfully",
-    user: {
-      id: user.id,
-      email: user.email,
-      role: user.role
-    }
+    user: publicUser(user)
   });
 }
 
@@ -206,16 +209,15 @@ async function googleLogin(req, res) {
   const prisma = getPrisma();
   const user = await prisma.user.findUnique({
     where: { email: payload.email },
-    select: {
-      id: true,
-      email: true,
-      role: true,
-      googleId: true,
-    },
+    select: { ...accessScope.USER_SCOPE_SELECT, googleId: true },
   });
 
   if (!user) {
     return res.status(403).json({ message: "No account found for this email" });
+  }
+
+  if (user.disabledAt) {
+    return res.status(403).json({ message: "This account is disabled" });
   }
 
   if (user.googleId !== payload.sub) {
@@ -235,11 +237,7 @@ async function googleLogin(req, res) {
 
   return res.status(200).json({
     message: "User logged in successfully",
-    user: {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-    },
+    user: publicUser(user),
   });
 }
 
@@ -247,30 +245,9 @@ async function googleLogin(req, res) {
 // GET ME
 //////////////////////////////////////////////////
 async function getMe(req, res) {
-  const userId = req.user.id;
-
-  const prisma = getPrisma();
-
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      id: true,
-      email: true,
-      role: true
-    }
-  });
-
-  if (!user) {
-    return res.status(404).json({ message: "User not found" });
-  }
-
-  return res.status(200).json({
-    user: {
-      id: user.id,
-      email: user.email,
-      role: user.role
-    }
-  });
+  // `authUser` read this account's row for this request (role, campus, disabled), so the
+  // answer is current without a second query.
+  return res.status(200).json({ user: publicUser(req.user) });
 }
 
 //////////////////////////////////////////////////
@@ -344,7 +321,28 @@ async function logout(req, res) {
   });
 }
 
+//////////////////////////////////////////////////
+// STEP-UP PIN (set / change, and whether one exists)
+//////////////////////////////////////////////////
+// The account's own PIN, set with its current password (see stepUpPin.service.js).
+async function getPinStatus(req, res) {
+  return res.status(200).json(await stepUpPin.pinStatus(getPrisma(), req.user.id));
+}
+
+async function setPin(req, res) {
+  try {
+    const result = await stepUpPin.setPin(getPrisma(), { id: req.user.id, role: req.user.role }, req.body);
+    return res.status(200).json({ message: result.changed ? "PIN changed" : "PIN set", configured: true });
+  } catch (error) {
+    if (error?.status && error.status < 500) return res.status(error.status).json({ message: error.message, code: error.code });
+    console.error("SET PIN ERROR:", error?.message);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+}
+
 module.exports = {
+  getPinStatus,
+  setPin,
   loginUser,
   googleLogin,
   getMe,

@@ -144,7 +144,7 @@ test('RC7 robot_recommissioned is a dashboard event the provider follows with a 
   const { DASHBOARD_EVENTS } = await load('lib/socket.js');
   assert.equal(DASHBOARD_EVENTS.ROBOT_RECOMMISSIONED, 'robot_recommissioned');
   const controller = fs.readFileSync(path.join(BACKEND, 'src/controllers/robots.controller.js'), 'utf8');
-  assert.match(controller, /emit\("robot_recommissioned"/);
+  assert.match(controller, /dashboardBroadcast\.emit\([^,]+, "robot_recommissioned"/);
   const src = code(read('context/AppProvider.jsx'));
   assert.match(src, /socket\.on\(DASHBOARD_EVENTS\.ROBOT_RECOMMISSIONED, onRobotRecommissioned\)/);
   assert.match(src, /socket\.off\(DASHBOARD_EVENTS\.ROBOT_RECOMMISSIONED, onRobotRecommissioned\)/);

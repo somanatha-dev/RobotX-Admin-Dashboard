@@ -32,6 +32,8 @@ const robotPosition = require("../../services/robotPosition.service");
 const agentReadiness = require("../../services/agentReadiness.service");
 const { POLICY: PHYSICAL_POLICY } = require("../../services/fleetProviders/physicalPolicy");
 const { safeJsonParse } = require("../../utils/json");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../dashboardBroadcast");
 
 // §23.5 — "Persistent implausibility triggers quarantine and a security event."
 //
@@ -112,7 +114,7 @@ function emitPersistentImplausibility(io, log, input) {
   // The event is emitted here; the quarantine itself is the engine's own path
   // (`QUARANTINE`, an agent-scope command), which this handler does not own.
   log.error?.("SECURITY: persistent implausibility", { robotId: source.robotId, detail: escalation.reason });
-  io.to("dashboard").emit("SECURITY_EVENT", {
+  dashboardBroadcast.emit(io, "SECURITY_EVENT", {
     kind: "PERSISTENT_IMPLAUSIBILITY",
     robotId: source.robotId,
     consecutive: escalation.count,
@@ -549,7 +551,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
           select: { id: true, status: true, lat: true, lon: true, speed: true, battery: true, isOnline: true },
         });
         if (!row) {
-          io.to("dashboard").emit("robot_unregistered", { robotId });
+          dashboardBroadcast.emit(io, "robot_unregistered", { robotId });
           return;
         }
         existing = row;
@@ -858,7 +860,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
               // unconditional update reported as P2025: tell the dashboard the same way.
               const row = await prisma.robot.findUnique({ where: { robotId }, select: { status: true } });
               if (!row) {
-                io.to("dashboard").emit("robot_unregistered", { robotId });
+                dashboardBroadcast.emit(io, "robot_unregistered", { robotId });
                 return;
               }
               log.warn?.("Telemetry status not written: the robot's status changed after this frame validated it", {
@@ -905,7 +907,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
               // decommission mid-session) — self-heal: same signal the old
               // per-tick findUnique gave every tick, now surfaced on the
               // write that actually discovers it instead.
-              io.to("dashboard").emit("robot_unregistered", { robotId });
+              dashboardBroadcast.emit(io, "robot_unregistered", { robotId });
               return;
             }
           } else {
@@ -1194,7 +1196,7 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
         physicalPolicy && typeof physicalPolicy.robotFor === "function" && physicalPolicy.robotFor(robotId)
           ? physicalPolicy.readiness === PHYSICAL_POLICY.AGENT_REPORT_REQUIRED
           : null;
-      io.to("dashboard").emit("robot:update", {
+      dashboardBroadcast.emit(io, "robot:update", {
         ...fullState,
         status: robotStatusPrecedence.displayedStatus(serverStatus, fullState.status),
         reportedStatus: fullState.status,
@@ -1403,7 +1405,7 @@ function feedProgressSupervision({ robotId, log, io, state, nowMs, socket, snaps
         response: assessment.response,
         measured: assessment.measured,
       });
-      io.to("dashboard").emit("SUPERVISION_SIGNAL", {
+      dashboardBroadcast.emit(io, "SUPERVISION_SIGNAL", {
         robotId,
         signal: assessment.signal,
         response: assessment.response,

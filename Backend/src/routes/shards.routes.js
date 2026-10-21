@@ -1,7 +1,7 @@
 const express = require("express");
 const shardsController = require("../controllers/shards.controller");
 const { createRateLimiter } = require("../middlewares/rateLimitHttp");
-const { authUser, requireElevatedRole } = require("../middlewares/auth_middleware");
+const { authUser, requireElevatedRole, requireSuperAdmin } = require("../middlewares/auth_middleware");
 
 const router = express.Router();
 
@@ -22,6 +22,8 @@ const router = express.Router();
 // reports as `executed: false`. Adding an action class the specification does not name
 // would be this plan redesigning a mechanism.
 router.use(authUser);
+// RBAC — SUPER_ADMIN only: no route on this router is open to a campus administrator.
+router.use(requireSuperAdmin());
 
 // A high read limit, for the same reason the invariant register has one: during a
 // rebalance or a failover this is the page an operator refreshes, and rate-limiting the

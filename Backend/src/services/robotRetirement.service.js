@@ -53,6 +53,8 @@ const positionObservation = require("./positionObservation.service");
 const robotSockets = require("../sockets/robotSockets");
 const { toStringOrNull } = require("../utils/parse");
 const policy = require("./robotRetirementPolicy");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../sockets/dashboardBroadcast");
 
 /** @structural outcome names */
 const OUTCOME = Object.freeze({ RETIRED: "RETIRED", ALREADY_RETIRED: "ALREADY_RETIRED" });
@@ -409,8 +411,8 @@ async function releaseRuntimeState(result, deps) {
   const io = settings.io;
   if (io) {
     await step("dashboard", () => {
-      io.to("dashboard").emit("robot_offline", { robotId });
-      io.to("dashboard").emit("robot_retired", { robotId, timestamp: Date.now() });
+      dashboardBroadcast.emit(io, "robot_offline", { robotId });
+      dashboardBroadcast.emit(io, "robot_retired", { robotId, timestamp: Date.now() });
     });
   }
 

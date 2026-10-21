@@ -19,6 +19,8 @@ const { getZoneForCoordinates } = require("./zoneManager.service");
 const { findAffectedRobots } = require("./routeIntersection.service");
 const { getAllRobotIds, getRobotState } = require("./robotRegistry.service");
 const { rerouteRobot } = require("./routing.service");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../sockets/dashboardBroadcast");
 
 // Represent a point obstacle as a tiny segment (~22 m diagonal)
 const POINT_OBSTACLE_DELTA = 0.0002; // degrees
@@ -51,7 +53,7 @@ async function processObstacleReport(prisma, kv, io, report) {
   // 3) Notify dashboard that a new obstacle was created
   if (io) {
     try {
-      io.to("dashboard").emit("ALERT_CREATED", {
+      dashboardBroadcast.emit(io, "ALERT_CREATED", {
         obstacleId: obstacle.obstacleId,
         lat,
         lon,
@@ -100,7 +102,7 @@ async function processObstacleReport(prisma, kv, io, report) {
       if (io) {
         try { io.to(`robot:${robotId}`).emit("REROUTE_ALERT", alertPayload); } catch { /* ignore */ }
         try {
-          io.to("dashboard").emit("REROUTE_ALERT", { robotId, ...alertPayload });
+          dashboardBroadcast.emit(io, "REROUTE_ALERT", { robotId, ...alertPayload });
         } catch { /* ignore */ }
       }
 

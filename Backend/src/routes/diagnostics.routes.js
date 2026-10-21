@@ -1,11 +1,13 @@
 const express = require("express");
 const diagnosticsController = require("../controllers/diagnostics.controller");
 const { createRateLimiter } = require("../middlewares/rateLimitHttp");
-const { authUser } = require("../middlewares/auth_middleware");
+const { authUser, requireSuperAdmin } = require("../middlewares/auth_middleware");
 
 const router = express.Router();
 
 router.use(authUser);
+// RBAC — SUPER_ADMIN only: no route on this router is open to a campus administrator.
+router.use(requireSuperAdmin());
 
 // PHASE 6 — §7.7's capacity-planning instrument. Read-only, and rate-limited more
 // tightly than the supervision endpoint: this one aggregates over a time range, so a

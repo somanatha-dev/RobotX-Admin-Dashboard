@@ -7,7 +7,10 @@ import { Button } from '@/components/ui/button.jsx';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog.jsx';
 import { Input } from '@/components/ui/input.jsx';
 
-import { pinAuth, webauthnStatus, webauthnAuthOptions, webauthnVerify } from '@/lib/api/auth.js';
+import { pinAuth, pinStatus, webauthnStatus, webauthnAuthOptions, webauthnVerify } from '@/lib/api/auth.js';
+
+// Where an account without a PIN gets one (Profile → Security → Step-up PIN).
+const NO_PIN_GUIDANCE = 'No step-up PIN is set for your account. Set one in Profile → Security → Step-up PIN, then try again.';
 
 function webAuthnErrorMessage(e) {
   if (!e) return 'Passkey authentication failed.';
@@ -26,6 +29,8 @@ export default function AuthChallengeModal({ request, onClose }) {
   // Server-verified registration status (not trusted from localStorage — see
   // Backend/src/controllers/webauthn_controller.js:status).
   const [hasRegisteredPasskey, setHasRegisteredPasskey] = useState(false);
+  // Whether this account has a PIN at all (server answer); null while unknown.
+  const [pinConfigured, setPinConfigured] = useState(null);
 
   const supportsPasskey = typeof window !== 'undefined' && browserSupportsWebAuthn();
 
@@ -34,6 +39,9 @@ export default function AuthChallengeModal({ request, onClose }) {
     webauthnStatus()
       .then((data) => { if (!cancelled) setHasRegisteredPasskey(!!data?.registered); })
       .catch(() => { /* leave as unregistered */ });
+    pinStatus()
+      .then((data) => { if (!cancelled) setPinConfigured(Boolean(data?.configured)); })
+      .catch(() => { /* unknown: the PIN check itself will answer */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -74,7 +82,7 @@ export default function AuthChallengeModal({ request, onClose }) {
       await Promise.resolve(request.action());
       onClose();
     } catch (e) {
-      setError(e?.message || 'Authorization failed.');
+      setError(e?.status === 403 && /PIN not configured/i.test(String(e?.message)) ? NO_PIN_GUIDANCE : e?.message || 'Authorization failed.');
     } finally {
       setLoading(false);
     }
@@ -211,7 +219,13 @@ export default function AuthChallengeModal({ request, onClose }) {
                 autoComplete="off"
                 className="h-12 text-center font-mono text-xl tracking-widest bg-muted/20"
               />
-              <div className="mt-2 text-xs text-muted-foreground">Enter your admin PIN to authorize.</div>
+              {pinConfigured === false ? (
+                <div role="note" data-no-pin className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  {NO_PIN_GUIDANCE}
+                </div>
+              ) : (
+                <div className="mt-2 text-xs text-muted-foreground">Enter your PIN to authorize.</div>
+              )}
               <div className="mt-6 flex gap-3">
                 <Button type="button" variant="outline" className="flex-1" onClick={onClose}>
                   Cancel

@@ -9,16 +9,20 @@ import {
   Plus,
   ShieldAlert,
   ListTodo,
+  Users,
 } from 'lucide-react';
 
 import NavItem from './NavItem.jsx';
 import { useAppActions, useAppState } from '@/context/appContext.js';
 import { Button } from '@/components/ui/button.jsx';
+import { accountLabel, isSuperAdmin } from '@/lib/access.js';
 
 export default function AppSidebar() {
   const { isSidebarOpen, session } = useAppState();
   const { logout, setIsSidebarOpen, navigate } = useAppActions();
-  const roleLabel = session?.user?.role || session?.identity || 'Operator';
+  // RBAC — role and campus as the server reported them; offers only, the server enforces.
+  const roleLabel = accountLabel(session);
+  const superAdmin = isSuperAdmin(session);
 
   return (
     <aside
@@ -55,6 +59,7 @@ export default function AppSidebar() {
           <NavItem icon={<Grid />} label="Robots" to="/robots" />
           <NavItem icon={<MapIcon />} label="Map Control" to="/map" />
           <NavItem icon={<ListTodo />} label="Tasks" to="/tasks" />
+          {superAdmin ? <NavItem icon={<Users />} label="Admins" to="/admins" /> : null}
         </nav>
       </div>
       <div className="p-4 border-t border-border/40 space-y-3">
@@ -62,18 +67,22 @@ export default function AppSidebar() {
             hardware somebody installed; creating a simulated robot provisions a test
             agent owned by this operator. Neither is a mode of the other, and there is no
             Physical/Simulated choice inside either form. */}
-        <Button type="button" onClick={() => navigate('/commission')} className="w-full" size="sm">
-          <Plus className="w-4 h-4" /> Commission Physical Robot
-        </Button>
-        <Button
-          type="button"
-          onClick={() => navigate('/simulator/new')}
-          className="w-full"
-          size="sm"
-          variant="secondary"
-        >
-          <Cpu className="w-4 h-4" /> Create Simulated Robot
-        </Button>
+        {superAdmin ? (
+          <>
+            <Button type="button" onClick={() => navigate('/commission')} className="w-full" size="sm">
+              <Plus className="w-4 h-4" /> Commission Physical Robot
+            </Button>
+            <Button
+              type="button"
+              onClick={() => navigate('/simulator/new')}
+              className="w-full"
+              size="sm"
+              variant="secondary"
+            >
+              <Cpu className="w-4 h-4" /> Create Simulated Robot
+            </Button>
+          </>
+        ) : null}
         <Button type="button" onClick={logout} className="w-full" size="sm" variant="outline">
           <LogOut className="w-4 h-4" /> Logout
         </Button>

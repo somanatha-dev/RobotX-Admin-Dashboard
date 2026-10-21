@@ -80,6 +80,8 @@ const legEntryDeadline = require("../engine/cutover/legEntryDeadline");
 const legMachine = require("../engine/lifecycle/legMachine");
 const timers = require("../engine/supervision/timers");
 const privacyKeys = require("../config/privacyKeys");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../sockets/dashboardBroadcast");
 
 /**
  * Intake is one transaction (SD-4): the PayloadSpec, the Task, its Mission and Task link,
@@ -1057,7 +1059,7 @@ async function assignTask(prisma, task, { kv, io, ...options } = {}) {
   // Notify dashboard so the UI shows the PENDING card with spinner right away — only now,
   // after the commit, so it never announces a task that was rolled back.
   try {
-    io?.to("dashboard")?.emit("TASK_CREATED", { ...committed.pending, robot: null });
+    dashboardBroadcast.emit(io, "TASK_CREATED", { ...committed.pending, robot: null });
   } catch { /* ignore */ }
 
   return Object.assign({}, committed.pending, { intake: committed.admitted, ignoredFields });
@@ -1216,7 +1218,7 @@ async function rerouteTask(prisma, taskId, { kv, io } = {}) {
 
   // Notify dashboard — useRobotStream listens for TASK_UPDATED with action REROUTED
   try {
-    io?.to("dashboard")?.emit("TASK_UPDATED", {
+    dashboardBroadcast.emit(io, "TASK_UPDATED", {
       taskId,
       robotId,
       action: "REROUTED",

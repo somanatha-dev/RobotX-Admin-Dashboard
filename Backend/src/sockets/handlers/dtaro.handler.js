@@ -36,6 +36,8 @@ const trustBoundaries = require("../../engine/security/trustBoundaries");
 // failure with a defined response and escalation, rather than a status change and a log line.
 const agentFailures = require("../../engine/failure/agentFailures");
 const catalogue = require("../../engine/failure/catalogue");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../dashboardBroadcast");
 
 /**
  * Resolve the identifier an agent reported completion under to a `Task.taskId`.
@@ -242,7 +244,7 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
           taskId,
           reasons: verdict.security.reasons,
         });
-        io.to("dashboard").emit("SECURITY_EVENT", {
+        dashboardBroadcast.emit(io, "SECURITY_EVENT", {
           kind: "UNREACHABLE_COMPLETION_CLAIM",
           robotId,
           taskId,
@@ -255,7 +257,7 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
         // "Insufficient evidence sends the Task to `VERIFYING` with an operator queue —
         // not to `COMPLETED`, and not to `FAILED`. Both of those are lies about the
         // physical state." So the legacy completion below is *not* performed.
-        io.to("dashboard").emit("TASK_UPDATED", {
+        dashboardBroadcast.emit(io, "TASK_UPDATED", {
           robotId,
           taskId,
           status: "VERIFYING",
@@ -414,7 +416,7 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       }
 
       // Notify dashboard
-      io.to("dashboard").emit("ROBOT_UPDATED", {
+      dashboardBroadcast.emit(io, "ROBOT_UPDATED", {
         robotId,
         status: "ERROR",
         healthStatus: "FAULT",
@@ -714,7 +716,7 @@ async function holdUnverifiableCompletion(input) {
     // The dashboard event and the log line still carry it.
   }
 
-  io.to("dashboard").emit("TASK_UPDATED", {
+  dashboardBroadcast.emit(io, "TASK_UPDATED", {
     robotId,
     taskId,
     status: "VERIFYING",

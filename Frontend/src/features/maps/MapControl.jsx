@@ -43,7 +43,8 @@ import {
   SEARCH_RESULT_TYPE,
 } from './campus/campusSearch.js';
 import { labelAnchorFor } from './campus/campusLayers.js';
-import { operatingCampusBounds } from './campus/operatingCampusView.js';
+import { campusBounds, operatingCampusBounds } from './campus/operatingCampusView.js';
+import { campusOf, isSuperAdmin, mayReadSimulator } from '@/lib/access.js';
 import { nearestNamedFeature } from './campus/semantics/campusOperational.js';
 import { CAMPUS_CAMERA_MODE, campusCameraFor, createCameraSequencer } from './camera/cameraModes.js';
 
@@ -91,7 +92,14 @@ function MapControlInner({ filtersHost }) {
     setFollowSelected,
     clearSelection,
   } = useMapContext();
-  const { robots: globalRobots, taskPathCacheRef, simulatorStatus } = useAppState();
+  const { robots: globalRobots, taskPathCacheRef, simulatorStatus, session } = useAppState();
+  // RBAC — a campus administrator's map is its campus: no location hierarchy (a SUPER_ADMIN-only
+  // read), the campus selection pinned to its own, and the opening view framed on it.
+  const superAdmin = isSuperAdmin(session);
+  const pinnedCampus = superAdmin ? null : campusOf(session);
+  const pinnedCampusId = pinnedCampus?.id || null;
+  const pinnedCampusCode = pinnedCampus?.code || null;
+  const locationFilterOptions = useMemo(() => ({ hierarchy: superAdmin, pinnedCampusId }), [superAdmin, pinnedCampusId]);
 
   const overlayRef = useRef(null);
   const canvasRef = useRef(null);
@@ -316,7 +324,7 @@ function MapControlInner({ filtersHost }) {
     setCampusId,
     loading,
     resetAll,
-  } = useLocationFilters();
+  } = useLocationFilters(locationFilterOptions);
 
   // ── CAMPUS LAYER ───────────────────────────────────────────────────────────
   //
@@ -589,7 +597,8 @@ function MapControlInner({ filtersHost }) {
       // campuses, framed from their boundaries by Mapbox itself), not the whole globe.
       // World view remains the fallback when no campus has an operating region.
       let cam = null;
-      const bounds = operatingCampusBounds();
+      // RBAC — a campus administrator opens on its own campus, never on another one.
+      const bounds = pinnedCampusCode ? campusBounds(pinnedCampusCode) : operatingCampusBounds();
       if (bounds) {
         try {
           const fitted = mapRef.current?.cameraForBounds(bounds, { padding: 48 });
@@ -635,7 +644,7 @@ function MapControlInner({ filtersHost }) {
     latestCameraRef.current = cam;
     // Flat there, then tilt — see focusCamera.
     if (!skipAnimation) focusCamera(cam, preset.pitch);
-  }, [isMapLoaded, environmentReady, focusTarget, focusCamera, mapRef]);
+  }, [isMapLoaded, environmentReady, focusTarget, focusCamera, mapRef, pinnedCampusCode]);
 
   // ── Camera modes (§28) ─────────────────────────────────────────────────────
   //
@@ -884,6 +893,7 @@ function MapControlInner({ filtersHost }) {
       setCampusId={setCampusId}
       loading={loading}
       resetAll={resetEverything}
+      campusLocked={!superAdmin}
     />
   );
 
@@ -1011,6 +1021,7 @@ function MapControlInner({ filtersHost }) {
           verificationLabel={campusDefinition.verificationRecord ? 'verified by owner' : 'unverified'}
           stations={chargingStations}
           chargingReported={Boolean(simulatorStatus?.charging)}
+          chargingRestricted={!mayReadSimulator(session)}
           selectedStationId={selectedStationId}
           onPickStation={pickStation}
         />

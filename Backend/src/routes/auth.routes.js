@@ -8,6 +8,7 @@ const router = express.Router();
 
 const loginLimiter = createRateLimiter({ windowMs: 60_000, limit: 10, keyPrefix: "login" });
 const webauthnLimiter = createRateLimiter({ windowMs: 60_000, limit: 20, keyPrefix: "webauthn" });
+const pinSetupLimiter = createRateLimiter({ windowMs: 60_000, limit: 5, keyPrefix: "pin_setup" });
 
 // Login
 router.post("/login", loginLimiter, authControllers.loginUser);
@@ -17,6 +18,9 @@ router.post("/google", loginLimiter, authControllers.googleLogin);
 router.get("/me", authMiddleware.authUser, authControllers.getMe);
 router.post("/change-password", authMiddleware.authUser, authControllers.changePassword);
 router.post("/pin-auth", authMiddleware.authUser, authControllers.pinAuth);
+// The account sets or changes its own step-up PIN, re-verifying its current password.
+router.get("/pin", authMiddleware.authUser, authControllers.getPinStatus);
+router.put("/pin", authMiddleware.authUser, pinSetupLimiter, authControllers.setPin);
 
 // WebAuthn / passkey step-up (server-verified — see
 // docs/history/legacy-phase1-hardening-review.md F31)

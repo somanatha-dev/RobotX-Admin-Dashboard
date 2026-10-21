@@ -10,6 +10,8 @@ const { FENCE_SCOPE } = require("../../engine/domain/agent");
 // owns the question. Settling an outbox row is an engine write.
 const agentGate = require("../../engine/cutover/agentGate");
 const assignmentProjection = require("../../services/assignmentProjection.service");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../dashboardBroadcast");
 
 // PHASE 4 — §11.1 item 2: "Dispatcher workers claim outbox rows, deliver, and mark
 // them delivered." The mark that closes the loop is the agent's acknowledgement, and
@@ -159,7 +161,7 @@ async function publishStandDown({ prisma, kv, io, log, robotId, commitmentId, ca
   } catch {
     // the route cache is best effort, as when it is written
   }
-  io.to("dashboard").emit("TASK_UPDATED", {
+  dashboardBroadcast.emit(io, "TASK_UPDATED", {
     taskId: released.taskId,
     // Not `robotId`: on `TASK_UPDATED` that field names the robot the task is now on, and
     // the task is on none. This names the unit that stood down, whose route is to be removed.
@@ -318,7 +320,7 @@ function registerCommandHandlers(io, socket, { prisma, kv, logger, appLocals }) 
       // Dashboard-only UI event — robots never listen for it. Was a global
       // io.emit (every connected socket, robots included); scoping to the
       // room avoids O(N) fan-out to sockets with no reason to receive it.
-      io.to("dashboard").emit("COMMAND_STATUS", { commandId, status: "ACK", responseTimeMs });
+      dashboardBroadcast.emit(io, "COMMAND_STATUS", { commandId, status: "ACK", responseTimeMs });
     } catch (e) {
       // If the command row doesn't exist (or belongs to another robot), ignore.
       log.error("COMMAND_ACK handler failed", e);

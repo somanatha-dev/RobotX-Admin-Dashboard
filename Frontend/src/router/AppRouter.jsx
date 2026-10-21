@@ -13,8 +13,10 @@ import RobotDetailPage from '@/pages/RobotDetailPage.jsx';
 import RobotsPage from '@/pages/RobotsPage.jsx';
 import SimulatedRobotPage from '@/pages/SimulatedRobotPage.jsx';
 import TasksPage from '@/pages/TasksPage.jsx';
+import AdminsPage from '@/pages/AdminsPage.jsx';
 
 import { useAppState } from '@/context/appContext.js';
+import { hasInvalidScope, isSuperAdmin } from '@/lib/access.js';
 
 function RequireAuth({ children }) {
   const { session, isAuthResolved, isAuthUnreachable } = useAppState();
@@ -37,7 +39,34 @@ function RequireAuth({ children }) {
   if (!isAuthResolved) return null;
   if (!session?.isAuthenticated) return <Navigate to="/login" replace />;
 
+  // RBAC — an administrator account with no valid campus: the server refuses it everything,
+  // so say that rather than render an empty fleet as if the campus had no robots.
+  if (hasInvalidScope(session)) {
+    return (
+      <div role="alert" data-access="invalid-scope" className="flex h-screen items-center justify-center p-6">
+        <div className="max-w-sm rounded-xl border border-rose-300 bg-rose-50 px-5 py-4 text-sm text-rose-900">
+          <div className="font-semibold">This account has no campus assigned</div>
+          <div className="mt-1 text-xs">Ask a super administrator to assign your campus, then sign in again.</div>
+        </div>
+      </div>
+    );
+  }
+
   return children;
+}
+
+// RBAC — pages only a super administrator is offered. The server refuses their requests to
+// anyone else regardless; this only keeps a campus administrator from landing on a form that
+// cannot succeed.
+function RequireSuperAdmin({ children }) {
+  const { session } = useAppState();
+  if (isSuperAdmin(session)) return children;
+  return (
+    <div role="alert" data-access="forbidden" className="p-8 text-center text-sm text-slate-600">
+      <div className="font-semibold text-slate-900">Not available to campus administrators</div>
+      <div className="mt-1">This page is reserved for a super administrator.</div>
+    </div>
+  );
 }
 
 export default function AppRouter() {
@@ -57,15 +86,16 @@ export default function AppRouter() {
         <Route path="robots" element={<RobotsPage />} />
         <Route path="robots/:id" element={<RobotDetailPage />} />
         {/* Enrollment of a physical unit's Pi: issue a one-time code, wait for the robot. */}
-        <Route path="robots/:id/connect" element={<ConnectRobotPage />} />
-        <Route path="commission" element={<CommissionPage />} />
+        <Route path="robots/:id/connect" element={<RequireSuperAdmin><ConnectRobotPage /></RequireSuperAdmin>} />
+        <Route path="commission" element={<RequireSuperAdmin><CommissionPage /></RequireSuperAdmin>} />
         {/* Its own route, not a mode of `commission`. Physical commissioning and
             simulated creation are separate product flows with separate endpoints, and
             sharing a screen is what let one become a checkbox on the other. */}
-        <Route path="simulator/new" element={<SimulatedRobotPage />} />
+        <Route path="simulator/new" element={<RequireSuperAdmin><SimulatedRobotPage /></RequireSuperAdmin>} />
         <Route path="map" element={<MapPage />} />
         <Route path="tasks" element={<TasksPage />} />
         <Route path="profile" element={<ProfilePage />} />
+        <Route path="admins" element={<RequireSuperAdmin><AdminsPage /></RequireSuperAdmin>} />
 
         {/* Back-compat */}
         <Route path="dashboard" element={<Navigate to="/" replace />} />

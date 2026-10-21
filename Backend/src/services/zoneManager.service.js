@@ -14,6 +14,8 @@
 
 const { safeJsonParse } = require("../utils/json");
 const { updateZone } = require("./robotRegistry.service");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../sockets/dashboardBroadcast");
 
 const ZONE_CACHE_REDIS_KEY = "zones:all";
 const ZONE_CACHE_REDIS_TTL = 300; // seconds
@@ -199,7 +201,7 @@ async function applyZoneChangeSideEffects(prisma, io, robotId, oldZoneId, newZon
   updateSocketZoneRoom(socket, oldZoneId, newZoneId);
   if (io) {
     try {
-      io.to("dashboard").emit("ZONE_UPDATED", {
+      dashboardBroadcast.emit(io, "ZONE_UPDATED", {
         robotId,
         oldZoneId,
         newZoneId,

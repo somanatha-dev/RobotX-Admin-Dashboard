@@ -1,7 +1,7 @@
 const express = require("express");
 const privacyController = require("../controllers/privacy.controller");
 const { createRateLimiter } = require("../middlewares/rateLimitHttp");
-const { authUser, requireElevatedRole } = require("../middlewares/auth_middleware");
+const { authUser, requireElevatedRole, requireSuperAdmin } = require("../middlewares/auth_middleware");
 
 const router = express.Router();
 
@@ -14,6 +14,9 @@ const router = express.Router();
 // one list, read by every gated surface, rather than a constant copied per route file.
 router.use(authUser);
 router.use(requireElevatedRole());
+// RBAC — SUPER_ADMIN only: no route on this router is open to a campus administrator, whatever
+// `security.elevated_roles` lists.
+router.use(requireSuperAdmin());
 
 // A deliberately low limit. An erasure request is a human action taken a handful of
 // times a day; a caller issuing them at machine rate is either a defect or an attack,

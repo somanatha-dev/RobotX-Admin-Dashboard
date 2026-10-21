@@ -1,7 +1,8 @@
 const express = require("express");
 const robotsController = require("../controllers/robots.controller");
 const { createRateLimiter } = require("../middlewares/rateLimitHttp");
-const { authUser, requireActionClass, requireElevatedRole } = require("../middlewares/auth_middleware");
+const { authUser, requireActionClass, requireElevatedRole, requireScopedAccess, requireSuperAdmin } = require("../middlewares/auth_middleware");
+const { robotParamInScope } = require("../middlewares/campusScope");
 // Soft retirement — a retired robot keeps its row, so each per-robot action refuses it by
 // name (409 ROBOT_RETIRED). Mounted after the rate limiter and before the override gate.
 const { refuseRetiredRobot } = require("../middlewares/refuseRetiredRobot");
@@ -46,28 +47,52 @@ const notRetired = refuseRetiredRobot();
 // service adds the mandatory reason and the typed confirmation, and records the Event.
 const elevatedOnly = requireElevatedRole();
 
-router.get("/", robotsController.listRobots);
+// RBAC — `scoped` admits a SUPER_ADMIN or an ADMIN with a valid campus; `superAdminOnly` a
+// SUPER_ADMIN alone. Applied per route on the ADMIN-capable and §23.4 routes, and as a
+// router-level barrier for everything declared after it.
+const scoped = requireScopedAccess();
+const superAdminOnly = requireSuperAdmin();
+
+// ── RBAC: ADMIN-capable, scoped to the caller's campus ─────────────────────────
+// The lists filter in the controller; a per-robot route checks the robot's campus first, so
+// a robot of another campus is the same 404 as one that does not exist.
+router.get("/", scoped, robotsController.listRobots);
 // Retired units, for the dashboard's "Recommission retired robot" choice. Declared before any
-// `/:robotId` route; identity and display fields only.
-router.get("/retired", robotsController.listRetiredRobots);
+// `/:robotId` route; identity and display fields only. SUPER_ADMIN only: it sits above the
+// barrier only to keep that ordering, so it carries its own gate.
+router.get("/retired", superAdminOnly, robotsController.listRetiredRobots);
 // New: dashboard initial load (DB + Redis live state merge)
-router.get("/state", robotsController.getRobotsState);
+router.get("/state", scoped, robotsController.getRobotsState);
 // Optional: telemetry history (last 50 snapshots)
-router.get("/:robotId/history", robotsController.getRobotHistory);
+router.get("/:robotId/history", scoped, robotParamInScope(), robotsController.getRobotHistory);
+// New: command API with ACK tracking (robot must be online to receive immediately). An ADMIN
+// may send only the commands that restrict motion (STOP, PAUSE) — enforced in the controller.
+router.post("/:robotId/command", commandLimiter, scoped, robotParamInScope(), notRetired, robotsController.sendRobotCommand);
+
+// ── RBAC: §23.4 quarantine overrides — SUPER_ADMIN only, after the action-class gate ────
+// The action-class gate runs first, exactly as before, so a refused attempt is decided and
+// audited (OverrideAudit and the audit stream) by the one gate §23.6's override rates are read
+// from. `superAdminOnly` then holds even if a configuration version ever listed another role
+// as elevated. A campus ADMIN is first narrowed to its own campus's robots (404 otherwise).
+// Admin override: clear a robot's pairing brute-force lockout (F32) before its TTL elapses.
+router.post("/:robotId/pairing/unlock", commandLimiter, robotParamInScope("robotId", { deferInvalid: true }), notRetired, quarantineOverride, superAdminOnly, robotsController.unlockPairing);
+// F33: deliberate fault-recovery — clears ERROR/healthStatus:FAULT back to a live state.
+router.post("/:robotId/clear-fault", commandLimiter, robotParamInScope("robotId", { deferInvalid: true }), notRetired, quarantineOverride, superAdminOnly, robotsController.clearRobotFault);
+
+// ── RBAC: SUPER_ADMIN only — every route below this line ───────────────────────
+router.use(superAdminOnly);
+
+// RBAC — assign a unit to a campus (or clear it). The only writer of `Robot.campusId` after
+// commissioning; it is what places an existing robot in a campus administrator's scope.
+router.put("/:robotId/campus", commandLimiter, robotsController.assignRobotCampus);
 // New: secure pairing/commissioning flow (does not replace existing POST /).
 router.post("/commission", commissionLimiter, refuseRetiredRobot({ from: "body" }), robotsController.commissionRobotWithPairing);
 // H3: where a robot's enrollment stands (pending code, lockout, enrolled, online). Read-only, and
 // it never returns the code. Polled by nothing: the Connect page reads it on load and on refresh,
 // and follows robot_online / robot_offline / robot_pairing_rejected after that.
 router.get("/:robotId/pairing", robotsController.getPairingStatus);
-// Admin override: clear a robot's pairing brute-force lockout (F32) before its TTL elapses.
-router.post("/:robotId/pairing/unlock", commandLimiter, notRetired, quarantineOverride, robotsController.unlockPairing);
-// New: command API with ACK tracking (robot must be online to receive immediately).
-router.post("/:robotId/command", commandLimiter, notRetired, robotsController.sendRobotCommand);
 // Gate 1: operator-declared state of charge for a physical unit (no battery ADC).
 router.post("/:robotId/soc-declaration", commandLimiter, notRetired, robotsController.declareStateOfCharge);
-// F33: deliberate fault-recovery — clears ERROR/healthStatus:FAULT back to a live state.
-router.post("/:robotId/clear-fault", commandLimiter, notRetired, quarantineOverride, robotsController.clearRobotFault);
 // Edit a commissioned unit's configuration — name, chassis family, and the six
 // specification values. Observed state and assignment state are deliberately not
 // editable; the controller rejects any other field by name rather than ignoring it.

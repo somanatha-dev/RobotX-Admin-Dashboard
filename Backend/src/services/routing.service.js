@@ -16,6 +16,8 @@ const { directionsPolyline } = require("./mapbox.service");
 const { updatePlannedPath } = require("./robotRegistry.service");
 const { haversineMeters } = require("../utils/distance");
 const { safeJsonParse } = require("../utils/json");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../sockets/dashboardBroadcast");
 
 const OBSTACLE_RADIUS_M = 30; // meters to flag waypoints as blocked
 const K_NEAREST = 6;         // neighbors considered by A*
@@ -209,7 +211,7 @@ async function rerouteRobot(prisma, kv, io, robotId, { obstacleLocation }) {
   // Notify dashboard
   if (io) {
     try {
-      io.to("dashboard").emit("TASK_UPDATED", {
+      dashboardBroadcast.emit(io, "TASK_UPDATED", {
         robotId,
         taskId,
         action: "REROUTED",

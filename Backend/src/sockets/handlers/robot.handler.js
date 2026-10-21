@@ -22,6 +22,8 @@ const commitmentLeaseRenewal = require("../../services/commitmentLeaseRenewal.se
 const robotSession = require("../../services/robotSession.service");
 // Soft retirement — a retired robot keeps its row, so AUTH refuses it by lifecycle.
 const robotRetirementPolicy = require("../../services/robotRetirementPolicy");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../dashboardBroadcast");
 
 // Per-robot throttle for the HEARTBEAT path's Postgres write, mirroring the
 // same gate in telemetry.handler.js. Per-process and in-memory (same pattern
@@ -211,8 +213,8 @@ async function reconcileDeadSocketBindings({ prisma, io, kv, log = console }) {
     } catch { /* index membership is best-effort */ }
     // The dashboard is told what was written: `robot_offline` means OFFLINE was written
     // (`markRobotOffline`); a liveness-only clear goes out as the liveness field alone.
-    if (livenessOnly) io.to("dashboard").emit("robot:update", { robotId, isOnline: false });
-    else io.to("dashboard").emit("robot_offline", { robotId });
+    if (livenessOnly) dashboardBroadcast.emit(io, "robot:update", { robotId, isOnline: false });
+    else dashboardBroadcast.emit(io, "robot_offline", { robotId });
   }
 
   if (offline.length > 0 || unknown.length > 0) {
@@ -695,7 +697,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
         const parsedCount = Number.parseInt(String(raw ?? "0"), 10);
         failedAttempts = Number.isFinite(parsedCount) ? parsedCount : 0;
       }
-      io.to("dashboard").emit("robot_pairing_rejected", { robotId, failedAttempts, locked: Boolean(locked) });
+      dashboardBroadcast.emit(io, "robot_pairing_rejected", { robotId, failedAttempts, locked: Boolean(locked) });
     } catch {
       // the refusal itself is what matters; the announcement is best-effort
     }
@@ -1067,7 +1069,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       // Backward compatible alias
       socket.emit("AUTH_OK", { robotId, token: nextToken, dedup: dedupOutcome, session: sessionDescriptor });
       // Dashboard-only UI event — scoped to the room instead of every socket.
-      io.to("dashboard").emit("robot_online", { robotId });
+      dashboardBroadcast.emit(io, "robot_online", { robotId });
 
       // DTARO: join dedicated robot room for targeted commands
       socket.join(`robot:${robotId}`);
@@ -1389,7 +1391,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
           if (typeof kv.srem === "function") await kv.srem("robots:all", boundRobotId);
         } catch { /* index membership is best-effort */ }
         // Dashboard-only UI event — scoped to the room instead of every socket.
-        io.to("dashboard").emit("robot_offline", { robotId: boundRobotId });
+        dashboardBroadcast.emit(io, "robot_offline", { robotId: boundRobotId });
       } catch {
         // ignore
       }

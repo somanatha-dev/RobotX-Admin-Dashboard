@@ -26,6 +26,8 @@ const shardsRoutes = require("./shards.routes");
 // because it is the only operator surface that destroys data, and a destructive action
 // sharing a mount with two read surfaces is one an operator reaches by accident.
 const privacyRoutes = require("./privacy.routes");
+// RBAC — campus administrator accounts (SUPER_ADMIN only).
+const usersRoutes = require("./users.routes");
 
 const router = express.Router();
 
@@ -42,5 +44,6 @@ router.use("/explain",   explainRoutes);
 router.use("/health",    healthRoutes);
 router.use("/shards",    shardsRoutes);
 router.use("/privacy",   privacyRoutes);
+router.use("/users",     usersRoutes);
 
 module.exports = router;

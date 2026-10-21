@@ -266,7 +266,10 @@ test('wiring — the sync pass reconciles first; only authoritative evictions le
   // two terminal evictions and the logout clear may remove an entry.
   const provider = code(read('context/AppProvider.jsx'));
   assert.doesNotMatch(provider, /taskPathCacheRef\.current\.delete\(/);
-  assert.equal((provider.match(/taskPathCacheRef\.current\.clear\(\)/g) || []).length, 1);
+  // Two authoritative clears, both "every route here belongs to a scope that no longer
+  // applies": sign-out, and an access change (RBAC — the account's campus or role moved).
+  assert.equal((provider.match(/taskPathCacheRef\.current\.clear\(\)/g) || []).length, 2);
   assert.match(provider, /const clearSessionState = useCallback\(\(\) => \{[\s\S]*?taskPathCacheRef\.current\.clear\(\);/);
+  assert.match(provider, /if \(current && accessChanged\(sessionRef\.current\.user, current\)\) \{[\s\S]*?taskPathCacheRef\.current\.clear\(\);/);
   assert.doesNotMatch(map, /taskPathCacheRef\??\.current\??\.(delete|clear)\(/);
 });

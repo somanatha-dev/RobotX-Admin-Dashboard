@@ -16,6 +16,46 @@ const feasibilityRegister = require("../engine/feasibility/register");
 const { policyFor, recordAuthorisation, configValue, verifySecondApprover } = require("../middlewares/auth_middleware");
 const taskCancellation = require("../services/taskCancellation.service");
 const { RELEASABLE_STATUSES } = require("../services/taskCompletion.service");
+// RBAC — the caller's campus scope.
+const accessScope = require("../services/accessScope.service");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../sockets/dashboardBroadcast");
+
+function scopeOf(req) {
+  return req.access ?? accessScope.accessScopeFor(req.user);
+}
+
+/**
+ * The operating region a submission goes to. A SUPER_ADMIN names it (body, then query), as
+ * before. An ADMIN's is its campus's region, read from its own account: a body or query that
+ * names another region or a shard is refused rather than quietly rewritten, and a campus with
+ * no operating region cannot submit at all.
+ *
+ * @returns {{ regionId: string|null, shardId: string|null }}
+ */
+function submissionTargetFor(req) {
+  const scope = scopeOf(req);
+  const requestedRegion = toStringOrNull(req.body?.regionId) || toStringOrNull(req.query?.regionId);
+  const requestedShard = toStringOrNull(req.body?.shardId);
+  if (accessScope.isSuperAdmin(scope)) return { regionId: requestedRegion, shardId: requestedShard };
+
+  const refuse = (status, code, message) => {
+    const err = new Error(message);
+    err.status = status;
+    err.code = code;
+    return err;
+  };
+  if (!scope.regionKey) {
+    throw refuse(409, "CAMPUS_HAS_NO_REGION", `Campus ${scope.campusCode} has no operating region linked, so it cannot accept tasks yet.`);
+  }
+  if (requestedRegion && requestedRegion !== scope.regionKey) {
+    throw refuse(403, "OUT_OF_SCOPE", "A campus administrator submits tasks only to its own campus's operating region.");
+  }
+  if (requestedShard) {
+    throw refuse(403, "OUT_OF_SCOPE", "A campus administrator may not choose a shard; its campus's region decides it.");
+  }
+  return { regionId: scope.regionKey, shardId: null };
+}
 
 /**
  * PHASE 15 — the API version this controller answers under.
@@ -50,7 +90,8 @@ const listTasks = asyncHandler(async (req, res) => {
   }
 
   const tasks = await prisma.task.findMany({
-    where,
+    // RBAC — only the caller's campus for an ADMIN (`accessScope.taskWhere`).
+    where: accessScope.within(where, accessScope.taskWhere(scopeOf(req))),
     include: {
       robot: { select: { robotId: true } },
     },
@@ -176,14 +217,28 @@ const assignTask = asyncHandler(async (req, res) => {
   res.set("Deprecation", "true");
   res.set("Link", `<${SUPERSESSION_NOTE}>; rel="deprecation"`);
 
+  const target = submissionTargetFor(req);
   const created = await taskService.assignTask(prisma, req.body, {
     kv,
     io,
     config: req.app?.locals?.config || null,
-    regionId: toStringOrNull(req.body?.regionId) || toStringOrNull(req.query?.regionId),
-    shardId: toStringOrNull(req.body?.shardId),
+    regionId: target.regionId,
+    shardId: target.shardId,
     idempotencyKey: toStringOrNull(req.get?.("Idempotency-Key")),
   });
+
+  // RBAC — an Idempotency-Key is global (`intake.idempotencyKeyFor`), so a repeated key answers
+  // with the task first accepted under it, whichever campus submitted that. An ADMIN is shown
+  // it only when it is in its own scope; otherwise the key is refused and no task is named.
+  if (!accessScope.isSuperAdmin(scopeOf(req)) && created?.taskId && created.persisted !== false) {
+    try {
+      await accessScope.taskInScopeOrThrow(prisma, scopeOf(req), String(created.taskId));
+    } catch (error) {
+      if (error.status !== 404) throw error;
+      res.status(409).json({ ok: false, code: "IDEMPOTENCY_KEY_CONFLICT", error: "This Idempotency-Key has already been used. Submit again with a new key." });
+      return;
+    }
+  }
 
   const admitted = created?.intake;
   if (admitted && admitted.accepted === false) {
@@ -298,7 +353,7 @@ const cancelTask = asyncHandler(async (req, res) => {
       }
       if (outcome.outcome === "CANCELLED") {
         try {
-          io?.to("dashboard")?.emit("TASK_UPDATED", {
+          dashboardBroadcast.emit(io, "TASK_UPDATED", {
             taskId,
             status: "CANCELLED",
             robotId: null,
@@ -411,7 +466,7 @@ const cancelTask = asyncHandler(async (req, res) => {
     }
 
     try {
-      io?.to("dashboard")?.emit("TASK_UPDATED", {
+      dashboardBroadcast.emit(io, "TASK_UPDATED", {
         taskId,
         status: "CANCELLED",
         robotId: releasedRobotCode,

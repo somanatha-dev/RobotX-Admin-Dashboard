@@ -6,8 +6,14 @@ const { registerOfferHandlers } = require("./handlers/offer.handler");
 const { sweepExpired } = require("../services/ekb.service");
 const { seedDefaultZones } = require("../services/zoneManager.service");
 const { getManyRobotStates } = require("../services/robotRegistry.service");
-const { verifyUserToken } = require("../middlewares/auth_middleware");
+const { verifyUserToken, resolveUserToken } = require("../middlewares/auth_middleware");
 const robotStateCache = require("../cache/robotStateCache");
+// RBAC — which dashboard room a human socket joins, and the scope its replay is filtered by.
+const accessScope = require("../services/accessScope.service");
+const dashboardBroadcast = require("./dashboardBroadcast");
+
+/** How often a connected dashboard socket's account is re-read (disabled, role, campus). */
+const DASHBOARD_RECHECK_INTERVAL_MS = 60_000;
 // PHASE 15 remediation (D-6) — the process half of the cutover switch, read through the
 // module that owns it rather than as a raw environment comparison. Which loop owns §12.4
 // row 9 is a genuinely *process*-level question (a process either runs the reconciler or it
@@ -200,7 +206,7 @@ function startDtaroSweep(prisma, kv, { logger } = {}) {
 // which does not exist: the Socket.IO upgrade request never passes through the express
 // app. The object is passed by reference and read at call time, so a republished snapshot
 // is picked up without re-registering a handler.
-function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig, appLocals } = {}) {
+function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig, appLocals, dashboardRecheckIntervalMs = DASHBOARD_RECHECK_INTERVAL_MS } = {}) {
     // PHASE 5 — exactly one loop owns this fact. With the engine on, it is the
     // reconciler (§12.4 row 9); with it off, it is the legacy sweep above. Never both:
     // a divergence repaired twice, by two loops with different notions of "stale", is
@@ -242,19 +248,65 @@ function initSocketServer(io, { prisma, kv, logger, engineDispatchConfig, appLoc
                 return;
             }
 
-            socket.data.userId = user.id;
-            socket.join("dashboard");
-            if (typeof log.socket === "function") {
-                log.socket("join", { socketId: socket.id, room: "dashboard" });
+            // RBAC — the room is chosen by the server from the account's own role and campus,
+            // never by the client. A SUPER_ADMIN joins `dashboard` (every event, as before); a
+            // campus ADMIN joins only its campus room, which receives the events
+            // `dashboardBroadcast` relays for that campus. An ADMIN with no valid campus is
+            // refused like an unauthenticated socket. Every human socket also joins its own
+            // `user:<id>` room so an account change can disconnect it at once.
+            const scope = accessScope.accessScopeFor(user);
+            if (scope.kind !== accessScope.SCOPE.ALL && scope.kind !== accessScope.SCOPE.CAMPUS) {
+                log.warn("Rejected dashboard socket with no valid access scope", { socketId: socket.id });
+                socket.emit("UNAUTHORIZED", { message: "This account has no valid campus assignment" });
+                socket.disconnect(true);
+                return;
             }
+
+            socket.data.userId = user.id;
+            socket.data.access = scope;
+            const room = scope.kind === accessScope.SCOPE.ALL ? dashboardBroadcast.ROOM : dashboardBroadcast.campusRoom(scope.campusId);
+            socket.join(room);
+            socket.join(dashboardBroadcast.userRoom(user.id));
+            if (scope.kind === accessScope.SCOPE.CAMPUS) {
+                dashboardBroadcast.memberJoined(scope.campusId);
+                socket.once("disconnect", () => dashboardBroadcast.memberLeft(scope.campusId));
+            }
+            if (typeof log.socket === "function") {
+                log.socket("join", { socketId: socket.id, room });
+            }
+
+            // RBAC — a long-lived socket is re-checked against the account row, so a disabled
+            // account or a changed role or campus does not keep receiving events. (Account
+            // changes made through `/api/users` also disconnect the socket immediately.)
+            // A lookup that fails (a database error) decides nothing: the socket is kept and asked
+            // about again next interval. Ending it would send the dashboard to `/api/auth/me`,
+            // which answers 401 while the database is still failing — signing the operator out
+            // over a transient error.
+            const recheck = setInterval(async () => {
+                const { user: current, reason, lookupFailed } = token
+                    ? await resolveUserToken(token).catch(() => ({ user: null, reason: null, lookupFailed: true }))
+                    : { user: null, reason: null };
+                if (lookupFailed) return;
+                const next = accessScope.accessScopeFor(current);
+                if (!current || next.kind !== scope.kind || next.campusId !== scope.campusId) {
+                    // Same codes as `/api/users` sends, so the dashboard reacts the same way.
+                    socket.emit("UNAUTHORIZED", current
+                        ? { message: "Your access changed", code: "ACCESS_CHANGED" }
+                        : { message: reason ? "Your access has been revoked" : "Your session ended", code: reason || "SESSION_ENDED" });
+                    socket.disconnect(true);
+                }
+            }, dashboardRecheckIntervalMs);
+            if (typeof recheck.unref === "function") recheck.unref();
+            socket.once("disconnect", () => clearInterval(recheck));
 
             // Re-hydrate this dashboard client with all active task paths so the
             // map route overlays work even when the user opens the page after
             // the initial TASK_ASSIGNED event was broadcast (on server startup or task creation).
+            // RBAC — only the tasks this account may see.
             setImmediate(async () => {
                 try {
                     const activeTasks = await prisma.task.findMany({
-                        where: { status: { in: ["ASSIGNED", "IN_PROGRESS"] } },
+                        where: accessScope.within({ status: { in: ["ASSIGNED", "IN_PROGRESS"] } }, accessScope.taskWhere(scope)),
                         include: { robot: { select: { robotId: true } } },
                     });
                     for (const t of activeTasks) {

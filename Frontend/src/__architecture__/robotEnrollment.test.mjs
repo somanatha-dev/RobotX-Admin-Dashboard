@@ -126,7 +126,8 @@ test('1a — a successful physical commission navigates to the Connect page, not
 
 test('1b — /robots/:id/connect is routed to the Connect page and titled', () => {
   const router = code(read('router/AppRouter.jsx'));
-  assert.match(router, /<Route path="robots\/:id\/connect" element=\{<ConnectRobotPage \/>\} \/>/);
+  // RBAC: offered to a super administrator only (the server enforces it).
+  assert.match(router, /<Route path="robots\/:id\/connect" element=\{<RequireSuperAdmin><ConnectRobotPage \/><\/RequireSuperAdmin>\} \/>/);
   assert.equal(getRouteTitle('/robots/RBT-2000/connect'), 'Connect Robot');
   assert.equal(getRouteTitle('/robots/RBT-2000'), 'Unit Details');
 });
@@ -229,7 +230,8 @@ test('4c — the page follows the live robot row, which robot_online / robot_off
 test('5a — robot_pairing_rejected is the name the backend emits, and the provider follows it', () => {
   assert.equal(DASHBOARD_EVENTS.ROBOT_PAIRING_REJECTED, 'robot_pairing_rejected');
   const handler = fs.readFileSync(path.join(BACKEND_SRC, 'sockets/handlers/robot.handler.js'), 'utf8');
-  assert.match(handler, /emit\("robot_pairing_rejected", \{ robotId, failedAttempts, locked: Boolean\(locked\) \}\)/);
+  // Through the RBAC dashboard broadcaster (SUPER_ADMIN sockets only for this event).
+  assert.match(handler, /dashboardBroadcast\.emit\(io, "robot_pairing_rejected", \{ robotId, failedAttempts, locked: Boolean\(locked\) \}\)/);
   assert.match(PROVIDER, /socket\.on\(DASHBOARD_EVENTS\.ROBOT_PAIRING_REJECTED, onRobotPairingRejected\)/);
   assert.match(PROVIDER, /socket\.off\(DASHBOARD_EVENTS\.ROBOT_PAIRING_REJECTED, onRobotPairingRejected\)/);
   assert.match(PROVIDER, /setPairingRejections\(\(prev\) => applyPairingRejection\(prev, data, Date\.now\(\)\)\)/);

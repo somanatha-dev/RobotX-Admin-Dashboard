@@ -15,6 +15,7 @@ import {
 import { normalizeStatus, isActive, isIdle } from '@/lib/robotStatus.js';
 import * as robotsApi from '@/lib/api/robots.js';
 import { connectActionFor, connectPathFor } from '@/lib/robotEnrollment.js';
+import { isSuperAdmin, mayCommand, mayReadSimulator, SIMULATOR_RESTRICTED_NOTE } from '@/lib/access.js';
 import {
   CHASSIS_LABEL,
   CHASSIS_OPTIONS,
@@ -37,7 +38,10 @@ function draftFrom(specification) {
 }
 
 export default function RobotDetailPage() {
-  const { robots, tasks, simulatorStatus } = useAppState();
+  const { robots, tasks, simulatorStatus, session } = useAppState();
+  // RBAC — offers only; the server refuses these to a campus administrator regardless.
+  const superAdmin = isSuperAdmin(session);
+  const mayReturn = mayCommand(session, 'RETURN');
   const { retire, updateRobotSpecification } = useAppActions();
   const navigate = useNavigate();
   const { id } = useParams();
@@ -59,7 +63,9 @@ export default function RobotDetailPage() {
   // the Connect page, where issuing a code is confirmed and step-up authorised.
   const [pairingStatus, setPairingStatus] = useState(null);
   const robotCode = robot?.robotId;
-  const needsPairingStatus = Boolean(robot) && !isSimulated(robot) && robot.isOnline !== true;
+  // Enrollment is a super administrator's: a campus administrator is not offered it, so its
+  // pairing status (a SUPER_ADMIN-only read) is not requested.
+  const needsPairingStatus = superAdmin && Boolean(robot) && !isSimulated(robot) && robot.isOnline !== true;
   useEffect(() => {
     if (!needsPairingStatus || !robotCode) return undefined;
     let cancelled = false;
@@ -75,7 +81,7 @@ export default function RobotDetailPage() {
       cancelled = true;
     };
   }, [needsPairingStatus, robotCode]);
-  const connectAction = connectActionFor(robot, pairingStatus);
+  const connectAction = superAdmin ? connectActionFor(robot, pairingStatus) : null;
 
   // Re-seed the draft when the stored specification changes underneath the form — an edit
   // made in another session, or the first load arriving after this page mounted. Skipped
@@ -115,8 +121,13 @@ export default function RobotDetailPage() {
 
   if (!robot) {
     return (
-      <div className="p-8 text-center font-bold text-slate-500">
-        Robot Decommissioned or Not Found.
+      <div className="p-8 text-center font-bold text-slate-500" data-robot-unavailable>
+        {/* RBAC — the same sentence whether the unit does not exist, was retired, or belongs to
+            another campus: the list this page reads is already scoped, so it cannot tell which,
+            and must not suggest one. */}
+        {superAdmin
+          ? 'Robot not found. It may have been retired or removed.'
+          : 'This robot is not available. It may not exist, may have been retired, or may be outside your campus.'}
         <button onClick={() => navigate('/robots')} className="text-blue-500 underline ml-2">
           Go Back
         </button>
@@ -149,7 +160,7 @@ export default function RobotDetailPage() {
                 {normalizeStatus(robot.status)}
               </span>
               <RobotIdentityBadge robot={robot} />
-              <SimulatorRuntimeBadge robot={robot} simulatorStatus={simulatorStatus} />
+              <SimulatorRuntimeBadge robot={robot} simulatorStatus={simulatorStatus} restricted={!superAdmin} />
             </div>
           </div>
         </div>
@@ -169,7 +180,9 @@ export default function RobotDetailPage() {
             RESUME (N/A IN V1)
           </button>
           {/* FS-05: RETURN bypasses the engine and abandons a delivery, so it is not
-              offered while the unit holds a task; otherwise it carries its warning. */}
+              offered while the unit holds a task; otherwise it carries its warning.
+              RBAC: not offered to a campus administrator (STOP and PAUSE only). */}
+          {mayReturn ? (
           <button
             type="button"
             onClick={() => sendCommand(robot.robotId, 'RETURN')}
@@ -185,12 +198,15 @@ export default function RobotDetailPage() {
           >
             RETURN
           </button>
+          ) : null}
           <button
             onClick={() => sendCommand(robot.robotId, 'STOP')}
             className="flex-1 sm:flex-none bg-amber-500 hover:bg-amber-600 text-white px-6 py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors shadow-sm"
           >
             STOP
           </button>
+          {superAdmin ? (
+          <>
           <div className="w-px h-8 bg-slate-300 mx-1 self-center hidden sm:block" />
           <button
             onClick={() => retire(robot.robotId)}
@@ -199,6 +215,8 @@ export default function RobotDetailPage() {
           >
             <Trash2 className="w-4 h-4" /> RETIRE
           </button>
+          </>
+          ) : null}
         </div>
       </div>
 
@@ -313,9 +331,11 @@ export default function RobotDetailPage() {
                   <span className="text-slate-500 font-medium shrink-0">Simulator runtime</span>
                   <span className="text-right">
                     <span className="font-mono font-bold text-slate-700">
-                      {runtimeLabel(runtimeStatusOf(robot, simulatorStatus))}
+                      {mayReadSimulator(session) ? runtimeLabel(runtimeStatusOf(robot, simulatorStatus)) : 'Restricted'}
                     </span>
-                    {runtimeReason(runtimeStatusOf(robot, simulatorStatus), simulatorStatus, robot) ? (
+                    {!mayReadSimulator(session) ? (
+                      <span className="block text-[11px] font-normal text-slate-500 mt-0.5 max-w-64" data-simulator-restricted>{SIMULATOR_RESTRICTED_NOTE}</span>
+                    ) : runtimeReason(runtimeStatusOf(robot, simulatorStatus), simulatorStatus, robot) ? (
                       <span className="block text-[11px] font-normal text-slate-500 mt-0.5 max-w-64">
                         {runtimeReason(runtimeStatusOf(robot, simulatorStatus), simulatorStatus, robot)}
                       </span>
@@ -354,14 +374,15 @@ export default function RobotDetailPage() {
                 >
                   <X className="w-3.5 h-3.5" /> Cancel
                 </button>
-              ) : (
+              ) : superAdmin ? (
+                // RBAC — configuration edits are a super administrator's.
                 <button
                   onClick={() => { setIsEditing(true); setDraft(draftFrom(specification)); }}
                   className="text-xs font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1"
                 >
                   <Pencil className="w-3.5 h-3.5" /> Edit
                 </button>
-              )}
+              ) : null}
             </div>
 
             {isEditing ? (

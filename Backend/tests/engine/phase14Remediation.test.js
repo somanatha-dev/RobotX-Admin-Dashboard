@@ -640,7 +640,8 @@ describe("P14-R14 — a completion claim from an unreachable position raises a s
     expect(raw).toMatch(/UNREACHABLE_COMPLETION_CLAIM/);
     // The same room and the same event name persistent implausibility already uses, so a
     // dashboard that handles one handles both.
-    expect(raw).toMatch(/io\.to\("dashboard"\)\.emit\("SECURITY_EVENT"/);
+    // Through the RBAC dashboard broadcaster, which sends SECURITY_EVENT to SUPER_ADMIN sockets.
+    expect(raw).toMatch(/dashboardBroadcast\.emit\(io, "SECURITY_EVENT"/);
   });
 
   test("the module's verdict is the one §23.5 states: a failed verification from an unreachable place is a security event", () => {

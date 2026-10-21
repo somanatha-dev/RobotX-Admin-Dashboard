@@ -1,7 +1,7 @@
 const express = require("express");
 const ctrl    = require("../controllers/simulator.controller");
 const { createRateLimiter } = require("../middlewares/rateLimitHttp");
-const { authUser, requireElevatedRole } = require("../middlewares/auth_middleware");
+const { authUser, requireElevatedRole, requireSuperAdmin } = require("../middlewares/auth_middleware");
 
 const router = express.Router();
 
@@ -9,6 +9,8 @@ const router = express.Router();
 // is not just access control: `req.user.id` **is** the creator fact recorded on the row,
 // so an unauthenticated request has nothing to attribute the robot it would create to.
 router.use(authUser);
+// RBAC — SUPER_ADMIN only: no route on this router is open to a campus administrator.
+router.use(requireSuperAdmin());
 
 // The same bucket size the physical commissioning route uses. A creation attempt is a
 // creation attempt, and the limiter is about request rate, not about how many simulated

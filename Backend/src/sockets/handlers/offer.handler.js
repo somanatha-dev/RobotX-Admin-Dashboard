@@ -70,6 +70,8 @@ const stopLatchObservation = require("../../services/stopLatchObservation.servic
 // response answers (`OFFERED --AGENT_ACK--> ACCEPTED`) and what an ACK must prove
 // (`FENCE_MATCHES_OFFER_UNEXPIRED`).
 const transitions = require("../../engine/lifecycle/transitions");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../dashboardBroadcast");
 
 /**
  * P2B-2 — is this Leg still awaiting the agent's answer to the offer this commitment made?
@@ -277,7 +279,7 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
       // when the route is absent: "assigned to RBT-1000" is true and useful on its own,
       // and withholding it because no line can be drawn would hide the assignment.
       if (projected.projected) {
-        io.to("dashboard").emit("TASK_UPDATED", {
+        dashboardBroadcast.emit(io, "TASK_UPDATED", {
           taskId: projected.task.taskId,
           robotId: input.robotId,
           status: assignmentProjection.PROJECTED_STATUS,
@@ -302,7 +304,7 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
         robotId: input.robotId,
         route,
       });
-      if (payload) io.to("dashboard").emit("TASK_ASSIGNED", payload);
+      if (payload) dashboardBroadcast.emit(io, "TASK_ASSIGNED", payload);
 
       await assignmentProjection.writeRouteCache(kv, {
         taskId: projected.task.taskId,
@@ -461,7 +463,7 @@ function registerOfferHandlers(io, socket, { prisma, kv, logger, config, appLoca
 
       if (result.outcome === offers.OUTCOME.APPLIED) {
         // The dashboard is the only listener; robots have no reason to receive it.
-        io.to("dashboard").emit("OFFER_RESPONSE", {
+        dashboardBroadcast.emit(io, "OFFER_RESPONSE", {
           robotId,
           commitmentId: parsed.data.commitmentId,
           response: event,

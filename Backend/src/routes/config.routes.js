@@ -1,7 +1,7 @@
 const express = require("express");
 const configController = require("../controllers/config.controller");
 const { createRateLimiter } = require("../middlewares/rateLimitHttp");
-const { authUser, requireElevatedRole, requireActionClass } = require("../middlewares/auth_middleware");
+const { authUser, requireElevatedRole, requireActionClass, requireSuperAdmin } = require("../middlewares/auth_middleware");
 // PHASE 14 — §23.4. The action-class register, so the publish gate names the same class
 // the audit row records rather than a string chosen here.
 const override = require("../engine/security/override");
@@ -18,6 +18,9 @@ const router = express.Router();
 // Safety-class config change rather than an edit in each of three route files.
 router.use(authUser);
 router.use(requireElevatedRole());
+// RBAC — SUPER_ADMIN only: no route on this router is open to a campus administrator, whatever
+// `security.elevated_roles` lists.
+router.use(requireSuperAdmin());
 
 const resolveLimiter = createRateLimiter({ windowMs: 60_000, limit: 240, keyPrefix: "config_resolve" });
 const publishLimiter = createRateLimiter({ windowMs: 60_000, limit: 10, keyPrefix: "config_publish" });

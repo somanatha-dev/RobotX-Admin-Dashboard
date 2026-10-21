@@ -82,8 +82,14 @@ describe("Socket.IO dashboard-room JWT gate (F21)", () => {
       client.on("UNAUTHORIZED", () => reject(new Error("unexpectedly rejected")));
     });
 
-    // Give the server a tick to run its async auth + socket.join().
-    await new Promise((r) => setTimeout(r, 100));
+    // `connect` fires before the server's async auth (the account lookup) has run, so wait for
+    // the join itself rather than a fixed delay. A 100 ms sleep here failed intermittently in
+    // the full in-band suite: reproduced by resolving the lookup 150 ms late ("Expected: 1,
+    // Received: undefined"). The bound is well inside the test timeout.
+    const deadline = Date.now() + 3000;
+    while (!io.sockets.adapter.rooms.get("dashboard") && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     expect(io.sockets.adapter.rooms.get("dashboard")?.size).toBe(1);
   });
 

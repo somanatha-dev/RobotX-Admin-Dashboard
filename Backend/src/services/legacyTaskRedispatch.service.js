@@ -25,6 +25,8 @@
 
 const { dispatchTaskAssign } = require("./commandDispatcher.service");
 const { safeJsonParse } = require("../utils/json");
+// RBAC — dashboard broadcasts go through one place, which scopes them by campus.
+const dashboardBroadcast = require("../sockets/dashboardBroadcast");
 
 /** @structural the window agents get to connect and authenticate before the re-send */
 const REDISPATCH_DELAY_MS = 5000;
@@ -69,7 +71,7 @@ async function redispatchActiveTasks({ prisma, kv, io, logger }) {
 
       // Also re-emit TASK_ASSIGNED so connected dashboards can draw the route.
       try {
-        io.to("dashboard").emit("TASK_ASSIGNED", {
+        dashboardBroadcast.emit(io, "TASK_ASSIGNED", {
           taskId:        task.taskId,
           robotId,
           pickup:        { lat: task.pickupLat, lon: task.pickupLon },

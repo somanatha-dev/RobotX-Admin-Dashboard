@@ -52,3 +52,15 @@ export function operatingCampusBounds(registry = CAMPUS_REGISTRY) {
   }
   return Number.isFinite(west) ? [[west, south], [east, north]] : null;
 }
+
+/**
+ * RBAC — one campus's boundary bounds, by its `Campus.code` (the registry id), whether or not
+ * it has an operating region: a campus administrator's map opens on its own campus.
+ *
+ * @param {string} code
+ * @returns {[[number, number], [number, number]]|null}
+ */
+export function campusBounds(code, registry = CAMPUS_REGISTRY) {
+  const entries = (Array.isArray(registry) ? registry : []).filter((entry) => entry?.id === code);
+  return operatingCampusBounds(entries.map((entry) => ({ ...entry, regionId: entry.regionId || entry.id })));
+}

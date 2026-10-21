@@ -175,7 +175,7 @@ describe("P7-D1 — STOP and PAUSE hold the robot at the server, whatever it rep
     res.status = jest.fn((c) => { res.statusCode = c; return res; });
     const done = new Promise((resolve, reject) => {
       res.json = jest.fn((b) => { res.body = b; resolve(); return res; });
-      sendRobotCommand({ params: { robotId: "R1" }, body: { type }, app: { locals: { io: createFakeIo() } } }, res, reject);
+      sendRobotCommand({ params: { robotId: "R1" }, body: { type }, user: USER, app: { locals: { io: createFakeIo() } } }, res, reject);
     });
     return done.then(() => res);
   }

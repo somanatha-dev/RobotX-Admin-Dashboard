@@ -104,7 +104,8 @@ test('map: the default view is the operating campuses\' boundary extent — no i
 
 test('map: only the no-filter branch changed; restored camera and filter focus are untouched', () => {
   const map = code(read('features/maps/MapControl.jsx'));
-  assert.match(map, /const bounds = operatingCampusBounds\(\);/);
+  // RBAC: a campus administrator's no-filter view is its own campus; everyone else's is unchanged.
+  assert.match(map, /const bounds = pinnedCampusCode \? campusBounds\(pinnedCampusCode\) : operatingCampusBounds\(\);/);
   assert.match(map, /mapRef\.current\?\.cameraForBounds\(bounds, \{ padding: 48 \}\)/);
   assert.match(map, /if \(!cam\) \{\s*const preset = CAMERA_PRESETS\.WORLD;/, 'world view stays the fallback');
   assert.match(map, /center: startCam \? \[startCam\.lon, startCam\.lat\] : WORLD_CENTER,/, 'a returning visit still restores the last camera');

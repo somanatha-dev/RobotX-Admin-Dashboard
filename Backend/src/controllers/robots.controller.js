@@ -35,6 +35,20 @@ const override = require("../engine/security/override");
 // PHASE 14 remediation (P14-R3 / P14-R5) — one policy and one audit writer, shared with
 // the action-class middleware.
 const { policyFor, recordAuthorisation } = require("../middlewares/auth_middleware");
+// RBAC — the caller's campus scope (lists, commands, campus assignment).
+const accessScope = require("../services/accessScope.service");
+const { withAudit } = require("../services/adminAudit.service");
+const dashboardBroadcast = require("../sockets/dashboardBroadcast");
+
+function scopeOf(req) {
+  return req.access ?? accessScope.accessScopeFor(req.user);
+}
+
+// RBAC — the commands a campus ADMIN may send to a robot of its campus: the two that place a
+// server-side hold and stop motion. RESUME and RETURN set a unit moving and stay SUPER_ADMIN's
+// until a policy for them is decided; lifting a hold is `clear-fault`, behind
+// QUARANTINE_OVERRIDE, which no ADMIN passes.
+const ADMIN_COMMANDS = new Set(["STOP", "PAUSE"]);
 
 /** A pairing code's lifetime: single use, and unusable this long after it was issued. */
 const PAIRING_CODE_TTL_SEC = 300;
@@ -79,7 +93,7 @@ function emitRobotUpdate(req, payload) {
   const io = req.app?.locals?.io;
   if (!io) return;
   try {
-    io.to("dashboard").emit("ROBOT_UPDATE", payload);
+    dashboardBroadcast.emit(io, "ROBOT_UPDATE", payload);
   } catch {
     // ignore
   }
@@ -135,7 +149,7 @@ const commissionRobot = asyncHandler(async (req, res) => {
   // Notify dashboard that a new robot has been commissioned (triggers map marker creation
   // regardless of the current location filter).
   try {
-    io?.to("dashboard")?.emit("ROBOT_COMMISSIONED", {
+    dashboardBroadcast.emit(io, "ROBOT_COMMISSIONED", {
       ...livePayload,
       locationId: robot.locationId || null,
       campusId:   robot.campusId   || null,
@@ -212,7 +226,7 @@ const updateRobot = asyncHandler(async (req, res) => {
   // than `ROBOT_UPDATE`: that one carries live telemetry, and a specification change is
   // not a telemetry reading.
   try {
-    req.app?.locals?.io?.to("dashboard")?.emit("ROBOT_SPECIFICATION_UPDATED", {
+    dashboardBroadcast.emit(req.app?.locals?.io, "ROBOT_SPECIFICATION_UPDATED", {
       robotId: robot.robotId,
       name: robot.name || null,
       specification: robotSpecification.specificationOf(robot),
@@ -228,7 +242,7 @@ const updateRobot = asyncHandler(async (req, res) => {
 const listRobots = asyncHandler(async (req, res) => {
   const prisma = getPrisma();
   const kv = req.app?.locals?.kv;
-  const robots = await robotService.listRobots(prisma, req.query);
+  const robots = await robotService.listRobots(prisma, req.query, { scopeWhere: accessScope.robotWhere(scopeOf(req)) });
 
   // Main API behavior: DB robots + Redis live overlay (when available).
   // This keeps robot ownership/metadata in DB, and live state in Redis.
@@ -282,7 +296,8 @@ const getRobotsState = asyncHandler(async (req, res) => {
     // Soft retirement — a retired unit keeps its row (its tasks and events still name it)
     // but is not part of the fleet the dashboard shows, counts or targets with a global STOP.
     // A robot with no Agent row is kept: that is an older unit, not a retired one.
-    where: robotRetirementPolicy.notRetiredRobotWhere(),
+    // RBAC — and only the caller's campus for an ADMIN (`accessScope.robotWhere`).
+    where: accessScope.within(robotRetirementPolicy.notRetiredRobotWhere(), accessScope.robotWhere(scopeOf(req))),
     include: {
       campus: true,
       location: true,
@@ -806,7 +821,7 @@ const clearRobotFault = asyncHandler(async (req, res) => {
       // ignore event log failure, as the fault path does
     }
 
-    io?.to("dashboard")?.emit("ROBOT_UPDATED", { robotId: robotCode, status: heldNext, timestamp: Date.now() });
+    dashboardBroadcast.emit(io, "ROBOT_UPDATED", { robotId: robotCode, status: heldNext, timestamp: Date.now() });
     res.json({ ok: true, robotId: robotCode, status: heldNext });
     return;
   }
@@ -850,7 +865,7 @@ const clearRobotFault = asyncHandler(async (req, res) => {
     // ignore event log failure
   }
 
-  io?.to("dashboard")?.emit("ROBOT_UPDATED", {
+  dashboardBroadcast.emit(io, "ROBOT_UPDATED", {
     robotId: robotCode,
     status: nextStatus,
     healthStatus: "OK",
@@ -968,7 +983,7 @@ const recommissionRobot = asyncHandler(async (req, res) => {
     });
     // Every dashboard: the unit is back in the lists (offline, until it pairs).
     try {
-      req.app?.locals?.io?.to("dashboard")?.emit("robot_recommissioned", { robotId: result.robotId, timestamp: Date.now() });
+      dashboardBroadcast.emit(req.app?.locals?.io, "robot_recommissioned", { robotId: result.robotId, timestamp: Date.now() });
     } catch {
       // ignore
     }
@@ -1025,6 +1040,11 @@ const sendRobotCommand = asyncHandler(async (req, res) => {
   if (!allowed.has(type)) {
     const err = new Error("Invalid command type");
     err.status = 400;
+    throw err;
+  }
+  if (!accessScope.isSuperAdmin(scopeOf(req)) && !ADMIN_COMMANDS.has(type)) {
+    const err = new Error(`A campus administrator may send ${[...ADMIN_COMMANDS].join(" or ")} only; ${type} is reserved for a super administrator`);
+    err.status = 403;
     throw err;
   }
 
@@ -1242,7 +1262,76 @@ const applyPhysicalDeclaration = asyncHandler(async (req, res) => {
   res.json({ ok: true, ...result, assignable: "NOT_ESTABLISHED" });
 });
 
+// PUT /api/robots/:robotId/campus — SUPER_ADMIN only (route). Body `{ campusId: "<Campus.id>" | null }`.
+//
+// The only writer of `Robot.campusId` after commissioning, and so what places an existing
+// unit in a campus administrator's scope. Refused when the robot's Agent already names a
+// region that is not the campus's: the two records would then disagree, and `robotWhere`
+// would hide the unit from both campuses rather than show it to one.
+const assignRobotCampus = asyncHandler(async (req, res) => {
+  const prisma = getPrisma();
+  const robotCode = toStringOrNull(req.params?.robotId);
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  if (!Object.prototype.hasOwnProperty.call(body, "campusId")) {
+    const err = new Error("campusId is required (a campus id, or null to clear)");
+    err.status = 400;
+    throw err;
+  }
+  const campusId = body.campusId === null ? null : toStringOrNull(body.campusId);
+  if (body.campusId !== null && !campusId) {
+    const err = new Error("campusId must be a non-empty string or null");
+    err.status = 400;
+    throw err;
+  }
+
+  const robot = await prisma.robot.findUnique({
+    where: { robotId: robotCode || "" },
+    select: { id: true, robotId: true, campusId: true, agent: { select: { regionId: true } } },
+  });
+  if (!robot) {
+    const err = new Error("Unknown robotId");
+    err.status = 404;
+    throw err;
+  }
+
+  let campus = null;
+  if (campusId) {
+    campus = await prisma.campus.findUnique({ where: { id: campusId }, select: { id: true, code: true, regionId: true } });
+    if (!campus) {
+      const err = new Error("Invalid campusId");
+      err.status = 400;
+      throw err;
+    }
+    const agentRegion = robot.agent ? robot.agent.regionId : null;
+    if (agentRegion && agentRegion !== campus.regionId) {
+      const err = new Error(
+        `Robot ${robot.robotId}'s agent operates in a region that is not campus ${campus.code}'s; ` +
+          "assigning it would leave its campus and region in disagreement. Link the campus to that region first.",
+      );
+      err.status = 409;
+      err.code = "CAMPUS_REGION_MISMATCH";
+      throw err;
+    }
+  }
+
+  const updated = await withAudit(prisma, async (tx) => ({
+    result: await tx.robot.update({ where: { id: robot.id }, data: { campusId: campus ? campus.id : null }, select: { robotId: true, campusId: true } }),
+    event: {
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      subjectType: "ROBOT",
+      subjectId: robot.robotId,
+      payload: { action: "ROBOT_CAMPUS_ASSIGNED", fromCampusId: robot.campusId || null, toCampusId: campus ? campus.id : null },
+    },
+  }));
+
+  // Live events for this unit are relayed by campus; drop the cached answer at once.
+  dashboardBroadcast.forgetRobot(robot.robotId);
+  res.json({ ok: true, robot: updated });
+});
+
 module.exports = {
+  assignRobotCampus,
   applyPhysicalDeclaration,
   declareStateOfCharge,
   // Exported so `simulator.controller.js` writes the `robot:{id}` live-state key through

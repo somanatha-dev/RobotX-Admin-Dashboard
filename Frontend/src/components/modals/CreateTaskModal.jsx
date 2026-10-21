@@ -17,6 +17,8 @@ import { campusTaskLocations } from '@/features/tasks/campusLocations.js';
 import { CHASSIS_OPTIONS } from '@/lib/robotSpecification.js';
 import { CAMPUS_REGISTRY } from '@/features/maps/campus/campusRegistry.js';
 import { newIdempotencyKey } from '@/lib/idempotency.js';
+import { useAppState } from '@/context/appContext.js';
+import { taskCampusesFor } from '@/lib/access.js';
 
 const EMPTY_LOC = { text: '', lat: null, lon: null };
 
@@ -42,10 +44,15 @@ export default function CreateTaskModal({ onClose, onCreate }) {
   // remove.
   const [requestedChassisType, setRequestedChassisType] = useState(CHASSIS_OPTIONS[0].value);
 
+  // RBAC — a campus administrator is offered its own campus only, pre-selected; the backend
+  // submits its tasks to that campus's region whatever this form sends (tasks.controller).
+  const { session } = useAppState();
+  const offeredCampuses = taskCampusesFor(session, CAMPUS_REGISTRY);
+
   // The campus the task is for. Required and not pre-selected: it decides the operating
   // region the task is submitted to (`lib/taskRequest.js`), and the backend has no
-  // default region — so the operator names it.
-  const [campusId, setCampusId] = useState('');
+  // default region — so the operator names it. (A campus administrator's one campus is.)
+  const [campusId, setCampusId] = useState(() => (offeredCampuses.length === 1 && offeredCampuses[0].regionId && session?.user?.role !== 'SUPER_ADMIN' ? offeredCampuses[0].id : ''));
 
   // Pickup and drop come from the selected campus's own locations, inside its boundary
   // (see features/tasks/campusLocations.js) — never from a citywide search.
@@ -174,7 +181,7 @@ export default function CreateTaskModal({ onClose, onCreate }) {
                 <SelectValue placeholder="Select a campus" />
               </SelectTrigger>
               <SelectContent>
-                {CAMPUS_REGISTRY.map((campus) => (
+                {offeredCampuses.map((campus) => (
                   <SelectItem key={campus.id} value={campus.id} disabled={!campus.regionId}>
                     {campus.regionId ? campus.name : `${campus.name} (no operating region)`}
                   </SelectItem>

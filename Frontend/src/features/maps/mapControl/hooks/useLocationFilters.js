@@ -67,8 +67,15 @@ function persistFiltersSafe({ countryId, stateId, cityId, areaId, campusId }) {
   }
 }
 
-export function useLocationFilters() {
-  const [initialFilters] = useState(() => readStoredFiltersSafe());
+/**
+ * @param {{ hierarchy?: boolean, pinnedCampusId?: string|null }} [options]
+ *   RBAC — `hierarchy: false` skips the country/state/city/area lists entirely (their endpoint
+ *   is SUPER_ADMIN-only); `pinnedCampusId` holds the campus selection to a campus
+ *   administrator's own campus, whatever was stored or picked.
+ */
+export function useLocationFilters({ hierarchy = true, pinnedCampusId = null } = {}) {
+  // A pinned map never adopts another account's stored selection on a shared browser.
+  const [initialFilters] = useState(() => (pinnedCampusId ? { campusId: pinnedCampusId } : readStoredFiltersSafe()));
 
   const [countries, setCountries] = useState([]);
   const [states, setStates] = useState([]);
@@ -80,7 +87,13 @@ export function useLocationFilters() {
   const [stateId, setStateId] = useState(initialFilters.stateId ?? null);
   const [cityId, setCityId] = useState(initialFilters.cityId ?? null);
   const [areaId, setAreaId] = useState(initialFilters.areaId ?? null);
-  const [campusId, setCampusId] = useState(initialFilters.campusId ?? null);
+  const [selectedCampusIdState, setCampusIdState] = useState(initialFilters.campusId ?? null);
+  const campusId = pinnedCampusId || selectedCampusIdState;
+  // Pinned: the only campus is the account's own; a selection of anything else is ignored.
+  const setCampusId = useCallback((next) => {
+    if (pinnedCampusId) return;
+    setCampusIdState(next);
+  }, [pinnedCampusId]);
 
   const prevCountryIdRef = useRef(undefined);
   const prevStateIdRef = useRef(undefined);
@@ -106,6 +119,7 @@ export function useLocationFilters() {
 
   // Initial load: countries
   useEffect(() => {
+    if (!hierarchy) return undefined;
     let alive = true;
     setLoading((p) => ({ ...p, countries: true }));
     fetchLocations({ type: 'COUNTRY' })
@@ -123,7 +137,7 @@ export function useLocationFilters() {
     return () => {
       alive = false;
     };
-  }, [fetchLocations]);
+  }, [fetchLocations, hierarchy]);
 
   // Initial load: campuses
   useEffect(() => {
@@ -306,7 +320,8 @@ export function useLocationFilters() {
     setStateId(null);
     setCityId(null);
     setAreaId(null);
-    setCampusId(null);
+    // The raw state: a pinned campus is derived from the account, not from this state.
+    setCampusIdState(null);
     setStates([]);
     setCities([]);
     setAreas([]);

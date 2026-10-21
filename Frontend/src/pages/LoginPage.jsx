@@ -7,11 +7,13 @@ import { GoogleLogin } from '@react-oauth/google';
 import { Button } from '@/components/ui/button.jsx';
 import { Input } from '@/components/ui/input.jsx';
 import { Label } from '@/components/ui/label.jsx';
-import { useAppActions } from '@/context/appContext.js';
+import { useAppActions, useAppState } from '@/context/appContext.js';
 
 export default function LoginPage() {
   const rrNavigate = useNavigate();
   const { login, loginWithGoogle } = useAppActions();
+  // RBAC — set when the last session ended because a super administrator disabled the account.
+  const { signedOutReason } = useAppState();
 
   const [identity, setIdentity] = useState('');
   const [password, setPassword] = useState('');
@@ -161,6 +163,11 @@ export default function LoginPage() {
                   </div>
                 </div>
 
+                {signedOutReason === 'ACCOUNT_DISABLED' && !error ? (
+                  <div role="alert" data-signed-out="access-revoked" className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+                    Your access has been revoked. You were signed out because your account was disabled by a super administrator.
+                  </div>
+                ) : null}
                 {error ? (
                   <div className="text-sm font-medium text-destructive">{error}</div>
                 ) : null}

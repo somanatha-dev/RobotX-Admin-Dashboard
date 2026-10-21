@@ -82,6 +82,8 @@ enum LocationType {
 
 enum Role {
   SUPER_ADMIN
+  /// A regular administrator, scoped to exactly one campus (`User.campusId`).
+  ADMIN
 }
 
 //////////////////////////////////////////////////////
@@ -92,7 +94,19 @@ model User {
   id       String @id @default(uuid())
   email    String @unique
   password String
-  role     Role   @default(SUPER_ADMIN)
+  // A row that names no role is an ADMIN, and an ADMIN without a campus is refused by the
+  // `User_role_campus_scope` CHECK — so code that forgets the role creates nothing, rather
+  // than a platform administrator (the default this replaces).
+  role     Role   @default(ADMIN)
+
+  // RBAC — the one campus a regular ADMIN may act in; null for a SUPER_ADMIN. The CHECK
+  // `User_role_campus_scope` (migration 20261021120100) holds "ADMIN ⇔ exactly one campus".
+  campusId String?
+  campus   Campus? @relation(fields: [campusId], references: [id], onDelete: Restrict)
+
+  // Set when a SUPER_ADMIN disables the account. `verifyUserToken` refuses a disabled
+  // account on every request and socket connection, so an issued JWT stops working at once.
+  disabledAt DateTime?
 
   // Set the first time this account signs in with "Continue with Google".
   // Login is keyed off the unique email above, so a Google sign-in with a
@@ -114,6 +128,8 @@ model User {
   simulatedRobots Robot[] @relation("SimulatedRobotOwner")
 
   createdAt DateTime @default(now())
+
+  @@index([campusId])
 }
 
 //////////////////////////////////////////////////////
@@ -465,7 +481,15 @@ model Campus {
   centerLat Float
   centerLon Float
 
+  // RBAC — the operating region this campus's tasks and agents belong to. `code` and
+  // `Region.regionId` are different identifiers; this is the one link between them. Unique,
+  // so two campuses cannot claim one region. Null denies region-owned resources (tasks) to
+  // this campus's administrators rather than widening anything.
+  regionId String?  @unique
+  region   Region?  @relation(fields: [regionId], references: [id], onDelete: SetNull)
+
   robots Robot[]
+  admins User[]
 
   createdAt DateTime @default(now())
 }
@@ -889,6 +913,9 @@ model Region {
   regionId    String  @unique
   name        String
   description String?
+
+  /// RBAC — the campus that operates in this region, if one is linked (`Campus.regionId`).
+  campus   Campus?
 
   zones    Zone[]
   sites    Site[]

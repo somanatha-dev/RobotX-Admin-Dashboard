@@ -7,6 +7,7 @@ const { getPrisma } = require("../db/prisma");
 // independently-remembered decisions in four route files.
 const override = require("../engine/security/override");
 const auditStream = require("../engine/observability/auditStream");
+const accessScope = require("../services/accessScope.service");
 
 function isUuid(value) {
   if (typeof value !== "string") return false;
@@ -20,27 +21,51 @@ function isUuid(value) {
 // token is missing/invalid/expired/unknown. Shared by the HTTP `authUser`
 // middleware and the Socket.IO dashboard connection gate so both surfaces
 // enforce identical rules.
+//
+// RBAC — the role and campus are read from the row on every call, never from the token's
+// claims, so a role or campus change applies to the next request. A disabled account
+// resolves to null: its unexpired JWT stops working at once.
 async function verifyUserToken(token) {
-  if (!token || !process.env.JWT_SECRET) return null;
+  return (await resolveUserToken(token)).user;
+}
 
+/**
+ * `verifyUserToken`, with the reason when there is no user: `ACCOUNT_DISABLED` for a valid
+ * token whose account a SUPER_ADMIN disabled, so the dashboard can say "access revoked"
+ * rather than "session expired". It tells the token's holder only what its own account is.
+ *
+ * `lookupFailed` is true when the token was valid but the account could not be read (a database
+ * error): there is no user to admit, but nothing says the session ended either. `authUser` still
+ * refuses such a request; the dashboard socket's periodic re-check keeps the socket and asks
+ * again next time rather than ending a session over a transient error.
+ *
+ * @returns {Promise<{ user: object|null, reason: string|null, lookupFailed?: boolean }>}
+ */
+async function resolveUserToken(token) {
+  if (!token || !process.env.JWT_SECRET) return { user: null, reason: null };
+
+  let decoded;
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded?.id || !isUuid(decoded.id)) return null;
-
-    const prisma = getPrisma();
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.id },
-      select: {
-        id: true,
-        email: true,
-        role: true
-      }
-    });
-
-    return user || null;
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
   } catch {
-    return null;
+    return { user: null, reason: null };
   }
+  if (!decoded?.id || !isUuid(decoded.id)) return { user: null, reason: null };
+
+  let user;
+  try {
+    const prisma = getPrisma();
+    user = await prisma.user.findUnique({
+      where: { id: decoded.id },
+      select: accessScope.USER_SCOPE_SELECT,
+    });
+  } catch {
+    return { user: null, reason: null, lookupFailed: true };
+  }
+
+  if (!user) return { user: null, reason: null };
+  if (user.disabledAt) return { user: null, reason: "ACCOUNT_DISABLED" };
+  return { user, reason: null };
 }
 
 async function authUser(req, res, next) {
@@ -60,15 +85,83 @@ async function authUser(req, res, next) {
     return res.status(500).json({ message: "Server misconfigured" });
   }
 
-  const user = await verifyUserToken(token);
+  const { user, reason } = await resolveUserToken(token);
   if (!user) {
-    return res.status(401).json({ message: "Unauthorized" });
+    return res.status(401).json(reason ? { message: "Your access has been revoked", code: reason } : { message: "Unauthorized" });
   }
 
   // Attach minimal data
   req.user = user;
+  // RBAC — what this account may see, computed once from its own row (see accessScope).
+  req.access = accessScope.accessScopeFor(user);
 
   next();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RBAC — role and campus gates.
+//
+// `requireSuperAdmin` checks the role itself rather than `security.elevated_roles`. That
+// register is a publishable configuration value; the platform-administration surfaces
+// (accounts, campuses, the simulator, physical commissioning) must not open to a role
+// because a configuration version listed it. The §23.4 gates keep reading the register.
+//
+// Mixed routers declare their ADMIN-capable routes first and then `router.use(
+// requireSuperAdmin())`, so a route added below that barrier is SUPER_ADMIN-only by
+// construction — default deny, rather than a check each new route must remember.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const FORBIDDEN = Object.freeze({ ok: false, error: "Forbidden", detail: "this surface is reserved for a super administrator" });
+
+/** @returns {import("express").RequestHandler} */
+function requireSuperAdmin() {
+  return function superAdminGate(req, res, next) {
+    if (accessScope.isSuperAdmin(req.access ?? accessScope.accessScopeFor(req.user))) return next();
+    // A refused attempt is worth a line: account ids and the route only, no personal data.
+    const path = `${req.baseUrl || ""}${req.path || ""}`;
+    req.app?.locals?.logger?.warn?.("RBAC: super administrator surface refused", {
+      userId: req.user?.id ?? null,
+      role: req.user?.role ?? null,
+      method: req.method,
+      path,
+    });
+    // §23.6's convention — a refused privileged *action* is on the record, like the action-class
+    // gate's refusals. Mutating requests only, so a polling read cannot flood the chain; and
+    // best-effort, never awaited, so an audit outage cannot turn a 403 into something else.
+    const prisma = req.app?.locals?.prisma;
+    if (prisma && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+      auditStream
+        .append(
+          { prisma },
+          {
+            eventType: auditStream.EVENT_TYPE.OPERATOR_ACTION,
+            actorId: req.user?.id ?? null,
+            actorRole: req.user?.role ?? null,
+            subjectType: "ROUTE",
+            subjectId: path,
+            payload: { action: "RBAC_REFUSED", method: req.method },
+            recordedAtMs: Date.now(),
+          },
+        )
+        .catch(() => {});
+    }
+    return res.status(403).json(FORBIDDEN);
+  };
+}
+
+/**
+ * Admit a SUPER_ADMIN, or an ADMIN with a valid campus assignment. An ADMIN whose campus is
+ * missing or unresolvable is refused here — it never reaches a handler as "unscoped".
+ *
+ * @returns {import("express").RequestHandler}
+ */
+function requireScopedAccess() {
+  return function scopedAccessGate(req, res, next) {
+    const scope = req.access ?? accessScope.accessScopeFor(req.user);
+    req.access = scope;
+    if (scope.kind === accessScope.SCOPE.ALL || scope.kind === accessScope.SCOPE.CAMPUS) return next();
+    return res.status(403).json({ ok: false, error: "Forbidden", refusal: "INVALID_SCOPE", detail: scope.reason || "no valid access scope" });
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -294,7 +387,10 @@ async function recordAuthorisation(req, decision, request, subject) {
 
 module.exports = {
   authUser,
+  requireSuperAdmin,
+  requireScopedAccess,
   verifyUserToken,
+  resolveUserToken,
   configValue,
   policyFor,
   requireElevatedRole,

@@ -1,13 +1,18 @@
 const express = require("express");
 const tasksController = require("../controllers/tasks.controller");
 const { createRateLimiter } = require("../middlewares/rateLimitHttp");
-const { authUser, requireActionClass } = require("../middlewares/auth_middleware");
+const { authUser, requireActionClass, requireScopedAccess, requireSuperAdmin } = require("../middlewares/auth_middleware");
+const { taskParamInScope } = require("../middlewares/campusScope");
 // PHASE 14 — §23.4's action-class register.
 const override = require("../engine/security/override");
 
 const router = express.Router();
 
 router.use(authUser);
+
+// RBAC — admits a SUPER_ADMIN or an ADMIN with a valid campus. Per route, and after the §23.4
+// gate on `/assign`, so a refused waiver is still decided and audited by that gate.
+const scoped = requireScopedAccess();
 
 const assignLimiter  = createRateLimiter({ windowMs: 60_000, limit: 60,  keyPrefix: "task_assign" });
 const cancelLimiter  = createRateLimiter({ windowMs: 60_000, limit: 120, keyPrefix: "task_cancel" });
@@ -56,9 +61,18 @@ function gateManualAssignment(req, res, next) {
   return manualAssignmentGate(req, res, next);
 }
 
-router.get("/", tasksController.listTasks);
-router.post("/assign", assignLimiter, gateManualAssignment, tasksController.assignTask);
-router.post("/:taskId/cancel",  cancelLimiter,  tasksController.cancelTask);
+// ── RBAC: ADMIN-capable, scoped to the caller's campus ─────────────────────────
+// The list filters in the controller, and `assignTask` submits an ADMIN's task to its
+// campus's operating region whatever the body says. A waiver still goes through
+// `gateManualAssignment`, which no ADMIN passes (not an elevated role). Cancelling an
+// engine-managed task still requires an elevated role inside `taskCancellation.service`.
+router.get("/", scoped, tasksController.listTasks);
+router.post("/assign", assignLimiter, gateManualAssignment, scoped, tasksController.assignTask);
+router.post("/:taskId/cancel",  cancelLimiter, scoped, taskParamInScope(), tasksController.cancelTask);
+
+// ── RBAC: SUPER_ADMIN only — every route below this line ───────────────────────
+router.use(requireSuperAdmin());
+
 router.post("/:taskId/reroute", rerouteLimiter, tasksController.rerouteTask);
 
 module.exports = router;

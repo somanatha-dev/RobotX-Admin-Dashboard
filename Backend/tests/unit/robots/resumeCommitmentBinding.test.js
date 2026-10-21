@@ -63,7 +63,7 @@ async function send(s, type) {
   await new Promise((resolve, reject) => {
     res.json = jest.fn((b) => { res.body = b; resolve(); return res; });
     getPrisma.mockReturnValue(s.prisma);
-    sendRobotCommand({ params: { robotId: "R1" }, body: { type }, app: { locals: { kv, io } } }, res, reject);
+    sendRobotCommand({ params: { robotId: "R1" }, body: { type }, user: { id: "11111111-1111-4111-8111-111111111111", role: "SUPER_ADMIN" }, app: { locals: { kv, io } } }, res, reject);
   });
   return { io, res, commands: () => io.emittedTo("robot:R1", "COMMAND") };
 }

@@ -48,30 +48,49 @@ async function ensureDefaultPin(prisma, userId, { logger } = {}) {
   return { applied: true };
 }
 
+// RBAC — the initial SUPER_ADMIN, created once and then left alone.
+//
+// This used to upsert on every boot, writing the configured password and `role: SUPER_ADMIN`
+// over whatever account held the email: a password the owner changed in the dashboard was
+// reverted at the next restart, and a regular ADMIN created with that email would have been
+// silently promoted to SUPER_ADMIN. Now:
+//
+//   no account with the email  → created as SUPER_ADMIN (the deterministic first account);
+//   an existing SUPER_ADMIN    → unchanged. Its password is re-applied only when the operator
+//                                sets SEED_ADMIN_RESET_PASSWORD=true for a lockout recovery,
+//                                and that is logged;
+//   any other existing account → refused and logged. A role is never raised by configuration.
 async function ensureAdminUser(prisma, { logger } = {}) {
+  const log = logger || console;
   const creds = getBootstrapCredentials();
   if (!creds) {
-    (logger || console).info(
+    log.info(
       "Admin bootstrap skipped (set SEED_ADMIN_EMAIL + SEED_ADMIN_PASSWORD to enable)"
     );
     return { bootstrapped: false, reason: "missing_credentials" };
   }
 
-  const hashedPassword = await bcrypt.hash(creds.password, 10);
+  const existing = await prisma.user.findUnique({ where: { email: creds.email }, select: { id: true, role: true } });
 
-  const user = await prisma.user.upsert({
-    where: { email: creds.email },
-    update: {
-      password: hashedPassword,
-      role: "SUPER_ADMIN",
-    },
-    create: {
-      email: creds.email,
-      password: hashedPassword,
-      role: "SUPER_ADMIN",
-    },
-    select: { id: true },
-  });
+  let user = existing;
+  if (!existing) {
+    try {
+      user = await prisma.user.create({
+        data: { email: creds.email, password: await bcrypt.hash(creds.password, 10), role: "SUPER_ADMIN" },
+        select: { id: true, role: true },
+      });
+    } catch (error) {
+      // Another process booting at the same moment created it first.
+      if (error?.code !== "P2002") throw error;
+      user = await prisma.user.findUnique({ where: { email: creds.email }, select: { id: true, role: true } });
+    }
+  } else if (existing.role !== "SUPER_ADMIN") {
+    log.warn("Admin bootstrap refused: the configured email belongs to an account that is not a super administrator; its role is left unchanged");
+    return { bootstrapped: false, reason: "existing_account_not_super_admin" };
+  } else if (String(process.env.SEED_ADMIN_RESET_PASSWORD || "").toLowerCase() === "true") {
+    await prisma.user.update({ where: { id: existing.id }, data: { password: await bcrypt.hash(creds.password, 10) } });
+    log.warn("Admin bootstrap re-applied the configured password to the super administrator (SEED_ADMIN_RESET_PASSWORD=true); unset it after recovery");
+  }
 
   await ensureDefaultPin(prisma, user.id, { logger });
 
@@ -85,6 +104,7 @@ async function ensureAdminUser(prisma, { logger } = {}) {
 }
 
 module.exports = {
+  PIN_PATTERN,
   ensureAdminUser,
   ensureDefaultPin,
 };
