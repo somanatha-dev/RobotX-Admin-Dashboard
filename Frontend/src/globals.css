@@ -87,11 +87,30 @@
     background: transparent;
   }
 
+  /* A sideways-scrolling row of chips on a phone: swipeable, with no bar under it. */
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
   .scrollbar-thin::-webkit-scrollbar-thumb {
     background-color: hsl(var(--border));
     border-radius: 9999px;
     border: 2px solid transparent;
     background-clip: content-box;
+  }
+}
+
+/* iOS Safari zooms the whole page into any focused field whose text is under 16px, and
+   leaves it zoomed. On a touch phone every text field is 16px; nothing else changes. */
+@media (max-width: 639px) and (pointer: coarse) {
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  select,
+  textarea {
+    font-size: 16px !important;
   }
 }
 
@@ -159,6 +178,80 @@
 
 .map-filters-bar__reset {
   flex: 0 0 auto;
+}
+
+/* Only a phone needs the toggle: from `md` up the filters are always in the toolbar. */
+.map-control-toolbar__filters-toggle {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .map-control-toolbar {
+    min-height: 0;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    gap: 0.5rem;
+  }
+
+  .map-control-toolbar__filters-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    height: 2.25rem;
+    padding: 0 0.75rem;
+    border-radius: calc(var(--radius) - 2px);
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  .map-control-toolbar__filters-chevron {
+    transition: transform 0.2s ease;
+  }
+
+  .is-filters-open .map-control-toolbar__filters-chevron {
+    transform: rotate(180deg);
+  }
+
+  .map-control-toolbar__actions {
+    margin-left: auto;
+  }
+
+  /* The filters drop below the toggle and the stop button, across the full width. */
+  .map-control-toolbar__filters {
+    order: 3;
+    flex: 1 0 100%;
+    display: none;
+  }
+
+  .is-filters-open .map-control-toolbar__filters {
+    display: flex;
+  }
+
+  .map-filters-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.375rem;
+  }
+
+  .map-filters-bar__group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.375rem;
+  }
+
+  .map-filter-trigger {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .map-filters-bar__reset {
+    align-self: flex-end;
+  }
 }
 
 .map-filters-overlay {

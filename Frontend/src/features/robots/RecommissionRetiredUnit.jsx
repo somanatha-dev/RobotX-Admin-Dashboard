@@ -77,16 +77,16 @@ export function RecommissionRetiredUnit({ initialRobotId }) {
   };
 
   return (
-    <form id="recommission-retired-unit" onSubmit={handleSubmit} className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
-      <div className="lg:col-span-2 space-y-6">
+    <form id="recommission-retired-unit" onSubmit={handleSubmit} className="mt-5 sm:mt-8 grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
+      <div className="lg:col-span-2 space-y-4 sm:space-y-6">
         <Card className="rounded-2xl border border-border/60 shadow-sm hover:shadow-sm">
-          <CardHeader className="p-6">
+          <CardHeader className="p-4 sm:p-6">
             <CardTitle className="text-lg font-medium">Retired robot</CardTitle>
             <CardDescription>
               Choose the retired unit to bring back. This is the same robot, not a new one: it keeps its identifier and history.
             </CardDescription>
           </CardHeader>
-          <CardContent className="p-6 pt-0 space-y-4">
+          <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0 space-y-4">
             {load.status === 'error' ? (
               <div className="rounded-lg bg-destructive/10 text-destructive px-4 py-3 text-sm font-medium" role="alert">
                 {load.error}
@@ -144,7 +144,7 @@ export function RecommissionRetiredUnit({ initialRobotId }) {
             ) : null}
 
             {selected ? (
-              <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+              <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 sm:gap-x-6 gap-y-2 text-sm wrap-anywhere">
                 <dt className="text-muted-foreground">Identifier</dt>
                 <dd className="font-mono font-semibold">{selected.robotId}</dd>
                 <dt className="text-muted-foreground">Name</dt>
@@ -165,11 +165,11 @@ export function RecommissionRetiredUnit({ initialRobotId }) {
         </Card>
 
         <Card className="rounded-2xl border border-border/60 shadow-sm hover:shadow-sm">
-          <CardHeader className="p-6">
+          <CardHeader className="p-4 sm:p-6">
             <CardTitle className="text-lg font-medium">Authorise recommissioning</CardTitle>
             <CardDescription>Requires an administrator account. The reason is recorded with your account in the unit’s audit trail.</CardDescription>
           </CardHeader>
-          <CardContent className="p-6 pt-0 space-y-6">
+          <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0 space-y-6">
             <div>
               <Label htmlFor="recommission-reason" className="mb-2 block">
                 Reason <RequiredMark />
@@ -220,13 +220,13 @@ export function RecommissionRetiredUnit({ initialRobotId }) {
 
       <aside className="lg:col-span-1">
         <Card className="rounded-2xl border border-border/60 shadow-sm hover:shadow-sm bg-muted/40">
-          <CardHeader className="p-6">
+          <CardHeader className="p-4 sm:p-6">
             <CardTitle className="text-lg font-medium flex items-center gap-2">
               <AlertTriangle className="w-4 h-4" /> What recommissioning does
             </CardTitle>
             <CardDescription>Read this before you confirm.</CardDescription>
           </CardHeader>
-          <CardContent className="p-6 pt-0">
+          <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">
             <ul className="text-sm text-muted-foreground list-disc pl-5 space-y-2" data-recommission-consequences>
               {RECOMMISSION_CONSEQUENCES.map((line) => (
                 <li key={line}>{line}</li>

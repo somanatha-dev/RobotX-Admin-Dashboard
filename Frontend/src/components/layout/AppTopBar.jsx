@@ -26,8 +26,10 @@ export default function AppTopBar() {
   const initial = String(email).trim().charAt(0).toUpperCase() || 'U';
 
   return (
-    <header className="h-16 bg-background border-b border-border/60 flex items-center justify-between px-6 shrink-0 z-20 relative">
-      <div className="flex items-center gap-3">
+    // Sticky, so on a phone — where `main` scrolls the whole page — the menu and the page's
+    // name stay in reach.
+    <header className="sticky top-0 h-14 sm:h-16 bg-background/95 backdrop-blur border-b border-border/60 flex items-center justify-between gap-2 px-3 sm:px-6 shrink-0 z-20">
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
         {!isSidebarOpen && (
           <Button
             type="button"
@@ -35,15 +37,15 @@ export default function AppTopBar() {
             size="icon"
             onClick={() => setIsSidebarOpen(true)}
             aria-label="Open sidebar"
-            className="h-9 w-9"
+            className="h-9 w-9 shrink-0"
           >
             <Menu className="h-5 w-5" />
           </Button>
         )}
-        <div className="text-2xl font-semibold tracking-tight">{routeTitle}</div>
+        <div className="text-lg sm:text-2xl font-semibold tracking-tight truncate">{routeTitle}</div>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 shrink-0">
         {preferences?.notificationsEnabled ? (
           <NotificationsMenu>
             <Button
@@ -79,10 +81,10 @@ export default function AppTopBar() {
           type="button"
           variant="outline"
           onClick={() => navigate('/profile')}
-          className="gap-2"
+          className="gap-2 h-9 px-1.5 sm:px-3"
           aria-label="Open profile"
         >
-          <Avatar className="h-8 w-8">
+          <Avatar className="h-7 w-7 sm:h-8 sm:w-8">
             <AvatarFallback>{initial}</AvatarFallback>
           </Avatar>
           <div className="hidden sm:block text-sm font-medium">Profile</div>

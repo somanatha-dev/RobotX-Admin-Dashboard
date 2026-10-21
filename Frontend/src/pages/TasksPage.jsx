@@ -102,7 +102,7 @@ function TaskCard({ task, robot, route, assignmentSignal, onCancel, elevated, ca
   const speed = typeof robot?.speed === 'number' && Number.isFinite(robot.speed) ? robot.speed : null;
 
   return (
-    <div className={`bg-white border rounded-2xl p-5 shadow-sm hover:shadow-md transition-all flex flex-col gap-4 ${
+    <div className={`bg-white border rounded-2xl p-4 sm:p-5 shadow-sm hover:shadow-md transition-all flex flex-col gap-4 ${
       phase.tone === 'pending' || phase.tone === 'warning' ? 'border-amber-200' : 'border-slate-200'
     }`} data-task-phase={phase.key}>
       {/* ── Header row ── */}
@@ -140,14 +140,14 @@ function TaskCard({ task, robot, route, assignmentSignal, onCancel, elevated, ca
       </div>
 
       {/* ── Route ── */}
-      <div className="bg-slate-50 rounded-xl px-4 py-3 border border-slate-100 space-y-2">
+      <div className="bg-slate-50 rounded-xl px-3 sm:px-4 py-3 border border-slate-100 space-y-2">
         <div className="flex items-center gap-2 text-sm">
           <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-          <span className="font-medium text-slate-700 truncate">{formatPickupDrop(task.pickup)}</span>
+          <span className="font-medium text-slate-700 truncate min-w-0">{formatPickupDrop(task.pickup)}</span>
         </div>
         <div className="flex items-center gap-2 text-sm">
           <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-          <span className="font-medium text-slate-700 truncate">{formatPickupDrop(task.drop)}</span>
+          <span className="font-medium text-slate-700 truncate min-w-0">{formatPickupDrop(task.drop)}</span>
         </div>
       </div>
 
@@ -260,19 +260,19 @@ export default function TasksPage() {
   }, [robots]);
 
   return (
-    <div className="max-w-7xl mx-auto space-y-6">
-      <div className="flex justify-between items-end">
-        <div>
+    <div className="max-w-7xl mx-auto w-full space-y-4 sm:space-y-6">
+      <div className="flex justify-between items-end gap-3">
+        <div className="min-w-0">
           <h1 className="text-lg font-medium">Task Control</h1>
           <p className="text-sm text-muted-foreground mt-1">Assign and monitor fleet objectives.</p>
         </div>
-        <Button onClick={() => setIsCreatingTask(true)} className="whitespace-nowrap">
+        <Button onClick={() => setIsCreatingTask(true)} className="whitespace-nowrap shrink-0">
           + CREATE TASK
         </Button>
       </div>
 
       {/* Metrics */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <MetricCard icon={ListTodo} title="Total Tasks"  value={totalTasks}     subtext="in system" />
         <MetricCard icon={Play}     title="Active"       value={activeTasks}    subtext="in progress" />
         <MetricCard icon={Check}    title="Completed"    value={completedTasks} subtext="done" />

@@ -153,7 +153,7 @@ export default function CreateTaskModal({ onClose, onCreate }) {
         </div>
 
         {/* Body */}
-        <div className="px-5 py-4 space-y-4 max-h-[78vh] overflow-y-auto">
+        <div className="px-4 sm:px-5 py-4 space-y-4 max-h-[min(78vh,calc(100dvh-10rem))] overflow-y-auto overscroll-contain">
           {/* How the unit is chosen. The legacy DTARO sentence was retired with the
               dispatcher it described; what selects an agent now is candidate generation,
               the feasibility gate and the solve. */}

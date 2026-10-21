@@ -895,3 +895,97 @@
     transition: none;
   }
 }
+
+/* ── Phone layout ─────────────────────────────────────────────────────────
+
+   At phone width the desktop corners collide: the search ran under the theme
+   control, the coverage notice (bottom-centre, nearly full width) covered the
+   legend, the Recenter button and Mapbox's attribution, and a 15-17rem panel
+   hid most of the map. Below 640px the overlays are re-stacked instead:
+
+     top row      Mapbox zoom/compass · search · fullscreen toggle (MapPage)
+     right        theme + camera controls, then the selected robot as a sheet
+                  at the bottom of the same rail (still one flow — see above)
+     left         legend, under Mapbox's zoom/compass group
+     bottom       attribution (vendor, 10px) → coverage notice → Recenter and
+                  the route notice; details cards open as a sheet over these.
+
+   Every offset below is one of those rows, so nothing guesses another box's
+   height except the one-line notice, which is clamped to one line here. */
+@media (max-width: 640px) {
+  .map-search {
+    top: 0.625rem;
+    left: 3.25rem;
+    right: 3.5rem;
+    width: auto;
+  }
+
+  .map-right-rail {
+    top: 3.5rem;
+    right: 0.75rem;
+    left: 0.75rem;
+    /* Above the Recenter row, so a selected robot never hides the way back. */
+    bottom: 7.25rem;
+  }
+
+  .map-right-rail .map-selected-panel {
+    margin-top: auto;
+    width: 100%;
+    max-height: 100%;
+    overflow-y: auto;
+  }
+
+  /* Below the camera-mode row, which at 360px reaches across to this side. */
+  .map-legend {
+    top: 8.75rem;
+    bottom: auto;
+    left: 0.625rem;
+    max-width: min(15rem, calc(100% - 1.25rem));
+    max-height: calc(100% - 14.5rem);
+  }
+
+  .map-data-notice {
+    left: 0.75rem;
+    right: 0.75rem;
+    bottom: 2.125rem;
+    width: auto;
+    transform: none;
+  }
+
+  .map-data-notice:not(.is-open) .map-data-notice__toggle > span:nth-child(2) {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .map-data-notice.is-open {
+    max-height: 55%;
+    overflow-y: auto;
+  }
+
+  .map-route-notice {
+    left: 0.75rem;
+    bottom: 4.75rem;
+    width: calc(100% - 8rem);
+  }
+
+  .map-route-notice.is-open {
+    max-height: 45%;
+    overflow-y: auto;
+  }
+
+  .map-recenter {
+    bottom: 4.75rem;
+    right: 0.75rem;
+  }
+
+  .map-feature-card {
+    left: 0.75rem;
+    right: 0.75rem;
+    bottom: 2.125rem;
+    width: auto;
+    max-height: 55%;
+  }
+}

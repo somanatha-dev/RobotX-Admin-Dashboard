@@ -24,6 +24,10 @@ export default function LoginPage() {
   const [error, setError] = useState('');
 
   const exitTimerRef = useRef(null);
+  // Google renders a fixed-width iframe: 320px overflowed the form on a 360px phone.
+  const [googleButtonWidth] = useState(() =>
+    String(Math.max(200, Math.min(320, (typeof window !== 'undefined' ? window.innerWidth : 400) - 96))),
+  );
 
   useEffect(() => {
     return () => {
@@ -73,7 +77,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4 py-8 overflow-hidden overscroll-none">
+    <div className="min-h-dvh flex items-center justify-center bg-slate-50 px-4 py-6 sm:py-8 overflow-hidden overscroll-none">
       {/* ambient background */}
       <div className="pointer-events-none fixed inset-0">
         <div className="absolute -top-56 -left-56 w-140 h-140 rounded-full bg-blue-200/35 blur-3xl" />
@@ -89,7 +93,7 @@ export default function LoginPage() {
         >
           <div className="grid grid-cols-1 md:grid-cols-[55%_45%]">
             {/* LEFT: Branding */}
-            <div className="relative p-10 text-white overflow-hidden bg-linear-to-br from-slate-950 via-slate-900 to-indigo-900">
+            <div className="relative p-6 sm:p-10 text-white overflow-hidden bg-linear-to-br from-slate-950 via-slate-900 to-indigo-900">
               <div className="absolute inset-0">
                 <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(255,255,255,0.14),transparent_55%)]" />
                 <div className="absolute inset-0 bg-white/5 backdrop-blur-xl" />
@@ -100,8 +104,8 @@ export default function LoginPage() {
                   <ShieldAlert className="w-4 h-4" /> RobotX
                 </div>
 
-                <div className="mt-8 max-w-sm space-y-3">
-                  <div className="text-2xl font-semibold tracking-tight">
+                <div className="mt-4 sm:mt-8 max-w-sm space-y-2 sm:space-y-3">
+                  <div className="text-xl sm:text-2xl font-semibold tracking-tight">
                     Control your robotic fleet with precision.
                   </div>
                   <div className="text-sm text-white/75">
@@ -112,13 +116,13 @@ export default function LoginPage() {
             </div>
 
             {/* RIGHT: Form */}
-            <div className="p-10 bg-background">
+            <div className="p-6 sm:p-10 bg-background">
               <div className="space-y-1">
                 <div className="text-2xl font-semibold tracking-tight text-foreground">Welcome back</div>
                 <div className="text-sm text-muted-foreground">Sign in to continue</div>
               </div>
 
-              <form onSubmit={handleSubmit} className="mt-8 space-y-6">
+              <form onSubmit={handleSubmit} className="mt-6 sm:mt-8 space-y-5 sm:space-y-6">
                 <div className="space-y-2">
                   <Label htmlFor="email" className="block">
                     Email
@@ -198,7 +202,7 @@ export default function LoginPage() {
                     onSuccess={handleGoogleSuccess}
                     onError={() => setError('Google sign-in failed')}
                     useOneTap={false}
-                    width="320"
+                    width={googleButtonWidth}
                   />
                 </div>
               </form>

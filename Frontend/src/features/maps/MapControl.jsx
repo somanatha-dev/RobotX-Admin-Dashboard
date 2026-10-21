@@ -1036,7 +1036,7 @@ function MapControlInner({ filtersHost }) {
           variant="secondary"
           size="sm"
           onClick={() => recenter?.()}
-          className="absolute bottom-11 right-3 z-10 shadow-lg"
+          className="map-recenter absolute bottom-11 right-3 z-10 shadow-lg"
           title="Recenter on active robots and routes"
         >
           Recenter

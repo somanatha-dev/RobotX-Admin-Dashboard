@@ -30,6 +30,7 @@ import { STOP_ALL_WARNING, summariseStopAll } from '@/lib/robotCommands.js';
 import { reopensAssignment } from '@/features/tasks/taskLifecycle.js';
 import { accessChanged, mayReadSimulator } from '@/lib/access.js';
 import { evictParkedMap } from '@/features/maps/mapControl/mapInstanceCache.js';
+import { isWideLayout } from '@/lib/viewport.js';
 import { CONNECTION, connectionStateOf } from '@/lib/connectionState.js';
 import { SESSION_CHECK, sessionCheckOutcome, sessionRetryDelayMs } from '@/lib/sessionCheck.js';
 import { applyRerouteToCache, applyRobotOffline, applyRobotOnline, applyTaskUpdate, evictOnStandDown, evictOnTerminalUpdate, evictTerminalRoutes } from '@/lib/liveState.js';
@@ -55,7 +56,8 @@ export default function AppProvider({ children }) {
   // the connection, never a robot: see lib/connectionState.js.
   const [connection, setConnection] = useState(() => ({ state: CONNECTION.IDLE, lastLiveAtMs: null }));
 
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  // Open beside the content on a wide screen; a closed drawer on a phone (lib/viewport.js).
+  const [isSidebarOpen, setIsSidebarOpen] = useState(isWideLayout);
 
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const notificationsRef = useRef(null);
@@ -242,7 +244,7 @@ export default function AppProvider({ children }) {
 
       setPreferences(loadUserPreferences({ userId: user?.id, email: user?.email || identity }));
       addEvent(`Signed in as ${identity}`, 'info');
-      setIsSidebarOpen(true);
+      setIsSidebarOpen(isWideLayout());
 
       const shouldNavigate = options?.navigate !== false;
       if (shouldNavigate) navigate('/');

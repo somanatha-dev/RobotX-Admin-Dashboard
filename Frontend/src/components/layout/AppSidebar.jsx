@@ -26,11 +26,15 @@ export default function AppSidebar() {
 
   return (
     <aside
-      className={`fixed inset-y-0 left-0 z-40 w-64 bg-background border-r border-border flex flex-col justify-between transform transition-transform duration-300 ease-in-out ${
-        isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
+      aria-label="Main navigation"
+      // Closed, it is off-screen: inert keeps its controls out of the Tab order and away from
+      // assistive technology, instead of focus landing on links nobody can see.
+      inert={!isSidebarOpen}
+      className={`fixed inset-y-0 left-0 z-40 w-72 max-w-[85vw] lg:w-64 bg-background border-r border-border flex flex-col justify-between transform transition-transform duration-300 ease-in-out ${
+        isSidebarOpen ? 'translate-x-0 shadow-2xl lg:shadow-none' : '-translate-x-full'
       } `}
     >
-      <div>
+      <div className="min-h-0 overflow-y-auto">
         <div className="h-16 flex items-center justify-between px-4 border-b border-border">
           <div className="flex items-center gap-3">
             <span className="p-1.5 rounded-md bg-primary/10 text-foreground">
@@ -62,7 +66,7 @@ export default function AppSidebar() {
           {superAdmin ? <NavItem icon={<Users />} label="Admins" to="/admins" /> : null}
         </nav>
       </div>
-      <div className="p-4 border-t border-border/40 space-y-3">
+      <div className="shrink-0 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-border/40 space-y-3">
         {/* Two buttons, because they are two product flows. Commissioning registers
             hardware somebody installed; creating a simulated robot provisions a test
             agent owned by this operator. Neither is a mode of the other, and there is no

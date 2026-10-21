@@ -31,7 +31,7 @@ export default function NotificationsMenu({ children }) {
       <DropdownMenuContent
         ref={notificationsRef}
         align="end"
-        className="w-80 p-0 overflow-hidden"
+        className="w-[min(20rem,calc(100vw-1.5rem))] p-0 overflow-hidden"
       >
         <div className="px-3 py-2 flex items-center justify-between">
           <DropdownMenuLabel className="px-0 py-0">Notifications</DropdownMenuLabel>

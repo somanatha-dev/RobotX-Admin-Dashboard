@@ -136,18 +136,22 @@ export default function RobotDetailPage() {
   }
 
   return (
-    <div className="h-full flex flex-col bg-slate-50 overflow-y-auto">
-      <div className="sticky top-0 z-20 bg-white border-b border-slate-200 px-4 py-3 lg:px-6 lg:py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
-        <div className="flex items-center gap-4">
+    <div className="flex flex-col bg-slate-50">
+      {/* Sticky under the top bar from `md` up; on a phone the header (with its 2×2 command
+          grid) scrolls away rather than holding a third of the screen. */}
+      <div className="md:sticky md:top-16 z-10 bg-white border-b border-slate-200 px-3 py-3 lg:px-6 lg:py-4 flex flex-col md:flex-row md:items-center justify-between gap-3 md:gap-4 shadow-sm">
+        <div className="flex items-start sm:items-center gap-2 sm:gap-4 min-w-0">
           <button
+            type="button"
             onClick={() => navigate('/robots')}
-            className="p-2 hover:bg-slate-100 rounded-lg text-slate-500 transition-colors border border-transparent hover:border-slate-200"
+            aria-label="Back to robots"
+            className="shrink-0 p-2 hover:bg-slate-100 rounded-lg text-slate-500 transition-colors border border-transparent hover:border-slate-200"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-xl font-bold font-mono text-slate-900 tracking-tight">{robot.robotId}</h1>
+          <div className="min-w-0">
+            <div className="flex items-center gap-x-2 gap-y-1.5 sm:gap-x-3 flex-wrap">
+              <h1 className="text-lg sm:text-xl font-bold font-mono text-slate-900 tracking-tight break-all">{robot.robotId}</h1>
               <span
                 className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${
                   isActive(robot.status)
@@ -165,7 +169,7 @@ export default function RobotDetailPage() {
           </div>
         </div>
 
-        <div className="flex gap-2 sm:gap-3">
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:gap-3 shrink-0">
           {/* Not sent in V1: the backend refuses a unit's own return to service (§23.5),
               so RESUME is delivered and changes nothing. Shown disabled with the reason
               rather than removed, so the operator learns why a paused unit stays paused. */}
@@ -224,7 +228,7 @@ export default function RobotDetailPage() {
         <div
           role="note"
           data-connect-action={connectAction.kind}
-          className="mx-4 lg:mx-6 mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm"
+          className="mx-3 sm:mx-4 lg:mx-6 mt-3 sm:mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm"
         >
           <span className="text-slate-700">
             {connectAction.kind === 'repair'
@@ -244,7 +248,7 @@ export default function RobotDetailPage() {
         <div
           role="note"
           data-connect-action="connected"
-          className="mx-4 lg:mx-6 mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-xs font-medium text-emerald-900 flex items-center gap-2"
+          className="mx-3 sm:mx-4 lg:mx-6 mt-3 sm:mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-xs font-medium text-emerald-900 flex items-center gap-2"
         >
           <CheckCircle2 className="w-4 h-4" /> Connected. Last seen{' '}
           {robot.lastSeenAt ? new Date(robot.lastSeenAt).toLocaleString() : '—'}.
@@ -255,14 +259,14 @@ export default function RobotDetailPage() {
         <div
           role="note"
           data-paused-note
-          className="mx-4 lg:mx-6 mt-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs font-medium text-amber-900"
+          className="mx-3 sm:mx-4 lg:mx-6 mt-3 sm:mt-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs font-medium text-amber-900"
         >
           This unit is PAUSED and out of assignment. {RESUME_UNAVAILABLE_REASON}
         </div>
       )}
 
-      <div className="p-4 lg:p-6 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="space-y-6">
+      <div className="p-3 sm:p-4 lg:p-6 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+        <div className="space-y-4 sm:space-y-6">
           <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
             <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
               <span className="text-sm font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
@@ -275,8 +279,8 @@ export default function RobotDetailPage() {
           </div>
         </div>
 
-        <div className="space-y-6">
-          <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+        <div className="space-y-4 sm:space-y-6">
+          <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
             <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Live State</h3>
             <div className="space-y-5">
               <div>
@@ -307,7 +311,7 @@ export default function RobotDetailPage() {
             </div>
           </div>
 
-          <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+          <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
             <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Unit Info</h3>
             <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3 text-sm shadow-sm">
               {/* ── Three rows that are deliberately three rows ─────────────
@@ -329,8 +333,8 @@ export default function RobotDetailPage() {
               {isSimulated(robot) ? (
                 <div className="flex justify-between items-start gap-3">
                   <span className="text-slate-500 font-medium shrink-0">Simulator runtime</span>
-                  <span className="text-right">
-                    <span className="font-mono font-bold text-slate-700">
+                  <span className="text-right min-w-0">
+                    <span className="font-mono font-bold text-slate-700 wrap-anywhere">
                       {mayReadSimulator(session) ? runtimeLabel(runtimeStatusOf(robot, simulatorStatus)) : 'Restricted'}
                     </span>
                     {!mayReadSimulator(session) ? (
@@ -343,13 +347,13 @@ export default function RobotDetailPage() {
                   </span>
                 </div>
               ) : null}
-              <div className="flex justify-between items-center">
-                <span className="text-slate-500 font-medium">Last Seen</span>
-                <span className="font-mono font-bold text-slate-700">{robot.lastSeenAt ? new Date(robot.lastSeenAt).toLocaleString() : '—'}</span>
+              <div className="flex justify-between items-start gap-3">
+                <span className="text-slate-500 font-medium shrink-0">Last Seen</span>
+                <span className="font-mono font-bold text-slate-700 text-right">{robot.lastSeenAt ? new Date(robot.lastSeenAt).toLocaleString() : '—'}</span>
               </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-500 font-medium">Location</span>
-                <span className="font-mono font-bold text-slate-700">{robot.location?.name || '—'}</span>
+              <div className="flex justify-between items-start gap-3">
+                <span className="text-slate-500 font-medium shrink-0">Location</span>
+                <span className="font-mono font-bold text-slate-700 text-right min-w-0 wrap-anywhere">{robot.location?.name || '—'}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-500 font-medium">Task</span>
@@ -362,7 +366,7 @@ export default function RobotDetailPage() {
               What was entered at commissioning, kept visually apart from the live
               state above because none of it is a reading. Editing writes only these
               fields; the endpoint refuses any other by name. */}
-          <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+          <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                 Configuration

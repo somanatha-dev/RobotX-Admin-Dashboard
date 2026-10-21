@@ -357,11 +357,11 @@ function ConnectRobot({ robotId }) {
       case ENROLLMENT_PHASE.WAITING:
         return (
           <>
-            <div className="rounded-xl border border-border/60 bg-muted/30 p-5">
+            <div className="rounded-xl border border-border/60 bg-muted/30 p-4 sm:p-5">
               <div className="flex flex-wrap items-end justify-between gap-4">
                 <div>
                   <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Pairing code</div>
-                  <div className="mt-1 font-mono text-4xl font-bold tracking-[0.3em]" aria-label="Pairing code">
+                  <div className="mt-1 font-mono text-3xl sm:text-4xl font-bold tracking-[0.2em] sm:tracking-[0.3em] break-all" aria-label="Pairing code">
                     {issued.code}
                   </div>
                 </div>
@@ -526,7 +526,7 @@ function ConnectRobot({ robotId }) {
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-6 py-6">
+    <div className="w-full max-w-3xl mx-auto sm:px-2 lg:px-6 lg:py-6">
       <button
         type="button"
         onClick={goToRobot}
@@ -536,7 +536,7 @@ function ConnectRobot({ robotId }) {
       </button>
 
       <Card className="rounded-2xl border border-border/60 shadow-sm hover:shadow-sm">
-        <CardHeader className="p-6">
+        <CardHeader className="p-4 sm:p-6">
           <div className="flex items-center gap-2">
             <Cpu className="w-5 h-5 text-muted-foreground" />
             <CardTitle className="text-lg font-medium">Connect Physical Robot</CardTitle>
@@ -552,7 +552,7 @@ function ConnectRobot({ robotId }) {
             {robot ? <RobotIdentityBadge robot={robot} /> : null}
           </div>
         </CardHeader>
-        <CardContent className="p-6 pt-0 flex flex-col gap-4">{renderPhase()}</CardContent>
+        <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0 flex flex-col gap-4">{renderPhase()}</CardContent>
       </Card>
     </div>
   );

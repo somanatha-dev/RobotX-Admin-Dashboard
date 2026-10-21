@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
@@ -97,6 +97,25 @@ export default function RobotsPage() {
   const navigate = useNavigate();
   const [filter, setFilter] = useState('All');
   const [selectedRobot, setSelectedRobot] = useState(null);
+  // The panel is not modal (from `md` up the page beside it stays usable), so it is a labelled
+  // region, not a dialog. Opening it moves focus to its close button; closing it returns focus
+  // to whichever control opened it.
+  const panelCloseRef = useRef(null);
+  const panelOpenerRef = useRef(null);
+  const openPanel = (robot) => {
+    panelOpenerRef.current = document.activeElement;
+    setSelectedRobot(robot);
+  };
+  const closePanel = () => {
+    setSelectedRobot(null);
+    const opener = panelOpenerRef.current;
+    panelOpenerRef.current = null;
+    if (opener?.isConnected) opener.focus({ preventScroll: true });
+  };
+  const openRobotId = selectedRobot?.robotId || null;
+  useEffect(() => {
+    if (openRobotId) panelCloseRef.current?.focus({ preventScroll: true });
+  }, [openRobotId]);
   const [search, setSearch] = useState('');
   const sendCommand = useRobotCommand();
   // FS-05 — judged on the live row (the panel holds the row as it was when clicked) and the
@@ -129,31 +148,35 @@ export default function RobotsPage() {
   });
 
   return (
-    <div className="h-full flex flex-col relative bg-slate-100/50">
+    <div className="flex flex-col relative bg-slate-100/50">
       <style>{`
         .robot-marker-root { width: 34px; height: 34px; pointer-events: auto; }
         .robot-car { width: 34px; height: 34px; display: grid; place-items: center; transform-origin: 50% 50%; will-change: transform; }
       `}</style>
-      <div className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 shrink-0 shadow-sm z-10">
-        <div className="flex items-center gap-4 flex-1">
-          <div className="relative w-48 lg:w-64">
+      {/* Sticky under the top bar: the page scrolls as one, and search and filters stay in
+          reach. On a phone the filters are a row of chips that scrolls sideways. */}
+      <div className="sticky top-14 sm:top-16 bg-white border-b border-slate-200 flex flex-col md:flex-row md:items-center md:justify-between gap-2 px-3 py-2.5 md:h-16 md:px-4 md:py-0 shrink-0 shadow-sm z-10">
+        <div className="flex items-center gap-4 md:flex-1 min-w-0">
+          <div className="relative w-full md:w-48 lg:w-64">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
               placeholder="Search ID or name…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-lg py-1.5 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-slate-900"
+              className="w-full bg-slate-50 border border-slate-200 rounded-lg py-2 md:py-1.5 pl-9 pr-3 text-base md:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-slate-900"
             />
           </div>
         </div>
 
-        <div className="hidden md:flex items-center gap-2">
+        <div className="flex items-center gap-2 overflow-x-auto scrollbar-none -mx-3 px-3 md:mx-0 md:px-0" role="group" aria-label="Filter robots">
           {['All', 'Active', 'Idle', 'Charging', 'Issues', 'Low Battery'].map((f) => (
             <button
               key={f}
+              type="button"
               onClick={() => setFilter(f)}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-full border transition-all ${
+              aria-pressed={filter === f}
+              className={`shrink-0 whitespace-nowrap px-3 py-1.5 text-xs font-semibold rounded-full border transition-all ${
                 filter === f
                   ? 'bg-slate-900 border-slate-900 text-white shadow-sm'
                   : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300'
@@ -165,9 +188,17 @@ export default function RobotsPage() {
         </div>
       </div>
 
-      <div className="flex-1 relative overflow-hidden flex">
-        <div className="flex-1 p-6 overflow-y-auto bg-slate-50">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-5 max-w-7xl mx-auto">
+      {/* `overflow-x-clip`, not `hidden`: it keeps the closed panel (translated off to the right)
+          from widening the page, without becoming a scroll container — which would stop the
+          panel's `sticky` from following the page. */}
+      <div className="flex-1 relative flex overflow-x-clip">
+        <div className="flex-1 min-w-0 p-3 sm:p-6 bg-slate-50">
+          {filteredRobots.length === 0 ? (
+            <div className="py-16 text-center text-sm text-slate-500" data-robots-empty>
+              {robots.length === 0 ? 'No robots yet.' : 'No robots match this search or filter.'}
+            </div>
+          ) : null}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-5 max-w-7xl mx-auto">
             {filteredRobots.map((r) =>
               (() => {
                 const tones = {
@@ -232,7 +263,7 @@ export default function RobotsPage() {
                 return (
                   <div
                     key={r.robotId}
-                    className="bg-white border border-slate-200 rounded-2xl p-5 flex flex-col shadow-sm hover:shadow-md transition-all group relative overflow-hidden min-h-50"
+                    className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 flex flex-col shadow-sm hover:shadow-md transition-all group relative overflow-hidden min-h-50"
                   >
                     <CardWatermark className={`absolute -right-8 -bottom-8 w-28 h-28 ${cardTone.text} opacity-[0.05]`} aria-hidden="true" />
 
@@ -242,7 +273,7 @@ export default function RobotsPage() {
                         {r.name ? (
                           <div className="text-xs font-medium text-slate-500 mb-0.5 truncate">{r.name}</div>
                         ) : null}
-                        <div className="font-mono font-bold text-slate-900 text-lg flex items-center gap-2">
+                        <div className="font-mono font-bold text-slate-900 text-lg flex items-center gap-2 min-w-0 break-all">
                           {r.robotId}
                           <div
                             className={`w-2 h-2 rounded-full shrink-0 ${r.isOnline ? 'bg-emerald-500' : 'bg-slate-400'}`}
@@ -321,7 +352,7 @@ export default function RobotsPage() {
                     {/* Actions — no delete in card */}
                     <div className="mt-auto flex gap-2">
                       <button
-                        onClick={() => setSelectedRobot(r)}
+                        onClick={() => openPanel(r)}
                         className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs py-2.5 rounded-xl font-semibold transition-colors shadow-sm"
                       >
                         Control
@@ -340,16 +371,22 @@ export default function RobotsPage() {
           </div>
         </div>
 
-        {/* RIGHT SIDE PANEL */}
+        {/* RIGHT SIDE PANEL — on a phone a full-screen sheet fixed to the viewport. From `md` up
+            a column down the right of the cards, with the panel `sticky` inside it just under
+            the top bar and the sticky toolbar (4rem + 4rem): it opens below the search and
+            filters, as it did before the page scrolled as a whole, and stays there on scroll. */}
         {selectedRobot && (
           <div
-            className="absolute inset-0 bg-slate-900/10 backdrop-blur-[1px] z-20 md:hidden"
-            onClick={() => setSelectedRobot(null)}
+            className="fixed inset-0 bg-slate-900/30 backdrop-blur-[1px] z-40 md:hidden"
+            onClick={closePanel}
           />
         )}
 
-        <div
-          className={`absolute top-0 right-0 bottom-0 w-full md:w-96 bg-white border-l border-slate-200 shadow-2xl transform transition-transform duration-300 ease-in-out flex flex-col z-30 ${
+        <div className="pointer-events-none fixed inset-0 z-50 max-md:overflow-x-clip md:absolute md:left-auto md:w-96 md:z-30">
+        <section
+          aria-label={selectedRobot ? `Control ${selectedRobot.robotId}` : undefined}
+          inert={!selectedRobot}
+          className={`pointer-events-auto h-full w-full md:sticky md:top-32 md:h-[calc(100dvh-8rem)] bg-white border-l border-slate-200 shadow-2xl transform transition-transform duration-300 ease-in-out flex flex-col ${
             selectedRobot ? 'translate-x-0' : 'translate-x-full'
           }`}
         >
@@ -376,14 +413,17 @@ export default function RobotsPage() {
                   </span>
                 </div>
                 <button
-                  onClick={() => setSelectedRobot(null)}
-                  className="p-1.5 hover:bg-slate-200 rounded-md text-slate-500 transition-colors shrink-0 ml-2"
+                  ref={panelCloseRef}
+                  type="button"
+                  onClick={closePanel}
+                  aria-label="Close control panel"
+                  className="p-2 hover:bg-slate-200 rounded-md text-slate-500 transition-colors shrink-0 ml-2"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-5 space-y-6">
+              <div className="flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-6">
                 <div className="grid grid-cols-3 gap-2">
                   <button
                     onClick={() => sendCommand(selectedRobot.robotId, 'STOP')}
@@ -426,7 +466,7 @@ export default function RobotsPage() {
                 <button
                   onClick={() => {
                     retire(selectedRobot.robotId);
-                    setSelectedRobot(null);
+                    closePanel();
                   }}
                   className="w-full bg-rose-600 hover:bg-rose-700 text-white py-2.5 rounded-xl font-bold transition-colors shadow-sm flex items-center justify-center gap-2 text-sm"
                   title="Permanently Remove Unit"
@@ -531,6 +571,7 @@ export default function RobotsPage() {
               </div>
             </>
           )}
+        </section>
         </div>
       </div>
     </div>

@@ -1,11 +1,12 @@
-import React, { useCallback } from 'react';
-import { Outlet } from 'react-router-dom';
+import React, { useCallback, useEffect } from 'react';
+import { Outlet, useLocation } from 'react-router-dom';
 import { WifiOff, X } from 'lucide-react';
 
 import AuthChallengeModal from '@/components/modals/AuthChallengeModal.jsx';
 import CreateTaskModal from '@/components/modals/CreateTaskModal.jsx';
 import DecisionRequiredModal from '@/components/modals/DecisionRequiredModal.jsx';
 import { connectionBanner } from '@/lib/connectionState.js';
+import { isWideLayout, subscribeWideLayout } from '@/lib/viewport.js';
 
 import AppSidebar from '@/components/layout/AppSidebar.jsx';
 import AppTopBar from '@/components/layout/AppTopBar.jsx';
@@ -22,6 +23,7 @@ export default function Layout() {
   } = useAppState();
 
   const {
+    setIsSidebarOpen,
     setAuthRequest,
     setIsCreatingTask,
     createTask,
@@ -38,28 +40,61 @@ export default function Layout() {
   // FS-02 — the page's live data stops being live with the socket; say so on every page.
   const liveBanner = connectionBanner(connection?.state, connection?.lastLiveAtMs);
 
+  // Below `lg` the sidebar is a drawer over the page: picking a page closes it, and so do the
+  // backdrop and Escape. On a wide screen it sits beside the content and stays as it is.
+  const { pathname } = useLocation();
+  const closeDrawer = useCallback(() => {
+    if (!isWideLayout()) setIsSidebarOpen(false);
+  }, [setIsSidebarOpen]);
+  useEffect(() => {
+    closeDrawer();
+  }, [pathname, closeDrawer]);
+  // Crossing the breakpoint (a resized window, a rotated tablet) gives the state that width
+  // starts with: beside the content when wide, a closed drawer when narrow — not a drawer left
+  // open over the page.
+  useEffect(() => subscribeWideLayout(setIsSidebarOpen), [setIsSidebarOpen]);
+  useEffect(() => {
+    if (!isSidebarOpen) return undefined;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') closeDrawer();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isSidebarOpen, closeDrawer]);
+
   return (
-    <div className="flex h-screen bg-muted/40 text-foreground overflow-hidden">
+    // `dvh`, not `vh`: on a phone `100vh` is the height with the browser's toolbars hidden, so
+    // the bottom of every page sat underneath them.
+    <div className="flex h-dvh bg-muted/40 text-foreground overflow-hidden">
       {/* Sidebar */}
       <AppSidebar />
 
       {/* Backdrop (mobile) */}
-      {isSidebarOpen && <div className="fixed inset-0 bg-foreground/40 backdrop-blur-sm z-30 lg:hidden" />}
+      {isSidebarOpen && (
+        <div
+          aria-hidden="true"
+          onClick={() => setIsSidebarOpen(false)}
+          className="fixed inset-0 bg-foreground/40 backdrop-blur-sm z-30 lg:hidden"
+        />
+      )}
 
       {/* Main Content */}
       <main
-        className={`flex-1 min-w-0 overflow-auto flex flex-col transition-[padding] duration-300 ease-in-out ${
+        className={`flex-1 min-w-0 overflow-auto overscroll-contain flex flex-col transition-[padding] duration-300 ease-in-out ${
           isSidebarOpen ? 'lg:pl-64' : 'lg:pl-0'
         }`}
       >
         <AppTopBar />
-        <div className="flex-1 min-h-0 px-6 py-5">
+        {/* A flex column, so the page below takes exactly the height that is left: a page that
+            fills the screen (the map) fills it without a stray scroll, and a longer page
+            grows and scrolls `main`. */}
+        <div className="flex-1 flex flex-col px-3 pt-3 pb-4 sm:px-6 sm:py-5">
           {liveBanner && (
             <div
               role="status"
               aria-live="polite"
               data-connection-state={connection.state}
-              className={`mt-2 flex items-start gap-3 rounded-xl border px-4 py-3 ${
+              className={`mb-3 sm:mb-0 sm:mt-2 flex items-start gap-3 rounded-xl border px-4 py-3 ${
                 liveBanner.kind === 'warning'
                   ? 'border-rose-300 bg-rose-50 text-rose-900'
                   : 'border-slate-200 bg-white text-slate-700'
@@ -76,7 +111,7 @@ export default function Layout() {
             <div
               role="status"
               data-operator-notice={notice.kind || 'info'}
-              className={`mt-2 flex items-start justify-between gap-3 rounded-xl border px-4 py-3 ${
+              className={`mb-3 sm:mb-0 sm:mt-2 flex items-start justify-between gap-3 rounded-xl border px-4 py-3 ${
                 notice.kind === 'warning'
                   ? 'border-amber-300 bg-amber-50 text-amber-900'
                   : 'border-slate-200 bg-white text-slate-800'
@@ -96,7 +131,7 @@ export default function Layout() {
               </button>
             </div>
           )}
-          <div className="mt-6 h-full min-h-0">
+          <div className="flex-1 flex flex-col sm:mt-6 *:flex-1">
             <Outlet />
           </div>
         </div>

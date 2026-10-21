@@ -45,7 +45,10 @@ function ChartTooltip({ active, payload, total }) {
   );
 }
 
-export default function BatteryPieChart({ data, width, height }) {
+// Memoised: the dashboard re-renders on every telemetry tick, and each render of the chart
+// restarted Recharts' animation from wherever it had reached, so the donut never finished
+// drawing. With stable props (the dashboard memoises `data`) a tick no longer reaches it.
+const BatteryPieChart = React.memo(function BatteryPieChart({ data, width, height }) {
   const safeData = useMemo(() => {
     if (Array.isArray(data) && data.length > 0) return data;
     return [
@@ -108,4 +111,6 @@ export default function BatteryPieChart({ data, width, height }) {
       <PieChart>{pie}</PieChart>
     </ResponsiveContainer>
   );
-}
+});
+
+export default BatteryPieChart;

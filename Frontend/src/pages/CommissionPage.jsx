@@ -163,11 +163,11 @@ export default function CommissionPage() {
   const showSelectedZone = String(formData.zone || '').trim().length > 0;
 
   return (
-    <div className="max-w-6xl mx-auto px-6 py-6">
+    <div className="w-full max-w-6xl mx-auto pb-32 sm:px-2 lg:px-6 lg:py-6 lg:pb-6">
       {/* Header */}
-      <div className="flex items-start justify-between gap-6">
+      <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4 lg:gap-6">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">
+          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight">
             {mode === 'recommission' ? 'Recommission Retired Unit' : 'Commission New Unit'}
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
@@ -175,13 +175,14 @@ export default function CommissionPage() {
               ? 'Return a retired robot’s own record to the fleet'
               : 'Register and authorize a new unit'}
           </p>
-          <div className="mt-4 inline-flex rounded-lg border border-border/60 p-1" role="group" aria-label="Commissioning operation">
+          <div className="mt-4 flex w-full sm:inline-flex sm:w-auto rounded-lg border border-border/60 p-1" role="group" aria-label="Commissioning operation">
             <Button
               type="button"
               size="sm"
               variant={mode === 'new' ? 'default' : 'ghost'}
               aria-pressed={mode === 'new'}
               onClick={() => chooseMode('new')}
+              className="flex-1 sm:flex-none h-auto min-h-8 whitespace-normal"
             >
               <ShieldCheck className="w-4 h-4" /> Commission new unit
             </Button>
@@ -191,13 +192,16 @@ export default function CommissionPage() {
               variant={mode === 'recommission' ? 'default' : 'ghost'}
               aria-pressed={mode === 'recommission'}
               onClick={() => chooseMode('recommission')}
+              className="flex-1 sm:flex-none h-auto min-h-8 whitespace-normal"
             >
               <RotateCcw className="w-4 h-4" /> Recommission retired robot
             </Button>
           </div>
         </div>
 
-        <div className="flex flex-col items-end gap-2">
+        {/* On a phone the actions are a bar fixed to the bottom of the screen, so the form can
+            be submitted from wherever the operator finished filling it in. */}
+        <div className="fixed inset-x-0 bottom-0 z-20 flex flex-col gap-1.5 border-t border-border bg-background/95 backdrop-blur px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-4px_16px_rgba(0,0,0,0.06)] lg:static lg:z-auto lg:items-end lg:gap-2 lg:border-0 lg:bg-transparent lg:p-0 lg:shadow-none lg:backdrop-blur-none">
           <div className="flex items-center gap-3">
             <Button type="button" variant="outline" onClick={handleCancel}>
               Cancel
@@ -208,8 +212,11 @@ export default function CommissionPage() {
                 form="commission-new-unit"
                 disabled={!canSubmit}
                 aria-describedby={missing.length > 0 ? 'commission-still-needed' : undefined}
+                // In the phone bar the label may wrap: on a 320px screen it is wider than the
+                // space beside Cancel, and clipping it would hide the action.
+                className="flex-1 min-w-0 h-auto min-h-10 whitespace-normal leading-tight lg:flex-none lg:h-10 lg:whitespace-nowrap"
               >
-                <ShieldCheck className="w-4 h-4" /> Authorize Commissioning
+                <ShieldCheck className="w-4 h-4 shrink-0" /> Authorize Commissioning
               </Button>
             ) : null}
           </div>
@@ -217,7 +224,7 @@ export default function CommissionPage() {
           {mode === 'new' ? (
             <>
               {missing.length > 0 ? (
-                <p id="commission-still-needed" aria-live="polite" className="max-w-sm text-right text-xs text-muted-foreground">
+                <p id="commission-still-needed" aria-live="polite" className="line-clamp-2 lg:line-clamp-none lg:max-w-sm lg:text-right text-xs text-muted-foreground">
                   Complete the required fields (<span aria-hidden>*</span>) to continue. Still empty:{' '}
                   <span className="font-medium text-foreground">
                     {missing.map((input) => input.label).join(', ')}
@@ -232,19 +239,19 @@ export default function CommissionPage() {
       {mode === 'recommission' ? (
         <RecommissionRetiredUnit key={preselectedRetiredId} initialRobotId={preselectedRetiredId} />
       ) : (
-      <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="mt-5 sm:mt-8 grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
         {/* Left: form (2/3) */}
         <div className="lg:col-span-2">
           <form id="commission-new-unit" onSubmit={handleSubmit} className="space-y-6">
             <Card className="rounded-2xl border border-border/60 shadow-sm hover:shadow-sm">
-              <CardHeader className="p-6">
+              <CardHeader className="p-4 sm:p-6">
                 <CardTitle className="text-lg font-medium">Basic Information</CardTitle>
                 <CardDescription>
                   Set a friendly name and a stable identifier for this unit.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="p-6 pt-0">
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
                   <div>
                     <Label htmlFor="unit-name" className="mb-2 block">
                       Unit Name (Optional)
@@ -287,14 +294,14 @@ export default function CommissionPage() {
             </Card>
 
             <Card className="rounded-2xl border border-border/60 shadow-sm hover:shadow-sm">
-              <CardHeader className="p-6">
+              <CardHeader className="p-4 sm:p-6">
                 <CardTitle className="text-lg font-medium">Configuration</CardTitle>
                 <CardDescription>
                   Choose the chassis type and assign the initial operating zone.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="p-6 pt-0">
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
                   <div>
                     <Label className="mb-2 block">Chassis Type</Label>
                     <Select
@@ -386,7 +393,7 @@ export default function CommissionPage() {
 
             {/* Specification — the values the assignment engine reasons from */}
             <Card className="rounded-2xl border border-border/60 shadow-sm hover:shadow-sm">
-              <CardHeader className="p-6">
+              <CardHeader className="p-4 sm:p-6">
                 <CardTitle className="text-lg font-medium">Unit Specification</CardTitle>
                 <CardDescription>
                   The physical configuration of this unit. These are the values the
@@ -395,8 +402,8 @@ export default function CommissionPage() {
                   defaulted.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="p-6 pt-0">
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                   {SPECIFICATION_FIELDS.map((field) => (
                     <div key={field.key}>
                       <Label htmlFor={`spec-${field.key}`} className="mb-2 block">
@@ -422,7 +429,7 @@ export default function CommissionPage() {
                 </div>
 
                 <div className="mt-6 border-t border-border/60 pt-6">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                     <div>
                       <Label htmlFor="spec-initialBatteryPct" className="mb-2 block">
                         {INITIAL_BATTERY_FIELD.label}{' '}
@@ -483,11 +490,11 @@ export default function CommissionPage() {
         {/* Right: info panel (1/3) */}
         <aside className="lg:col-span-1">
           <Card className="rounded-2xl border border-border/60 shadow-sm hover:shadow-sm bg-muted/40">
-            <CardHeader className="p-6">
+            <CardHeader className="p-4 sm:p-6">
               <CardTitle className="text-lg font-medium">Commissioning Info</CardTitle>
               <CardDescription>What this action does and what happens next.</CardDescription>
             </CardHeader>
-            <CardContent className="p-6 pt-0">
+            <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">
               <div className="text-sm text-muted-foreground space-y-4">
                 <p>
                   Commissioning registers a unit and assigns its initial operating zone.
