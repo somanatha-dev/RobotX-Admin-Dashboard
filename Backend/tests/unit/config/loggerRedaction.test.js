@@ -88,6 +88,26 @@ describe("H7 — the HTTP request log", () => {
     );
     for (const secret of ["tok-secret-1", "pw-secret-2", "9988", CODE]) expect(out).not.toContain(secret);
   });
+
+  // 2026-10-21: `currentPassword` / `newPassword` matched no exact name and were printed in clear —
+  // `POST /api/auth/change-password`, and the step-up PIN setup `PUT /api/auth/pin`.
+  test.each([
+    ["/api/auth/change-password", { currentPassword: "cur-pw-1", newPassword: "new-pw-2" }],
+    ["/api/auth/pin", { currentPassword: "cur-pw-3", pin: "4821" }],
+    ["/x", { clientSecret: "cs-4", refreshToken: "rt-5", adminPassphrase: "pp-6" }],
+  ])("credential-named fields in a %s body are redacted", (url, body) => {
+    const logger = loadLogger({ production: true });
+    const out = captureStdout(() => logger.http({ method: "POST", path: url, originalUrl: url, query: {}, body: { ...body, email: "a@x.test" } }));
+    expect(out).toContain("a@x.test");
+    for (const secret of Object.values(body)) expect(out).not.toContain(secret);
+  });
+
+  test("keys that only resemble a credential are not redacted", () => {
+    const logger = loadLogger();
+    const out = captureStdout(() => logger.http({ method: "POST", path: "/x", originalUrl: "/x", query: {}, body: { pinnedCampusId: "campus-1", tokenCount: 3 } }));
+    expect(out).toContain("campus-1");
+    expect(out).toContain("3");
+  });
 });
 
 describe("H7 — log metadata", () => {

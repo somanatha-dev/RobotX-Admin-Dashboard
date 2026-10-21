@@ -66,12 +66,22 @@ const c = (() => {
 // whoever presents it with the robotId becomes that robot. Redacted wherever it appears (a
 // request body, a query string, log metadata), even though no request carries it today.
 const SENSITIVE = new Set(["password", "token", "secret", "authorization", "cookie", "pin", "pairingcode"]);
+// Credential-named keys beyond the exact names: `currentPassword` and `newPassword`
+// (`/api/auth/change-password`, `PUT /api/auth/pin`) were matched by nothing above and printed in
+// clear, in production too — the request line is written on every request in every environment.
+const SENSITIVE_PART = /password|passphrase|secret/;
+const SENSITIVE_SUFFIX = /token$/;
+
+function isSensitiveKey(key) {
+  const k = String(key).toLowerCase();
+  return SENSITIVE.has(k) || SENSITIVE_PART.test(k) || SENSITIVE_SUFFIX.test(k);
+}
 
 function sanitise(obj, depth = 0) {
   if (!obj || typeof obj !== "object" || depth > 3) return obj;
   const out = {};
   for (const [k, v] of Object.entries(obj)) {
-    out[k] = SENSITIVE.has(k.toLowerCase()) ? "[redacted]" : sanitise(v, depth + 1);
+    out[k] = isSensitiveKey(k) ? "[redacted]" : sanitise(v, depth + 1);
   }
   return out;
 }
