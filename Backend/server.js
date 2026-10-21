@@ -1,7 +1,6 @@
 const http = require("http");
 const { Server } = require("socket.io");
-const { createAdapter } = require("@socket.io/redis-adapter");
-const Redis = require("ioredis");
+const { attachRedisAdapter } = require("./src/sockets/redisAdapter");
 
 const { loadedFrom: envFile } = require("./src/config/env");
 // ROBOTX_ENV=LOCAL: refuse a non-loopback database or Redis before anything connects.
@@ -19,7 +18,7 @@ const {
   isSerializationFailure,
 } = require("./src/db/prisma");
 const { assertSchemaMatchesClient } = require("./src/db/schemaDrift");
-const { initKv } = require("./src/cache/kv");
+const { initKv, redisSettings } = require("./src/cache/kv");
 const initSocketServer = require("./src/sockets/socket.server");
 const { closeHttpAndSockets } = require("./src/utils/closeHttpServer");
 const { reconcileDeadSocketBindings } = require("./src/sockets/handlers/robot.handler");
@@ -499,41 +498,21 @@ async function start() {
   // this is the one place where that fallback is a real behavior change
   // (cross-worker broadcast silently stops working) rather than a
   // transparent degrade, so it's logged loudly.
+  // The attach is bounded (`sockets/redisAdapter.js`): a half-open Redis must not hold boot
+  // before `listen`.
   let redisAdapterClients = null;
-  const redisUrl = typeof process.env.REDIS_URL === "string" ? process.env.REDIS_URL.trim() : "";
-  const redisEnabled = String(process.env.REDIS_ENABLED || "").toLowerCase() !== "false";
-  if (redisEnabled && redisUrl) {
-    try {
-      const pubClient = new Redis(redisUrl, { connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS || 5000) });
-      const subClient = pubClient.duplicate();
-      await Promise.all([
-        new Promise((resolve, reject) => { pubClient.once("ready", resolve); pubClient.once("error", reject); }),
-        new Promise((resolve, reject) => { subClient.once("ready", resolve); subClient.once("error", reject); }),
-      ]);
-      io.adapter(createAdapter(pubClient, subClient));
-      // RBAC — campus rooms may now have members on other processes; relay regardless.
-      dashboardBroadcast.setCrossProcess(true);
-      redisAdapterClients = { pubClient, subClient };
-      logger.info("Socket.IO Redis adapter attached — broadcasts fan out across worker processes");
-    } catch (e) {
-      logger.warn(
-        "Socket.IO Redis adapter unavailable — falling back to the default single-process adapter. " +
-        "If this process is one of several workers behind a load balancer, dashboard broadcasts from " +
-        "other workers will NOT reach clients connected here.",
-        { message: e?.message }
-      );
-    }
+  const redis = redisSettings();
+  if (redis.configured) {
+    redisAdapterClients = await attachRedisAdapter(io, redis, logger);
+    // RBAC — campus rooms may now have members on other processes; relay regardless.
+    if (redisAdapterClients) dashboardBroadcast.setCrossProcess(true);
   }
 
-  // Detect Redis availability for the startup banner.
-  let redisLive = false;
-  try {
-    const testKey = `hb:${Date.now()}`;
-    await kv.set(testKey, "1", { ex: 2 });
-    const v = await kv.get(testKey);
-    await kv.del(testKey);
-    redisLive = v === "1";
-  } catch { /* falls back to in-memory */ }
+  // Redis state for the startup banner, from the facade's connection state: a set/get probe
+  // also succeeds against the in-memory fallback and reported "connected" with no Redis.
+  const kvHealth = kv.health();
+  const redisLive = kvHealth.redis;
+  const redisState = kvHealth.redis ? "connected" : kvHealth.configured ? "unreachable" : "disabled";
 
   app.locals.kv = kv;
   app.locals.prisma = prisma;
@@ -1400,6 +1379,7 @@ async function start() {
       port,
       db:        true,
       redis:     redisLive,
+      redisState,
       simulator: simulatorEnabled
         ? "Enabled — re-hydrating simulated robots…"
         : `Disabled (${simulationPolicy.SIMULATOR_ENV_VAR} is not true) — physical fleet only`,

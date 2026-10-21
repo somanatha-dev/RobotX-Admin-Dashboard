@@ -500,11 +500,17 @@ rootLogger.obstacle = function logObstacle({ reportingRobotId, lat, lon, severit
 
 // ─── Startup banner ───────────────────────────────────────────────────────────
 
-rootLogger.startup = function logStartup({ env, port, db, redis, simulator } = {}) {
+rootLogger.startup = function logStartup({ env, port, db, redis, redisState, simulator } = {}) {
   if (isProd) {
-    pinoBase.info({ env, port, db, redis }, "Server started");
+    pinoBase.info({ env, port, db, redis, redisState }, "Server started");
     return;
   }
+
+  const redisLabel = {
+    connected:   c.bGreen("connected"),
+    disabled:    c.bYellow("disabled — in-memory KV, single process"),
+    unreachable: c.bRed("configured but unreachable — in-memory fallback"),
+  }[redisState] || (redis ? c.bGreen("connected") : c.bYellow("in-memory fallback"));
 
   const tick  = c.bGreen("✓");
   const cross = c.bRed("✗");
@@ -524,7 +530,7 @@ rootLogger.startup = function logStartup({ env, port, db, redis, simulator } = {
     row("Environment", env === "production" ? c.bRed("production") : c.bGreen(env || "development")),
     row("Port",        c.bWhite(String(port))),
     row("Database",    `${ok(db)}  ${db ? c.bGreen("PostgreSQL connected") : c.bRed("FAILED")}`),
-    row("Redis",       `${ok(redis)}  ${redis ? c.bGreen("connected") : c.bYellow("in-memory fallback")}`),
+    row("Redis",       `${ok(redis)}  ${redisLabel}`),
     row("Simulator",   `${tick}  ${c.bGreen(simulator || "Ready")}`),
     `└${line}┘`,
   ].join("\n");

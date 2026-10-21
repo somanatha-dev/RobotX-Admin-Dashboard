@@ -591,24 +591,69 @@ async function rebuildIndexFromMirror(deps) {
  */
 function start(deps, options) {
   const intervalMs = (options && options.intervalMs) || SWEEP_INTERVAL_MS;
+  const onError = (error) => {
+    if (deps && typeof deps.onError === "function") deps.onError(error, null);
+  };
 
-  if (!options || options.rebuildOnStart !== false) {
-    rebuildIndexFromMirror(deps).catch((error) => {
-      if (deps && typeof deps.onError === "function") deps.onError(error, null);
+  // ── One queue for every index write this worker makes ────────────────────────
+  // A rebuild reads the mirror and then writes each agent's keys; a sweep that moved an agent
+  // between that read and that write would have its removal undone, leaving the agent in its
+  // old cell as well as its new one. Rebuilds and sweeps therefore run one at a time, in order.
+  // A sweep still running when the next interval fires leaves at most one more queued, and any
+  // number of rebuild requests made before a queued rebuild starts are answered by that one.
+  let tail = Promise.resolve();
+  let stopped = false;
+  let sweepQueued = false;
+  let rebuildQueued = false;
+
+  function enqueue(task) {
+    tail = tail.then(() => (stopped ? undefined : task())).catch(onError);
+    return tail;
+  }
+
+  function requestRebuild() {
+    if (rebuildQueued) return tail;
+    rebuildQueued = true;
+    return enqueue(() => {
+      rebuildQueued = false;
+      return rebuildIndexFromMirror(deps);
     });
   }
 
-  const handle = setInterval(() => {
-    sweepOnce(deps).catch((error) => {
-      if (deps && typeof deps.onError === "function") deps.onError(error, null);
+  function requestSweep() {
+    if (sweepQueued) return;
+    sweepQueued = true;
+    enqueue(() => {
+      sweepQueued = false;
+      return sweepOnce(deps);
     });
-  }, intervalMs);
+  }
+
+  if (!options || options.rebuildOnStart !== false) requestRebuild();
+
+  // ── The KV facade's mode changes ─────────────────────────────────────────────
+  // When Redis is lost the facade answers from an in-memory store that starts empty, and a
+  // sweep writes only deltas — so without a rebuild every stationary agent is missing from
+  // candidate search for as long as the outage lasts (reproduced: three agents → none). The
+  // rebuild writes the mirror into whichever store the facade is on. After recovery the
+  // facade has already replayed the outage's set changes, removals included, into Redis; the
+  // second rebuild re-asserts every active agent there in case Redis itself lost data.
+  const unsubscribe =
+    deps && deps.kv && typeof deps.kv.onModeChange === "function" ? deps.kv.onModeChange(() => requestRebuild()) : () => {};
+
+  const handle = setInterval(requestSweep, intervalMs);
 
   if (typeof handle.unref === "function") handle.unref();
 
   return {
     stop() {
+      stopped = true;
       clearInterval(handle);
+      unsubscribe();
+    },
+    /** Resolves once every rebuild and sweep queued so far has run. For tests and shutdown. */
+    idle() {
+      return tail;
     },
   };
 }

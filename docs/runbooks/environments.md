@@ -17,7 +17,7 @@ is no development-only code path, and none may be added.
 | `SHARD_ID` | `rnsit-shard` (the world copied from Neon; the lease row lives in `robotx`) | `rnsit-shard` |
 | Engine / simulator | on / on | as configured on Render |
 | Physical fleet | **off** | as configured on Render |
-| Redis | off (in-memory KV, single process) | as configured on Render |
+| Redis | off (in-memory KV, single process) | off by design (§2.4); confirm with `/health` |
 | Identity | `ROBOTX_ENV=LOCAL` | `ROBOTX_ENV` unset |
 
 ### Rules
@@ -96,6 +96,139 @@ Two more guards for scripts that write (same module):
 `Frontend/.env` holds only values that are compiled into the browser bundle and are public by
 design (API URLs, the Mapbox *public* token, the Google OAuth client id, the socket singleton's
 property name). It is gitignored and may stay in the repository folder.
+
+### 2.4 Redis
+
+Redis is implemented and **off in both environments by design**: the deployment is one backend
+process, and the KV facade's in-process store is correct (and faster) for exactly one.
+
+- **What uses it.** Everything goes through the `kv` facade (`src/cache/kv.js`): live robot state
+  and the availability-index sets, robot sessions and pairing codes, task paths, the engine's
+  advisory mirrors (`engine:mode:`, `engine:queue:`, `config:v:`) and route caches
+  (`engine:route:cell:`, `engine:charger:reach:`). `server.js` also attaches the Socket.IO Redis
+  adapter when Redis is configured. PostgreSQL stays authoritative: every KV value is a cache, an
+  advisory mirror or short-lived live state, and no assignment is decided from it. The commit
+  transaction (`engine/commitment/commit.js`) takes no KV dependency.
+- **Off** (`REDIS_ENABLED=false`, or no `REDIS_URL`). The facade keeps the same TTL semantics
+  in memory and sweeps expired entries every 60 s. Run exactly one instance: a second process
+  would have its own live state, sessions, allocation locks and dashboard broadcasts.
+- **Configured but unreachable.** Reads and writes fall back to memory and the facade reconnects
+  with 1 → 30 s backoff. An advisory `reserveRobot` is granted, because the commit transaction
+  decides. A caller that passes `{ advisory: false }` gets `503 LOCK_UNAVAILABLE` (none does
+  today). The Socket.IO adapter is not attached, and its clients are closed. Its attach at
+  boot is bounded at connect timeout plus command timeout (`src/sockets/redisAdapter.js`), so a
+  half-open Redis cannot hold the server before it listens.
+  - **What counts as unreachable:**
+    - a refused or closed connection;
+    - a command that takes longer than `REDIS_COMMAND_TIMEOUT_MS` (default 1000), which is how
+      a half-open connection shows up: the socket stays open and nothing is answered;
+    - a batch whose replies include a timeout, a closed stream or an OOM refusal.
+
+    The TCP keepalive (`REDIS_KEEPALIVE_MS`, default 5000) lets an idle dead connection be
+    noticed. A reconnect attempt is bounded at connect timeout plus command timeout.
+  - **Backoff.** It restarts from 1 s only after a recovered connection has stayed healthy for
+    30 s. A Redis that accepts the connection and then fails the next command is retried at
+    1, 2, 4 … 30 s, not every second.
+  - **The availability index is rebuilt into memory.** On fallback, the facade tells the index
+    maintainer, which rebuilds the index from its durable mirror (`AgentCellPosition`), so a
+    stationary agent stays a candidate. Before this, the memory store started empty and every
+    agent that did not move dropped out of candidate search for the whole outage. Rebuilds and
+    sweeps run one at a time.
+- **Recovery.** Every key the outage wrote is reconciled before the facade reads Redis again.
+  A string key set during the outage that memory still holds is written back to Redis with
+  the TTL it has left; one deleted during the outage, or whose entry has since expired, is
+  deleted in Redis. Either way Redis ends up with this process's latest value, never the one
+  it held before the outage. Set members added or removed are replayed member by member, so a
+  set is never dropped whole. The outage-time memory copy is then discarded. So a robot paired
+  during the outage reconnects with the token it was given, and its revoked pre-outage token
+  is refused. A pairing code issued during the outage stays usable, and a pairing lockout
+  (`pairingLocked:`, `pairingAttempts:`) imposed during it stays in force for its remaining
+  TTL. (Until 2026-10-21 recovery deleted every touched key, which lifted such a lockout
+  early.) If Redis refuses the reconciliation, the facade stays on memory and retries at the
+  next backoff step. `kv.health().outagePending` counts what is waiting. Once Redis answers again,
+  the index maintainer rebuilds the index into it from the mirror. The outage's own set changes,
+  removals included, have already been replayed by then.
+- **Why it stays off.**
+  - One instance gains nothing from cross-process state.
+  - A hosted Redis measured ~250 ms round-trip time against a 2 s round budget.
+  - Robot sessions already survive a restart in PostgreSQL (`RobotSession`).
+  - Live state that survives a restart is a hazard of its own (`legacyTaskRedispatch.service.js`).
+    That sweep is never registered while the engine is on.
+  - Measured locally on 2026-10-21. This used the real telemetry handler, a fake Postgres with no
+    latency, and Memurai on loopback; it is not a production measurement. Redis does not change
+    the PostgreSQL calls per telemetry frame: 3.4 with the engine off, 5.4 with it on. Those
+    calls are the evidence writes (`Observation`, `BatteryState`) plus lookups, and they must
+    stay durable. KV round trips are 2 per frame in both modes. Redis added about 1 ms per frame
+    on loopback.
+  - Dashboards add no polling load on PostgreSQL. `GET /api/robots/state` and `GET /api/tasks`
+    run on sign-in, on socket reconnect and after an operator action. The only poll is
+    `GET /api/simulator/status` every 5 s, served from process memory. A shared read cache would
+    save little and could show a status older than the task or feasibility state beside it.
+- **Enabling it (one instance).** This is a reviewed configuration change, not a code change.
+  1. Provision a Redis-compatible service in the backend's region, on its private network. Use
+     TLS `rediss://` where offered. Measure its round-trip time from the backend first: two
+     round trips per telemetry frame have to fit well inside the 2 s tick.
+  2. Set `maxmemory-policy noeviction`, with `maxmemory` sized so that it is never reached.
+     Alert when `used_memory` passes 70 % of `maxmemory`, and on any refused write
+     (`errorstat_OOM` in `INFO errorstats`).
+     - **Why not `volatile-lru`.** It silently evicts keys that carry a TTL, and almost every key
+       does. Most evictions fail safe: a session falls back to `RobotSession`, and a stop-latch
+       or readiness report becomes INDETERMINATE and refuses. But an evicted
+       `pairingAttempts:` or `pairingLocked:` key lifts a pairing lockout early.
+     - **What `noeviction` does at the limit.** Redis refuses every write with an OOM error and
+       still serves reads and `DEL`.
+       - The facade treats a refused write, single or in a batch, as an outage: it falls back to
+         memory, rebuilds the availability index there, and keeps serving.
+       - Reconnects back off to 30 s.
+       - Reconciliation writes the outage's keys back and replays the index's set changes, which
+         Redis also refuses. The facade therefore stays on memory until Redis has room again:
+         expiring keys free it.
+       - While full, the process runs as it does with Redis off. That is correct for one
+         instance; more than one instance would lose cross-process state.
+       - `/health` shows `redis: "fail"`.
+     - **Keys with no TTL** (never evicted, and not freed by expiry): `config:active`,
+       `robots:all`, the availability-index sets, `ekb:obstacles`, and the SLI instance set.
+       They grow with the fleet and the cells it occupies, not with time.
+     - **Sizing.** Measure `used_memory` after a soak with the full fleet, and leave headroom for
+       the route caches (`engine:route:cell:`), whose count grows with distinct routes until
+       their TTL.
+  3. Set `REDIS_URL` and `REDIS_ENABLED=true`. Optionally set `REDIS_CONNECT_TIMEOUT_MS`
+     (default 5000), `REDIS_COMMAND_TIMEOUT_MS` (default 1000) and `REDIS_KEEPALIVE_MS`
+     (default 5000). A command timeout much below the measured p99 round trip turns latency
+     spikes into outages; keep it well above it. Redeploy.
+  4. Confirm `GET /health` shows `redis: "ok"` and the boot line shows `redisState: connected`.
+- **Rollback.** Set `REDIS_ENABLED=false` and redeploy. The process restarts on the in-memory
+  store. Robots reconnect through `RobotSession`, and nothing in PostgreSQL depends on the KV.
+  Pairing codes issued while Redis was on must be issued again. Before reusing the Redis
+  database for anything else, delete what it holds.
+- **Before running more than one instance.** Redis is necessary but not sufficient. All of these
+  are per process today:
+  - `robotStateCache`;
+  - the in-process simulator, and its fleet-wide start, stop and reset routes;
+  - the timers;
+  - the HTTP rate limiter (`rateLimitHttp.js`), whose limits would multiply by the instance count;
+  - the per-connection telemetry ordering;
+  - the dashboard broadcast's campus caches.
+
+  The dashboard socket also starts on HTTP long-polling, so instances behind a load balancer need
+  sticky sessions or a websocket-only transport, in addition to the adapter.
+- **Verify.** `GET /health` → `redis` is `disabled` (not configured), `ok` (connected, with a
+  round trip through Redis) or `fail` (configured, on the in-memory fallback). Before 2026-10-21
+  it reported `ok` whenever the in-memory store answered, so older readings prove nothing. The
+  boot log's `Server started` line carries `redisState` (`connected` / `disabled` /
+  `unreachable`).
+- **Integration test against a real server:**
+  `REDIS_TEST_URL=redis://127.0.0.1:6379/15 npx jest tests/integration/redisKv.integration.test.js`
+  (use a spare database index). It deletes only its own keys. It covers outage and recovery
+  through a TCP proxy the test owns, so other clients of the server are not disturbed. Without
+  `REDIS_TEST_URL` it is skipped. Three suites cover the same behaviour in every run:
+  - `tests/unit/redis/kvOutageRecovery.test.js` — the recovery cases, against a fake client;
+  - `kvHalfOpen.test.js` — real ioredis against a RESP server the test silences;
+  - `kvMemoryLimit.test.js` — OOM and backoff.
+
+  `availabilityIndexOutage.test.js` covers the index.
+  To measure latency from the backend's runtime: `node tools/ops/redisLatency.js`. It is
+  read-only by default; `--write` writes only its own expiring keys.
 
 ## 3. LOCAL
 

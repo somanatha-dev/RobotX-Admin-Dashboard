@@ -1,8 +1,118 @@
 const Redis = require("ioredis");
 
+// How often the in-memory store drops expired entries. A read already drops the entry it
+// touches; the sweep covers keys written once and never read again — `metrics:allocation:{ms}`,
+// or a route entry keyed on a robot's exact position — which would otherwise be held for the
+// life of the process however short their TTL.
+const MEMORY_SWEEP_INTERVAL_MS = 60_000;
+
+// Keys per DEL command when a recovered connection invalidates what the outage wrote.
+const OUTAGE_DEL_BATCH = 500;
+
+// Passes a reconnect makes over writes that keep landing while it reconciles, before it gives
+// up and tries again at the next backoff step.
+const OUTAGE_RECONCILE_PASSES = 5;
+
+// The longest a single Redis command may take before the facade treats the connection as lost.
+// Without one, a half-open connection (bytes dropped, no FIN or RST) left every command pending
+// until the OS gave up on the socket — hours with Linux defaults — and the telemetry handler,
+// the heartbeat and `/health` each blocked on their first Redis call, while the facade still
+// reported Redis as connected. A command that reaches it falls back to memory like any other
+// failure. Telemetry is a 1–2 s tick, so a command slower than this is already a failure.
+const DEFAULT_COMMAND_TIMEOUT_MS = 1000;
+
+// How long a recovered connection must stay healthy before the reconnect backoff starts again
+// from 1 s. Without it, a Redis that accepts connections but refuses writes (full under
+// noeviction) made the facade reconnect, fail its next write and reconnect again every second,
+// rebuilding the availability index each time; with it the attempts back off to 30 s.
+const RECONNECT_STABLE_MS = 30_000;
+
+// TCP keepalive's initial delay on the facade's connection. ioredis's default (0) keeps the OS
+// default, two hours on Linux; this lets an idle half-open connection be noticed without traffic.
+const DEFAULT_KEEPALIVE_MS = 5000;
+
+/**
+ * The first reply in an ioredis pipeline result that is a lost connection rather than a command's
+ * own error. ioredis resolves a pipeline whose commands timed out (`commandTimeout`) or whose
+ * stream closed with one error per command instead of rejecting, so without this a half-open
+ * connection dropped every batched write silently while the facade still reported Redis as
+ * connected. An OOM reply counts too: under `maxmemory-policy noeviction` a full Redis refuses
+ * every write, and a batch whose writes were refused must fall back like a single write does,
+ * not leave older values to be read back. A command's own error (WRONGTYPE, …) is not one of
+ * these.
+ *
+ * @param {Array<[Error|null, unknown]>|null} results
+ * @returns {Error|null}
+ */
+function connectionFailureIn(results) {
+  for (const [err] of results || []) {
+    if (!err) continue;
+    const message = String(err.message || "");
+    if (
+      message.includes("Command timed out") ||
+      message.includes("Connection is closed") ||
+      message.includes("Stream isn't writeable") ||
+      message.startsWith("OOM ") ||
+      ["ECONNRESET", "EPIPE", "ETIMEDOUT", "ECONNREFUSED", "ENOTCONN"].includes(err.code)
+    ) {
+      return err;
+    }
+  }
+  return null;
+}
+
+function positiveMs(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/**
+ * The Redis settings, read from the environment in one place so the KV facade and the
+ * Socket.IO adapter (server.js) cannot disagree about whether Redis is configured.
+ */
+function redisSettings(env = process.env) {
+  const url = typeof env.REDIS_URL === "string" ? env.REDIS_URL.trim() : "";
+  const enabled = String(env.REDIS_ENABLED || "").toLowerCase() !== "false";
+  return {
+    url,
+    enabled,
+    configured: enabled && Boolean(url),
+    connectTimeoutMs: Number(env.REDIS_CONNECT_TIMEOUT_MS || 5000),
+    commandTimeoutMs: positiveMs(env.REDIS_COMMAND_TIMEOUT_MS, DEFAULT_COMMAND_TIMEOUT_MS),
+    keepAliveMs: positiveMs(env.REDIS_KEEPALIVE_MS, DEFAULT_KEEPALIVE_MS),
+  };
+}
+
+function positiveOrUndefined(value) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * The expiry, in seconds, from either argument shape the callers use: `{ ex: seconds }`, or
+ * the ioredis positional form `"EX", seconds` / `"PX", milliseconds`. `cellPairCache.write`
+ * and `capacityPricingClient.write` use the positional form, which `set` used to read as "no
+ * options" — so their entries were stored with no expiry at all, in Redis (TTL -1) and in
+ * memory alike, and `route.cell_pair_cache_ttl` never took effect.
+ */
+function expirySeconds(args) {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg && typeof arg === "object") return positiveOrUndefined(arg.ex);
+    if (typeof arg !== "string") continue;
+    const flag = arg.toUpperCase();
+    if (flag === "EX") return positiveOrUndefined(Number(args[i + 1]));
+    // Rounded up: Redis EX takes whole seconds, and an entry may outlive a sub-second
+    // remainder but must not expire before the time it was given.
+    if (flag === "PX") {
+      const ms = positiveOrUndefined(Number(args[i + 1]));
+      return ms === undefined ? undefined : Math.ceil(ms / 1000);
+    }
+  }
+  return undefined;
+}
+
 async function initKv({ logger }) {
-  const redisUrl = typeof process.env.REDIS_URL === "string" ? process.env.REDIS_URL.trim() : "";
-  const redisEnabled = String(process.env.REDIS_ENABLED || "").toLowerCase() !== "false";
+  const { url: redisUrl, enabled: redisEnabled, configured, connectTimeoutMs, commandTimeoutMs, keepAliveMs } = redisSettings();
 
   let redis = null;
   let redisAvailable = false;
@@ -15,7 +125,7 @@ async function initKv({ logger }) {
   //   - configured but unreachable → the operator intended a SHARED lock across
   //     instances. Falling back to memory would silently change that safety
   //     property, so lock operations fail closed instead (see reserveRobot).
-  const redisConfigured = redisEnabled && Boolean(redisUrl);
+  const redisConfigured = configured;
 
   // Background reconnect probe (F15/F39). Without this, a single transient
   // blip trips `disableRedis()` and downgrades the process to in-memory mode
@@ -23,6 +133,9 @@ async function initKv({ logger }) {
   // short of a restart.
   let reconnectTimer = null;
   let reconnectAttempt = 0;
+  // When the last reconnect succeeded: the backoff restarts only once a connection outlives
+  // RECONNECT_STABLE_MS (see there). 0 — no reconnect yet, so the first outage starts at 1 s.
+  let recoveredAt = 0;
   let closed = false;
 
   // In-memory fallback supports basic TTL semantics so higher-level code
@@ -31,13 +144,45 @@ async function initKv({ logger }) {
   // In-memory fallback for Redis SET semantics.
   const memorySets = new Map();
 
+  // What an outage wrote, kept only while Redis is configured (when it is not, the memory
+  // store is the store and there is nothing to reconcile). On reconnect the Redis copy of
+  // every such key is older than this process's last write, so answering from it would serve
+  // stale state — a robot paired during the outage would be offered its revoked session token.
+  //   outageKeys    — string keys set or deleted during the outage: on recovery written back with
+  //                   their remaining TTL when memory still holds them, deleted in Redis otherwise
+  //   outageMembers — set key → member → "add" | "rem", the last change to each member: replayed,
+  //                   because deleting a set would drop every member nobody touched
+  const outageKeys = new Set();
+  const outageMembers = new Map();
+
   function nowMs() {
     return Date.now();
+  }
+
+  function recordOutageKey(key) {
+    if (redisConfigured) outageKeys.add(String(key));
+  }
+
+  function recordOutageMember(key, member, change) {
+    if (!redisConfigured) return;
+    const k = String(key);
+    let members = outageMembers.get(k);
+    if (!members) {
+      members = new Map();
+      outageMembers.set(k, members);
+    }
+    members.set(String(member), change);
   }
 
   function memorySet(key, value, { ex } = {}) {
     const expiresAt = typeof ex === "number" && Number.isFinite(ex) && ex > 0 ? nowMs() + ex * 1000 : null;
     memoryKv.set(key, { value, expiresAt });
+    recordOutageKey(key);
+  }
+
+  function memoryDel(key) {
+    memoryKv.delete(key);
+    recordOutageKey(key);
   }
 
   function memoryGet(key) {
@@ -52,6 +197,16 @@ async function initKv({ logger }) {
     return entry.value;
   }
 
+  function sweepExpired() {
+    const now = nowMs();
+    for (const [key, entry] of memoryKv) {
+      if (entry && typeof entry === "object" && entry.expiresAt && now > entry.expiresAt) memoryKv.delete(key);
+    }
+  }
+
+  const sweepTimer = setInterval(sweepExpired, MEMORY_SWEEP_INTERVAL_MS);
+  if (typeof sweepTimer.unref === "function") sweepTimer.unref();
+
   function memorySAdd(key, ...members) {
     const k = String(key);
     let set = memorySets.get(k);
@@ -63,6 +218,7 @@ async function initKv({ logger }) {
     for (const m of members) {
       if (m === undefined || m === null) continue;
       const s = String(m);
+      recordOutageMember(k, s, "add");
       if (!set.has(s)) {
         set.add(s);
         added += 1;
@@ -73,6 +229,10 @@ async function initKv({ logger }) {
 
   function memorySRem(key, ...members) {
     const k = String(key);
+    // Recorded even when this process holds no copy of the set: the member is in Redis's.
+    for (const m of members) {
+      if (m !== undefined && m !== null) recordOutageMember(k, String(m), "rem");
+    }
     const set = memorySets.get(k);
     if (!set) return 0;
     let removed = 0;
@@ -92,6 +252,26 @@ async function initKv({ logger }) {
     return Array.from(set);
   }
 
+  // Told when the facade leaves Redis for its in-memory store ("fallback") and when it is back
+  // on Redis with the outage reconciled ("recovered"). The memory store starts empty, so state
+  // rebuilt from durable records — the availability index — has to be rebuilt into it, or every
+  // reader sees nothing for as long as the outage lasts. Called on a later tick, never inside
+  // the facade's own state change; a listener's failure is its own.
+  const modeListeners = new Set();
+
+  function announce(mode) {
+    for (const listener of [...modeListeners]) {
+      setImmediate(() => {
+        try {
+          const result = listener(mode);
+          if (result && typeof result.catch === "function") result.catch(() => {});
+        } catch {
+          // a listener's failure never reaches the facade
+        }
+      });
+    }
+  }
+
   function disableRedis(err) {
     if (!redisWarned) {
       const code = err && (err.code || err.errno);
@@ -100,7 +280,10 @@ async function initKv({ logger }) {
       );
       redisWarned = true;
     }
+    const wasAvailable = redisAvailable;
+    if (wasAvailable && nowMs() - recoveredAt >= RECONNECT_STABLE_MS) reconnectAttempt = 0;
     redisAvailable = false;
+    if (wasAvailable) announce("fallback");
     if (redis) {
       try {
         redis.disconnect();
@@ -128,9 +311,13 @@ async function initKv({ logger }) {
       reconnectAttempt += 1;
       const connected = await connectRedis();
       if (connected) {
-        reconnectAttempt = 0;
+        // The attempt count is kept, not reset: it restarts when this connection has stayed
+        // healthy for RECONNECT_STABLE_MS, so a Redis that keeps failing right after a reconnect
+        // is retried ever more slowly instead of every second.
+        recoveredAt = nowMs();
         redisWarned = false;
         (logger || console).info("Redis reconnected; leaving in-memory fallback mode");
+        announce("recovered");
       } else {
         scheduleReconnect();
       }
@@ -153,7 +340,12 @@ async function initKv({ logger }) {
       // Don't let ioredis run its own retry loop underneath ours — this
       // facade owns the backoff so the two can't compound.
       retryStrategy: () => null,
-      connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS || 5000),
+      connectTimeout: connectTimeoutMs,
+      // A finite answer to every command, and a keepalive that notices an idle dead socket —
+      // see DEFAULT_COMMAND_TIMEOUT_MS. A timed-out command rejects and takes the existing
+      // fallback path (disableRedis), exactly as a refused connection does.
+      commandTimeout: commandTimeoutMs,
+      keepAlive: keepAliveMs,
     });
 
     client.on("connect", () => (logger || console).info("Redis connected"));
@@ -167,13 +359,121 @@ async function initKv({ logger }) {
     });
 
     try {
-      await client.connect();
+      // ioredis's connectTimeout covers the TCP connect; a server that accepts the socket and
+      // then answers nothing (the half-open case) would hold the handshake open. The attempt as a
+      // whole is bounded, so a reconnect through a dead path fails and is retried at the next
+      // backoff step instead of stopping the reconnect loop.
+      let deadline = null;
+      try {
+        await Promise.race([
+          client.connect(),
+          new Promise((_, reject) => {
+            deadline = setTimeout(() => reject(new Error("Redis connect timed out")), connectTimeoutMs + commandTimeoutMs);
+          }),
+        ]);
+      } finally {
+        clearTimeout(deadline);
+      }
+      let restored = 0;
+      let invalidated = 0;
+      let replayed = 0;
+      // The emptiness check that ends this loop and the switch below run with no await between
+      // them, so a write that lands while a pass is in flight is reconciled by the next pass
+      // rather than cleared unreconciled.
+      for (let pass = 0; outageKeys.size > 0 || outageMembers.size > 0; pass += 1) {
+        if (pass >= OUTAGE_RECONCILE_PASSES) throw new Error("outage writes kept arriving during reconciliation");
+        const done = await reconcileOutage(client);
+        restored += done.restored;
+        invalidated += done.invalidated;
+        replayed += done.replayed;
+      }
+      // Everything the memory store holds was written during the outage and is now reconciled;
+      // keeping it would serve this outage's values during the next one.
+      memoryKv.clear();
+      memorySets.clear();
       redis = client;
       redisAvailable = true;
+      if (restored > 0 || invalidated > 0 || replayed > 0) {
+        (logger || console).info("Redis reconciled after an outage", { restoredKeys: restored, invalidatedKeys: invalidated, replayedSetChanges: replayed });
+      }
       return true;
     } catch {
       try { client.disconnect(); } catch { /* ignore */ }
       return false;
+    }
+  }
+
+  /**
+   * One pass over what the outage wrote, sent to the recovered connection. A string key the
+   * outage set and memory still holds is written back with its remaining TTL; one it deleted, or
+   * whose entry has since expired, is DEL'd. Either way Redis ends up with this process's latest
+   * value, never the one it held before the outage. Writing back, rather than deleting every
+   * touched key, is what keeps a pairing lockout (`pairingLocked:`, `pairingAttempts:`) imposed
+   * during the outage in force after it — a DEL lifted it early, the hazard the runbook rejects
+   * `volatile-lru` for — and keeps a pairing code or session issued during the outage usable.
+   * SADD/SREM replay every set member changed. On failure the records are put back — a change
+   * recorded since this pass began wins — and the caller keeps the facade on its fallback, so
+   * nothing is lost and the next reconnect attempt retries.
+   */
+  async function reconcileOutage(client) {
+    const keys = [...outageKeys];
+    const members = new Map(outageMembers);
+    outageKeys.clear();
+    outageMembers.clear();
+
+    const pipeline = client.pipeline();
+    const now = nowMs();
+    const deleted = [];
+    let restored = 0;
+    for (const key of keys) {
+      const entry = memoryKv.get(key);
+      if (entry === undefined) {
+        deleted.push(key);
+        continue;
+      }
+      if (entry && typeof entry === "object" && "value" in entry) {
+        if (entry.expiresAt) {
+          const remainingMs = entry.expiresAt - now;
+          if (remainingMs <= 0) {
+            deleted.push(key);
+            continue;
+          }
+          pipeline.set(key, entry.value, "PX", Math.ceil(remainingMs));
+        } else {
+          pipeline.set(key, entry.value);
+        }
+      } else {
+        // Backward-compat: a raw value stored by older code, with no expiry.
+        pipeline.set(key, entry);
+      }
+      restored += 1;
+    }
+    for (let i = 0; i < deleted.length; i += OUTAGE_DEL_BATCH) pipeline.del(...deleted.slice(i, i + OUTAGE_DEL_BATCH));
+    let replayed = 0;
+    for (const [key, changes] of members) {
+      const adds = [];
+      const rems = [];
+      for (const [member, change] of changes) (change === "add" ? adds : rems).push(member);
+      if (adds.length) pipeline.sadd(key, ...adds);
+      if (rems.length) pipeline.srem(key, ...rems);
+      replayed += changes.size;
+    }
+
+    try {
+      const results = await pipeline.exec();
+      const failed = (results || []).find(([err]) => err);
+      if (failed) throw failed[0];
+      return { restored, invalidated: deleted.length, replayed };
+    } catch (e) {
+      for (const key of keys) outageKeys.add(key);
+      for (const [key, changes] of members) {
+        for (const [member, change] of changes) {
+          const current = outageMembers.get(key);
+          if (current && current.has(member)) continue;
+          recordOutageMember(key, member, change);
+        }
+      }
+      throw e;
     }
   }
 
@@ -197,9 +497,9 @@ async function initKv({ logger }) {
 
   const kv = {
     // set(key, value[, options])
-    // - options.ex: expire in seconds
-    async set(key, value, options) {
-      const ex = options && typeof options === "object" ? options.ex : undefined;
+    // - options.ex: expire in seconds; the ioredis positional "EX", s / "PX", ms is read too
+    async set(key, value, ...options) {
+      const ex = expirySeconds(options);
       if (redisAvailable && redis) {
         try {
           if (typeof ex === "number" && Number.isFinite(ex) && ex > 0) {
@@ -234,7 +534,7 @@ async function initKv({ logger }) {
           disableRedis(e);
         }
       }
-      memoryKv.delete(key);
+      memoryDel(key);
     },
 
     // Redis Set helpers (best-effort). Used for live robot indexing.
@@ -316,7 +616,8 @@ async function initKv({ logger }) {
             if (ex) pipeline.set(String(e.key), e.value, "EX", ex);
             else pipeline.set(String(e.key), e.value);
           }
-          await pipeline.exec();
+          const lost = connectionFailureIn(await pipeline.exec());
+          if (lost) throw lost;
           return;
         } catch (e) {
           disableRedis(e);
@@ -369,8 +670,8 @@ async function initKv({ logger }) {
           ops.push({ type: "get", key });
           return builder;
         },
-        set(key, value, options) {
-          const ex = options && typeof options === "object" ? options.ex : undefined;
+        set(key, value, ...options) {
+          const ex = expirySeconds(options);
           ops.push({ type: "set", key, value, ex });
           return builder;
         },
@@ -384,6 +685,8 @@ async function initKv({ logger }) {
                 else p.set(o.key, o.value);
               }
               const results = await p.exec();
+              const lost = connectionFailureIn(results);
+              if (lost) throw lost;
               // ioredis pipeline results are [err, result] pairs in command order.
               return results.map(([err, result]) => (err ? null : result));
             } catch (e) {
@@ -403,7 +706,9 @@ async function initKv({ logger }) {
 
     /**
      * Atomically increment a counter and set/refresh its TTL.
-     * Uses Redis INCR + EXPIRE for true atomicity; falls back to safe GET+SET.
+     * INCR and EXPIRE run in one MULTI, so a connection lost between the two cannot leave
+     * a counter with no expiry — for `pairingAttempts:{robotId}` that would count failures
+     * forever instead of per 300 s window. Falls back to GET+SET in memory.
      *
      * @param {string} key
      * @param {{ ex?: number }} [options]  ex = TTL in seconds
@@ -412,10 +717,10 @@ async function initKv({ logger }) {
     async incr(key, { ex } = {}) {
       if (redisAvailable && redis) {
         try {
-          const next = await redis.incr(key);
-          if (typeof ex === "number" && Number.isFinite(ex) && ex > 0) {
-            await redis.expire(key, Math.floor(ex));
-          }
+          if (!(typeof ex === "number" && Number.isFinite(ex) && ex > 0)) return await redis.incr(key);
+          const results = await redis.multi().incr(key).expire(key, Math.floor(ex)).exec();
+          const [incrErr, next] = (results && results[0]) || [new Error("MULTI aborted")];
+          if (incrErr) throw incrErr;
           return next;
         } catch (e) {
           disableRedis(e);
@@ -555,16 +860,37 @@ async function initKv({ logger }) {
       await kv.del(key);
     },
 
+    /**
+     * Subscribe to the facade's mode changes: `"fallback"` when a connected Redis is lost and
+     * reads and writes move to the in-memory store, `"recovered"` when Redis answers again with
+     * the outage reconciled. Never called when Redis is not configured.
+     *
+     * @param {(mode: "fallback"|"recovered") => void|Promise<void>} listener
+     * @returns {() => void} unsubscribe
+     */
+    onModeChange(listener) {
+      if (typeof listener !== "function") return () => {};
+      modeListeners.add(listener);
+      return () => modeListeners.delete(listener);
+    },
+
     // Best-effort health signal for monitoring endpoints.
     //   redis        — a live connection is currently usable
     //   configured   — the operator asked for Redis at all
     //   reconnecting — configured, currently down, and actively being retried
     //                  (i.e. degraded but not permanently latched)
+    //   memoryEntries — keys held by the in-memory store (all of them when Redis is off)
+    //   outagePending — keys and set members written during the current outage, reconciled on
+    //                   reconnect (always 0 when Redis is off or connected)
     health() {
+      let pendingMembers = 0;
+      for (const changes of outageMembers.values()) pendingMembers += changes.size;
       return {
         redis: Boolean(redisAvailable && redis),
         configured: redisConfigured,
         reconnecting: Boolean(redisConfigured && !redisAvailable),
+        memoryEntries: memoryKv.size,
+        outagePending: outageKeys.size + pendingMembers,
       };
     },
   };
@@ -575,6 +901,8 @@ async function initKv({ logger }) {
     kv,
     async close() {
       closed = true;
+      modeListeners.clear();
+      clearInterval(sweepTimer);
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -598,4 +926,6 @@ async function initKv({ logger }) {
 
 module.exports = {
   initKv,
+  redisSettings,
+  MEMORY_SWEEP_INTERVAL_MS,
 };

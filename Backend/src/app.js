@@ -51,18 +51,30 @@ app.get("/health", async (req, res) => {
   const kv = req.app?.locals?.kv;
   const prisma = req.app?.locals?.prisma;
 
-  let redisOk = false;
+  // `redis` is read from the facade's connection state. A set/get round trip alone cannot tell
+  // Redis from the in-memory fallback — both answer "1" — so this used to report "ok" for a
+  // process with no Redis at all.
+  //   disabled — not configured (REDIS_ENABLED=false or no REDIS_URL): in-memory, one process
+  //   ok       — configured, connected, and a round trip through Redis succeeded
+  //   fail     — configured but unreachable: on the in-memory fallback and reconnecting
+  let redisStatus = "fail";
   let dbOk = false;
 
   try {
-    const hinted = typeof kv?.health === "function" ? kv.health() : null;
-    if (hinted?.redis === true) redisOk = true;
-    const key = `health:${Date.now()}`;
-    await kv?.set(key, "1", { ex: 2 });
-    if ((await kv?.get(key)) === "1") redisOk = true;
-    await kv?.del(key);
+    const state = typeof kv?.health === "function" ? kv.health() : null;
+    if (state && !state.configured) {
+      redisStatus = "disabled";
+    } else if (state?.redis) {
+      const key = `health:${Date.now()}`;
+      await kv.set(key, "1", { ex: 2 });
+      const roundTrip = (await kv.get(key)) === "1";
+      await kv.del(key);
+      // A command that fails mid-probe switches the facade to its fallback, which still
+      // answers "1", so the connection state is read again after the round trip.
+      if (roundTrip && kv.health().redis) redisStatus = "ok";
+    }
   } catch {
-    redisOk = false;
+    redisStatus = "fail";
   }
 
   try {
@@ -224,7 +236,7 @@ app.get("/health", async (req, res) => {
 
   res.json({
     server: "ok",
-    redis: redisOk ? "ok" : "fail",
+    redis: redisStatus,
     db: dbOk ? "ok" : "fail",
     degraded,
     shard,

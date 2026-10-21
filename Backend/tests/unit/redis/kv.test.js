@@ -126,7 +126,7 @@ describe("cache/kv — health() when Redis is deliberately not configured", () =
   // to reconnect to and the in-memory fallback is the correct behavior.
   test("reports redis:false and configured:false when no REDIS_URL is set (matches tests/setup/env.js)", async () => {
     const { kv } = await createTestKv();
-    expect(kv.health()).toEqual({ redis: false, configured: false, reconnecting: false });
+    expect(kv.health()).toEqual({ redis: false, configured: false, reconnecting: false, memoryEntries: 0, outagePending: 0 });
   });
 
   test("stays on the in-memory fallback, and does not claim to be reconnecting", async () => {
@@ -140,5 +140,76 @@ describe("cache/kv — health() when Redis is deliberately not configured", () =
     expect(kv.health().reconnecting).toBe(false);
     // Every read/write above must still have succeeded via memory fallback.
     expect(await kv.get("k4")).toBe("v");
+  });
+});
+
+describe("cache/kv — TTL argument forms (in-memory)", () => {
+  // `cellPairCache.write` and `capacityPricingClient.write` pass the ioredis positional form.
+  // It used to be read as "no options" and the entry never expired.
+  test.each([
+    ["{ ex }", [{ ex: 1 }]],
+    ['"EX", seconds', ["EX", 1]],
+    ['"ex", seconds (case-insensitive)', ["ex", 1]],
+    ['"PX", milliseconds', ["PX", 1000]],
+  ])("set(key, value, %s) expires", async (_label, options) => {
+    jest.useFakeTimers();
+    try {
+      const { kv, close } = await createTestKv();
+      await kv.set("ttl-form", "v", ...options);
+      expect(await kv.get("ttl-form")).toBe("v");
+      jest.advanceTimersByTime(1100);
+      expect(await kv.get("ttl-form")).toBeNull();
+      await close();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("pipeline().set reads the positional form too", async () => {
+    jest.useFakeTimers();
+    try {
+      const { kv, close } = await createTestKv();
+      await kv.pipeline().set("p-ttl", "v", "EX", 1).exec();
+      jest.advanceTimersByTime(1100);
+      expect(await kv.get("p-ttl")).toBeNull();
+      await close();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe("cache/kv — the in-memory store stays bounded", () => {
+  test("expired entries that are never read again are swept", async () => {
+    jest.useFakeTimers();
+    try {
+      const { kv, close } = await createTestKv();
+      const { MEMORY_SWEEP_INTERVAL_MS } = require("../../../src/cache/kv");
+      for (let i = 0; i < 50; i++) await kv.set(`metrics:allocation:${i}`, "x", { ex: 1 });
+      await kv.set("no-ttl", "kept");
+      await kv.set("long-ttl", "kept", { ex: 3600 });
+      expect(kv.health().memoryEntries).toBe(52);
+
+      jest.advanceTimersByTime(MEMORY_SWEEP_INTERVAL_MS + 1);
+
+      expect(kv.health().memoryEntries).toBe(2);
+      expect(await kv.get("no-ttl")).toBe("kept");
+      expect(await kv.get("long-ttl")).toBe("kept");
+      await close();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("close() stops the sweep timer", async () => {
+    jest.useFakeTimers();
+    try {
+      const { close } = await createTestKv();
+      expect(jest.getTimerCount()).toBe(1);
+      await close();
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
