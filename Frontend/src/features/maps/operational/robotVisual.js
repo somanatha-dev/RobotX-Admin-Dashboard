@@ -37,6 +37,7 @@
 
 import { normalizeStatus } from '../../../lib/robotStatus.js';
 import { toRobotWorldAnchor } from '../world/robotWorldAnchor.js';
+import { robotColorFor } from './robotColors.js';
 
 /** Renderer names. The registry resolves these; see robotRendererRegistry.js. */
 export const ROBOT_REPRESENTATION = Object.freeze({
@@ -92,39 +93,12 @@ function deriveHealth(robotState) {
 // this lived inside useRobotStream; it is identity, not marker chrome, so it
 // belongs with the semantic model.
 
-function hashStringToInt(str) {
-  let h = 2166136261;
-  for (let i = 0; i < str.length; i += 1) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-function hslToHex(h, s, l) {
-  const _s = s / 100;
-  const _l = l / 100;
-  const c = (1 - Math.abs(2 * _l - 1)) * _s;
-  const hp = (h % 360) / 60;
-  const x = c * (1 - Math.abs((hp % 2) - 1));
-  let r1 = 0;
-  let g1 = 0;
-  let b1 = 0;
-  if (hp >= 0 && hp < 1) [r1, g1, b1] = [c, x, 0];
-  else if (hp >= 1 && hp < 2) [r1, g1, b1] = [x, c, 0];
-  else if (hp >= 2 && hp < 3) [r1, g1, b1] = [0, c, x];
-  else if (hp >= 3 && hp < 4) [r1, g1, b1] = [0, x, c];
-  else if (hp >= 4 && hp < 5) [r1, g1, b1] = [x, 0, c];
-  else [r1, g1, b1] = [c, 0, x];
-  const m = _l - c / 2;
-  const toHex = (n) => Math.round((n + m) * 255).toString(16).padStart(2, '0');
-  return `#${toHex(r1)}${toHex(g1)}${toHex(b1)}`;
-}
-
-/** Deterministic identity colour for a robot id. */
+/**
+ * The robot's identity colour: distinct from every other robot on the map (see
+ * `robotColors.js`, which holds the fleet assignment), deterministic per id otherwise.
+ */
 export function colorForRobot(robotId) {
-  const id = String(robotId || 'robot');
-  return hslToHex(hashStringToInt(id) % 360, 78, 55);
+  return robotColorFor(robotId);
 }
 
 /**

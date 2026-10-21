@@ -25,6 +25,7 @@ import { injectPulseCSS, applyMarkerZoomScale } from '@/lib/mapboxMarkers.js';
 import '@/features/maps/operational/renderers/robotMarker2dRenderer.js';
 import { createRobotRenderer } from '@/features/maps/operational/robotRendererRegistry.js';
 import { ROBOT_REPRESENTATION, toRobotVisual, colorForRobot } from '@/features/maps/operational/robotVisual.js';
+import { setFleetRobotIds } from '@/features/maps/operational/robotColors.js';
 import { anchorToLngLat } from '@/features/maps/world/robotWorldAnchor.js';
 import { ROUTE_SEGMENT, advanceRouteState } from '@/features/maps/operational/routeGeometry.js';
 import { summariseRouteFindings, validateRoute } from '@/features/maps/operational/routeValidation.js';
@@ -625,6 +626,8 @@ export function useRobotStream({
       // replan that keeps the same task id.
       const signature = [
         taskId,
+        // The robot's colour: a fleet change can give it a new one, and its route follows.
+        color,
         record?.pathRevision || 0,
         state.segment,
         state.onRoute ? 1 : 0,
@@ -658,6 +661,20 @@ export function useRobotStream({
       let pickupMarker = existing?.pickupMarker || null;
       let dropMarker = existing?.dropMarker || null;
 
+      // Both pins wear the robot's colour, so an operator can tell whose pickup and drop they
+      // are. A pin drawn in a colour the robot no longer has is rebuilt rather than restyled.
+      if (existing && existing.missionColor !== color) {
+        for (const pin of [pickupMarker, dropMarker]) {
+          try {
+            pin?.remove();
+          } catch {
+            // ignore
+          }
+        }
+        pickupMarker = null;
+        dropMarker = null;
+      }
+
       // Place each pin at the PATH ENDPOINT — where the dashed (pickup) and solid (drop)
       // lines actually end — rather than at the task's stated address. On the V1 engine path
       // the route ends at the stop's exact coordinate, so the two coincide; a provider route
@@ -686,7 +703,7 @@ export function useRobotStream({
       if (snapDropLL) {
         if (!dropMarker) {
           dropMarker = new mapboxgl.Marker({
-            element: createMissionMarkerEl({ color: '#22c55e', label: 'Drop' }),
+            element: createMissionMarkerEl({ color, label: 'Drop' }),
             anchor: 'center',
           })
             .setLngLat(snapDropLL)
@@ -772,6 +789,7 @@ export function useRobotStream({
         progress,
         pickupMarker,
         dropMarker,
+        missionColor: color,
       });
     },
     [mapRef, removeRouteForRobot, themeRef, publishFindings]
@@ -1198,6 +1216,12 @@ export function useRobotStream({
       const map = mapRef?.current;
       const store = markersRef?.current;
       if (!map || !store) return;
+
+      // Distinct identity colours over the robots this map shows (`robotColors.js`). A robot
+      // whose colour changed — the fleet gained or lost a unit — is drawn again below even if
+      // its row did not change, so its marker, route and pins take the new colour together.
+      const listed = (Array.isArray(list) ? list : []).map((r) => String(r?.robotId || '').trim()).filter(Boolean);
+      for (const id of setFleetRobotIds(listed)) lastSyncedRowRef.current.delete(id);
 
       const nextIds = new Set();
       for (const r of Array.isArray(list) ? list : []) {

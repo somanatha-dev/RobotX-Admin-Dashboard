@@ -32,6 +32,7 @@ import {
   setMarkerSelected,
   setMarkerHovered,
   setMarkerFreshness,
+  setMarkerColor,
   markerScaleForZoom,
 } from '../../../../lib/mapboxMarkers.js';
 import { prefersReducedMotion, subscribeReducedMotion } from '../../../../lib/reducedMotion.js';
@@ -49,6 +50,7 @@ import {
 } from '../robotMotion.js';
 import { registerRobotRenderer } from '../robotRendererRegistry.js';
 import { ROBOT_REPRESENTATION } from '../robotVisual.js';
+import { colocationLayout } from '../colocatedRobots.js';
 
 // ── Motion (see `../robotMotion.js`) ─────────────────────────────────────────
 //
@@ -194,6 +196,48 @@ export function createRobotMarker2dRenderer(context = {}) {
     freshnessTimer = null;
   };
 
+  // ── Robots on one spot (see `../colocatedRobots.js`) ─────────────────────
+  // Markers sit at their robots' true coordinates, so robots parked on the same point drew as one
+  // marker. Each robot's newest target position decides its group; the group is fanned out with a
+  // pixel offset on the marker, which shifts only the drawn icon — never the robot's coordinate.
+  // Recomputed once per batch of mounts/updates/removals (a microtask), never per animation frame.
+  let relayoutQueued = false;
+  let disposed = false;
+
+  const relayout = () => {
+    relayoutQueued = false;
+    if (disposed) return;
+    const handles = [...liveHandles];
+    const layout = colocationLayout(handles.map((h) => ({ id: h.robotId, lngLat: h.targetLngLat })));
+    for (const handle of handles) {
+      const { offset, groupSize } = layout.get(String(handle.robotId)) || { offset: [0, 0], groupSize: 1 };
+      if (handle.offset[0] !== offset[0] || handle.offset[1] !== offset[1]) {
+        try {
+          handle.marker?.setOffset?.(offset);
+        } catch {
+          // ignore
+        }
+        handle.offset = offset;
+      }
+      if (handle.groupSize !== groupSize) {
+        handle.groupSize = groupSize;
+        if (groupSize > 1) {
+          handle.root.dataset.colocated = String(groupSize);
+          if (handle.hitEl) handle.hitEl.title = `${groupSize} robots at this point`;
+        } else {
+          delete handle.root.dataset.colocated;
+          if (handle.hitEl) handle.hitEl.removeAttribute('title');
+        }
+      }
+    }
+  };
+
+  const scheduleRelayout = () => {
+    if (relayoutQueued || disposed) return;
+    relayoutQueued = true;
+    queueMicrotask(relayout);
+  };
+
   // Turning reduced motion on mid-session finishes every tween where it was heading.
   const unsubscribeReducedMotion = subscribeReducedMotion((reduced) => {
     reducedMotion = reduced;
@@ -238,6 +282,13 @@ export function createRobotMarker2dRenderer(context = {}) {
         hasHeading: visual.anchor.hasHeading,
         isOnline: visual.isOnline,
         listeners: [],
+        // Co-location (see `relayout`): the newest sample, the applied pixel offset, the group size.
+        targetLngLat: lngLat,
+        offset: [0, 0],
+        groupSize: 1,
+        hitEl,
+        // The identity colour drawn; recoloured in `update` when the fleet assignment changes.
+        color: visual.color,
       };
 
       // ── Interaction → application state ──────────────────────────────────
@@ -297,6 +348,7 @@ export function createRobotMarker2dRenderer(context = {}) {
 
       liveHandles.add(handle);
       ensureFreshnessTimer();
+      scheduleRelayout();
       return handle;
     },
 
@@ -312,6 +364,15 @@ export function createRobotMarker2dRenderer(context = {}) {
 
       updateMarkerInfo(handle.root, { battery: visual.battery, status: visual.status });
       setMarkerSelected(handle.root, visual.selected);
+      if (visual.color && visual.color !== handle.color) {
+        setMarkerColor(handle.root, visual.color);
+        handle.color = visual.color;
+      }
+
+      if (handle.targetLngLat[0] !== to[0] || handle.targetLngLat[1] !== to[1]) {
+        handle.targetLngLat = to;
+        scheduleRelayout();
+      }
 
       const t = now();
       const mode = retargetTrack(
@@ -372,9 +433,12 @@ export function createRobotMarker2dRenderer(context = {}) {
         stopLoop();
         stopFreshnessTimer();
       }
+      // The robot it shared a spot with stands alone again.
+      scheduleRelayout();
     },
 
     dispose() {
+      disposed = true;
       for (const handle of [...liveHandles]) {
         this.destroy(handle);
       }

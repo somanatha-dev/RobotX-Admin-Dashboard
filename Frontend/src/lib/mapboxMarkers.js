@@ -494,6 +494,21 @@ export function setMarkerSelected(root, selected) {
   root.style.zIndex = selected ? '40' : '10';
 }
 
+/**
+ * Recolour a robot marker in place — its id chip, vehicle body and selection rings — when the
+ * fleet's colour assignment gives it a new identity colour (`operational/robotColors.js`).
+ */
+export function setMarkerColor(root, color) {
+  if (!root || !color) return;
+  if (root._labelEl) root._labelEl.style.background = color;
+  if (root._carEl) root._carEl.innerHTML = carSvg(color);
+  if (root._selectRing) {
+    root._selectRing.style.borderColor = color;
+    root._selectRing.style.boxShadow = `0 0 0 3px ${color}22, 0 0 14px ${color}66`;
+  }
+  if (root._selectPulse) root._selectPulse.style.borderColor = color;
+}
+
 export function setMarkerHovered(root, hovered) {
   if (!root) return;
   const ring = root._selectRing;
