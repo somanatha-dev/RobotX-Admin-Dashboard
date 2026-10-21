@@ -347,6 +347,53 @@ const lastTelemetryLogAt = new Map();
 const mapIncomingStatusToDb = robotStatusPrecedence.toPersistedStatus;
 
 
+/**
+ * The frame's place in the agent's own stream: its `sequence`, else its agent `timestamp`. A
+ * legacy frame with neither has no place, and is never ordered.
+ *
+ * @param {object} payload the parsed frame
+ * @returns {{ sequence: number|null, timestamp: number|null }}
+ */
+function frameOrdinal(payload) {
+  const sequence = toNumberOrNull(payload?.sequence);
+  const timestamp = toNumberOrNull(payload?.timestamp);
+  return {
+    sequence: Number.isFinite(sequence) ? sequence : null,
+    timestamp: Number.isFinite(timestamp) ? timestamp : null,
+  };
+}
+
+/**
+ * Claim a frame for this connection, or refuse it as a duplicate or out of order: a sequence
+ * that does not exceed the newest accepted one (or, between frames without a sequence, a
+ * timestamp that does not). The sequence decides when both frames carry one, so an agent clock
+ * stepped backwards by NTP does not freeze the stream.
+ *
+ * Per connection, held on `socket.data`, and synchronous — called before the handler's first
+ * await, so two frames can never both claim the same place. A new connection starts with no
+ * mark: an agent whose counter restarted is not refused here (the Observation log, which
+ * orders across restarts, still refuses its frames until it has counted past its old mark).
+ *
+ * @param {object} socket
+ * @param {{ sequence: number|null, timestamp: number|null }} ordinal
+ * @returns {boolean} true when the frame is newer than every frame accepted on this connection
+ */
+function claimFrameOrder(socket, ordinal) {
+  const newest = socket.data.telemetryNewest || null;
+  if (newest) {
+    if (ordinal.sequence !== null && newest.sequence !== null) {
+      if (ordinal.sequence <= newest.sequence) return false;
+    } else if (ordinal.timestamp !== null && newest.timestamp !== null) {
+      if (ordinal.timestamp <= newest.timestamp) return false;
+    }
+  }
+  socket.data.telemetryNewest = {
+    sequence: ordinal.sequence ?? newest?.sequence ?? null,
+    timestamp: ordinal.timestamp ?? newest?.timestamp ?? null,
+  };
+  return true;
+}
+
 // Pure — builds the value to SET under snapshotState:{robotId}. Split from
 // the write itself so the telemetry hot path can queue it into a batched
 // pipeline instead of awaiting its own round trip (see handleTelemetry).
@@ -484,6 +531,26 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
 
       const robotId = toStringOrNull(socket.data.robotId);
       if (!robotId) return;
+
+      // A re-sent or reordered frame carries nothing newer than what was already applied, and
+      // applying it would move the robot backwards on the map and put its stale status on the
+      // Robot row. The durable writers order their own rows (the Observation log by sequence,
+      // `BatteryState` by observed time), so a frame refused here is one they refuse as well.
+      if (!claimFrameOrder(socket, frameOrdinal(payload))) {
+        socket.data.telemetryStaleFrames = (socket.data.telemetryStaleFrames || 0) + 1;
+        if (socket.data.telemetryStaleFrames % 100 === 1) {
+          log.warn?.("TELEMETRY frame not newer than one already applied on this connection — dropped", {
+            robotId,
+            sequence: toNumberOrNull(payload?.sequence),
+            timestamp: toNumberOrNull(payload?.timestamp),
+            droppedOnConnection: socket.data.telemetryStaleFrames,
+          });
+        }
+        return;
+      }
+      // This frame's arrival order on the connection, for the live-state check below.
+      socket.data.telemetryReceipt = (socket.data.telemetryReceipt || 0) + 1;
+      const receipt = socket.data.telemetryReceipt;
 
       // ── PHASE 14 — §23.2 / §23.5: capability is rejected entirely ───────────
       //
@@ -1114,6 +1181,14 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
           }
         }
       } catch { /* non-critical */ }
+
+      // Two frames from one connection can be in flight at once when a database write is slow,
+      // and finish in either order. Once a later frame has written the live state, this one's
+      // values are older: writing them, broadcasting them or feeding them to supervision would
+      // put the robot back where it was. The durable writes above are not affected — each
+      // orders its own rows. Checked and claimed with no await in between.
+      if ((socket.data.telemetryLiveWritten || 0) > receipt) return;
+      socket.data.telemetryLiveWritten = receipt;
 
       // Flush this tick's Redis writes — robot:*, registry:*, and whichever
       // of snapshotState:*/vr:battery* were queued above — as one pipelined

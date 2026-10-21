@@ -37,7 +37,7 @@ async function createTelemetryReplay(input) {
   const { registerTelemetryHandlers } = require(`${SRC}/sockets/handlers/telemetry.handler`);
   const robotStateCache = require(`${SRC}/cache/robotStateCache`);
 
-  const socket = createFakeSocket({ id: `sock-${robotId}` });
+  let socket = createFakeSocket({ id: `sock-${robotId}` });
   const dbRow = { id: `db-${robotId}`, robotId, speed: 0, isOnline: true, socketId: socket.id, ...row };
   const writes = [];
   const prisma = createMockPrisma();
@@ -61,27 +61,32 @@ async function createTelemetryReplay(input) {
 
   let virtualNow = startMs;
   const realNow = Date.now;
-  registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals: { config: { values: configValues } } });
+  const handlerDeps = { prisma, kv, logger, appLocals: { config: { values: configValues } } };
+  registerTelemetryHandlers(io, socket, handlerDeps);
 
   const refusals = () => logLines.filter((l) => /TELEMETRY refused/.test(l.msg)).length;
   const updates = () => io.emittedTo("dashboard", "robot:update").length;
+  // Frames the handler's per-connection ordering dropped as not newer than one it applied.
+  const dropped = () => socket.data.telemetryStaleFrames || 0;
 
   /**
    * Send one frame and settle it.
    * @param {object} frame a TELEMETRY payload; its `timestamp` is replaced by the virtual clock
-   * @returns {Promise<{ accepted: boolean, refused: boolean, broadcast: object|null }>}
+   * @returns {Promise<{ accepted: boolean, refused: boolean, dropped: boolean, broadcast: object|null }>}
+   *   `dropped` — the connection had already applied a frame at or after this one's sequence
    */
   async function send(frame) {
     virtualNow += stepMs;
     Date.now = () => virtualNow;
     try {
-      const before = { refused: refusals(), updates: updates() };
+      const before = { refused: refusals(), updates: updates(), dropped: dropped() };
       socket.trigger("TELEMETRY", { ...frame, timestamp: virtualNow });
       for (let i = 0; i < 2000; i += 1) {
+        if (dropped() > before.dropped) return { accepted: false, refused: false, dropped: true, broadcast: null };
         if (updates() > before.updates) {
-          return { accepted: true, refused: false, broadcast: io.emittedTo("dashboard", "robot:update").slice(-1)[0] };
+          return { accepted: true, refused: false, dropped: false, broadcast: io.emittedTo("dashboard", "robot:update").slice(-1)[0] };
         }
-        if (refusals() > before.refused) return { accepted: false, refused: true, broadcast: null };
+        if (refusals() > before.refused) return { accepted: false, refused: true, dropped: false, broadcast: null };
         // eslint-disable-next-line no-await-in-loop
         await new Promise((resolve) => setImmediate(resolve));
       }
@@ -100,6 +105,17 @@ async function createTelemetryReplay(input) {
     logLines,
     securityEvents: () => io.emittedTo("dashboard", "SECURITY_EVENT"),
     refusals,
+    /**
+     * The robot reconnects: a new socket, bound to the row as AUTH binds it, with the same
+     * handler module (its per-robot state carries over; the per-connection ordering does not).
+     */
+    reconnect() {
+      socket = createFakeSocket({ id: `sock-${robotId}-${Math.random().toString(36).slice(2, 8)}` });
+      socket.data.isAuthed = true;
+      socket.data.robotId = robotId;
+      dbRow.socketId = socket.id;
+      registerTelemetryHandlers(io, socket, handlerDeps);
+    },
   };
 }
 

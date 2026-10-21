@@ -122,16 +122,36 @@ describe("D-2 — the check is not weakened", () => {
     expect((await replay.send(frame("IDLE", 65, 3))).refused).toBe(true);
   });
 
-  test("an out-of-order (older, higher) frame after a newer accepted one is refused", async () => {
+  // On one connection a frame whose sequence is not newer is dropped before any check runs (the
+  // handler's frame ordering). The energy reference is per robot, not per connection, so the same
+  // frames are also replayed across a reconnect, where only the §23.5 check stands between them
+  // and the reference.
+  test("an out-of-order (older, higher) frame after a newer accepted one is not applied", async () => {
     const replay = await createTelemetryReplay({ robotId: "SIM-OOO", row: { status: "IDLE", battery: 60, lat: 12.9, lon: 77.5 }, configValues: THRESHOLD });
     expect((await replay.send(frame("IDLE", 60, 1))).accepted).toBe(true);
     expect((await replay.send(frame("IDLE", 59.5, 3))).accepted).toBe(true);
+    expect((await replay.send(frame("IDLE", 59.9, 2))).dropped).toBe(true);
+  });
+
+  test("across a reconnect, the same out-of-order frame is refused by the energy check", async () => {
+    const replay = await createTelemetryReplay({ robotId: "SIM-OOO-RC", row: { status: "IDLE", battery: 60, lat: 12.9, lon: 77.5 }, configValues: THRESHOLD });
+    expect((await replay.send(frame("IDLE", 60, 1))).accepted).toBe(true);
+    expect((await replay.send(frame("IDLE", 59.5, 3))).accepted).toBe(true);
+    replay.reconnect();
     expect((await replay.send(frame("IDLE", 59.9, 2))).refused).toBe(true);
   });
 
   test("a duplicate of the newest frame carries no rise and cannot raise the reference", async () => {
     const replay = await createTelemetryReplay({ robotId: "SIM-DUP", row: { status: "IDLE", battery: 60, lat: 12.9, lon: 77.5 }, configValues: THRESHOLD });
     expect((await replay.send(frame("IDLE", 59.8, 1))).accepted).toBe(true);
+    expect((await replay.send(frame("IDLE", 59.8, 1))).dropped).toBe(true);
+    expect((await replay.send(frame("IDLE", 60, 2))).refused).toBe(true);
+  });
+
+  test("across a reconnect, a duplicate is admitted by the energy check and still cannot raise the reference", async () => {
+    const replay = await createTelemetryReplay({ robotId: "SIM-DUP-RC", row: { status: "IDLE", battery: 60, lat: 12.9, lon: 77.5 }, configValues: THRESHOLD });
+    expect((await replay.send(frame("IDLE", 59.8, 1))).accepted).toBe(true);
+    replay.reconnect();
     expect((await replay.send(frame("IDLE", 59.8, 1))).accepted).toBe(true);
     expect((await replay.send(frame("IDLE", 60, 2))).refused).toBe(true);
   });

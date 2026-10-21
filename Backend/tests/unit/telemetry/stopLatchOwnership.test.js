@@ -157,7 +157,10 @@ describe("the original races (public path: telemetry → physicalFacts → F7)",
     socket.trigger("TELEMETRY", latchFrame(true, now - 100, 12.9002)); // frame B: newer, completes
     await settled(async () => (await f7(real)).outcome === "VIOLATED");
     gate.release(); // A finishes last
-    await settled(async () => JSON.parse((await real.get(`registry:${ROBOT}`)) || "{}").lat === 12.9001);
+    // A's live-state flush is skipped: B, a later frame from the same connection, already wrote
+    // it (telemetry ordering), so the registry keeps B's position rather than going back to A's.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(JSON.parse(await real.get(`registry:${ROBOT}`)).lat).toBe(12.9002);
 
     const verdict = await f7(real);
     expect(verdict.emergencyStop).toMatchObject({ value: true, observedAt: new Date(now - 100) });
