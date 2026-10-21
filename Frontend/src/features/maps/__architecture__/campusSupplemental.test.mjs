@@ -38,6 +38,7 @@ import {
 } from '../campus/campusSchema.js';
 import { RNSIT_CAMPUS_OSM } from '../campus/data/rnsit/rnsitCampusOsm.js';
 import { RNSIT_CAMPUS_SUPPLEMENTAL } from '../campus/data/rnsit/rnsitCampusSupplemental.js';
+import { RNSIT_CAMPUS_ACCESS_CANDIDATES } from '../campus/data/rnsit/rnsitCampusAccessCandidates.js';
 import { importOsmCampus, osmDataset } from '../campus/osm/osmCampusImport.js';
 import {
   BOUNDARY_UNCERTAINTY_M,
@@ -596,7 +597,11 @@ test('the merged campus definition is valid and both sources survive it', () => 
   assert.equal(byProvenance[PROVENANCE.OPEN_DATA_IMPORT], 54);
   assert.equal(byProvenance[PROVENANCE.USER_SUPPLIED], 10);
   assert.equal(byProvenance[PROVENANCE.SEED_RECORD], 1);
-  assert.equal(def.features.length, 65);
+  // Plus one feature per site-verified access point in the register (access/accessPointImport.js),
+  // and nothing from an unverified one.
+  const verifiedAccessPoints = RNSIT_CAMPUS_ACCESS_CANDIDATES.features.filter((f) => f.properties.status === 'verified').length;
+  assert.equal(byProvenance[PROVENANCE.DERIVED_ACCESS_POINT] || 0, verifiedAccessPoints);
+  assert.equal(def.features.length, 65 + verifiedAccessPoints);
 
   // Ids are unique across the two sources — a collision would have one dataset
   // silently shadowing the other.

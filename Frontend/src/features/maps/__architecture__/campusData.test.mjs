@@ -204,6 +204,17 @@ test('every RNSIT feature keeps its original provenance AND records who verified
   let supplied = 0;
 
   for (const f of CAMPUS_GEOMETRY.RNSIT.features) {
+    // A site-verified access point (access/accessPointImport.js) is a third provenance with its OWN
+    // dated, attributed review. The campus-wide record below must never cover it, so it is checked
+    // against its review instead of that record.
+    if (f.provenance === PROVENANCE.DERIVED_ACCESS_POINT) {
+      assert.ok([VERIFICATION.VERIFIED_BY_USER, VERIFICATION.VERIFIED].includes(f.verification), `${f.id}: only a reviewed access point is a feature`);
+      assert.match(String(f.verifiedOn), /^\d{4}-\d{2}-\d{2}$/, `${f.id}: its review must be dated`);
+      assert.ok(f.verifiedBy, `${f.id}: its review must name the checker`);
+      assert.ok(f.verificationMethod, `${f.id}: its review must name the method`);
+      assert.notEqual(f.unverifiedCandidate, true, `${f.id}: an unverified candidate is never a production feature`);
+      continue;
+    }
     assert.ok(allowed.has(f.provenance), `${f.id}: unexpected provenance ${f.provenance}`);
     // Checked by the owner — and NOT promoted to VERIFIED, which is reserved
     // for a survey. No such source exists for this campus.

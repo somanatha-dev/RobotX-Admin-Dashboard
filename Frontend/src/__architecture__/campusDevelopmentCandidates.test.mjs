@@ -53,10 +53,20 @@ const importDev = (register, buildings = SIX) =>
     declaredNames: declaredNames(),
     developmentCandidateBuildings: buildings,
   });
-/** The register before any site review, so a recorded review cannot change what is tested here. */
+/**
+ * The register before any site review, so a recorded review cannot change what is tested here.
+ * A reviewed entry is put back as the generator emitted it — `needs_review` when it carries flags,
+ * `candidate` otherwise, with no review — rather than dropped: dropping it would leave these tests
+ * checking an empty set once the department points are verified.
+ */
 const unreviewed = () => {
   const register = clone(RNSIT_CAMPUS_ACCESS_CANDIDATES);
-  register.features = register.features.filter((f) => !f.properties.review && f.properties.status !== ACCESS_STATUS.VERIFIED);
+  for (const f of register.features) {
+    const p = f.properties;
+    if (!p.review && p.status !== ACCESS_STATUS.VERIFIED) continue;
+    p.status = (p.flags || []).length > 0 ? ACCESS_STATUS.NEEDS_REVIEW : ACCESS_STATUS.CANDIDATE;
+    p.review = null;
+  }
   return register;
 };
 const sixCandidates = (register) =>
@@ -204,7 +214,14 @@ test('the inventory offers them to pickup and drop alike, keeps the declared eig
   assert.ok(!inventory.excluded.some((r) => r.reason === X.SERVED_BY_ACCESS_POINT));
 });
 
-test('the real registry, built with the flag set, offers 26 RNSIT locations — and 8 under a production build', () => {
+test('the real registry: the flag adds only the department candidates, and a production build ignores it', () => {
+  // Derived from the register, so a recorded site review moves an entry from "development only" to
+  // "offered everywhere" without editing this test: 8 declared + every verified entry in any build,
+  // plus the unreviewed department candidates only with the flag in a non-production build.
+  const declared = 8;
+  const verified = RNSIT_CAMPUS_ACCESS_CANDIDATES.features.filter((f) => f.properties.status === ACCESS_STATUS.VERIFIED).length;
+  const development = sixCandidates(RNSIT_CAMPUS_ACCESS_CANDIDATES).length;
+  assert.equal(verified + development, 18, 'the six departments have 18 points between them, verified or not');
   const script = [
     "import { pathToFileURL } from 'node:url';",
     `const m = await import(pathToFileURL(${JSON.stringify(path.join(SRC, 'features/tasks/campusLocations.js'))}).href);`,
@@ -217,9 +234,9 @@ test('the real registry, built with the flag set, offers 26 RNSIT locations — 
     Object.assign(env, extra);
     return JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script], { env, encoding: 'utf8' }).trim());
   };
-  assert.deepEqual(run({ [DEVELOPMENT_CANDIDATE_FLAG]: 'true' }), { rnsit: 26, unverified: 18, jssate: 0 });
-  assert.deepEqual(run({ [DEVELOPMENT_CANDIDATE_FLAG]: 'true', NODE_ENV: 'production' }), { rnsit: 8, unverified: 0, jssate: 0 });
-  assert.deepEqual(run({ [DEVELOPMENT_CANDIDATE_FLAG]: 'false' }), { rnsit: 8, unverified: 0, jssate: 0 });
+  assert.deepEqual(run({ [DEVELOPMENT_CANDIDATE_FLAG]: 'true' }), { rnsit: declared + verified + development, unverified: development, jssate: 0 });
+  assert.deepEqual(run({ [DEVELOPMENT_CANDIDATE_FLAG]: 'true', NODE_ENV: 'production' }), { rnsit: declared + verified, unverified: 0, jssate: 0 });
+  assert.deepEqual(run({ [DEVELOPMENT_CANDIDATE_FLAG]: 'false' }), { rnsit: declared + verified, unverified: 0, jssate: 0 });
 });
 
 test('a development location reaches the task request with its exact coordinates and the RNSIT region', () => {

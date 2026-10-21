@@ -647,7 +647,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/204638929",
         "buildingFeatureId": "osm-way-204638929",
         "buildingName": "CSE, ISE & CSDS Department",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -689,7 +689,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 1",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -707,7 +713,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/204638929",
         "buildingFeatureId": "osm-way-204638929",
         "buildingName": "CSE, ISE & CSDS Department",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -749,7 +755,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 2",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -767,7 +779,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/204638929",
         "buildingFeatureId": "osm-way-204638929",
         "buildingName": "CSE, ISE & CSDS Department",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -809,7 +821,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 3",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -827,7 +845,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/204638932",
         "buildingFeatureId": "osm-way-204638932",
         "buildingName": "ECE Department",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -869,7 +887,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 1",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -887,7 +911,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/204638932",
         "buildingFeatureId": "osm-way-204638932",
         "buildingName": "ECE Department",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -929,7 +953,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 2",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -947,7 +977,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/204638932",
         "buildingFeatureId": "osm-way-204638932",
         "buildingName": "ECE Department",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -989,7 +1019,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 3",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -1194,7 +1230,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/204638941",
         "buildingFeatureId": "osm-way-204638941",
         "buildingName": "RNSIT Mec and EEE Department",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -1236,7 +1272,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 1",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -1254,7 +1296,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/204638941",
         "buildingFeatureId": "osm-way-204638941",
         "buildingName": "RNSIT Mec and EEE Department",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -1296,7 +1338,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 2",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -1314,7 +1362,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/204638941",
         "buildingFeatureId": "osm-way-204638941",
         "buildingName": "RNSIT Mec and EEE Department",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -1356,7 +1404,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 3",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -1374,7 +1428,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/204638943",
         "buildingFeatureId": "osm-way-204638943",
         "buildingName": "RNSIT MBA block",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -1416,7 +1470,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 1",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -1434,7 +1494,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/204638943",
         "buildingFeatureId": "osm-way-204638943",
         "buildingName": "RNSIT MBA block",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -1476,7 +1536,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 2",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -1494,7 +1560,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/204638943",
         "buildingFeatureId": "osm-way-204638943",
         "buildingName": "RNSIT MBA block",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -1536,7 +1602,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 3",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -1746,7 +1818,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/1224941276",
         "buildingFeatureId": "osm-way-1224941276",
         "buildingName": "RNS International School",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -1788,7 +1860,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 1",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -1806,7 +1884,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/1224941276",
         "buildingFeatureId": "osm-way-1224941276",
         "buildingName": "RNS International School",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -1848,7 +1926,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 2",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -1866,7 +1950,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/1224941276",
         "buildingFeatureId": "osm-way-1224941276",
         "buildingName": "RNS International School",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -1908,7 +1992,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 3",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -2120,7 +2210,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/1486312656",
         "buildingFeatureId": "osm-way-1486312656",
         "buildingName": "RNSIT Civil and AIML Block",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -2162,7 +2252,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 1",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -2180,7 +2276,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/1486312656",
         "buildingFeatureId": "osm-way-1486312656",
         "buildingName": "RNSIT Civil and AIML Block",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -2222,7 +2318,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 2",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     },
     {
@@ -2240,7 +2342,7 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
         "buildingSourceId": "way/1486312656",
         "buildingFeatureId": "osm-way-1486312656",
         "buildingName": "RNSIT Civil and AIML Block",
-        "status": "candidate",
+        "status": "verified",
         "rejections": [],
         "flags": [],
         "derivation": {
@@ -2282,7 +2384,13 @@ export const RNSIT_CAMPUS_ACCESS_CANDIDATES = {
           "nearDeclaredPoints": [],
           "sharedFrontageWith": []
         },
-        "review": null
+        "review": {
+          "by": "Somanatha Basavanuty",
+          "on": "2026-10-22",
+          "method": "OWNER_SITE_CHECK",
+          "label": "point 3",
+          "note": "C1 yes. C2 yes. C3 yes. C4: none reported. Recorded from the owner's statement that all 18 six-department candidates were checked on site on 2026-10-22 and passed C1-C3."
+        }
       }
     }
   ]
