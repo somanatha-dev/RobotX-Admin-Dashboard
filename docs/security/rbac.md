@@ -19,7 +19,13 @@ everything (HTTP 403 `INVALID_SCOPE`, socket rejected). A missing campus is neve
 
 `security.elevated_roles` is unchanged (`[SUPER_ADMIN]`). The §23.4 action classes (quarantine
 override, safety configuration change, bulk cancellation, manual assignment against policy),
-their reasons, second approvers and audit records apply exactly as before. The platform
+their reasons, second approvers and audit records apply exactly as before, with one exception:
+by owner decision 2026-10-23 a safety configuration change (`POST /api/config/publish`) no longer
+requires a second approver by default. This is a single-owner deployment. The publisher must
+still be an authenticated `SUPER_ADMIN`, give a reason, and leave an `OverrideAudit` record. To
+restore two-person approval, add `SAFETY_CONFIG_CHANGE` to
+`security.second_approver_action_classes`. The route also refuses a spatial map that fails the
+hierarchy's containment check (`SPATIAL_CONTAINMENT`, HTTP 422) before anything is written. The platform
 surfaces below are additionally gated on `role === SUPER_ADMIN` itself (`requireSuperAdmin`),
 so publishing another role into `security.elevated_roles` would not open them.
 

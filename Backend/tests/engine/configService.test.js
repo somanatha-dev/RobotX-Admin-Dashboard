@@ -323,27 +323,24 @@ describe("§22.3 — Safety-class changes", () => {
     expect(service.safetyClassChanges(entries, after.values, null).length).toBeGreaterThan(10);
   });
 
-  test("require two distinct people", async () => {
+  test("the publisher alone is the approving identity (owner decision 2026-10-23: quorum 1)", async () => {
+    expect(service.SAFETY_APPROVAL_QUORUM).toBe(1);
     const { client } = createConfigStore();
-    await expect(
-      service.publish(client, { publishedBy: "ops-1", bindings: safetyChange, approvals: [] }),
-    ).rejects.toMatchObject({ name: "ConfigValidationError" });
+    const published = await service.publish(client, { publishedBy: "ops-1", bindings: safetyChange, approvals: [] });
+    expect(published.version).toBe(1);
+    expect(published.safetyClassChanges.length).toBeGreaterThan(0);
 
-    await expectRefused(
-      service.publish(client, {
-        publishedBy: "ops-1",
-        bindings: safetyChange,
-        approvals: [{ approverId: "ops-1", approvedAt: "t" }],
-      }),
-      /two-person approval requires 2/,
-    );
-
-    const published = await service.publish(client, {
+    // A second approval, when given, is still accepted.
+    const second = await service.publish(client, {
       publishedBy: "ops-1",
-      bindings: safetyChange,
+      bindings: BASELINE,
       approvals: [{ approverId: "safety-1", approvedAt: "t" }],
     });
-    expect(published.version).toBe(1);
+    expect(second.version).toBe(2);
+  });
+
+  test("a Safety-class change carrying no identity at all is still refused (S2)", () => {
+    expect(service.checkSafetyApproval({ publishedBy: "", approvals: [] }, ["lease.duration"]).map((f) => f.id)).toContain("S2");
   });
 
   test("every approval records who gave it and when", () => {
@@ -398,13 +395,19 @@ describe("§22.3 / §23.4 — the approval record of an HTTP publish (verifiedAp
     expect(service.checkApprovalIdentities({ publishedBy: "ops-1", approvals })).toEqual([]);
   });
 
-  test("an HTTP publish with no verified approver attached is refused (S5) and nothing is written", async () => {
+  test("an HTTP publish with no verified approver publishes on the publisher's identity alone (S5 removed 2026-10-23)", async () => {
     const { client, versions } = createConfigStore();
-    await expectRefused(
-      service.publish(client, { publishedBy: "ops-1", bindings: BASELINE, approvals: [], verifiedApproverId: null }),
-      /no second approver verified by the route gate/,
-    );
-    expect(versions).toHaveLength(0);
+    const published = await service.publish(client, { publishedBy: "ops-1", bindings: BASELINE, approvals: [], verifiedApproverId: null });
+    expect(published.version).toBe(1);
+    expect(versions).toHaveLength(1);
+    expect(versions[0].approvals).toEqual([]);
+  });
+
+  test("with no verified approver, approvals[] may name only the publisher (S4)", () => {
+    const check = (approvals) => service.checkApprovalIdentities({ publishedBy: "ops-1", approvals, verifiedApproverId: null }).map((f) => f.id);
+    expect(check([])).toEqual([]);
+    expect(check([{ approverId: "ops-1", approvedAt: "t" }])).toEqual([]);
+    expect(check([{ approverId: "safety-1", approvedAt: "t" }])).toEqual(["S4"]);
   });
 
   test("approvals[] may name the publisher and the verified approver, and nobody else (S4)", () => {

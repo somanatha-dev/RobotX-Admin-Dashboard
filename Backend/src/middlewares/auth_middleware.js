@@ -285,7 +285,8 @@ function requireActionClass(actionClassId, options) {
     // The second approver is an account, not a string: resolved only once everything else has
     // been granted (an unelevated caller learns nothing about which accounts exist), and refused
     // when the lookup cannot answer — an unverified approver is not an approver.
-    if (decision.granted && override.secondApproverRequired(actionClassId, policy)) {
+    const approverRequired = override.secondApproverRequired(actionClassId, policy);
+    if (decision.granted && approverRequired) {
       decision = await verifySecondApprover(request, policy);
     }
 
@@ -295,7 +296,10 @@ function requireActionClass(actionClassId, options) {
       return res.status(REFUSAL_STATUS[decision.refusal] || 400).json({ ok: false, error: "Forbidden", refusal: decision.refusal, detail: decision.detail });
     }
 
-    req.override = { decision, request, subject };
+    // `secondApproverVerified` is true only when this gate resolved and judged the approver's
+    // account. When the class needs none, a caller-supplied id was never checked, so nothing
+    // downstream may treat it as an approval.
+    req.override = { decision, request, subject, secondApproverVerified: approverRequired };
     return next();
   };
 }

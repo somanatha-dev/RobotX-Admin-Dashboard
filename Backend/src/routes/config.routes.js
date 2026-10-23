@@ -29,19 +29,17 @@ const publishLimiter = createRateLimiter({ windowMs: 60_000, limit: 10, keyPrefi
 router.get("/resolve", resolveLimiter, configController.resolveParameter);
 router.get("/versions", resolveLimiter, configController.listVersions);
 
-// §22.1 rule 5 + §22.3: validated at publish; Safety-class changes need two people.
+// §22.1 rule 5 + §22.3: validated at publish; Safety-class changes are never automated.
 //
 // PHASE 14 — §23.4 names "safety-class config change" as one of the four highest-privilege
-// actions, so the publish route now carries that action class explicitly: an elevated role,
-// a recorded reason, and a second approver.
+// actions, so the publish route carries that action class explicitly: an elevated role
+// (plus SUPER_ADMIN above), a recorded reason, an audit record, and — only where
+// `security.second_approver_action_classes` names SAFETY_CONFIG_CHANGE — a second approver.
+// Owner decision 2026-10-23: not named by default (single-owner deployment).
 //
-// The two-person rule itself is **not** moved here. `config/service.js`'s S2 check has
-// enforced it since Phase 1 against the *published parameter set* — it fires only when the
-// publish actually touches a Safety-class parameter, which this gate cannot know before the
-// body is validated. The gate is the outer of two checks, not a replacement for the inner
-// one, and a publish that names no Safety-class parameter still passes S2 trivially while
-// paying this gate's cost. That asymmetry is deliberate: §23.4's list is about the *route*,
-// §22.3's rule is about the *change*.
+// `config/service.js`'s S-rules judge the *published parameter set*: they fire only when
+// the publish actually touches a Safety-class parameter, which this gate cannot know before
+// the body is validated. §23.4's list is about the *route*, §22.3's rule is about the *change*.
 router.post(
   "/publish",
   publishLimiter,

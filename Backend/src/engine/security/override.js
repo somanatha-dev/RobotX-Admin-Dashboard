@@ -105,11 +105,15 @@ const ACTION_CLASS = Object.freeze({
     auditEventType: EVENT_TYPE.QUARANTINE,
     description: "releasing an agent from quarantine, or clearing a fault that put it there",
   }),
+  // Owner decision 2026-10-23: this single-owner deployment publishes configuration from the
+  // owner's own SUPER_ADMIN account, so a second approver is not required by default. Identity,
+  // elevated role, reason and audit still are; a deployment that wants two-person approval back
+  // adds SAFETY_CONFIG_CHANGE to `security.second_approver_action_classes`.
   SAFETY_CONFIG_CHANGE: Object.freeze({
     id: "SAFETY_CONFIG_CHANGE",
     elevated: true,
     reason: true,
-    secondApprover: true,
+    secondApprover: false,
     auditEventType: EVENT_TYPE.CONFIG_CHANGE,
     description: "publishing a configuration version that changes a Safety-class parameter (§22.3)",
   }),

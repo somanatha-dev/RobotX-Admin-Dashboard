@@ -188,7 +188,9 @@ describe("§23.4 — the second approver's account", () => {
 
   test("secondApproverRequired is the rule authoriseAction applies: the class's own, or added by configuration", () => {
     expect(override.secondApproverRequired("QUARANTINE_OVERRIDE", { requireSecondApproverFor: [] })).toBe(true);
-    expect(override.secondApproverRequired("SAFETY_CONFIG_CHANGE", {})).toBe(true);
+    // Owner decision 2026-10-23: a config publish needs no second approver unless configured.
+    expect(override.secondApproverRequired("SAFETY_CONFIG_CHANGE", {})).toBe(false);
+    expect(override.secondApproverRequired("SAFETY_CONFIG_CHANGE", { requireSecondApproverFor: ["SAFETY_CONFIG_CHANGE"] })).toBe(true);
     expect(override.secondApproverRequired("BULK_CANCELLATION", {})).toBe(false);
     expect(override.secondApproverRequired("BULK_CANCELLATION", { requireSecondApproverFor: ["BULK_CANCELLATION"] })).toBe(true);
     expect(override.secondApproverRequired("NOT_A_CLASS", {})).toBe(false);

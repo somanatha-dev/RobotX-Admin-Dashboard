@@ -312,7 +312,7 @@ describe("no gate was weakened to obtain the publish", () => {
     expect(store.versions).toHaveLength(0);
   });
 
-  test("the refusal is V9 and S2 — the two §22.3/§14.3 gates, unmodified", async () => {
+  test("the refusal is V9 — the §14.3 gate, unmodified (S2 no longer fires: quorum 1, owner decision 2026-10-23)", async () => {
     const store = createConfigStore();
     let error = null;
     try {
@@ -322,7 +322,7 @@ describe("no gate was weakened to obtain the publish", () => {
     }
     expect(error).toBeTruthy();
     const blocking = error.findings.filter((item) => item.severity === "BLOCKING").map((item) => item.id).sort();
-    expect(blocking).toEqual(["S2", "V9"]);
+    expect(blocking).toEqual(["V9"]);
   });
 
   test("the accommodation is labelled in the version's own note, not hidden", () => {

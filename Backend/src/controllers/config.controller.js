@@ -4,6 +4,7 @@ const configService = require("../engine/config/service");
 const { SCOPE_ORDER } = require("../engine/config/resolver");
 const override = require("../engine/security/override");
 const { checkSpatialZoneReferences } = require("../services/spatialZoneReferences");
+const hierarchy = require("../engine/spatial/hierarchy");
 
 const HTTP_BAD_REQUEST = 400;
 const HTTP_NOT_FOUND = 404;
@@ -99,7 +100,9 @@ const listVersions = asyncHandler(async (req, res) => {
 /**
  * The second approver the SAFETY_CONFIG_CHANGE gate verified on this request, or null. Read from
  * `req.override` — the decision `requireActionClass` attaches only when it granted — so nothing
- * the caller sends can stand in for it.
+ * the caller sends can stand in for it. Null whenever the gate did not verify an approver (the
+ * default since 2026-10-23: the class needs none unless `security.second_approver_action_classes`
+ * names it), including when the caller sent an id anyway.
  *
  * @param {object} req
  * @returns {string|null}
@@ -107,6 +110,7 @@ const listVersions = asyncHandler(async (req, res) => {
 function verifiedApproverFrom(req) {
   const gated = req.override;
   if (!gated || !gated.decision || gated.decision.granted !== true) return null;
+  if (gated.secondApproverVerified !== true) return null;
   if (!gated.request || gated.request.actionClass !== override.ACTION_CLASS.SAFETY_CONFIG_CHANGE.id) return null;
   return typeof gated.request.secondApproverId === "string" && gated.request.secondApproverId ? gated.request.secondApproverId : null;
 }
@@ -114,8 +118,9 @@ function verifiedApproverFrom(req) {
 // POST /api/config/publish
 //
 // Invalid configuration is rejected here, not discovered at decision time (§22.1
-// rule 5). Safety-class changes additionally require two-person approval and may
-// never be made by an automated process (§22.3).
+// rule 5). Safety-class changes may never be made by an automated process (§22.3); a
+// second approver is required only where `security.second_approver_action_classes`
+// names SAFETY_CONFIG_CHANGE (not by default since 2026-10-23).
 const publishVersion = asyncHandler(async (req, res) => {
   const prisma = getPrisma();
   const kv = req.app?.locals?.kv || null;
@@ -139,8 +144,8 @@ const publishVersion = asyncHandler(async (req, res) => {
     // The second approver the route gate verified (an existing account, distinct, admitted
     // role), taken from the gate's own granted decision — never from the body. `approvals[]` may
     // name only the publisher and this identity, and the stored record marks it
-    // (`configService.checkApprovalIdentities` / `recordedApprovals`). `null` when no such
-    // decision is attached, which the service refuses (S5).
+    // (`configService.checkApprovalIdentities` / `recordedApprovals`). `null` when the gate
+    // verified none: `approvals[]` may then name only the publisher.
     verifiedApproverId: verifiedApproverFrom(req),
     approverVerifiedAt: new Date().toISOString(),
   };
@@ -149,6 +154,21 @@ const publishVersion = asyncHandler(async (req, res) => {
   // routes by those rows, so a missing one stops every assignment through it. The Config
   // Service does not check this (it validates structure only), so it is refused here — before
   // publishing, and therefore before the pin below (`services/spatialZoneReferences`).
+  //
+  // The same for containment (§3.6): the Config Service's V8 does not run the hierarchy's own
+  // publish check, so a cell naming a region its zone does not lie in was accepted. A map the
+  // engine says may not be published is refused here, before anything is written.
+  if (request.spatial && typeof request.spatial === "object") {
+    const containment = hierarchy.validateForPublish(request.spatial);
+    if (!containment.ok) {
+      return res.status(HTTP_UNPROCESSABLE).json({
+        ok: false,
+        message: `configuration rejected before publish: the spatial map fails ${containment.problems.length} containment check(s). Nothing was published or pinned.`,
+        findings: containment.problems.map((message) => ({ id: "SPATIAL_CONTAINMENT", severity: "BLOCKING", rule: "§3.6", message })),
+      });
+    }
+  }
+
   const referenceFindings = await checkSpatialZoneReferences(prisma, request.spatial);
   if (referenceFindings.length > 0) {
     return res.status(HTTP_UNPROCESSABLE).json({

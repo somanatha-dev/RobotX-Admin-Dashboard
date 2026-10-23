@@ -7,8 +7,8 @@
  *
  *   ROBOTX_OPERATOR_PASSWORD=…  (or ROBOTX_SESSION_COOKIE=token=…)  node tools/deploy/publishG4.js \
  *     --api https://<backend> --database-url <url> --confirm-host <exact db hostname> \
- *     --email <your SUPER_ADMIN login> --second-approver <User.id of the second approver> \
- *     --reason "<why>" [--expect-active-version N] [--restore-version N] [--apply]
+ *     --email <your SUPER_ADMIN login> --reason "<why>" \
+ *     [--expect-active-version N] [--restore-version N] [--apply]
  *
  * `--restore-version N` is the RECOVERY path: it republishes version N exactly (its map, bindings,
  * kill switches, regimes, delivery domain) through the same guarded route and pins it — e.g.
@@ -22,11 +22,13 @@
  *      restated — every binding, kill-switch state, regime, site, the delivery domain — with ONLY
  *      the 64 RNSIT cover cells reassigned to the validated G4 zones (digest 13be3a93…).
  *   2. Checks it: the engine's publish validators, the Zone-row references (the same check the
- *      route's guard makes), that only the 64 cells change, and that the API serves the same
- *      pinned version the database holds (the API runs on this database).
+ *      route's guard makes), that only the 64 cells change, that no in-force parameter value
+ *      changes, that the API serves the same pinned version the database holds (the API runs on
+ *      this database), and that the served approval policy needs no second approver for
+ *      SAFETY_CONFIG_CHANGE (owner decision 2026-10-23; an older deployment still does).
  *   3. With `--apply`: `POST /api/config/publish` — authentication, SUPER_ADMIN, the
- *      SAFETY_CONFIG_CHANGE action class with the named second approver and the reason, then the
- *      route's Zone-reference guard, then publish and pin. Nothing here bypasses any of them.
+ *      SAFETY_CONFIG_CHANGE action class with the reason (audited), then the route's
+ *      Zone-reference guard, then publish and pin. Nothing here bypasses any of them.
  *   4. Verifies through authoritative reads: the route's answer, `GET /api/config/versions`
  *      (active version), the database pin and the 64 cells resolved through the alert path
  *      (`dtaroZoneAlert.resolvePoint`), and `GET /api/dtaro/zones` after the propagation tick.
@@ -51,7 +53,6 @@ function parseArgs(argv) {
     url: flag("--database-url"),
     confirmHost: flag("--confirm-host"),
     email: flag("--email"),
-    secondApproverId: flag("--second-approver"),
     reason: flag("--reason"),
     expectActive: flag("--expect-active-version") === null ? null : Number(flag("--expect-active-version")),
     restoreVersion: flag("--restore-version") === null ? null : Number(flag("--restore-version")),
@@ -72,6 +73,50 @@ async function readState(prisma) {
   });
 }
 
+/**
+ * Why a password login for `email` would be refused, from its account row (READ ONLY). Never
+ * reads or returns the password value: only whether the stored value is a bcrypt hash, i.e.
+ * whether password login is possible at all for this account (a Google sign-in account holds a
+ * non-bcrypt placeholder, so every password is refused with the same 400 as a wrong one).
+ */
+async function diagnoseLogin(prisma, email) {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe("SET TRANSACTION READ ONLY");
+    const rows = await tx.$queryRawUnsafe(
+      `select role::text as role, email = $1 as exact,
+              ("disabledAt" is not null) as disabled,
+              ("googleId" is not null) as google_linked,
+              (left(password, 4) in ('$2a$', '$2b$', '$2y$') and length(password) = 60) as password_login
+         from "User" where lower(btrim(email)) = lower(btrim($1))`,
+      email,
+    );
+    if (rows.length === 0) return { verdict: "NO_ACCOUNT", advice: "no account has this email: check the address you sign in with" };
+    const row = rows[0];
+    if (!row.exact) return { verdict: "EMAIL_MISMATCH", advice: "an account matches only when case/spaces are ignored: type the email exactly as stored (lower case, no spaces)" };
+    if (row.disabled) return { verdict: "DISABLED", advice: "this account is disabled" };
+    if (!row.password_login) return { verdict: "GOOGLE_ONLY", googleLinked: row.google_linked, advice: "this account signs in with Google and has no password login: re-run with -UseSessionCookie (your browser's `token` cookie)" };
+    if (row.role !== "SUPER_ADMIN") return { verdict: "NOT_SUPER_ADMIN", role: row.role, advice: `role ${row.role} cannot publish: use a SUPER_ADMIN account` };
+    return { verdict: "WRONG_PASSWORD", advice: "the account has password login, so the password did not match: re-run and type it again" };
+  });
+}
+
+/**
+ * Parameter names whose effective value differs between two value maps (plain objects or Maps).
+ * The candidate against what the server runs now must give none: G4 changes only the map.
+ */
+function parameterChanges(before, after) {
+  const read = (source, name) => (source instanceof Map ? source.get(name) : source ? source[name] : undefined);
+  const keys = (source) => (source instanceof Map ? [...source.keys()] : Object.keys(source || {}));
+  const same = (a, b) => JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b);
+  return [...new Set([...keys(before), ...keys(after)])].filter((name) => !same(read(before, name), read(after, name))).sort();
+}
+
+/** Does a served `security.second_approver_action_classes` resolution still require an approver for config publishes? */
+function servedPolicyNeedsApprover(resolved) {
+  const value = resolved?.resolution?.value;
+  return !Array.isArray(value) || value.includes("SAFETY_CONFIG_CHANGE");
+}
+
 async function http(api, cookie, method, route, body) {
   const response = await fetch(`${api}${route}`, {
     method,
@@ -88,7 +133,7 @@ async function http(api, cookie, method, route, body) {
 }
 
 async function run(args, { log = console.log } = {}) {
-  const FLAG = { api: "--api", url: "--database-url", confirmHost: "--confirm-host", email: "--email", secondApproverId: "--second-approver", reason: "--reason" };
+  const FLAG = { api: "--api", url: "--database-url", confirmHost: "--confirm-host", email: "--email", reason: "--reason" };
   for (const [key, flag] of Object.entries(FLAG)) if (!args[key]) throw new Error(`${flag} is required`);
   if (!/^https?:\/\//.test(args.api)) throw new Error("--api must be an http(s) URL");
   const host = new URL(args.url).hostname;
@@ -127,21 +172,73 @@ async function run(args, { log = console.log } = {}) {
     const onlyCells =
       diff.cellsOtherwiseChanged === 0 && diff.regionsIdentical && diff.sitesIdentical && diff.cellsBefore === diff.cellsAfter &&
       (args.restoreVersion !== null ? true : diff.cellsWithNewZone === 64);
-    step("2 checks", { engineFindings: engine, zoneReferenceFindings: references, onlyTheRnsitCellsChange: onlyCells, diff });
+    // Every parameter value: the candidate against what the server runs now (the pinned bindings
+    // under the register in force) must be identical — the publish changes the map, nothing else.
+    // `safetyClassChanges` is what the version row will record: it compares against the values the
+    // pinned version STORED, so it also names register defaults changed since then (already in force).
+    const configService = require(path.join(BACKEND_ROOT, "src/engine/config/service"));
+    const snapshotOf = (source, map) =>
+      configService.buildSnapshot({ bindings: source.bindings || [], killSwitchState: source.killSwitchState, regimes: source.regimes || [], spatial: map, deliveryDomain: source.deliveryDomain || null });
+    const inForce = snapshotOf(before.row.payload, before.row.payload.spatial);
+    const candidate = snapshotOf(payload, spatial);
+    const valuesChanged = parameterChanges(inForce.values, candidate.values);
+    const killSwitchesSame = JSON.stringify(inForce.killSwitchState) === JSON.stringify(candidate.killSwitchState);
+    const recordedSafetyChanges = configService.safetyClassChanges(candidate.entries, candidate.values, before.row.payload.values || null, payload.regimes || []);
+    step("2 checks", {
+      engineFindings: engine,
+      zoneReferenceFindings: references,
+      onlyTheRnsitCellsChange: onlyCells,
+      diff,
+      parameterValuesChangedVsInForce: valuesChanged,
+      killSwitchesUnchanged: killSwitchesSame,
+      registerDigest: { atPinnedPublish: `${String(before.row.payload.registerDigest).slice(0, 12)}…`, inForce: `${inForce.registerDigest.slice(0, 12)}…` },
+      safetyClassChangesTheVersionWillRecord: recordedSafetyChanges,
+    });
     if (engine.length || references.length || !onlyCells) throw new Error("the candidate is not publishable; nothing was sent");
+    if (args.restoreVersion === null && (valuesChanged.length > 0 || !killSwitchesSame)) {
+      throw new Error(`the candidate changes in-force parameter values (${valuesChanged.join(", ") || "kill switches"}); nothing was sent`);
+    }
 
     const cookie = process.env.ROBOTX_SESSION_COOKIE || null;
     let session = cookie;
     if (!session) {
       if (!process.env.ROBOTX_OPERATOR_PASSWORD) throw new Error("set ROBOTX_OPERATOR_PASSWORD (or ROBOTX_SESSION_COOKIE) in the environment");
       const login = await http(args.api, null, "POST", "/api/auth/login", { email: args.email, password: process.env.ROBOTX_OPERATOR_PASSWORD });
-      if (login.status !== 200 || !login.setCookie) throw new Error(`login refused (HTTP ${login.status})`);
+      if (login.status !== 200 || !login.setCookie) {
+        // The server's own message (never a credential), and what the account row says about why.
+        const diagnosis = login.status === 400 ? await diagnoseLogin(prisma, args.email) : null;
+        step("2a login refused", { status: login.status, serverMessage: login.json?.message || null, email: args.email, diagnosis });
+        throw new Error(`login refused (HTTP ${login.status}${login.json?.message ? `: ${login.json.message}` : ""})${diagnosis ? ` — ${diagnosis.advice}` : ""}`);
+      }
       session = login.setCookie.split(";")[0];
     }
     const listed = await http(args.api, session, "GET", "/api/config/versions?limit=5");
-    if (listed.status !== 200) throw new Error(`GET /api/config/versions: HTTP ${listed.status}`);
+    if (listed.status !== 200) {
+      const why =
+        listed.status === 401 ? (cookie ? "the session cookie was not accepted (expired, or not the `token` value)" : "the new session was not accepted")
+          : listed.status === 403 ? "this account may not use the configuration API (SUPER_ADMIN required)"
+            : listed.json?.message || "unexpected response";
+      throw new Error(`GET /api/config/versions: HTTP ${listed.status} — ${why}`);
+    }
     if (listed.json.activeVersion !== before.pin.version) throw new Error(`the API serves version ${listed.json.activeVersion}, the database pins ${before.pin.version}: not the same environment`);
     step("2b API agrees with the database", { apiActiveVersion: listed.json.activeVersion });
+
+    // What the live server serves now (GET, read only): the map version and whether alerts are on.
+    const servedNow = await http(args.api, session, "GET", "/api/dtaro/zones");
+    step("2c served now", { status: servedNow.status, configVersion: servedNow.json?.configVersion ?? null, zones: (servedNow.json?.zones || []).map((z) => `${z.zoneId}(${z.cellCount})`), alertsEnabled: servedNow.json?.alertsEnabled ?? null });
+
+    // The approval policy the live server applies to this route (read only). A deployment from
+    // before 2026-10-23 still names SAFETY_CONFIG_CHANGE and would refuse the POST.
+    const policy = await http(args.api, session, "GET", "/api/config/resolve?param=security.second_approver_action_classes");
+    const needsApprover = policy.status !== 200 || servedPolicyNeedsApprover(policy.json);
+    step("2d served approval policy", {
+      status: policy.status,
+      secondApproverActionClasses: policy.json?.resolution?.value ?? null,
+      source: policy.json?.resolution?.source ?? null,
+      registerDigest: policy.json?.registerDigest ? `${policy.json.registerDigest.slice(0, 12)}…` : null,
+      secondApproverRequired: needsApprover,
+    });
+    if (needsApprover) throw new Error("the live server still requires a second approver for a config publish (it is not running the 2026-10-23 code yet); nothing was sent");
 
     if (!args.apply) {
       step("DRY RUN", { wouldPublish: args.restoreVersion !== null ? `version ${args.restoreVersion} restored` : "G4 (64 RNSIT cells → 4 zones)", via: "POST /api/config/publish", rollbackTarget: before.pin.version });
@@ -160,7 +257,6 @@ async function run(args, { log = console.log } = {}) {
           ? `RECOVERY: version ${args.restoreVersion} republished exactly (replacing version ${before.pin.version}).`
           : `G4 RNSIT four-zone layout (digest ${digest.slice(0, 12)}…): version ${before.pin.version} restated with the 64 RNSIT cells reassigned to rnsit-z-west/east/south/southwest. Owner-authorised 2026-10-23.`,
       reason: args.reason,
-      secondApproverId: args.secondApproverId,
     });
     step("3 POST /api/config/publish", { status: published.status, ok: published.json?.ok, version: published.json?.version, pinned: published.json?.pinned, safetyClassChanges: published.json?.safetyClassChanges, message: published.json?.message, refusal: published.json?.refusal, findings: published.json?.findings });
     if (published.status !== 200 || !published.json?.ok) throw new Error("the route refused the publish; the pin is unchanged");
@@ -192,7 +288,7 @@ async function run(args, { log = console.log } = {}) {
   }
 }
 
-module.exports = { run, readState };
+module.exports = { run, readState, diagnoseLogin, parameterChanges, servedPolicyNeedsApprover };
 
 if (require.main === module) {
   run(parseArgs(process.argv.slice(2)))

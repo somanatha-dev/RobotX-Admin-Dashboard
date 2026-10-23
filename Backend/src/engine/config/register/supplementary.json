@@ -2335,8 +2335,7 @@
       "type": "set",
       "unit": "action_class",
       "default": [
-        "QUARANTINE_OVERRIDE",
-        "SAFETY_CONFIG_CHANGE"
+        "QUARANTINE_OVERRIDE"
       ],
       "range": {},
       "specScope": "global",
@@ -2350,7 +2349,7 @@
       "calibrationStatus": "DERIVED",
       "section": "§23.4, §23.6",
       "requiredBy": "security/override.authoriseAction — 'and where configured a second approver'",
-      "derivation": "Stated source: §23.4 says 'where configured a second approver' and §23.6's table says 'High-risk overrides require a second approver | Configurable per action class', so the specification fixes that this set is configuration and fixes its floor. The two members are the action classes §23.6 names as high-risk. It is a floor rather than a value: authoriseAction() takes the union of this set with each action class's own default and never the configured set alone, so the derivation cannot be undone by configuration — a set able to remove a second-approver requirement would put the strongest control in §23 behind an ordinary config change.",
+      "derivation": "Stated source: §23.4 says 'where configured a second approver' and §23.6's table says 'High-risk overrides require a second approver | Configurable per action class', so the specification fixes that this set is configuration and fixes its floor. QUARANTINE_OVERRIDE is the action class §23.6 names as high-risk; SAFETY_CONFIG_CHANGE was removed by owner decision 2026-10-23 (single-owner deployment: the owner publishes configuration from their own SUPER_ADMIN account, with identity, reason and audit still required) and is restored by adding it back here. It is a floor rather than a value: authoriseAction() takes the union of this set with each action class's own default and never the configured set alone, so the derivation cannot be undone by configuration — a set able to remove a second-approver requirement would put the strongest control in §23 behind an ordinary config change.",
       "description": "The §23.4 action classes that require a second approver in this deployment. §23.4 says 'where configured a second approver' and §23.6 says 'High-risk overrides require a second approver | Configurable per action class', so the set is configuration. It may only ever ADD to each action class's own default: authoriseAction() takes the union, never the configured set alone, because a configuration able to remove a second-approver requirement would put the strongest control in §23 behind an ordinary config change."
     },
     {

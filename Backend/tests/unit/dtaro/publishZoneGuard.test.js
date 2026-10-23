@@ -122,6 +122,26 @@ test("authorisation still runs first: the publish route's middleware chain is un
   // router.use(authUser), requireElevatedRole(), requireSuperAdmin() precede every route.
   expect(layers.indexOf(publishLayer)).toBeGreaterThanOrEqual(3);
   expect(layers.slice(0, 3)).toEqual(["authUser", expect.any(String), expect.any(String)]);
-  // rate limit → action-class gate (second approver) → controller.
+  // rate limit → action-class gate (identity, role, reason, audit) → controller.
   expect(publishLayer).toMatch(/\[.*actionClassGate, asyncMiddleware\]$/);
+});
+
+test("a cell naming a region its zone does not lie in: 422 SPATIAL_CONTAINMENT, nothing published or pinned", async () => {
+  const map = oneZoneMap();
+  map.cells[0].regionId = "not-a-region";
+  const prisma = prismaWith([{ id: "rnsit-z1", regionId: REGION }]);
+  const { res, next } = await call(prisma, { spatial: map, bindings: [] });
+  expect(next).not.toHaveBeenCalled();
+  expect(res.statusCode).toBe(422);
+  expect(res.body.findings[0]).toMatchObject({ id: "SPATIAL_CONTAINMENT", severity: "BLOCKING", rule: "§3.6" });
+  expect(res.body.findings[0].message).toMatch(/names region "not-a-region" but its zone "rnsit-z1"/);
+  expect(prisma.zone.findMany).not.toHaveBeenCalled();
+  expect(publish).not.toHaveBeenCalled();
+  expect(pin).not.toHaveBeenCalled();
+});
+
+test("a publish with no spatial map is not touched by the containment check", async () => {
+  const { res } = await call(prismaWith([]), { bindings: [] });
+  expect(res.statusCode).toBe(200);
+  expect(publish).toHaveBeenCalledTimes(1);
 });

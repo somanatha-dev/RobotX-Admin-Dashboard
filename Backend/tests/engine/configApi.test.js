@@ -35,6 +35,22 @@ const token = () => jwt.sign({ id: USER.id }, process.env.JWT_SECRET);
 // The route gate's second approver is an existing account, resolved by id (a made-up identity is refused).
 const APPROVER = { id: "22222222-2222-4222-8222-222222222222", role: "SUPER_ADMIN" };
 
+// Owner decision 2026-10-23: a config publish needs no second approver by default. These swap in a
+// configuration that names SAFETY_CONFIG_CHANGE again, so the opt-in path keeps its coverage.
+const configService = require("../../src/engine/config/service");
+function requireApproverForPublish() {
+  let saved;
+  beforeAll(() => {
+    saved = app.locals.config;
+    app.locals.config = configService.buildSnapshot({
+      bindings: [{ level: "global", name: "security.second_approver_action_classes", value: ["QUARANTINE_OVERRIDE", "SAFETY_CONFIG_CHANGE"] }],
+    });
+  });
+  afterAll(() => {
+    app.locals.config = saved;
+  });
+}
+
 beforeEach(() => {
   mockPrismaClient.user.findUnique.mockImplementation(async ({ where }) => [USER, APPROVER].find((row) => row.id === where.id) || null);
   mockPrismaClient.configActiveVersion.findUnique.mockResolvedValue(null);
@@ -132,9 +148,10 @@ describe("GET /api/config/versions", () => {
 
 describe("POST /api/config/publish", () => {
   // PHASE 14 — §23.4 names "safety-class config change" among the four highest-privilege
-  // actions, so the publish route now carries the action-class gate: an elevated role, a
-  // recorded reason, and a second approver. Every publish below therefore supplies the two
-  // headers; the gate's own refusals get their own tests underneath.
+  // actions, so the publish route carries the action-class gate: an elevated role and a
+  // recorded reason, audited — and a second approver only where configured (not by default
+  // since the owner decision of 2026-10-23). Every publish below supplies the reason header;
+  // the gate's own refusals get their own tests underneath.
   //
   // The reason travels in a header rather than the body deliberately: the publish body is
   // the *configuration*, and a field in it that the Config Service ignored would be a field
@@ -142,8 +159,7 @@ describe("POST /api/config/publish", () => {
   const authorised = (agent) =>
     agent
       .set("Authorization", `Bearer ${token()}`)
-      .set("X-Override-Reason", "quarterly recalibration")
-      .set("X-Second-Approver", APPROVER.id);
+      .set("X-Override-Reason", "quarterly recalibration");
 
   test("returns 422 with the findings when validation rejects the configuration", async () => {
     const response = await authorised(request(app).post("/api/config/publish"))
@@ -167,15 +183,18 @@ describe("POST /api/config/publish", () => {
     const response = await authorised(request(app).post("/api/config/publish"))
       .send({
         bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }],
-        // Over HTTP an approval names the second approver the route gate verified (S4).
-        approvals: [{ approverId: APPROVER.id, approvedAt: "2026-07-28T09:00:00Z" }],
         note: "raise the combined conservatism cap",
       })
       .expect(200);
 
     expect(response.body).toMatchObject({ ok: true, version: 1, pinned: true });
     expect(response.body.signature).toMatch(/^[0-9a-f]{64}$/);
+    expect(response.body.safetyClassChanges.length).toBeGreaterThan(0);
     expect(mockPrismaClient.configActiveVersion.upsert).toHaveBeenCalled();
+    // The authenticated publisher is the approving identity; nothing else is recorded.
+    const stored = mockPrismaClient.configVersion.create.mock.calls[0][0].data;
+    expect(stored.publishedBy).toBe(USER.id);
+    expect(stored.approvals).toEqual([]);
   });
 
   test("refuses an automated Safety-class change", async () => {
@@ -201,7 +220,6 @@ describe("POST /api/config/publish", () => {
     const response = await request(app)
       .post("/api/config/publish")
       .set("Authorization", `Bearer ${token()}`)
-      .set("X-Second-Approver", APPROVER.id)
       .send({ bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }] })
       .expect(400);
 
@@ -212,11 +230,63 @@ describe("POST /api/config/publish", () => {
     expect(mockPrismaClient.configVersion.create).not.toHaveBeenCalled();
   });
 
+  test("the owner publishes alone: no second approver, and the decision is still audited", async () => {
+    mockPrismaClient.configVersion.create.mockImplementation(async ({ data }) => ({ id: "cv-1", publishedAt: new Date("2026-07-28T09:00:00Z"), ...data }));
+    mockPrismaClient.configVersion.findUnique.mockResolvedValue({ version: 1, payload: {} });
+    mockPrismaClient.configActiveVersion.upsert.mockResolvedValue({ id: "singleton", version: 1 });
+    mockPrismaClient.auditEvent.findFirst.mockResolvedValue(null);
+    mockPrismaClient.auditEvent.create.mockImplementation(async ({ data }) => ({ ...data }));
+    mockPrismaClient.overrideAudit.create.mockResolvedValue({});
+    app.locals.prisma = mockPrismaClient;
+    try {
+      const response = await authorised(request(app).post("/api/config/publish"))
+        .send({ bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }] })
+        .expect(200);
+      expect(response.body).toMatchObject({ ok: true, version: 1, pinned: true });
+    } finally {
+      delete app.locals.prisma;
+    }
+    expect(mockPrismaClient.overrideAudit.create).toHaveBeenCalledTimes(1);
+    expect(mockPrismaClient.overrideAudit.create.mock.calls[0][0].data).toMatchObject({
+      actionClass: "SAFETY_CONFIG_CHANGE",
+      granted: true,
+      actorId: USER.id,
+      reason: "quarterly recalibration",
+      secondApproverId: null,
+    });
+  });
+
+  test("an X-Second-Approver sent when none is required is neither verified nor recorded", async () => {
+    mockPrismaClient.configVersion.create.mockImplementation(async ({ data }) => ({ id: "cv-1", publishedAt: new Date("2026-07-28T09:00:00Z"), ...data }));
+    mockPrismaClient.configVersion.findUnique.mockResolvedValue({ version: 1, payload: {} });
+    mockPrismaClient.configActiveVersion.upsert.mockResolvedValue({ id: "singleton", version: 1 });
+
+    await authorised(request(app).post("/api/config/publish"))
+      .set("X-Second-Approver", "made-up-approver")
+      .set("X-Forwarded-For", "192.0.2.10")
+      .send({ bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }] })
+      .expect(200);
+    expect(mockPrismaClient.configVersion.create.mock.calls[0][0].data.approvals).toEqual([]);
+
+    // …so approvals[] cannot name it either (S4).
+    const refused = await authorised(request(app).post("/api/config/publish"))
+      .set("X-Second-Approver", APPROVER.id)
+      .set("X-Forwarded-For", "192.0.2.11")
+      .send({ bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }], approvals: [{ approverId: APPROVER.id, approvedAt: "t" }] })
+      .expect(422);
+    expect(refused.body.findings.map((item) => item.id)).toContain("S4");
+  });
+});
+
+describe("POST /api/config/publish — a second approver re-enabled by configuration", () => {
+  requireApproverForPublish();
+
   test("a publish with no second approver is refused — §23.4's 'where configured a second approver'", async () => {
     const response = await request(app)
       .post("/api/config/publish")
       .set("Authorization", `Bearer ${token()}`)
       .set("X-Override-Reason", "quarterly recalibration")
+      .set("X-Forwarded-For", "192.0.2.20")
       .send({ bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }] })
       .expect(400);
 
@@ -249,16 +319,20 @@ describe("POST /api/config/publish", () => {
     expect(mockPrismaClient.configVersion.create).not.toHaveBeenCalled();
   });
 
-  test("the route gate does not replace §22.3's own two-person check on the parameter set", async () => {
+  test("the route gate does not replace §22.3's own checks on the parameter set", async () => {
     // The gate is satisfied — reason and a distinct approver are present — and the publish
-    // is still refused, by S2, because the *change* touches a Safety-class parameter with
-    // only one distinct approver identity in `approvals`. §23.4's list is about the route;
-    // §22.3's rule is about the change, and one is not a substitute for the other.
-    const response = await authorised(request(app).post("/api/config/publish"))
-      .send({ bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }] })
+    // is still refused, by S1, because the *change* is automated and touches a Safety-class
+    // parameter. §23.4's list is about the route; §22.3's rule is about the change.
+    const response = await request(app)
+      .post("/api/config/publish")
+      .set("Authorization", `Bearer ${token()}`)
+      .set("X-Override-Reason", "quarterly recalibration")
+      .set("X-Second-Approver", APPROVER.id)
+      .set("X-Forwarded-For", "192.0.2.23")
+      .send({ automated: true, bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }] })
       .expect(422);
 
-    expect(response.body.findings.some((item) => item.id === "S2")).toBe(true);
+    expect(response.body.findings.some((item) => item.id === "S1")).toBe(true);
   });
 });
 
@@ -291,7 +365,6 @@ describe("POST /api/config/publish — malformed input follows the validation co
       .post("/api/config/publish")
       .set("Authorization", `Bearer ${token()}`)
       .set("X-Override-Reason", "quarterly recalibration")
-      .set("X-Second-Approver", APPROVER.id)
       .set("X-Forwarded-For", `203.0.113.${client}`);
   };
 
@@ -360,8 +433,6 @@ describe("POST /api/config/publish — malformed input follows the validation co
     const response = await publish()
       .send({
         bindings: [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }],
-        // Over HTTP an approval names the second approver the route gate verified (S4).
-        approvals: [{ approverId: APPROVER.id, approvedAt: "2026-07-28T09:00:00Z" }],
         killSwitchState: { batch_solving: true },
       })
       .expect(200);
@@ -394,9 +465,12 @@ describe("GET /health", () => {
    publisher and the second approver the gate verified (S4), and the stored record marks the
    verified identity. What is established is the account and its role, not that its holder
    consented. Each publish presents its own `X-Forwarded-For` (the route's 10/minute limit).
+   Since 2026-10-23 the gate verifies an approver only where configuration requires one, so
+   this group runs under that configuration.
    ───────────────────────────────────────────────────────────────────────────── */
 
 describe("POST /api/config/publish — the stored approval record names the verified approver", () => {
+  requireApproverForPublish();
   const SAFETY_CHANGE = [{ level: "global", name: "energy.max_combined_conservatism", value: 2.1 }];
   let client = 0;
   const publish = (approverId = APPROVER.id) => {
@@ -441,16 +515,18 @@ describe("POST /api/config/publish — the stored approval record names the veri
     expect(second.approvals[0]).not.toHaveProperty("approvedAt");
   });
 
-  test("a Safety-class change whose approvals[] omits the verified approver is still refused by S2 — the gate is not a substitute", async () => {
-    const response = await publish().send({ bindings: SAFETY_CHANGE, approvals: [{ approverId: USER.id, approvedAt: "t" }] }).expect(422);
-    expect(findingIds(response)).toContain("S2");
-    expect(mockPrismaClient.configVersion.create).not.toHaveBeenCalled();
+  test("a Safety-class change whose approvals[] names only the publisher publishes (quorum 1), and the verified approver is still recorded", async () => {
+    await publish().send({ bindings: SAFETY_CHANGE, approvals: [{ approverId: USER.id, approvedAt: "t" }] }).expect(200);
+    expect(stored().approvals).toEqual([
+      { approverId: USER.id, approvedAt: "t" },
+      { approverId: APPROVER.id, verifiedBy: "SAFETY_CONFIG_CHANGE", verifiedAt: expect.any(String) },
+    ]);
   });
 
   test("a fabricated approverId cannot stand in for an approval (the old string-count shape)", async () => {
     const response = await publish().send({ bindings: SAFETY_CHANGE, approvals: [{ approverId: "safety-1", approvedAt: "t" }] }).expect(422);
     expect(findingIds(response)).toContain("S4");
-    expect(findingIds(response)).not.toContain("S2"); // S2 alone would have passed it
+    expect(findingIds(response)).not.toContain("S2"); // S2 alone passes it
     expect(response.body.findings.find((item) => item.id === "S4").message).toMatch(/"safety-1"/);
     expect(mockPrismaClient.configVersion.create).not.toHaveBeenCalled();
   });

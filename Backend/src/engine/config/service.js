@@ -75,8 +75,13 @@ const DEFAULT_CACHE_TTL_SECONDS = 3600;
 const ACTIVE_VERSION_KEY = "config:active";
 const SINGLETON_PIN_ID = "singleton";
 
-/** @structural the number of distinct people a Safety-class change requires (§22.3) */
-const SAFETY_APPROVAL_QUORUM = 2;
+/**
+ * @structural the number of distinct identities a Safety-class change records (§22.3). One — the
+ * authenticated publisher — by owner decision 2026-10-23 (single-owner deployment); it was two.
+ * A second approver is still verified and recorded when `security.second_approver_action_classes`
+ * requires one for SAFETY_CONFIG_CHANGE.
+ */
+const SAFETY_APPROVAL_QUORUM = 1;
 
 const SAFETY_CHANGE_CLASS = "SAFETY";
 
@@ -343,12 +348,11 @@ function safetyClassChanges(entries, values, previousValues, declaredRegimes) {
 /**
  * Enforce §22.3's approval process for Safety-class changes.
  *
- * Two rules, both absolute:
- *   - **No automated tuner may modify a Safety-class parameter.** An optimiser
+ *   - **No automated tuner may modify a Safety-class parameter** (absolute). An optimiser
  *     permitted to reduce its own safety margins in pursuit of throughput will do
  *     exactly that, and it will be locally correct every time.
- *   - **Two-person approval.** Two *distinct* identities, counting the publisher as
- *     one of them.
+ *   - **An approving identity.** `SAFETY_APPROVAL_QUORUM` distinct identities, counting the
+ *     publisher as one of them.
  *
  * @param {{ publishedBy: string, approvals?: Array<{ approverId: string, approvedAt?: string }>,
  *           automated?: boolean }} request
@@ -385,7 +389,7 @@ function checkSafetyApproval(request, changes) {
       rule: "§22.3",
       message:
         `Safety-class change to ${changes.join(", ")} carries ${identities.size} distinct ` +
-        `approver identities; two-person approval requires ${SAFETY_APPROVAL_QUORUM} (§22.3).`,
+        `approver identities; approval requires ${SAFETY_APPROVAL_QUORUM} (§22.3).`,
     });
   }
 
@@ -409,12 +413,15 @@ function checkSafetyApproval(request, changes) {
  *
  * `checkSafetyApproval` counts identity *strings*: on its own, a made-up `approverId` in
  * `approvals[]` satisfies S2, and the version row then stored an approval nobody verified. Over
- * HTTP the route gate (SAFETY_CONFIG_CHANGE) has already verified one second approver — an
- * existing account, distinct from the publisher, holding an admitted role — and the controller
- * passes that identity as `verifiedApproverId`. So `approvals[]` may name the publisher (the
- * authenticated caller) and that approver, and nobody else (S4); and an HTTP publish carrying no
- * verified approver is refused (S5). S2 and S3 still judge the caller's list exactly as before:
- * the gate is the outer check, not a substitute for §22.3's.
+ * HTTP the route gate (SAFETY_CONFIG_CHANGE) verifies a second approver when the deployment requires
+ * one (`security.second_approver_action_classes`) — an existing account, distinct from the
+ * publisher, holding an admitted role — and the controller passes that identity as
+ * `verifiedApproverId`, or `null` when it verified none. So `approvals[]` may name the publisher
+ * (the authenticated caller) and that approver, and nobody else (S4). S2 and S3 still judge the
+ * caller's list exactly as before: the gate is the outer check, not a substitute for §22.3's.
+ *
+ * (S5, which refused an HTTP publish carrying no verified approver, was removed by owner decision
+ * 2026-10-23 together with the default second-approver requirement.)
  *
  * What this establishes is the account and its role — not that the person consented, which no
  * part of this request can show.
@@ -428,15 +435,8 @@ function checkSafetyApproval(request, changes) {
  */
 function checkApprovalIdentities(request) {
   if (request.verifiedApproverId === undefined) return [];
-  if (!request.verifiedApproverId) {
-    return [{
-      id: "S5",
-      severity: SEVERITY.BLOCKING,
-      rule: "§22.3 / §23.4",
-      message: "this publish carries no second approver verified by the route gate (SAFETY_CONFIG_CHANGE), so its approval record cannot be established.",
-    }];
-  }
-  const established = new Set([String(request.publishedBy), String(request.verifiedApproverId)]);
+  const established = new Set([String(request.publishedBy)]);
+  if (request.verifiedApproverId) established.add(String(request.verifiedApproverId));
   const unverified = [...new Set(
     (request.approvals || [])
       .filter((approval) => approval && approval.approverId && !established.has(String(approval.approverId)))
@@ -449,7 +449,7 @@ function checkApprovalIdentities(request) {
     rule: "§22.3 / §23.4",
     message:
       `approvals[] names ${unverified.map((id) => `"${id}"`).join(", ")}, which this request did not verify. An approval may ` +
-      "name only the publisher or the second approver the route gate verified (sent as X-Second-Approver / secondApproverId).",
+      "name only the publisher or a second approver the route gate verified (sent as X-Second-Approver / secondApproverId where the deployment requires one).",
   }];
 }
 
