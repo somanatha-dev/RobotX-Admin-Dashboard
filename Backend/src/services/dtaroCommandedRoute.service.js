@@ -25,8 +25,12 @@
  *   · position unknown → the whole corridor (`FULL_ROUTE_POSITION_UNKNOWN`);
  *   · tolerance not configured → the whole corridor (`FULL_ROUTE_NO_TOLERANCE`);
  *   · an older position → a cut further back along the route, i.e. a superset of the truth.
- * A commitment with no route geometry, or a failed read, yields NO route (`NO_ROUTE_GEOMETRY`,
- * `LOOKUP_FAILED`): the robot is then not selected by route, and the record says why.
+ * A commitment with no route geometry, a corridor holding a point that is not a finite
+ * coordinate, or a failed read yields NO route (`NO_ROUTE_GEOMETRY`, `MALFORMED_ROUTE`,
+ * `LOOKUP_FAILED`). Those are UNKNOWN routes (`UNKNOWN_ROUTE_STATUSES`), not empty ones: the
+ * recipient policy alerts such a robot conservatively (ROUTE_UNKNOWN). A malformed corridor is
+ * never repaired by dropping its bad points, which would join two points the server never
+ * commanded as one segment.
  */
 
 /** Statuses of a commanded-route read. */
@@ -35,8 +39,12 @@ const ROUTE_STATUS = Object.freeze({
   NO_AGENT: "NO_AGENT",
   NO_LIVE_COMMITMENT: "NO_LIVE_COMMITMENT",
   NO_ROUTE_GEOMETRY: "NO_ROUTE_GEOMETRY",
+  MALFORMED_ROUTE: "MALFORMED_ROUTE",
   LOOKUP_FAILED: "LOOKUP_FAILED",
 });
+
+/** Statuses where the robot may hold a commanded route the server could not establish. */
+const UNKNOWN_ROUTE_STATUSES = Object.freeze([ROUTE_STATUS.NO_ROUTE_GEOMETRY, ROUTE_STATUS.MALFORMED_ROUTE, ROUTE_STATUS.LOOKUP_FAILED]);
 
 /** How the remaining route was derived from the corridor. */
 const CUT = Object.freeze({
@@ -55,14 +63,25 @@ const isPoint = (p) => Boolean(p) && Number.isFinite(p.lat) && Number.isFinite(p
 
 /** The corridor points of one OFFER payload, in stop order (`readCommandedCorridor`'s rule). */
 function corridorOf(payload) {
+  return corridorFactsOf(payload).points;
+}
+
+/**
+ * The corridor points, and whether any path entry was not a valid coordinate (a non-finite or
+ * out-of-range lat/lon, or not a point at all). `points` keeps the valid ones in order.
+ */
+function corridorFactsOf(payload) {
   const stops = payload && Array.isArray(payload.stopSequence) ? payload.stopSequence : [];
   const points = [];
+  let malformed = false;
   for (const stop of stops) {
     for (const point of Array.isArray(stop && stop.path) ? stop.path : []) {
-      if (point && typeof point.lat === "number" && typeof point.lon === "number") points.push({ lat: point.lat, lon: point.lon });
+      const valid = isPoint(point) && Math.abs(point.lat) <= 90 && Math.abs(point.lon) <= 180;
+      if (valid) points.push({ lat: point.lat, lon: point.lon });
+      else malformed = true;
     }
   }
-  return points;
+  return { points, malformed };
 }
 
 /**
@@ -124,10 +143,11 @@ async function readCommandedRoutes(prisma, robotIds, options = {}) {
         continue;
       }
       const offer = offerByCommitment.get(live.commitmentId);
-      const points = offer ? corridorOf(offer.payload) : [];
+      const facts = offer ? corridorFactsOf(offer.payload) : { points: [], malformed: false };
+      const points = facts.malformed ? [] : facts.points;
       const leaseMs = live.leaseExpiry ? new Date(live.leaseExpiry).getTime() : NaN;
       out.set(robotId, {
-        status: points.length >= 2 ? ROUTE_STATUS.OK : ROUTE_STATUS.NO_ROUTE_GEOMETRY,
+        status: facts.malformed ? ROUTE_STATUS.MALFORMED_ROUTE : points.length >= 2 ? ROUTE_STATUS.OK : ROUTE_STATUS.NO_ROUTE_GEOMETRY,
         commitmentId: live.commitmentId,
         offerCreatedAt: offer && offer.createdAt ? new Date(offer.createdAt).toISOString() : null,
         // Recorded, not acted on: an expired lease does not release the commitment (the
@@ -196,4 +216,4 @@ function remainingRoute(points, position, { toleranceM }) {
   return { cut: CUT.AT_POSITION, points: out, segmentIndex: chosen.i, offRouteM: Math.round(nearest * 10) / 10 };
 }
 
-module.exports = { ROUTE_STATUS, CUT, TOLERANCE_ENV, corridorOf, readCommandedRoutes, corridorToleranceM, remainingRoute };
+module.exports = { ROUTE_STATUS, UNKNOWN_ROUTE_STATUSES, CUT, TOLERANCE_ENV, corridorOf, corridorFactsOf, readCommandedRoutes, corridorToleranceM, remainingRoute };

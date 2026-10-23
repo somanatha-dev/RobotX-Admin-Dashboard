@@ -97,6 +97,25 @@ describe("readCommandedRoutes — the live commitment's latest OFFER, and nothin
     expect(routes.get("R4")).toMatchObject({ status: ROUTE_STATUS.OK, commitmentId: "c-4", leaseExpired: true });
   });
 
+  test("a corridor holding a non-finite or out-of-range point is MALFORMED_ROUTE: never repaired by dropping the bad point", async () => {
+    const bad = {
+      agents: [{ id: "ag-m", agentId: "RM" }, { id: "ag-n", agentId: "RN" }],
+      commitments: [
+        { commitmentId: "c-m", agentId: "ag-m", grantedAt: "2026-10-23T09:50:00Z", releasedAt: null, leaseExpiry: "2026-10-23T10:05:00Z" },
+        { commitmentId: "c-n", agentId: "ag-n", grantedAt: "2026-10-23T09:50:00Z", releasedAt: null, leaseExpiry: "2026-10-23T10:05:00Z" },
+      ],
+      outbox: [
+        { commitmentId: "c-m", command: "OFFER", createdAt: "2026-10-23T09:50:01Z", payload: offer([[P(0), { lat: NaN, lon: 77.5 }, P(0.002)]]) },
+        { commitmentId: "c-n", command: "OFFER", createdAt: "2026-10-23T09:50:01Z", payload: offer([[P(0), { lat: 12.9, lon: 977.5 }, P(0.002)]]) },
+      ],
+    };
+    const routes = await route.readCommandedRoutes(prismaWith(bad), ["RM", "RN"], { nowMs: NOW });
+    expect(routes.get("RM")).toMatchObject({ status: ROUTE_STATUS.MALFORMED_ROUTE, commitmentId: "c-m", points: [] });
+    expect(routes.get("RN")).toMatchObject({ status: ROUTE_STATUS.MALFORMED_ROUTE, points: [] });
+    expect(route.UNKNOWN_ROUTE_STATUSES).toEqual(expect.arrayContaining([ROUTE_STATUS.MALFORMED_ROUTE, ROUTE_STATUS.NO_ROUTE_GEOMETRY, ROUTE_STATUS.LOOKUP_FAILED]));
+    expect(route.UNKNOWN_ROUTE_STATUSES).not.toContain(ROUTE_STATUS.NO_LIVE_COMMITMENT);
+  });
+
   test("a failed read, or no database, gives LOOKUP_FAILED for every robot — never a guessed route", async () => {
     const failing = createPermissivePrisma((model) => {
       if (model === "agent") throw new Error("connection reset");

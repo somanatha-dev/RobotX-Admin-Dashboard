@@ -101,6 +101,7 @@ export function useZoneAtCentre(mapRef, { isMapLoaded, zones } = {}) {
  * @param {object|null} [options.previewCells] the proposal preview's cell grid
  *                                           (`zoneModel.previewCellCollection`); null when off
  * @param {object[]} options.obstacles       obstacles in scope for the selected campus
+ * @param {number} [options.nowMs]           the page clock, so a marker turns expired on time
  * @param {object|null} options.selectedObstacle
  * @param {object[]} options.robots          the fleet (for the involved-robot rings)
  * @param {{ current: object|null }} [options.themeRef]
@@ -117,6 +118,7 @@ export function useDtaroLayer(
     areas,
     previewCells,
     obstacles,
+    nowMs,
     selectedObstacle,
     robots,
     themeRef,
@@ -132,7 +134,12 @@ export function useDtaroLayer(
   const areaData = useMemo(() => areaFeatureCollection(areas || []), [areas]);
   const areaLabelData = useMemo(() => areaLabelCollection(areas || []), [areas]);
   const previewCellData = useMemo(() => previewCells || EMPTY_CELLS, [previewCells]);
-  const obstacleData = useMemo(() => obstacleCollection(obstacles || []), [obstacles]);
+  // Rebuilt when the list changes or when an obstacle crosses its expiry, never on every tick:
+  // an expired obstacle must stop looking active on the map without waiting for another event.
+  const clock = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const expiredKey = (obstacles || []).filter((o) => Number.isFinite(o?.expiresAtMs) && o.expiresAtMs <= clock).map((o) => o.obstacleId).join('|');
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `clock` is captured through `expiredKey`
+  const obstacleData = useMemo(() => obstacleCollection(obstacles || [], clock), [obstacles, expiredKey]);
   const footprintData = useMemo(() => footprintCollection(selectedObstacle), [selectedObstacle]);
 
   // Read by the style.load / click handlers, which outlive any one render.

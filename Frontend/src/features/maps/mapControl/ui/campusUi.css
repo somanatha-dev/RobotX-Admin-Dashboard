@@ -1611,6 +1611,33 @@ button.map-obstacle__entry:hover {
   color: #bae6fd;
 }
 
+/* Simulated: every zone-delivered report comes from a simulated robot, never a physical sensor. */
+.map-obstacle__chip.is-sim {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.5);
+  color: #bae6fd;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Active: still within the server's obstacle lifetime. */
+.map-obstacle__chip.is-active {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.6);
+  color: #fecaca;
+}
+
+.map-obstacle__simnote {
+  margin: 0;
+  font-size: 0.6875rem;
+  color: #94a3b8;
+}
+
+.map-obstacle__simnote .map-obstacle__sim {
+  margin-left: 0;
+  margin-right: 0.25rem;
+}
+
 /* Cross-zone: alerted because its remaining commanded route crosses the obstacle from another zone. */
 .map-obstacle__chip.is-cross {
   background: rgba(167, 139, 250, 0.16);

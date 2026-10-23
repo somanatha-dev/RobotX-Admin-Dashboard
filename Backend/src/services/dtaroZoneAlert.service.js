@@ -33,7 +33,8 @@
  *   * No reroute, replan or path mutation of any kind, and no call into `routing.service`
  *     (OD-3: no replanning authority exists while the V1 engine is frozen).
  *   * No engine write: no Outbox, Commitment, Leg, Task or Mission row, no fenced command.
- *   * No plausibility distance, dedup or lifecycle beyond the existing EKB TTL (OD-4/OD-5).
+ *   * No plausibility distance and no lifecycle beyond the existing EKB TTL (OD-4/OD-5).
+ *     Dedup is one active obstacle per (region, published cell), serialized per cell.
  *   * Physical robots are neither zone members nor accepted reporters: physical obstacle
  *     integration is out of scope (A-6), and the Pi never emits OBSTACLE_REPORT.
  *
@@ -224,6 +225,27 @@ const ledger = new Map();
 const activeByCell = new Map();
 const cellKey = (regionId, cellId) => `${regionId}|${cellId}`;
 
+/**
+ * One report at a time per (region, cell) between the duplicate check and the ledger write.
+ * Storing an obstacle awaits the EKB, so without this two reports of one cell arriving together
+ * both found no active obstacle and both created and broadcast one.
+ */
+const cellLocks = new Map();
+async function withCellLock(key, fn) {
+  const prior = cellLocks.get(key) || Promise.resolve();
+  let release;
+  const mine = new Promise((resolve) => { release = resolve; });
+  const tail = prior.then(() => mine);
+  cellLocks.set(key, tail);
+  await prior;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (cellLocks.get(key) === tail) cellLocks.delete(key);
+  }
+}
+
 function ledgerPut(entry) {
   const now = Date.now();
   for (const [id, item] of ledger) {
@@ -354,37 +376,57 @@ async function processReport({ io, prisma, kv, snapshot, socket, reporterRobotId
     });
   }
 
-  const existing = activeObstacleIn(located.regionId, located.cellId);
-  if (existing) {
-    const repeat = existing.reportingRobotId === reporterRobotId || existing.corroborations.has(reporterRobotId);
-    if (!repeat) existing.corroborations.add(reporterRobotId);
-    const merged = {
-      obstacleId: existing.obstacleId,
-      reportingRobotId: reporterRobotId,
-      originalReporterId: existing.reportingRobotId,
-      corroborations: [...existing.corroborations].sort(),
-      repeat,
-      regionId: existing.regionId,
-      zoneId: existing.zoneId,
-      cellId: located.cellId,
+  const created = await withCellLock(cellKey(located.regionId, located.cellId), async () => {
+    const existing = activeObstacleIn(located.regionId, located.cellId);
+    if (existing) {
+      const repeat = existing.reportingRobotId === reporterRobotId || existing.corroborations.has(reporterRobotId);
+      if (!repeat) existing.corroborations.add(reporterRobotId);
+      const merged = {
+        obstacleId: existing.obstacleId,
+        reportingRobotId: reporterRobotId,
+        originalReporterId: existing.reportingRobotId,
+        corroborations: [...existing.corroborations].sort(),
+        repeat,
+        regionId: existing.regionId,
+        zoneId: existing.zoneId,
+        cellId: located.cellId,
+        lat,
+        lon,
+        timestamp: Date.now(),
+        expiresAt: new Date(existing.expiresAtMs).toISOString(),
+      };
+      toDashboard(io, MERGED_EVENT, merged);
+      return { merged: { accepted: true, merged: true, obstacle: { obstacleId: existing.obstacleId, timestamp: merged.timestamp }, alert: merged, room: existing.room, recipients: [] } };
+    }
+
+    const stored = await ekb.storeObstacle(kv, prisma, {
       lat,
       lon,
-      timestamp: Date.now(),
+      zoneId: located.zoneId,
+      severity,
+      reportingRobotId: reporterRobotId,
+    });
+
+    const zoneRoomName = zoneRoom(located.regionId, located.zoneId);
+    const zoneMembers = await recipientsOf(io, zoneRoomName, reporterRobotId);
+    const ledgerEntry = {
+      obstacleId: stored.obstacleId,
+      regionId: located.regionId,
+      zoneId: located.zoneId,
+      room: zoneRoomName,
+      reportingRobotId: reporterRobotId,
+      cellId: located.cellId,
+      recipients: new Set(zoneMembers),
+      corroborations: new Set(),
+      verdicts: new Map(),
+      expiresAtMs: Date.parse(stored.expiresAt) || Date.now() + 300_000,
     };
-    toDashboard(io, MERGED_EVENT, merged);
-    return { accepted: true, merged: true, obstacle: { obstacleId: existing.obstacleId, timestamp: merged.timestamp }, alert: merged, room: existing.room, recipients: [] };
-  }
-
-  const obstacle = await ekb.storeObstacle(kv, prisma, {
-    lat,
-    lon,
-    zoneId: located.zoneId,
-    severity,
-    reportingRobotId: reporterRobotId,
+    ledgerPut(ledgerEntry);
+    return { obstacle: stored, room: zoneRoomName, sameZoneRecipients: zoneMembers, entry: ledgerEntry };
   });
+  if (created.merged) return created.merged;
 
-  const room = zoneRoom(located.regionId, located.zoneId);
-  const sameZoneRecipients = await recipientsOf(io, room, reporterRobotId);
+  const { obstacle, room, sameZoneRecipients, entry } = created;
   const footprint = { kind: "H3_CELL", cellId: located.cellId, polygon: cellFootprint(located.cellId) };
 
   const alert = {
@@ -400,20 +442,6 @@ async function processReport({ io, prisma, kv, snapshot, socket, reporterRobotId
     timestamp: obstacle.timestamp,
     expiresAt: obstacle.expiresAt,
   };
-
-  const entry = {
-    obstacleId: obstacle.obstacleId,
-    regionId: located.regionId,
-    zoneId: located.zoneId,
-    room,
-    reportingRobotId: reporterRobotId,
-    cellId: located.cellId,
-    recipients: new Set(sameZoneRecipients),
-    corroborations: new Set(),
-    verdicts: new Map(),
-    expiresAtMs: Date.parse(obstacle.expiresAt) || Date.now() + 300_000,
-  };
-  ledgerPut(entry);
 
   // The reporter is excluded by its robot room, so a reporter with two sockets is excluded
   // from both. Delivery is the Socket.IO room, the same mechanism the Redis adapter extends.
@@ -523,7 +551,12 @@ async function crossZoneStep({ io, prisma, located, footprint, reporterRobotId, 
 
     const picked = selectRecipients({
       obstacle: { regionId: located.regionId, zoneId: located.zoneId, footprint: footprint.polygon },
-      robots: candidates.map((r) => ({ ...r, remainingRoute: routeFacts.has(r.robotId) ? routeFacts.get(r.robotId).remaining : null })),
+      robots: candidates.map((r) => ({
+        ...r,
+        remainingRoute: routeFacts.has(r.robotId) ? routeFacts.get(r.robotId).remaining : null,
+        // A route the server could not establish is unknown, not absent (conservative policy).
+        routeUnknown: routeFacts.has(r.robotId) && commandedRoute.UNKNOWN_ROUTE_STATUSES.includes(routeFacts.get(r.robotId).status),
+      })),
       reporterRobotId,
     });
     const recipients = picked.crossZone.filter((robotId) => !inZoneRoom.has(robotId)).sort();
@@ -568,6 +601,8 @@ function recordRelevance({ io, robotId, payload }) {
     zoneId: entry.zoneId,
     reportingRobotId: entry.reportingRobotId,
     timestamp: Date.now(),
+    // The obstacle's own expiry, so a dashboard that never saw its alert still lets it expire.
+    expiresAt: new Date(entry.expiresAtMs).toISOString(),
   };
   entry.verdicts.set(robotId, relayed);
   toDashboard(io, RELEVANCE_EVENT, relayed);
@@ -578,6 +613,7 @@ function recordRelevance({ io, robotId, payload }) {
 function resetForTests() {
   ledger.clear();
   activeByCell.clear();
+  cellLocks.clear();
   activityLog.length = 0;
 }
 

@@ -490,7 +490,11 @@ function MapControlInner({ filtersHost }) {
     if (!superAdmin) return undefined;
     let cancelled = false;
     getDtaroZones().then((view) => {
-      if (!cancelled) setDtaroFetched(view);
+      if (cancelled) return;
+      // A refetch that fails because the network is down (it runs when the connection drops,
+      // too) keeps the last map: otherwise the zones and the obstacle panel vanished exactly
+      // while the panel should be saying "reconnecting". Any answer from the server replaces it.
+      setDtaroFetched((previous) => (view?.error === 'NETWORK' && previous && previous.available !== false ? previous : view));
     });
     return () => {
       cancelled = true;
@@ -568,6 +572,17 @@ function MapControlInner({ filtersHost }) {
     const timer = setInterval(() => setDtaroNowMs(Date.now()), DTARO_CLOCK_MS);
     return () => clearInterval(timer);
   }, [alertsEnabled]);
+  // And exactly when the next obstacle expires, so the panel and the marker stop showing it as
+  // active at its expiry rather than up to one clock period later.
+  const nextExpiryMs = useMemo(() => {
+    const pending = scopedObstacles.map((o) => o.expiresAtMs).filter((ms) => Number.isFinite(ms) && ms > dtaroNowMs);
+    return pending.length ? Math.min(...pending) : null;
+  }, [scopedObstacles, dtaroNowMs]);
+  useEffect(() => {
+    if (!alertsEnabled || nextExpiryMs === null) return undefined;
+    const timer = setTimeout(() => setDtaroNowMs(Date.now()), Math.max(0, nextExpiryMs - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [alertsEnabled, nextExpiryMs]);
 
   const toggleZone = useCallback((key) => {
     setHiddenZones((prev) => {
@@ -586,6 +601,7 @@ function MapControlInner({ filtersHost }) {
     areas: layerAreas,
     previewCells,
     obstacles: scopedObstacles,
+    nowMs: dtaroNowMs,
     selectedObstacle,
     robots: globalRobots,
     themeRef,

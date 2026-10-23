@@ -85,9 +85,13 @@ async function resolveCompletedTaskId(prisma, reported) {
   return { taskId: null, resolvedFrom: "UNRESOLVED" };
 }
 
+// Coordinates must be finite numbers (WGS84 degrees). Range, region and cell are judged by the
+// spatial authority (`dtaroZoneAlert.resolvePoint`), which refuses visibly rather than here.
+// Any other field a report carries (a client timestamp, a zone, a route) is stripped: the
+// server stamps the time and resolves the zone itself.
 const obstacleSchema = z.object({
-  lat: z.number(),
-  lon: z.number(),
+  lat: z.number().finite(),
+  lon: z.number().finite(),
   severity: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).optional().default("MEDIUM"),
 });
 

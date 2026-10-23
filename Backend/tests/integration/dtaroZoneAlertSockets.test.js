@@ -392,19 +392,41 @@ describe("DTARO zone alerts over real local sockets", () => {
     expect(robots.get("SIM-CROSS").obstacleAwareness().alerts.length).toBe(alertsBefore);
   });
 
-  test("a client-supplied region or zone does not redirect delivery", async () => {
+  test("a client-supplied region, zone, time, id or expiry does not redirect delivery or set the obstacle's lifetime", async () => {
     const vr = robots.get("SIM-REPORTER");
     await new Promise((resolve) => setTimeout(resolve, 550)); // the handler's minimum report interval
     const ack = new Promise((resolve) => vr.socket.once("OBSTACLE_REPORT_ACK", resolve));
-    vr.socket.emit("OBSTACLE_REPORT", { lat: OBSTACLE.lat + 0.0003, lon: OBSTACLE.lon, severity: "LOW", regionId: "rB", zoneId: "z1" });
+    const before = Date.now();
+    vr.socket.emit("OBSTACLE_REPORT", {
+      lat: OBSTACLE.lat + 0.0003,
+      lon: OBSTACLE.lon,
+      severity: "LOW",
+      regionId: "rB",
+      zoneId: "z1",
+      // Stale/future/out-of-order claims: the server stamps its own receipt time and lifetime.
+      timestamp: before + 86_400_000,
+      expiresAt: new Date(before + 86_400_000).toISOString(),
+      obstacleId: "FORGED-ID",
+    });
     const payload = await ack;
     expect(payload).toMatchObject({ regionId: "rA", zoneId: "z1", delivery: "ZONE_ROOM" });
     expect(payload.recipients).toEqual(["SIM-CLEAR", "SIM-CROSS", "SIM-IDLE"]);
+    expect(payload.obstacleId).not.toBe("FORGED-ID");
+    const stamped = payload.timestamp; // epoch ms, the server's receipt time
+    expect(stamped).toBeGreaterThanOrEqual(before - 1000);
+    expect(stamped).toBeLessThanOrEqual(Date.now() + 1000);
+    const created = await waitFor(() => dashboardSeen.find((m) => m.event === "ALERT_CREATED" && m.payload.obstacleId === payload.obstacleId), { timeout: 3000 });
+    // The server's five-minute lifetime (EKB TTL), not the client's claimed expiry.
+    expect(created.payload.timestamp).toBe(stamped);
+    expect(Date.parse(created.payload.expiresAt) - created.payload.timestamp).toBe(300_000);
   });
 
   test.each([
     ["out-of-range coordinates", { lat: 999, lon: 77.5 }, "INVALID_COORDINATES"],
     ["a cell the published map does not assign", { lat: 12.95, lon: 77.6 }, "UNASSIGNED_CELL"],
+    // Latitude and longitude swapped (or another axis order): a valid point, far from any published
+    // cell. Refused, never re-interpreted or moved to the nearest region.
+    ["swapped latitude and longitude", { lat: OBSTACLE.lon, lon: OBSTACLE.lat }, "UNASSIGNED_CELL"],
   ])("invalid report: %s is refused (%s) and stores nothing", async (_label, point, reason) => {
     const vr = robots.get("SIM-REPORTER");
     const rejected = new Promise((resolve) => vr.socket.once("OBSTACLE_REPORT_REJECTED", resolve));

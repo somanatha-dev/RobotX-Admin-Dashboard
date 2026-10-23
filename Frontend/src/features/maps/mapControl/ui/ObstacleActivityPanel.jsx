@@ -37,6 +37,7 @@ const STATUS_CLASS = Object.freeze({
 const WHY_TEXT = Object.freeze({
   SAME_ZONE: 'same zone',
   ROUTE_CROSSES_OBSTACLE: 'other zone — its remaining route crosses the obstacle',
+  ROUTE_UNKNOWN: 'other zone — route unknown, alerted to be safe',
   ROUTE_CLEAR: 'other zone — remaining route clear of the obstacle',
   NO_REMAINING_ROUTE: 'other zone — no commanded route',
   NO_ZONE: 'no zone — no commanded route',
@@ -48,6 +49,7 @@ const ROUTE_STATUS_TEXT = Object.freeze({
   NO_ROUTE_GEOMETRY: 'route has no geometry',
   NO_AGENT: 'not an engine agent',
   LOOKUP_FAILED: 'route could not be read',
+  MALFORMED_ROUTE: 'route data malformed',
 });
 
 function whyText(decision) {
@@ -251,6 +253,10 @@ export function ObstacleActivityPanel({
             Simulated robots only{campusName ? ` · ${campusName}` : ' · all regions'}. Each robot alerted decides for itself
             whether the obstacle is on its commanded route.
           </p>
+          <p className="map-obstacle__simnote">
+            <span className="map-obstacle__sim">SIMULATED</span> Every report here comes from a simulated robot — the server
+            refuses any other. None is a physical sensor detection.
+          </p>
           {note && (
             <p className="map-obstacle__warn" role="status">
               {note}
@@ -301,6 +307,17 @@ export function ObstacleActivityPanel({
                         )}
                       </span>
                       <span className="map-obstacle__chips">
+                        <span className="map-obstacle__chip is-sim">simulated</span>
+                        {!isExpired(entry.obstacle, nowMs) && Number.isFinite(entry.obstacle.expiresAtMs) && (
+                          <span className="map-obstacle__chip is-active" title="Active until the server's obstacle lifetime ends">
+                            active · until {clockOf(entry.obstacle.expiresAtMs)}
+                          </span>
+                        )}
+                        {entry.obstacle.severity && (
+                          <span className="map-obstacle__chip is-clear" title="As reported by the robot (advisory)">
+                            {entry.obstacle.severity.toLowerCase()}
+                          </span>
+                        )}
                         <SummaryChips counts={entry.counts} />
                         {entry.obstacle.corroborations?.length > 0 && (
                           <span className="map-obstacle__chip is-clear">+{entry.obstacle.corroborations.length} report{entry.obstacle.corroborations.length === 1 ? '' : 's'}</span>

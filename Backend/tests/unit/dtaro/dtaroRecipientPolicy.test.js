@@ -124,6 +124,50 @@ describe("dtaroRecipientPolicy.selectRecipients", () => {
     ]);
   });
 
+  test("an UNKNOWN route (could not be read, or no usable geometry) is alerted conservatively; an idle robot is not", () => {
+    const r = selectRecipients({
+      obstacle,
+      robots: [
+        { robotId: "U", regionId: "rnsit", zoneId: "rnsit-z-west", remainingRoute: null, routeUnknown: true },
+        { robotId: "I", regionId: "rnsit", zoneId: "rnsit-z-west", remainingRoute: null, routeUnknown: false },
+        // Region isolation wins over the conservative rule: another region is never alerted.
+        { robotId: "J", regionId: "jssate", zoneId: "rnsit-z-west", remainingRoute: null, routeUnknown: true },
+        // A known route decides; `routeUnknown` only applies when there is no route to judge.
+        { robotId: "C", regionId: "rnsit", zoneId: "rnsit-z-west", remainingRoute: clear, routeUnknown: true },
+      ],
+    });
+    expect(r.crossZone).toEqual(["U"]);
+    expect(r.decisions.map((d) => [d.robotId, d.selected, d.reason, d.routeIntersects])).toEqual([
+      ["C", false, REASON.ROUTE_CLEAR, false],
+      ["I", false, REASON.NO_REMAINING_ROUTE, null],
+      ["J", false, REASON.OTHER_REGION, null],
+      ["U", true, REASON.ROUTE_UNKNOWN, null],
+    ]);
+  });
+
+  test("a reused zone id in another region is still another region: never a recipient", () => {
+    const r = selectRecipients({
+      obstacle,
+      robots: [{ robotId: "Z", regionId: "jssate", zoneId: obstacle.zoneId, remainingRoute: through }],
+    });
+    expect(r.sameZone).toEqual([]);
+    expect(r.crossZone).toEqual([]);
+    expect(r.decisions).toEqual([{ robotId: "Z", relation: "OTHER_REGION", routeIntersects: null, selected: false, reason: REASON.OTHER_REGION }]);
+  });
+
+  test("route endpoints and boundaries: a route ENDING on the footprint edge or vertex is a crossing", () => {
+    const [v0, v1] = obstacle.footprint;
+    const mid = { lat: (v0.lat + v1.lat) / 2, lon: (v0.lon + v1.lon) / 2 };
+    const outward = { lat: mid.lat + (mid.lat - OB_LAT) * 3, lon: mid.lon + (mid.lon - OB_LON) * 3 };
+    const robots = [
+      { robotId: "E", regionId: "rnsit", zoneId: "rnsit-z-west", remainingRoute: [outward, mid] },
+      { robotId: "V", regionId: "rnsit", zoneId: "rnsit-z-west", remainingRoute: [{ lat: v0.lat + 0.001, lon: v0.lon }, v0] },
+      // A zero-length route (a robot at the end of its corridor) inside the footprint.
+      { robotId: "Z", regionId: "rnsit", zoneId: "rnsit-z-west", remainingRoute: [{ lat: OB_LAT, lon: OB_LON }, { lat: OB_LAT, lon: OB_LON }] },
+    ];
+    expect(selectRecipients({ obstacle, robots }).crossZone).toEqual(["E", "V", "Z"]);
+  });
+
   test("an obstacle without a resolved region, zone or footprint is refused", () => {
     expect(() => selectRecipients({ obstacle: { regionId: "rnsit", zoneId: null, footprint: [] }, robots: [] })).toThrow(TypeError);
   });

@@ -365,6 +365,68 @@ describe("dtaroZoneAlert — one active obstacle per published cell (duplicates 
     expect(h.emitted.filter((e) => e.event === dtaroZoneAlert.ALERT_EVENT)).toHaveLength(2);
   });
 
+  test("concurrent reports of one cell create ONE obstacle: the rest merge, even while the first is still being stored", async () => {
+    const { kv } = await createTestKv();
+    const h = harness();
+    // Make storing slow, so all three reports are in flight before the first one finishes.
+    const ekb = require("../../../src/services/ekb.service");
+    const realStore = ekb.storeObstacle;
+    jest.spyOn(ekb, "storeObstacle").mockImplementation(async (...args) => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return realStore(...args);
+    });
+    const results = await Promise.all(["SIM-A", "SIM-C", "SIM-D"].map((id) => report(h, kv, id)));
+    const created = results.filter((r) => !r.merged);
+    expect(created).toHaveLength(1);
+    expect(results.filter((r) => r.merged).map((r) => r.alert.obstacleId)).toEqual([created[0].obstacle.obstacleId, created[0].obstacle.obstacleId]);
+    expect(ekb.storeObstacle).toHaveBeenCalledTimes(1);
+    expect(h.emitted.filter((e) => e.event === dtaroZoneAlert.ALERT_EVENT)).toHaveLength(1);
+    expect(h.emitted.filter((e) => e.event === "ALERT_CREATED")).toHaveLength(1);
+  });
+
+  test("two distinct obstacles in adjacent published cells are NOT merged: each alerts", async () => {
+    const { kv } = await createTestKv();
+    const h = harness();
+    const neighbour = h3.gridDisk(CELL, 1).find((id) => id !== CELL);
+    const [nLat, nLon] = h3.cellToLatLng(neighbour);
+    const map2 = { spatial: { ...MAP.spatial, cells: [...MAP.spatial.cells, { cellId: neighbour, resolution: "FINE", regionId: "rA", zoneId: "z1" }] } };
+    const first = await dtaroZoneAlert.processReport({ io: h.io, prisma: null, kv, snapshot: map2, socket: h.socket("SIM-A"), reporterRobotId: "SIM-A", report: { lat: C.lat, lon: C.lon, severity: "HIGH" } });
+    const second = await dtaroZoneAlert.processReport({ io: h.io, prisma: null, kv, snapshot: map2, socket: h.socket("SIM-C"), reporterRobotId: "SIM-C", report: { lat: nLat, lon: nLon, severity: "HIGH" } });
+    expect(second.merged).toBeUndefined();
+    expect(second.obstacle.obstacleId).not.toBe(first.obstacle.obstacleId);
+    expect([first.alert.cellId, second.alert.cellId]).toEqual([CELL, neighbour]);
+    expect(h.emitted.filter((e) => e.event === dtaroZoneAlert.ALERT_EVENT)).toHaveLength(2);
+  });
+
+  test("a verdict carries its obstacle's expiry; a verdict after expiry is refused and relays nothing", async () => {
+    const { kv } = await createTestKv();
+    const h = harness();
+    const t0 = Date.now();
+    const now = jest.spyOn(Date, "now").mockReturnValue(t0);
+    const first = await report(h, kv, "SIM-A");
+    const answer = { obstacleId: first.obstacle.obstacleId, relevant: false, routeSource: "NONE", decision: "NO_PLANNED_ROUTE" };
+    const relayed = dtaroZoneAlert.recordRelevance({ io: h.io, robotId: "SIM-B", payload: answer });
+    expect(relayed).toMatchObject({ accepted: true, payload: { expiresAt: first.obstacle.expiresAt } });
+
+    now.mockReturnValue(t0 + 300_001);
+    const late = dtaroZoneAlert.recordRelevance({ io: h.io, robotId: "SIM-B", payload: { ...answer, decision: "LATE" } });
+    expect(late).toEqual({ accepted: false, reason: "UNKNOWN_OBSTACLE" });
+    expect(h.emitted.filter((e) => e.event === dtaroZoneAlert.RELEVANCE_EVENT)).toHaveLength(1);
+  });
+
+  test("a merged report names the obstacle's original expiry; merging never extends its lifetime", async () => {
+    const { kv } = await createTestKv();
+    const h = harness();
+    const t0 = Date.now();
+    const now = jest.spyOn(Date, "now").mockReturnValue(t0);
+    const first = await report(h, kv, "SIM-A");
+    now.mockReturnValue(t0 + 200_000);
+    const merged = await report(h, kv, "SIM-C");
+    expect(merged.alert.expiresAt).toBe(first.obstacle.expiresAt);
+    now.mockReturnValue(t0 + 300_001);
+    expect(dtaroZoneAlert.ledgerGet(first.obstacle.obstacleId)).toBeNull();
+  });
+
   test("the same cell in another region is a different obstacle", async () => {
     const { kv } = await createTestKv();
     const h = harness();

@@ -56,6 +56,52 @@ Two environment variables turn it on. Both are off by default.
 
 **Limitation of the RNSIT map:** with the current RNSIT map (one zone), every simulated robot on campus is in the same room. The relevance check is what separates affected robots from unaffected ones. The four-zone RNSIT proposal (`RNSIT_ZONE_MAPPING_PROPOSAL.md`) is **not** published and is not used.
 
+## Presentation demo (G4, four zones): `presentation/`
+
+This is the repeatable live demonstration. It runs on a throwaway stack: a new PostgreSQL cluster under `%TEMP%` on port 55480, the real `server.js` (engine, simulator) on :3140, and the dashboard on :5190. It never touches Neon, the Docker LOCAL database or your LOCAL env file.
+
+All robots are simulated. Every obstacle is reported by a simulated robot that is commissioned on a scenario obstacle and senses it. None is a physical sensor detection, and the dashboard says so on every entry.
+
+Run in PowerShell from `Backend`. Setup takes about 2 minutes:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\demo\dtaro\presentation\setup.ps1   # cluster, migrations, seed, G4 published + pinned
+powershell -ExecutionPolicy Bypass -File tools\demo\dtaro\presentation\start.ps1   # backend + dashboard (hidden; logs in %TEMP%\robotx-dtaro-presentation)
+```
+
+Open `http://127.0.0.1:5190/map` (use `127.0.0.1`, not `localhost`, or the session cookie is not sent). Sign in with the email `start.ps1` prints; the password is `SEED_ADMIN_PASSWORD` in `%TEMP%\robotx-dtaro-presentation\demo.env`. Then select RNSIT, switch to **Zones** and open **Obstacle awareness**. Then:
+
+```powershell
+node tools\demo\dtaro\presentation\runDemo.js --pause            # Enter advances each step
+node tools\demo\dtaro\presentation\runDemo.js --pause --expiry   # also waits out the 5-minute lifetime
+```
+
+The driver:
+1. checks that G4 is served with alerts on;
+2. gives four robots work across zones;
+3. has a simulated robot report an obstacle;
+4. checks every recipient decision against an independent oracle (the G4 cell lookup plus 1 m sampling of each robot's remaining OFFER corridor);
+5. reports the same obstacle again, which merges and is not re-broadcast;
+6. reports a second obstacle in another zone;
+7. proves no OFFER changed and no REROUTE exists.
+
+It prints PASS/FAIL per check and writes `demo-evidence.json`. It can be run again on the same stack; earlier obstacles stay in the panel as expired history. Remove everything with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\demo\dtaro\presentation\teardown.ps1
+```
+
+What to point at in the panel:
+- **SIMULATED**, and **active · until HH:MM:SS** on each entry. At expiry the entry turns to "expired — not confirmed clear", and its map marker changes too, without a reload.
+- **+1 report** on a merged duplicate.
+- In the detail: each recipient with its own verdict, a **cross-zone** tag, and the server's reason ("same zone", "its remaining route crosses the obstacle", "route unknown, alerted to be safe").
+- The **Considered, not alerted** list, with why each robot was left out.
+- The note "Reroute: not available".
+
+If the connection drops, the panel stays up and says "Live updates paused — reconnecting".
+
+**Recipient policy for unknown routes (2026-10-24).** Missing route data is never treated as proof that a robot is unaffected. Suppose a same-region robot in another zone has a live commitment, but its commanded route cannot be read, has no geometry, or holds a malformed point. That robot is alerted conservatively, with reason `ROUTE_UNKNOWN`. An idle robot (no live commitment) has no commanded route, so it is not alerted by route.
+
 ## Full-stack run (real `server.js`, real engine, disposable PostgreSQL)
 
 This section has **not been executed yet.** It is the procedure for running the full stack. Every step touches only a new cluster under `%TEMP%`, on port 55470:

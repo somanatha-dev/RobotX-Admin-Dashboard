@@ -88,7 +88,7 @@ function render(props) {
       onFocus: () => {},
       zoneNameOf: (zoneId, regionId) => (zoneId === 'rnsit-z1' && regionId === 'row-rnsit' ? 'RNSIT Zone 1' : null),
       robotsById: new Map([['SIM-A', { robotId: 'SIM-A', simulated: true }]]),
-      nowMs: ALERT.timestamp + 1_000,
+      nowMs: props.nowMs ?? ALERT.timestamp + 1_000,
       initiallyOpen: props.open !== false,
     }),
   );
@@ -301,4 +301,59 @@ test('zone key, published map with no pending proposal (G4 published): plain hea
   const html = renderZones({ live: liveZonesForCampus(VIEW, 'rnsit'), preview: null, mode: ZONE_VIEW.PUBLISHED });
   assert.match(html, /Alert zones — published map</);
   assert.doesNotMatch(html, /diagnostic|Back to the|proposal/i);
+});
+
+test('simulated, active and expiry are stated on the entry itself, and the entry flips to expired at its expiry', () => {
+  const state = stateWith([OBSTACLE_EVENTS.ALERT_CREATED, ALERT]);
+  const expiresAtMs = Date.parse(ALERT.expiresAt);
+
+  const active = render({ state, nowMs: expiresAtMs - 1 });
+  assert.match(active, /SIMULATED<\/span> Every report here comes from a simulated robot/);
+  assert.match(active, /None is a physical sensor detection/);
+  assert.match(active, /map-obstacle__chip is-sim">simulated</);
+  assert.match(active, /active · until \d\d:\d\d:\d\d/);
+  assert.match(active, />high</);
+  assert.doesNotMatch(active, /expired — not confirmed clear/);
+
+  const expired = render({ state, nowMs: expiresAtMs });
+  assert.doesNotMatch(expired, /active · until/);
+  assert.match(expired, /expired — not confirmed clear/);
+  assert.match(expired, /map-obstacle__entry is-expired/);
+});
+
+test('why chips: an unknown route says it was alerted to be safe, naming the route status', () => {
+  const state = stateWith([
+    OBSTACLE_EVENTS.ALERT_CREATED,
+    {
+      ...ALERT,
+      recipients: ['SIM-U'],
+      crossZoneRecipients: ['SIM-U'],
+      recipientDecisions: [{ robotId: 'SIM-U', zoneId: 'rnsit-z-west', relation: 'OTHER_ZONE', routeIntersects: null, selected: true, alerted: true, reason: 'ROUTE_UNKNOWN', route: { status: 'LOOKUP_FAILED' } }],
+    },
+  ]);
+  const html = render({ state, selectedId: 'OBS-1' });
+  assert.match(html, /route unknown, alerted to be safe \(route could not be read\)/);
+});
+
+test('map markers turn expired at the page clock, not only when the obstacle list changes', async () => {
+  const { obstacleCollection } = await import('../dtaro/dtaroLayers.js');
+  const obstacle = { obstacleId: 'OBS-1', lat: ALERT.lat, lon: ALERT.lon, expiresAtMs: Date.parse(ALERT.expiresAt) };
+  assert.equal(obstacleCollection([obstacle], obstacle.expiresAtMs - 1).features[0].properties.expired, false);
+  assert.equal(obstacleCollection([obstacle], obstacle.expiresAtMs).features[0].properties.expired, true);
+  const hook = fs.readFileSync(path.resolve(HERE, '../dtaro/useDtaroLayer.js'), 'utf8');
+  // The layer is fed the page clock and rebuilds its markers when an obstacle crosses its expiry.
+  assert.match(hook, /obstacleCollection\(obstacles \|\| \[\], clock\)/);
+  assert.match(hook, /\[obstacles, expiredKey\]/);
+  const page = fs.readFileSync(path.resolve(HERE, '../MapControl.jsx'), 'utf8');
+  assert.match(page, /nowMs: dtaroNowMs,/);
+  assert.match(page, /setTimeout\(\(\) => setDtaroNowMs\(Date\.now\(\)\), Math\.max\(0, nextExpiryMs - Date\.now\(\)\)/);
+});
+
+test('a connection drop keeps the zone map and the obstacle panel: a network-failed refetch never replaces a good view', () => {
+  const page = fs.readFileSync(path.resolve(HERE, '../MapControl.jsx'), 'utf8');
+  // The zone fetch re-runs when the connection drops; offline it fails with NETWORK. Replacing the
+  // view with that failure set alertsEnabled false and unmounted the panel mid-outage (seen in
+  // the real dashboard, 2026-10-23), so the "reconnecting" note was never shown.
+  assert.match(page, /setDtaroFetched\(\(previous\) => \(view\?\.error === 'NETWORK' && previous && previous\.available !== false \? previous : view\)\)/);
+  assert.match(page, /\{alertsEnabled && \(\s*<ObstacleActivityPanel\s*connectionState=\{connectionState\}/);
 });

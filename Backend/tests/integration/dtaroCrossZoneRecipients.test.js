@@ -258,7 +258,8 @@ describe("cross-zone obstacle recipients — flag on, real sockets", () => {
   });
 
   test("cross-zone robot whose remaining commanded route meets the obstacle is alerted through its robot room", () => {
-    expect(created.payload.crossZoneRecipients).toEqual(["X-CROSS"]);
+    // X-NOGEOM is alerted too, conservatively (ROUTE_UNKNOWN): see the no-geometry test below.
+    expect(created.payload.crossZoneRecipients).toEqual(["X-CROSS", "X-NOGEOM"]);
     expect(decisionOf(created, "X-CROSS")).toMatchObject({
       zoneId: "zW",
       relation: "OTHER_ZONE",
@@ -278,7 +279,7 @@ describe("cross-zone obstacle recipients — flag on, real sockets", () => {
       zoneId: "zE",
       delivery: "ZONE_ROOM",
       recipientPolicy: "ZONE_PLUS_REMAINING_ROUTE",
-      recipients: ["SAME-CROSS", "SAME-IDLE", "X-CROSS"],
+      recipients: ["SAME-CROSS", "SAME-IDLE", "X-CROSS", "X-NOGEOM"],
     });
     expect(created.payload.crossZoneError).toBeUndefined();
     const reported = s.robots.get("REPORTER").obstacleAwareness().reported.find((r) => r.worldId === "OB-1");
@@ -290,7 +291,7 @@ describe("cross-zone obstacle recipients — flag on, real sockets", () => {
     expect(logged).toHaveLength(1);
     expect(JSON.parse(JSON.stringify(logged[0].payload))).toEqual(created.payload);
     const verdicts = dtaroZoneAlert.recentActivity().filter((e) => e.event === "OBSTACLE_RELEVANCE" && e.payload.obstacleId === created.payload.obstacleId);
-    expect(verdicts.map((e) => e.payload.robotId).sort()).toEqual(["SAME-CROSS", "SAME-IDLE", "X-CROSS"]);
+    expect(verdicts.map((e) => e.payload.robotId).sort()).toEqual(["SAME-CROSS", "SAME-IDLE", "X-CROSS", "X-NOGEOM"]);
   });
 
   test("the dashboard receives each recipient's verdict, the cross-zone one included", () => {
@@ -299,6 +300,7 @@ describe("cross-zone obstacle recipients — flag on, real sockets", () => {
       ["SAME-CROSS", true, "RELEVANT_NO_REPLAN"],
       ["SAME-IDLE", false, "NO_PLANNED_ROUTE"],
       ["X-CROSS", true, "RELEVANT_NO_REPLAN"],
+      ["X-NOGEOM", false, "NO_PLANNED_ROUTE"],
     ]);
   });
 
@@ -325,9 +327,9 @@ describe("cross-zone obstacle recipients — flag on, real sockets", () => {
     expect(alertsOf(s, "X-ROBOT")).toEqual([]);
   });
 
-  test("a live commitment with no route geometry is recorded and not selected", () => {
-    expect(decisionOf(created, "X-NOGEOM")).toMatchObject({ selected: false, reason: "NO_REMAINING_ROUTE", route: { status: "NO_ROUTE_GEOMETRY" } });
-    expect(alertsOf(s, "X-NOGEOM")).toEqual([]);
+  test("a live commitment with no route geometry is an UNKNOWN route: alerted conservatively, never assumed clear", () => {
+    expect(decisionOf(created, "X-NOGEOM")).toMatchObject({ selected: true, alerted: true, reason: "ROUTE_UNKNOWN", routeIntersects: null, route: { status: "NO_ROUTE_GEOMETRY" } });
+    expect(alertsOf(s, "X-NOGEOM")).toEqual([expect.objectContaining({ obstacleId: created.payload.obstacleId })]);
   });
 
   test("a robot in another region is never alerted, and its route is never read", () => {
@@ -355,7 +357,7 @@ describe("cross-zone obstacle recipients — flag on, real sockets", () => {
     for (const [id] of s.robots) expect(alertsOf(s, id).length).toBe(before[id]);
   });
 
-  test("route state unavailable: same-zone delivery still happens; cross-zone is withheld and recorded as LOOKUP_FAILED", async () => {
+  test("route state unavailable: same-zone delivery still happens; same-region robots are alerted conservatively as ROUTE_UNKNOWN", async () => {
     failRouteReads = true;
     try {
       const createdBefore = dashboard.filter((m) => m.event === "ALERT_CREATED").length;
@@ -364,11 +366,17 @@ describe("cross-zone obstacle recipients — flag on, real sockets", () => {
       vr.socket.emit("OBSTACLE_REPORT", { lat: O2.lat, lon: O2.lon, severity: "HIGH" });
       await waitFor(() => dashboard.filter((m) => m.event === "ALERT_CREATED").length > createdBefore, { timeout: 5000 });
       const second = dashboard.filter((m) => m.event === "ALERT_CREATED")[createdBefore];
-      expect(second.payload).toMatchObject({ zoneId: "zE", sameZoneRecipients: ["REPORTER", "SAME-IDLE"], crossZoneRecipients: [] });
-      // X-CROSS's corridor runs through O2 too; with its route unreadable it is NOT guessed at.
-      expect(decisionOf(second, "X-CROSS")).toMatchObject({ selected: false, alerted: false, reason: "NO_REMAINING_ROUTE", route: { status: "LOOKUP_FAILED" } });
+      // Every same-region robot in another zone has an unreadable route: none is assumed clear.
+      // Region B is still never considered (its route is not even read).
+      const otherZone = ["X-CLEAR", "X-CROSS", "X-IDLE", "X-NOGEOM", "X-PASSED", "X-ROBOT"];
+      expect(second.payload).toMatchObject({ zoneId: "zE", sameZoneRecipients: ["REPORTER", "SAME-IDLE"], crossZoneRecipients: otherZone });
+      for (const robotId of otherZone) {
+        expect(decisionOf(second, robotId)).toMatchObject({ selected: true, alerted: true, reason: "ROUTE_UNKNOWN", route: { status: "LOOKUP_FAILED" } });
+      }
+      expect(decisionOf(second, "B-ROUTE")).toMatchObject({ reason: "OTHER_REGION", alerted: false });
       await waitFor(() => alertsOf(s, "SAME-IDLE").some((a) => a.obstacleId === second.payload.obstacleId), { timeout: 5000 });
-      expect(alertsOf(s, "X-CROSS").some((a) => a.obstacleId === second.payload.obstacleId)).toBe(false);
+      await waitFor(() => alertsOf(s, "X-CROSS").some((a) => a.obstacleId === second.payload.obstacleId), { timeout: 5000 });
+      expect(alertsOf(s, "B-ROUTE").some((a) => a.obstacleId === second.payload.obstacleId)).toBe(false);
     } finally {
       failRouteReads = false;
     }

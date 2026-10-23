@@ -203,3 +203,33 @@ test('a merged report adds corroborations to the obstacle it joined; one for an 
   const again = applyObstacleEvent(state, OBSTACLE_EVENTS.ALERT_CREATED, ALERT);
   assert.deepEqual(again.obstacles[0].corroborations, ['SIM-C']);
 });
+
+test('a late verdict never resurrects an expired obstacle this page did not see; a partial entry expires with it', () => {
+  const expiresAt = new Date(ALERT.timestamp + 300_000).toISOString();
+  const late = applyObstacleEvent(EMPTY_ACTIVITY, OBSTACLE_EVENTS.RELEVANCE, { ...verdict('SIM-B', true), expiresAt }, ALERT.timestamp + 300_000);
+  assert.equal(late, EMPTY_ACTIVITY);
+
+  const early = applyObstacleEvent(EMPTY_ACTIVITY, OBSTACLE_EVENTS.RELEVANCE, { ...verdict('SIM-B', true), expiresAt }, ALERT.timestamp + 1_000);
+  assert.equal(early.obstacles.length, 1);
+  assert.equal(early.obstacles[0].partial, true);
+  assert.equal(early.obstacles[0].expiresAtMs, ALERT.timestamp + 300_000);
+  assert.equal(isExpired(early.obstacles[0], ALERT.timestamp + 300_000), true);
+
+  // A verdict for an obstacle the page already holds still updates it, expired or not.
+  const held = applyObstacleEvent(EMPTY_ACTIVITY, OBSTACLE_EVENTS.ALERT_CREATED, { ...ALERT, expiresAt }, ALERT.timestamp);
+  const after = applyObstacleEvent(held, OBSTACLE_EVENTS.RELEVANCE, { ...verdict('SIM-B', false), expiresAt }, ALERT.timestamp + 400_000);
+  assert.equal(after.obstacles[0].verdicts['SIM-B'].relevant, false);
+});
+
+test('replaying the server activity log twice (reconnect) leaves one entry per obstacle', () => {
+  const store = createObstacleActivityStore();
+  const events = [
+    { event: OBSTACLE_EVENTS.ALERT_CREATED, payload: ALERT },
+    { event: OBSTACLE_EVENTS.RELEVANCE, payload: verdict('SIM-B', true) },
+  ];
+  store.hydrate(events, ALERT.timestamp + 1_000);
+  store.hydrate(events, ALERT.timestamp + 2_000);
+  const snapshot = store.getSnapshot();
+  assert.equal(snapshot.obstacles.length, 1);
+  assert.deepEqual(Object.keys(snapshot.obstacles[0].verdicts), ['SIM-B']);
+});

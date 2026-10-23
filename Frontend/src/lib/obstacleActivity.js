@@ -125,6 +125,10 @@ export function applyObstacleEvent(state, event, payload, nowMs = Date.now()) {
       atMs: timeOf(payload.timestamp) ?? nowMs,
     };
     const existing = current.obstacles.find((o) => o.obstacleId === obstacleId);
+    // A late verdict must not resurrect an obstacle this page never saw once it has expired: the
+    // server stamps each verdict with its obstacle's expiry.
+    const verdictExpiresAtMs = timeOf(payload.expiresAt);
+    if (!existing && verdictExpiresAtMs !== null && verdictExpiresAtMs <= nowMs) return current;
     // A verdict for an alert this page did not see (it opened afterwards): keep what the
     // verdict itself states, marked partial — no location, no recipient list is invented.
     const base = existing || {
@@ -137,7 +141,8 @@ export function applyObstacleEvent(state, event, payload, nowMs = Date.now()) {
       cellId: null,
       severity: null,
       reportedAtMs: null,
-      expiresAtMs: null,
+      // The obstacle's expiry as the verdict states it, so a partial entry also expires.
+      expiresAtMs: verdictExpiresAtMs,
       recipients: [],
       footprint: null,
       verdicts: {},
