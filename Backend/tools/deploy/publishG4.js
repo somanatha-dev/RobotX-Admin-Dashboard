@@ -8,7 +8,11 @@
  *   ROBOTX_OPERATOR_PASSWORD=…  (or ROBOTX_SESSION_COOKIE=token=…)  node tools/deploy/publishG4.js \
  *     --api https://<backend> --database-url <url> --confirm-host <exact db hostname> \
  *     --email <your SUPER_ADMIN login> --second-approver <User.id of the second approver> \
- *     --reason "<why>" [--expect-active-version N] [--apply]
+ *     --reason "<why>" [--expect-active-version N] [--restore-version N] [--apply]
+ *
+ * `--restore-version N` is the RECOVERY path: it republishes version N exactly (its map, bindings,
+ * kill switches, regimes, delivery domain) through the same guarded route and pins it — e.g.
+ * `--restore-version 1` returns the cover to `rnsit-z1`. Nothing is deleted; versions are immutable.
  *
  * Dry run unless `--apply`. Credentials come only from the environment and are never printed.
  *
@@ -50,6 +54,7 @@ function parseArgs(argv) {
     secondApproverId: flag("--second-approver"),
     reason: flag("--reason"),
     expectActive: flag("--expect-active-version") === null ? null : Number(flag("--expect-active-version")),
+    restoreVersion: flag("--restore-version") === null ? null : Number(flag("--restore-version")),
     apply: argv.includes("--apply"),
   };
 }
@@ -102,15 +107,26 @@ async function run(args, { log = console.log } = {}) {
     const before = await readState(prisma);
     if (!before.row || !before.region) throw new Error("no pinned version or no Region rnsit");
     if (args.expectActive !== null && before.pin.version !== args.expectActive) throw new Error(`the pinned version is ${before.pin.version}, not the expected ${args.expectActive}`);
-    const payload = before.row.payload;
-    const spatial = rehearsal.g4SpatialFrom(payload.spatial, { proposal, rnsitRowId: before.region.id });
-    const diff = rehearsal.spatialDiff(payload.spatial, spatial);
+    let payload = before.row.payload;
+    let spatial;
+    if (args.restoreVersion !== null) {
+      // RECOVERY: version N exactly, as published then.
+      const target = await prisma.configVersion.findUnique({ where: { version: args.restoreVersion } });
+      if (!target) throw new Error(`no version ${args.restoreVersion} to restore`);
+      payload = target.payload;
+      spatial = target.payload.spatial;
+    } else {
+      spatial = rehearsal.g4SpatialFrom(payload.spatial, { proposal, rnsitRowId: before.region.id });
+    }
+    const diff = rehearsal.spatialDiff(before.row.payload.spatial, spatial);
     step("1 read (READ ONLY)", { pinned: before.pin.version, versions: before.versions, signature: `${before.row.signature.slice(0, 16)}…`, g4Digest: `${digest.slice(0, 12)}…`, zoneRows: before.zones.map((z) => z.id).sort() });
 
     // 2 — checks.
     const engine = rehearsal.engineFindings(spatial);
     const references = rehearsal.zoneRowFindings(spatial, before.zones);
-    const onlyCells = diff.cellsWithNewZone === 64 && diff.cellsOtherwiseChanged === 0 && diff.regionsIdentical && diff.sitesIdentical && diff.cellsBefore === diff.cellsAfter;
+    const onlyCells =
+      diff.cellsOtherwiseChanged === 0 && diff.regionsIdentical && diff.sitesIdentical && diff.cellsBefore === diff.cellsAfter &&
+      (args.restoreVersion !== null ? true : diff.cellsWithNewZone === 64);
     step("2 checks", { engineFindings: engine, zoneReferenceFindings: references, onlyTheRnsitCellsChange: onlyCells, diff });
     if (engine.length || references.length || !onlyCells) throw new Error("the candidate is not publishable; nothing was sent");
 
@@ -128,7 +144,7 @@ async function run(args, { log = console.log } = {}) {
     step("2b API agrees with the database", { apiActiveVersion: listed.json.activeVersion });
 
     if (!args.apply) {
-      step("DRY RUN", { wouldPublish: "G4 (64 RNSIT cells → 4 zones)", via: "POST /api/config/publish", rollbackTarget: before.pin.version });
+      step("DRY RUN", { wouldPublish: args.restoreVersion !== null ? `version ${args.restoreVersion} restored` : "G4 (64 RNSIT cells → 4 zones)", via: "POST /api/config/publish", rollbackTarget: before.pin.version });
       return report;
     }
 
@@ -139,7 +155,10 @@ async function run(args, { log = console.log } = {}) {
       regimes: payload.regimes || [],
       spatial,
       deliveryDomain: payload.deliveryDomain || null,
-      note: `G4 RNSIT four-zone layout (digest ${digest.slice(0, 12)}…): version ${before.pin.version} restated with the 64 RNSIT cells reassigned to rnsit-z-west/east/south/southwest. Owner-authorised 2026-10-23.`,
+      note:
+        args.restoreVersion !== null
+          ? `RECOVERY: version ${args.restoreVersion} republished exactly (replacing version ${before.pin.version}).`
+          : `G4 RNSIT four-zone layout (digest ${digest.slice(0, 12)}…): version ${before.pin.version} restated with the 64 RNSIT cells reassigned to rnsit-z-west/east/south/southwest. Owner-authorised 2026-10-23.`,
       reason: args.reason,
       secondApproverId: args.secondApproverId,
     });
@@ -151,9 +170,13 @@ async function run(args, { log = console.log } = {}) {
     const resolved = rehearsal.resolveCover({ spatial: after.row.payload.spatial }, context.cover);
     const counts = {};
     for (const z of resolved.values()) counts[z] = (counts[z] || 0) + 1;
-    const allG4 = proposal.cells.every((r) => resolved.get(r.cellId) === r.zoneId);
+    const restoredZones = args.restoreVersion !== null ? rehearsal.resolveCover({ spatial }, context.cover) : null;
+    const allG4 =
+      args.restoreVersion !== null
+        ? context.cover.every((c) => resolved.get(c) === restoredZones.get(c))
+        : proposal.cells.every((r) => resolved.get(r.cellId) === r.zoneId);
     const listedAfter = await http(args.api, session, "GET", "/api/config/versions?limit=5");
-    step("4 database + API", { dbPinned: after.pin.version, dbVersions: after.versions, apiActiveVersion: listedAfter.json?.activeVersion, coverResolvesTo: counts, equalsG4: allG4, rollbackTarget: before.pin.version });
+    step("4 database + API", { dbPinned: after.pin.version, dbVersions: after.versions, apiActiveVersion: listedAfter.json?.activeVersion, coverResolvesTo: counts, matchesTarget: allG4, rollbackTarget: before.pin.version });
     let served = null;
     for (let i = 0; i < 40; i += 1) {
       const z = await http(args.api, session, "GET", "/api/dtaro/zones");
