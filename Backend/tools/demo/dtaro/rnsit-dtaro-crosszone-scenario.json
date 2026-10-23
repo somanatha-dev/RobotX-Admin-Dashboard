@@ -1,0 +1,10 @@
+{
+  "id": "rnsit-dtaro-crosszone-demo-1",
+  "description": "Cross-zone demonstration obstacles (2026-10-23). Each lies about 10 m beside the PU College <-> Playground 2 walkway, inside a published cell that walkway crosses, and is sensed only within 4 m: a robot driving the walkway does NOT report it itself; a simulated reporter commissioned at the point does. OB-A and OB-B are in the synthetic EAST zone, OB-C in the synthetic WEST zone (split at cell-centre longitude 77.518, stageCrossZoneDemo.js). Simulation only; physical agents never load this file.",
+  "senseRadiusM": 4,
+  "obstacles": [
+    { "id": "OB-A", "lat": 12.899991, "lon": 77.518614, "severity": "HIGH" },
+    { "id": "OB-B", "lat": 12.900409, "lon": 77.518809, "severity": "MEDIUM" },
+    { "id": "OB-C", "lat": 12.899912, "lon": 77.517381, "severity": "LOW" }
+  ]
+}
