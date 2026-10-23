@@ -50,7 +50,7 @@ export function ZoneLegendSection({
     <div className="map-zone-legend" role="group" aria-label="Zones and campus areas">
       <div className="map-zone-legend__head">
         <span>
-          {normal ? 'Zones — hidden (normal map)' : previewOn ? `Zones — ${layoutName}proposal preview` : 'Alert zones — published map (diagnostic)'}
+          {normal ? 'Zones — hidden (normal map)' : previewOn ? `Zones — ${layoutName}proposal preview` : preview ? 'Alert zones — published map (diagnostic)' : 'Alert zones — published map'}
         </span>
         {published && spatialVersion !== null && <span className="map-zone-legend__meta">v{String(spatialVersion)}</span>}
       </div>

@@ -295,3 +295,10 @@ test('expiry is a timeout, never shown as clearance; corroborating reports are s
   assert.match(html, /\+1 report</);
   assert.match(html, /Also reported by<\/dt><dd>SIM-C — same published cell, not re-broadcast/);
 });
+
+
+test('zone key, published map with no pending proposal (G4 published): plain heading, no diagnostic wording', () => {
+  const html = renderZones({ live: liveZonesForCampus(VIEW, 'rnsit'), preview: null, mode: ZONE_VIEW.PUBLISHED });
+  assert.match(html, /Alert zones — published map</);
+  assert.doesNotMatch(html, /diagnostic|Back to the|proposal/i);
+});

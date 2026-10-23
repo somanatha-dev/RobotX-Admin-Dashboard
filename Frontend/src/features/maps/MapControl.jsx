@@ -80,6 +80,7 @@ import {
   ZONE_VIEW,
   liveZonesForCampus,
   previewCellCollection,
+  previewIsPublished,
   previewLabelsClearOf,
   previewZonesForCampus,
   zonesForView,
@@ -506,10 +507,13 @@ function MapControlInner({ filtersHost }) {
     () => liveZonesForCampus(dtaroView, campusRegionKey, { campusSelected: Boolean(selectedCampus) }),
     [dtaroView, campusRegionKey, selectedCampus]
   );
-  const zonePreview = useMemo(
-    () => (zoneMapEnabled ? previewZonesForCampus(RNSIT_ZONE_PROPOSAL_PREVIEW, selectedCampus?.code || null) : null),
-    [zoneMapEnabled, selectedCampus]
-  );
+  // The proposal preview — until the published map holds it: then it IS the operational map and
+  // Zones shows the published zones, never a "not approved, not published" proposal.
+  const zonePreview = useMemo(() => {
+    if (!zoneMapEnabled) return null;
+    const preview = previewZonesForCampus(RNSIT_ZONE_PROPOSAL_PREVIEW, selectedCampus?.code || null);
+    return preview && previewIsPublished(preview, liveZones.zones) ? null : preview;
+  }, [zoneMapEnabled, selectedCampus, liveZones]);
   const previewActive = zoneView === ZONE_VIEW.PROPOSAL && Boolean(zonePreview);
   const publishedActive = zoneView === ZONE_VIEW.PUBLISHED;
   const placedPreview = useMemo(
@@ -1337,7 +1341,7 @@ function MapControlInner({ filtersHost }) {
             Zones
             {/* What the overlay is, so an unpublished preview is never mistaken for live zones. */}
             <span className={`map-zone-mode__tag${publishedActive || !zonePreview ? ' is-published' : ''}`}>
-              {publishedActive || !zonePreview ? 'published · diagnostic' : `${zonePreview.layout || 'proposal'} preview · not live`}
+              {zonePreview ? (publishedActive ? 'published · diagnostic' : `${zonePreview.layout || 'proposal'} preview · not live`) : 'published'}
             </span>
           </button>
         </div>

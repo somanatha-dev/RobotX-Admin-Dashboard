@@ -119,6 +119,21 @@ export function liveZonesForCampus(view, campusRegionKey, { campusSelected = tru
  * @param {object|null} preview `RNSIT_ZONE_PROPOSAL_PREVIEW`
  * @param {string|null} campusCode
  */
+/**
+ * Is the proposal already the published map? True when every proposal zone is a published zone
+ * of the campus's region with the same cell count. Once it is, the proposal must not be shown as
+ * "not approved, not published": the operational map is drawn instead (2026-10-23, G4 release).
+ *
+ * @param {object|null} preview from `previewZonesForCampus`
+ * @param {Array<{ zoneId: string, cellCount?: number }>} liveZones from `liveZonesForCampus`
+ */
+export function previewIsPublished(preview, liveZones) {
+  if (!preview || !Array.isArray(preview.zones) || preview.zones.length === 0) return false;
+  if (!Array.isArray(liveZones) || liveZones.length === 0) return false;
+  const live = new Map(liveZones.map((z) => [z.zoneId, z]));
+  return preview.zones.every((z) => live.has(z.zoneId) && live.get(z.zoneId).cellCount === z.cellCount);
+}
+
 export function previewZonesForCampus(preview, campusCode) {
   // A snapshot claiming approval or publication is not a preview: an approved map reaches the
   // dashboard through the published map (`/api/dtaro/zones`), never through this file.

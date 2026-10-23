@@ -23,6 +23,7 @@ import {
   liveZonesForCampus,
   previewZonesForCampus,
   previewCellCollection,
+  previewIsPublished,
   previewLabelsClearOf,
   PREVIEW_LABEL_CLEARANCE,
   PREVIEW_PALETTE,
@@ -616,4 +617,21 @@ test('the boundary label runs along the simplified ring, as a line label, on the
   const hook = source('../dtaro/useDtaroLayer.js');
   assert.match(hook, /zoneEdgeCollection\(zones \|\| \[\], hiddenZones\)/);
   assert.match(hook, /\[DTARO_SOURCE\.ZONE_EDGES, edgeData\]/);
+});
+
+
+test('once the published map holds the G4 proposal, the proposal is not shown as "not approved, not published"', () => {
+  const preview = previewZonesForCampus(RNSIT_ZONE_PROPOSAL_PREVIEW, 'RNSIT');
+  const published = preview.zones.map((z) => ({ zoneId: z.zoneId, cellCount: z.cellCount }));
+  assert.equal(previewIsPublished(preview, published), true);
+  // Today's one-zone map, a partial match, or different cell counts: still a proposal.
+  assert.equal(previewIsPublished(preview, [{ zoneId: 'rnsit-z1', cellCount: 64 }]), false);
+  assert.equal(previewIsPublished(preview, published.slice(0, 3)), false);
+  assert.equal(previewIsPublished(preview, published.map((z, i) => (i === 0 ? { ...z, cellCount: z.cellCount + 1 } : z))), false);
+  assert.equal(previewIsPublished(preview, []), false);
+  assert.equal(previewIsPublished(null, published), false);
+  const page = source('../MapControl.jsx');
+  assert.match(page, /return preview && previewIsPublished\(preview, liveZones\.zones\) \? null : preview;/);
+  // With no pending proposal the switch tags the overlay as the published map, not a diagnostic.
+  assert.match(page, /\{zonePreview \? \(publishedActive \? 'published · diagnostic' : `\$\{zonePreview\.layout \|\| 'proposal'\} preview · not live`\) : 'published'\}/);
 });
