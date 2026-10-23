@@ -3,6 +3,7 @@ const { getPrisma } = require("../db/prisma");
 const configService = require("../engine/config/service");
 const { SCOPE_ORDER } = require("../engine/config/resolver");
 const override = require("../engine/security/override");
+const { checkSpatialZoneReferences } = require("../services/spatialZoneReferences");
 
 const HTTP_BAD_REQUEST = 400;
 const HTTP_NOT_FOUND = 404;
@@ -143,6 +144,21 @@ const publishVersion = asyncHandler(async (req, res) => {
     verifiedApproverId: verifiedApproverFrom(req),
     approverVerifiedAt: new Date().toISOString(),
   };
+
+  // A map may name only zones that are `Zone` rows in the region it puts them in: F27 authorises
+  // routes by those rows, so a missing one stops every assignment through it. The Config
+  // Service does not check this (it validates structure only), so it is refused here — before
+  // publishing, and therefore before the pin below (`services/spatialZoneReferences`).
+  const referenceFindings = await checkSpatialZoneReferences(prisma, request.spatial);
+  if (referenceFindings.length > 0) {
+    return res.status(HTTP_UNPROCESSABLE).json({
+      ok: false,
+      message:
+        `configuration rejected before publish: the spatial map names ${referenceFindings.length} zone reference(s) ` +
+        "the Zone table does not hold. Create the Zone rows first; nothing was published or pinned.",
+      findings: referenceFindings.map((message) => ({ id: "ZONE_REFERENCE", severity: "BLOCKING", rule: "F27", message })),
+    });
+  }
 
   let published;
   try {
