@@ -57,6 +57,37 @@ export function obstacleAlertFrom(data, robots) {
   };
 }
 
+/**
+ * DTARO zone alerts — the suffix naming who an obstacle alert was delivered to. Present only
+ * when the server delivered through a zone room (`delivery: "ZONE_ROOM"`); the legacy event
+ * carries no recipients and gets no suffix.
+ */
+export function alertRecipientsSuffix(data) {
+  if (data?.delivery !== 'ZONE_ROOM' || !Array.isArray(data?.recipients)) return '';
+  const zone = [text(data?.regionId), text(data?.zoneId)].filter(Boolean).join('/');
+  const who = data.recipients.map(text).filter(Boolean);
+  return ` — alerted ${who.length ? who.join(', ') : 'no other robot'}${zone ? ` in zone ${zone}` : ''}`;
+}
+
+/** DTARO zone alerts — the event-log line for one robot's relevance verdict. */
+export function obstacleRelevanceLogLine(data) {
+  const robotId = text(data?.robotId);
+  if (!robotId) return null;
+  if (data?.routeSource === 'NONE') return `${robotId}: obstacle alert received — no planned route, not relevant`;
+  const task = text(data?.taskId);
+  return data?.relevant === true
+    ? `${robotId}: obstacle is on its commanded route${task ? ` (${task})` : ''} — flagged, no reroute (V1)`
+    : `${robotId}: obstacle is not on its commanded route${task ? ` (${task})` : ''} — no change`;
+}
+
+/** DTARO zone alerts — the event-log line for a refused obstacle report. */
+export function obstacleRejectedLogLine(data) {
+  const robotId = text(data?.reportingRobotId);
+  const reason = text(data?.reason);
+  if (!robotId || !reason) return null;
+  return `Obstacle report from ${robotId} refused: ${reason}`;
+}
+
 /** The event-log line for `REROUTE_ALERT`: an alert was sent, not a reroute performed. */
 export function rerouteAlertLogLine(data) {
   const robotId = text(data?.robotId);

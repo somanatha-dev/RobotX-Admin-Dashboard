@@ -34,7 +34,9 @@ import { isWideLayout } from '@/lib/viewport.js';
 import { CONNECTION, connectionStateOf } from '@/lib/connectionState.js';
 import { SESSION_CHECK, sessionCheckOutcome, sessionRetryDelayMs } from '@/lib/sessionCheck.js';
 import { applyRerouteToCache, applyRobotOffline, applyRobotOnline, applyTaskUpdate, evictOnStandDown, evictOnTerminalUpdate, evictTerminalRoutes } from '@/lib/liveState.js';
-import { obstacleAlertFrom, rerouteAlertLogLine } from '@/lib/obstacleAlert.js';
+import { alertRecipientsSuffix, obstacleAlertFrom, obstacleRejectedLogLine, obstacleRelevanceLogLine, rerouteAlertLogLine } from '@/lib/obstacleAlert.js';
+import { OBSTACLE_EVENTS, isZoneDelivery, obstacleActivityStore } from '@/lib/obstacleActivity.js';
+import { getDtaroActivity } from '@/lib/api/dtaro.js';
 import { DUPLICATE_OUTCOME, newIdempotencyKey } from '@/lib/idempotency.js';
 import { applyPairingRejection, connectPathFor } from '@/lib/robotEnrollment.js';
 import { buildRecommissionRequest, isRetiredIdRefusal, recommissionFailureMessage } from '@/lib/robotRecommission.js';
@@ -213,6 +215,15 @@ export default function AppProvider({ children }) {
         // A task the backend lists as finished has no active route to replay on the map,
         // even if its terminal event never reached this page (lib/liveState.js).
         evictTerminalRoutes(taskPathCacheRef.current, tasksNext);
+        // DTARO — replay the obstacle events the server already sent, so a page that opens or
+        // reconnects after a report still shows it, its recipients and their verdicts.
+        // SUPER_ADMIN only (the same gate as the simulator report); not awaited: the robot and
+        // task lists never wait on it, and a failure leaves the live events to fill the panel.
+        if (mayReadSimulatorRef.current) {
+          getDtaroActivity()
+            .then(({ events }) => obstacleActivityStore.hydrate(events))
+            .catch(() => {});
+        }
         // Applied only if no poll that started later has already landed a newer report.
         simulatorSyncRef.current.settle(simulatorTicket, simulatorNext || null);
       } while (refreshQueuedRef.current);
@@ -319,6 +330,8 @@ export default function AppProvider({ children }) {
     setSimulatorStatus(null);
     setEvents([]);
     taskPathCacheRef.current.clear();
+    // DTARO obstacle activity belongs to the session that received it.
+    obstacleActivityStore.reset();
     // The map page parks its Mapbox map between visits; a session that ended keeps none of it.
     evictParkedMap();
     setTaskRoutes({});
@@ -1164,9 +1177,17 @@ export default function AppProvider({ children }) {
 
       addEvent(
         `Obstacle reported${alert.robotId ? ` by ${alert.robotId}` : ''} — ${alert.severity || 'severity not stated'}` +
-          `${alert.zone ? ` in ${alert.zone}` : ''}`,
+          `${alert.zone ? ` in ${alert.zone}` : ''}` +
+          alertRecipientsSuffix(data),
         'critical'
       );
+
+      // DTARO zone delivery (feature on): the map's obstacle-awareness panel shows it, with
+      // its recipients and their verdicts as they arrive — not a modal per report.
+      if (isZoneDelivery(data)) {
+        obstacleActivityStore.apply(OBSTACLE_EVENTS.ALERT_CREATED, data);
+        return;
+      }
 
       // One alert on screen at a time; every alert is in the event log above.
       setDecisionRequest((prev) => prev ?? alert);
@@ -1202,6 +1223,24 @@ export default function AppProvider({ children }) {
     // A replanned path, when one exists, arrives as TASK_UPDATED `REROUTED` (useRobotStream).
     const onRerouteAlert = (data) => {
       const line = rerouteAlertLogLine(data);
+      if (line) addEvent(line, 'warning');
+    };
+
+    // DTARO zone alerts — each recipient's verdict, and refused reports. Event log only:
+    // the verdict changes nothing (no reroute exists in V1).
+    // The activity panel holds every verdict; the event log carries only the ones that matter
+    // to an operator (relevant), so a zone of ten robots is not ten log lines per report.
+    const onObstacleRelevance = (data) => {
+      obstacleActivityStore.apply(OBSTACLE_EVENTS.RELEVANCE, data);
+      const line = obstacleRelevanceLogLine(data);
+      if (line && data?.relevant === true) addEvent(line, 'warning');
+    };
+    const onObstacleReportMerged = (data) => {
+      obstacleActivityStore.apply(OBSTACLE_EVENTS.MERGED, data);
+    };
+    const onObstacleReportRejected = (data) => {
+      obstacleActivityStore.apply(OBSTACLE_EVENTS.REJECTED, data);
+      const line = obstacleRejectedLogLine(data);
       if (line) addEvent(line, 'warning');
     };
 
@@ -1294,6 +1333,9 @@ export default function AppProvider({ children }) {
     socket.on(DASHBOARD_EVENTS.TASK_ASSIGNED, onTaskAssigned);
     socket.on(DASHBOARD_EVENTS.ALERT_CREATED, onAlertCreated);
     socket.on(DASHBOARD_EVENTS.REROUTE_ALERT, onRerouteAlert);
+    socket.on(DASHBOARD_EVENTS.OBSTACLE_RELEVANCE, onObstacleRelevance);
+    socket.on(DASHBOARD_EVENTS.OBSTACLE_REPORT_REJECTED, onObstacleReportRejected);
+    socket.on(DASHBOARD_EVENTS.OBSTACLE_REPORT_MERGED, onObstacleReportMerged);
 
     return () => {
       socket.off(DASHBOARD_EVENTS.ROBOT_UPDATE, onRobotUpdate);
@@ -1312,6 +1354,9 @@ export default function AppProvider({ children }) {
       socket.off(DASHBOARD_EVENTS.TASK_ASSIGNED, onTaskAssigned);
       socket.off(DASHBOARD_EVENTS.ALERT_CREATED, onAlertCreated);
       socket.off(DASHBOARD_EVENTS.REROUTE_ALERT, onRerouteAlert);
+      socket.off(DASHBOARD_EVENTS.OBSTACLE_RELEVANCE, onObstacleRelevance);
+      socket.off(DASHBOARD_EVENTS.OBSTACLE_REPORT_REJECTED, onObstacleReportRejected);
+      socket.off(DASHBOARD_EVENTS.OBSTACLE_REPORT_MERGED, onObstacleReportMerged);
     };
   }, [addEvent, refreshDbState, setDecisionRequest]);
   // ─────────────────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 
 import { STATION_STATE, STATION_STATE_META } from '../../charging/stationModel.js';
 
@@ -14,6 +14,13 @@ const STATION_KEY = [STATION_STATE.AVAILABLE, STATION_STATE.OCCUPIED, STATION_ST
  * campus geometry only appear when this campus HAS campus geometry, so on a
  * campus with none the legend stays the four operational rows it always was
  * rather than listing things that are not on screen.
+ *
+ * ── Collapsed means collapsed ─────────────────────────────────────────────
+ * The header used to toggle only the short key rows at the bottom, while the zone section —
+ * most of the panel — was rendered outside the toggle and never went away: clicking to
+ * minimise the legend made it LONGER (2026-10-23). Now the header collapses the whole body to
+ * the header bar, which stays on screen as the way back. Expanded state can be owned by the
+ * page (`expanded` + `onExpandedChange`), which frames the zone preview clear of the panel.
  */
 export function MapLegend({
   theme,
@@ -33,21 +40,54 @@ export function MapLegend({
   chargingRestricted = false,
   selectedStationId = null,
   onPickStation,
+  /** DTARO — the zone key (`ZoneLegendSection`), shown whether or not the legend is expanded. */
+  zoneSection = null,
+  /**
+   * DTARO — `{ text, color }` naming the alert zone at the map centre, in the legend's header so
+   * it stays readable while the legend is collapsed (on a phone the zone key is then hidden).
+   */
+  headerNote = null,
+  /** Controlled expanded state; uncontrolled (starting expanded) when omitted. */
+  expanded,
+  onExpandedChange,
 }) {
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(true);
+  const open = typeof expanded === 'boolean' ? expanded : ownOpen;
+  const setOpen = (next) => {
+    if (typeof expanded !== 'boolean') setOwnOpen(next);
+    onExpandedChange?.(next);
+  };
+  const bodyId = useId();
   const hasCampusGeometry = campusFeatureCount > 1; // the centre point alone is not geometry
 
   const swatch = (style) => <span className="map-legend__swatch" style={style} />;
 
   return (
-    <div className="map-legend" aria-label="Map legend">
-      <button type="button" className="map-legend__head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+    <div className={`map-legend${open ? ' is-open' : ' is-collapsed'}`} aria-label="Map legend">
+      <button
+        type="button"
+        className="map-legend__head"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-controls={bodyId}
+        title={open ? 'Minimise the legend' : 'Show the legend'}
+      >
         <span>Legend</span>
-        <span aria-hidden="true">{open ? '▾' : '▸'}</span>
+        {headerNote && (
+          <span className="map-legend__note" style={headerNote.color ? { '--zone-color': headerNote.color } : undefined}>
+            {headerNote.text}
+          </span>
+        )}
+        <span className="map-legend__toggle-hint">
+          {open ? 'Hide' : 'Show'}
+          <span aria-hidden="true">{open ? ' ▾' : ' ▸'}</span>
+        </span>
       </button>
 
       {open && (
-        <>
+        <div id={bodyId} className="map-legend__body">
+          {zoneSection}
+
           <div className="map-legend__row">
             <span className="map-legend__swatch map-legend__swatch--robot" />
             <span>Robot — 2D marker, arrow = heading</span>
@@ -118,6 +158,13 @@ export function MapLegend({
           {hasCampusGeometry && (
             <>
               <div className="map-legend__divider" />
+              <div className="map-legend__row">
+                {swatch({
+                  background: `repeating-linear-gradient(90deg, ${theme.campus.boundaryLine} 0 5px, transparent 5px 8px)`,
+                  height: '0.1875rem',
+                })}
+                <span>Campus boundary — tasks and routes stay inside</span>
+              </div>
               <div className="map-legend__row">
                 {swatch({ background: theme.campus.buildings.ACADEMIC, height: '0.625rem', borderRadius: '2px' })}
                 <span>Campus building (colour = type)</span>
@@ -217,7 +264,7 @@ export function MapLegend({
               </>
             ) : null}
           </div>
-        </>
+        </div>
       )}
     </div>
   );

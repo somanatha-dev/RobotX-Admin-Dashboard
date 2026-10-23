@@ -64,3 +64,14 @@ export function campusBounds(code, registry = CAMPUS_REGISTRY) {
   const entries = (Array.isArray(registry) ? registry : []).filter((entry) => entry?.id === code);
   return operatingCampusBounds(entries.map((entry) => ({ ...entry, regionId: entry.regionId || entry.id })));
 }
+
+/**
+ * The campus the operational map opens on when nothing is selected: the first registered campus
+ * with an operating region (RNSIT today — the only one RobotX operates). Its `Campus.code`, or
+ * null when no campus has an operating region (the map then keeps its no-campus view).
+ *
+ * @returns {string|null}
+ */
+export function operatingCampusCode(registry = CAMPUS_REGISTRY) {
+  return (Array.isArray(registry) ? registry : []).find((entry) => entry?.regionId)?.id ?? null;
+}

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
@@ -43,10 +43,17 @@ import {
   SEARCH_RESULT_TYPE,
 } from './campus/campusSearch.js';
 import { labelAnchorFor } from './campus/campusLayers.js';
-import { campusBounds, operatingCampusBounds } from './campus/operatingCampusView.js';
+import { campusBounds, operatingCampusBounds, operatingCampusCode } from './campus/operatingCampusView.js';
 import { campusOf, isSuperAdmin, mayReadSimulator } from '@/lib/access.js';
 import { nearestNamedFeature } from './campus/semantics/campusOperational.js';
-import { CAMPUS_CAMERA_MODE, campusCameraFor, createCameraSequencer } from './camera/cameraModes.js';
+import {
+  CAMPUS_CAMERA_MODE,
+  campusCameraFor,
+  campusStartCamera,
+  createCameraSequencer,
+  isCameraNear,
+  topDownCameraForBounds,
+} from './camera/cameraModes.js';
 
 import { MapFiltersBar } from './mapControl/ui/MapFiltersBar.jsx';
 import { SelectedRobotPanel } from './mapControl/ui/SelectedRobotPanel.jsx';
@@ -59,7 +66,34 @@ import { CampusFeatureCard } from './mapControl/ui/CampusFeatureCard.jsx';
 import { ChargingStationCard } from './mapControl/ui/ChargingStationCard.jsx';
 import { CampusDataNotice } from './mapControl/ui/CampusDataNotice.jsx';
 import { RouteIssuesNotice } from './mapControl/ui/RouteIssuesNotice.jsx';
+import { ObstacleActivityPanel } from './mapControl/ui/ObstacleActivityPanel.jsx';
+import { ZoneLegendSection } from './mapControl/ui/ZoneLegendSection.jsx';
 import './mapControl/ui/campusUi.css';
+
+// ── DTARO: published zones and obstacle awareness ────────────────────────────
+import { getDtaroZones } from '@/lib/api/dtaro.js';
+import { ACTIVITY_FILTER, activityEntries, obstacleActivityStore } from '@/lib/obstacleActivity.js';
+import { CONNECTION } from '@/lib/connectionState.js';
+import { operatingRegionFor } from './campus/campusRegistry.js';
+import {
+  ZONE_STATUS,
+  ZONE_VIEW,
+  liveZonesForCampus,
+  previewCellCollection,
+  previewLabelsClearOf,
+  previewZonesForCampus,
+  zonesForView,
+} from './dtaro/zoneModel.js';
+import { areaLegendRows, campusAreasFor, missingAreaNotes } from './dtaro/campusAreas.js';
+import { RNSIT_ZONE_PROPOSAL_PREVIEW } from './dtaro/rnsitZoneProposalPreview.js';
+import { useDtaroLayer, useZoneAtCentre } from './dtaro/useDtaroLayer.js';
+
+/** How often expiry labels are re-read while the obstacle panel is mounted. */
+const DTARO_CLOCK_MS = 15_000;
+const NO_HIDDEN_ZONES = new Set();
+const NO_ROBOT_SAMPLE = [];
+const NO_ZONES = Object.freeze([]);
+const NO_AREAS = Object.freeze([]);
 
 // WORLD VIEW (strict)
 const WORLD_CENTER = [20, 0];
@@ -92,14 +126,21 @@ function MapControlInner({ filtersHost }) {
     setFollowSelected,
     clearSelection,
   } = useMapContext();
-  const { robots: globalRobots, taskPathCacheRef, simulatorStatus, session } = useAppState();
+  const { robots: globalRobots, taskPathCacheRef, simulatorStatus, session, connection } = useAppState();
   // RBAC — a campus administrator's map is its campus: no location hierarchy (a SUPER_ADMIN-only
   // read), the campus selection pinned to its own, and the opening view framed on it.
   const superAdmin = isSuperAdmin(session);
   const pinnedCampus = superAdmin ? null : campusOf(session);
   const pinnedCampusId = pinnedCampus?.id || null;
   const pinnedCampusCode = pinnedCampus?.code || null;
-  const locationFilterOptions = useMemo(() => ({ hierarchy: superAdmin, pinnedCampusId }), [superAdmin, pinnedCampusId]);
+  // The operational map: no World / country / state / city / area hierarchy (RNSIT is the one
+  // campus RobotX operates; the hierarchy only ever led to a globe view), and with nothing valid
+  // selected it opens on the operating campus. Other campuses stay selectable from the campus
+  // selector and the search; their data is untouched.
+  const locationFilterOptions = useMemo(
+    () => ({ hierarchy: false, pinnedCampusId, defaultCampusCode: pinnedCampusId ? null : operatingCampusCode() }),
+    [pinnedCampusId]
+  );
 
   const overlayRef = useRef(null);
   const canvasRef = useRef(null);
@@ -115,6 +156,8 @@ function MapControlInner({ filtersHost }) {
   // should do nothing (the map is already constructed at the last-saved
   // camera) instead of replaying the "earth → area" flyTo.
   const skipNextFlyToRef = useRef(mapHasBeenOpenedBefore);
+  // The focus target the camera was last aimed at (see the focus effect).
+  const lastFocusKeyRef = useRef(null);
 
   const token = import.meta.env.VITE_MAPBOX_TOKEN;
 
@@ -128,8 +171,11 @@ function MapControlInner({ filtersHost }) {
     mapboxgl.accessToken = token;
 
     // Returning visit with no parked map: open exactly where the user left off,
-    // instantly — no world-view flash, no replayed flyTo animation.
-    const startCam = persistedMapCamera;
+    // instantly — no world-view flash, no replayed flyTo animation. A first visit (and every
+    // reload) opens straight on the campus, at its Overview framing — not on the globe with a
+    // flight in once the style and terrain have loaded (~10 s, measured 2026-10-23).
+    const startCam =
+      persistedMapCamera || campusStartCamera(pinnedCampusCode ? campusBounds(pinnedCampusCode) : operatingCampusBounds());
 
     const createMap = (container) => {
       const created = new mapboxgl.Map({
@@ -281,7 +327,7 @@ function MapControlInner({ filtersHost }) {
       releaseMap(map);
       mapRef.current = null;
     };
-  }, [token, mapContainerRef, mapRef, markersRef, setSelectedRobotId]);
+  }, [token, mapContainerRef, mapRef, markersRef, setSelectedRobotId, pinnedCampusCode]);
 
   const { isMapLoaded, flyTo } = useMapController(mapRef, { overlayRef, canvasRef });
 
@@ -411,6 +457,224 @@ function MapControlInner({ filtersHost }) {
     onSelectFeature: onSelectCampusFeature,
     operationsEmphasis,
   });
+
+  // DTARO view state, declared before their first reader (the campus reset below also clears them).
+  // Normal map by default: no zone overlay. See ZONE_VIEW.
+  const [zoneView, setZoneViewState] = useState(ZONE_VIEW.NORMAL);
+  // The legend starts expanded, except on a phone, where it would cover a third of the map.
+  const [legendExpanded, setLegendExpanded] = useState(
+    () => typeof window === 'undefined' || !window.matchMedia?.('(max-width: 640px)').matches
+  );
+  // Robot positions sampled when the preview is switched on: its labels are placed clear of them.
+  const [previewRobotSample, setPreviewRobotSample] = useState(NO_ROBOT_SAMPLE);
+  const [hiddenZones, setHiddenZones] = useState(NO_HIDDEN_ZONES);
+  const [selectedObstacleId, setSelectedObstacleId] = useState(null);
+  const [activityFilter, setActivityFilter] = useState(ACTIVITY_FILTER.ALL);
+  // Off by default: tinted buildings beside a campus-wide zone read as zone divisions they are not.
+  const [areasOn, setAreasOn] = useState(false);
+
+  // ── DTARO LAYER ────────────────────────────────────────────────────────────
+  //
+  // The published zone map (`GET /api/dtaro/zones`, SUPER_ADMIN only — obstacle data is
+  // default-deny for campus administrators) and the obstacle activity the provider collects
+  // from the socket. The zone map is drawn for every SUPER_ADMIN session, whatever the alert
+  // switch: it is the published map, and gating it on DTARO_ZONE_ALERTS_ENABLED left a server
+  // without the switch showing no zone and no reason (seen in the real app, 2026-10-22). The
+  // obstacle panel needs alerts on. Fetched at once, and again whenever the live connection
+  // comes back, so a server restart with a new pinned map is picked up without a reload.
+  const [dtaroFetched, setDtaroFetched] = useState(null);
+  const connectionState = connection?.state || CONNECTION.IDLE;
+  const dtaroLive = connectionState === CONNECTION.CONNECTED;
+  useEffect(() => {
+    if (!superAdmin) return undefined;
+    let cancelled = false;
+    getDtaroZones().then((view) => {
+      if (!cancelled) setDtaroFetched(view);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [superAdmin, dtaroLive]);
+  const dtaroView = superAdmin ? dtaroFetched : null;
+  const zoneMapEnabled = superAdmin;
+  const alertsEnabled = dtaroView?.alertsEnabled === true;
+
+  // A campus shows its own region's zones only: the region the campus record names, else the
+  // registry's operating region for its code — the same one tasks are submitted to.
+  const campusRegionKey = selectedCampus ? selectedCampus.regionId || operatingRegionFor(selectedCampus.code) : null;
+  const liveZones = useMemo(
+    () => liveZonesForCampus(dtaroView, campusRegionKey, { campusSelected: Boolean(selectedCampus) }),
+    [dtaroView, campusRegionKey, selectedCampus]
+  );
+  const zonePreview = useMemo(
+    () => (zoneMapEnabled ? previewZonesForCampus(RNSIT_ZONE_PROPOSAL_PREVIEW, selectedCampus?.code || null) : null),
+    [zoneMapEnabled, selectedCampus]
+  );
+  const previewActive = zoneView === ZONE_VIEW.PROPOSAL && Boolean(zonePreview);
+  const publishedActive = zoneView === ZONE_VIEW.PUBLISHED;
+  const placedPreview = useMemo(
+    () => (previewActive ? previewLabelsClearOf(zonePreview, previewRobotSample) : zonePreview),
+    [previewActive, zonePreview, previewRobotSample]
+  );
+  const layerZones = useMemo(
+    () => zonesForView(zoneView, { liveZones: liveZones.zones, preview: previewActive ? placedPreview : null }),
+    [zoneView, previewActive, placedPreview, liveZones]
+  );
+
+  // Visual campus areas — named buildings and grounds from the campus's own outlines, so the
+  // campus reads by area. Not alert zones (the published map has one zone per region today),
+  // and hidden during the proposal preview so the two kinds of shading are never on screen
+  // together.
+  const campusAreas = useMemo(
+    () => (zoneMapEnabled && selectedCampus ? campusAreasFor(campusDefinition) : NO_AREAS),
+    [zoneMapEnabled, selectedCampus, campusDefinition]
+  );
+  const areaRows = useMemo(() => (previewActive ? [] : areaLegendRows(campusAreas)), [previewActive, campusAreas]);
+  const areaNotes = useMemo(() => (campusAreas.length ? missingAreaNotes(campusDefinition) : []), [campusAreas, campusDefinition]);
+  const layerAreas = areasOn && !previewActive ? campusAreas : NO_AREAS;
+  const previewCells = useMemo(
+    () => (previewActive ? previewCellCollection(zonePreview, hiddenZones) : null),
+    [previewActive, zonePreview, hiddenZones]
+  );
+
+  const activity = useSyncExternalStore(obstacleActivityStore.subscribe, obstacleActivityStore.getSnapshot);
+  // No campus: every region, each entry naming its own. A campus: its region's published ids only.
+  const regionScope = selectedCampus ? liveZones.regionIds : null;
+  const activityView = useMemo(
+    () => activityEntries(activity, { regionIds: regionScope, filter: activityFilter }),
+    [activity, regionScope, activityFilter]
+  );
+  const scopedObstacles = useMemo(
+    () => activityEntries(activity, { regionIds: regionScope }).entries.filter((e) => e.kind === 'OBSTACLE').map((e) => e.obstacle),
+    [activity, regionScope]
+  );
+  const selectedObstacle = useMemo(
+    () => (selectedObstacleId ? scopedObstacles.find((o) => o.obstacleId === selectedObstacleId) || null : null),
+    [scopedObstacles, selectedObstacleId]
+  );
+  const zoneNameOf = useCallback(
+    (zoneId, regionId) => liveZones.zones.find((z) => z.zoneId === zoneId && z.regionId === regionId)?.name || null,
+    [liveZones]
+  );
+  const robotsById = useMemo(() => new Map((globalRobots || []).map((r) => [String(r?.robotId), r])), [globalRobots]);
+
+  const [dtaroNowMs, setDtaroNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!alertsEnabled) return undefined;
+    const timer = setInterval(() => setDtaroNowMs(Date.now()), DTARO_CLOCK_MS);
+    return () => clearInterval(timer);
+  }, [alertsEnabled]);
+
+  const toggleZone = useCallback((key) => {
+    setHiddenZones((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  useDtaroLayer(mapRef, {
+    isMapLoaded: isMapLoaded && environmentReady,
+    enabled: zoneMapEnabled,
+    zones: layerZones,
+    hiddenZones,
+    areas: layerAreas,
+    previewCells,
+    obstacles: scopedObstacles,
+    selectedObstacle,
+    robots: globalRobots,
+    themeRef,
+    subscribeToTheme,
+    onSelectObstacle: setSelectedObstacleId,
+  });
+
+  // The published zone at the map centre, named in the legend header while the published map is
+  // shown (diagnostics): readable with the legend collapsed. Never the preview's zones.
+  const zoneHere = useZoneAtCentre(mapRef, {
+    isMapLoaded: isMapLoaded && environmentReady,
+    zones: zoneMapEnabled && selectedCampus && publishedActive ? liveZones.zones : NO_ZONES,
+  });
+  const legendZoneNote = useMemo(() => {
+    // During the preview the header names the preview, never a published zone: "Alert zone:
+    // SYNTHETIC … west half" over four proposal zones read as if it were one of them (2026-10-23).
+    // The normal map has no zone overlay, so its header names none.
+    if (zoneMapEnabled && selectedCampus && previewActive) {
+      return { text: `Proposal preview: ${zonePreview.layout || 'proposal'} · ${zonePreview.zones.length} zones`, color: null };
+    }
+    if (!zoneMapEnabled || !selectedCampus || !publishedActive || liveZones.status !== ZONE_STATUS.READY) return null;
+    return zoneHere ? { text: `Alert zone: ${zoneHere.name}`, color: zoneHere.color } : { text: 'Outside the alert zones', color: null };
+  }, [zoneMapEnabled, selectedCampus, liveZones.status, zoneHere, previewActive, publishedActive, zonePreview]);
+
+  // Switching the map's zone view (Normal map / Zones). A rendering preference: it changes what
+  // the DTARO layer draws and nothing else — no request, no publish or pin, no alert, route or
+  // assignment change. Turning the proposal ON frames it top-down clear of the legend ONLY when
+  // it is not already wholly on screen there, so switching back and forth does not move the
+  // camera (the pitched default view hid the south-west lobe under the legend).
+  const setZoneView = useCallback(
+    (view) => {
+      setZoneViewState(view);
+      if (view !== ZONE_VIEW.PROPOSAL) return;
+      setPreviewRobotSample((globalRobots || []).map((r) => ({ lat: r?.lat, lon: r?.lon })));
+      const map = mapRef.current;
+      if (!map || !zonePreview || zonePreview.cells.length === 0) return;
+      let minLon = Infinity;
+      let minLat = Infinity;
+      let maxLon = -Infinity;
+      let maxLat = -Infinity;
+      for (const cell of zonePreview.cells) {
+        for (const [lon, lat] of cell.ring || []) {
+          if (lon < minLon) minLon = lon;
+          if (lon > maxLon) maxLon = lon;
+          if (lat < minLat) minLat = lat;
+          if (lat > maxLat) maxLat = lat;
+        }
+      }
+      if (!Number.isFinite(minLon)) return;
+      try {
+        const width = map.getContainer()?.clientWidth || 1000;
+        const height = map.getContainer()?.clientHeight || 700;
+        // An expanded legend covers the lower left; a collapsed one is a header bar.
+        const padding = { top: 64, bottom: 96, left: legendExpanded ? Math.min(360, Math.round(width * 0.3)) : 48, right: 64 };
+        const corners = [
+          [minLon, minLat],
+          [minLon, maxLat],
+          [maxLon, minLat],
+          [maxLon, maxLat],
+        ];
+        // A few pixels of slack: after a fit the corners sit exactly ON the padded edge, and
+        // floating point (63.9999 vs 64) re-framed a view that was already right (2026-10-23).
+        const slack = 12;
+        const inView = corners.every((lngLat) => {
+          const { x, y } = map.project(lngLat);
+          return (
+            x >= padding.left - slack &&
+            x <= width - padding.right + slack &&
+            y >= padding.top - slack &&
+            y <= height - padding.bottom + slack
+          );
+        });
+        if (inView) return;
+        // Flat framing computed here, not `fitBounds` (terrain-dependent, and its padding would
+        // stay on the map) — see topDownCameraForBounds.
+        const cam = topDownCameraForBounds(
+          [
+            [minLon, minLat],
+            [maxLon, maxLat],
+          ],
+          { width, height, padding }
+        );
+        if (!cam) return;
+        // Claims the camera like every other command, so a deferred stage of an earlier one (the
+        // arrival tilt) cannot run after this.
+        sequencerRef.current?.begin();
+        map.easeTo({ center: cam.center, zoom: cam.zoom, pitch: 0, bearing: 0, duration: 900, essential: true });
+      } catch {
+        // a camera the map refuses (mid-style-reload) leaves the view where it is
+      }
+    },
+    [mapRef, zonePreview, globalRobots, legendExpanded]
+  );
 
   // ── Campus context labels ──────────────────────────────────────────────────
   //
@@ -557,6 +821,26 @@ function MapControlInner({ filtersHost }) {
     setSelectedFeature(null);
     setSelectedStationId(null);
     setCameraMode(CAMPUS_CAMERA_MODE.OVERVIEW);
+    setZoneViewState(ZONE_VIEW.NORMAL);
+    setHiddenZones(NO_HIDDEN_ZONES);
+    setSelectedObstacleId(null);
+  }
+
+  // DTARO — an obstacle and a campus feature or station card share the right side of the map,
+  // so picking one closes the other: one inspected object at a time, as for robots and stations.
+  const [obstacleIdAtCards, setObstacleIdAtCards] = useState(selectedObstacleId);
+  if (obstacleIdAtCards !== selectedObstacleId) {
+    setObstacleIdAtCards(selectedObstacleId);
+    if (selectedObstacleId) {
+      setSelectedFeature(null);
+      setSelectedStationId(null);
+    }
+  }
+  const cardOpen = Boolean(selectedFeature || selectedStationId);
+  const [cardOpenAtObstacle, setCardOpenAtObstacle] = useState(cardOpen);
+  if (cardOpenAtObstacle !== cardOpen) {
+    setCardOpenAtObstacle(cardOpen);
+    if (cardOpen) setSelectedObstacleId(null);
   }
 
   // Selecting a robot closes the station card: one inspected object at a time. Adjusted during
@@ -576,6 +860,24 @@ function MapControlInner({ filtersHost }) {
     // Still waiting on a deeper hierarchy level's list to load (see the
     // focusTarget comment above) — don't touch the camera yet.
     if (focusTarget === undefined) return;
+
+    // A re-run for the target already applied (a list finished loading, the style reloaded, a
+    // dependency changed identity) is not a new choice: the camera is never re-aimed at it,
+    // wherever the operator has moved it since. Only a different target moves the camera.
+    const focusKey = focusTarget ? `${focusTarget.type}:${focusTarget.loc?.lat}:${focusTarget.loc?.lon}` : 'NONE';
+    if (lastFocusKeyRef.current === focusKey) return;
+    lastFocusKeyRef.current = focusKey;
+    // The map opens at the campus (see the map-init effect), so the campus record arriving is
+    // usually a target already on screen: no flight to where the operator is already looking.
+    const alreadyAt = (cam) => {
+      try {
+        const map = mapRef.current;
+        const c = map.getCenter();
+        return isCameraNear({ lon: c.lng, lat: c.lat, zoom: map.getZoom() }, cam);
+      } catch {
+        return false;
+      }
+    };
 
     // Returning visit: this first run just means "the map finished loading
     // again" — it's already sitting at the restored camera (see the
@@ -615,7 +917,7 @@ function MapControlInner({ filtersHost }) {
         cam = { lon: WORLD_CENTER[0], lat: WORLD_CENTER[1], ...preset };
       }
       latestCameraRef.current = cam;
-      if (!skipAnimation) focusCamera(cam, 0);
+      if (!skipAnimation && !alreadyAt(cam)) focusCamera(cam, 0);
       return;
     }
 
@@ -643,7 +945,7 @@ function MapControlInner({ filtersHost }) {
 
     latestCameraRef.current = cam;
     // Flat there, then tilt — see focusCamera.
-    if (!skipAnimation) focusCamera(cam, preset.pitch);
+    if (!skipAnimation && !alreadyAt(cam)) focusCamera(cam, preset.pitch);
   }, [isMapLoaded, environmentReady, focusTarget, focusCamera, mapRef, pinnedCampusCode]);
 
   // ── Camera modes (§28) ─────────────────────────────────────────────────────
@@ -852,6 +1154,13 @@ function MapControlInner({ filtersHost }) {
     [chargingStations, clearSelection, focusLngLat]
   );
 
+  const focusObstacle = useCallback(
+    (obstacle) => {
+      if (Number.isFinite(obstacle?.lon) && Number.isFinite(obstacle?.lat)) focusLngLat(obstacle.lon, obstacle.lat, 18);
+    },
+    [focusLngLat]
+  );
+
   const focusSelectedStation = useCallback(() => {
     if (selectedStation?.lngLat) focusLngLat(selectedStation.lngLat[0], selectedStation.lngLat[1], 18.2);
   }, [selectedStation, focusLngLat]);
@@ -894,6 +1203,7 @@ function MapControlInner({ filtersHost }) {
       loading={loading}
       resetAll={resetEverything}
       campusLocked={!superAdmin}
+      showHierarchy={false}
     />
   );
 
@@ -945,6 +1255,23 @@ function MapControlInner({ filtersHost }) {
             }}
           />
 
+          {alertsEnabled && (
+            <ObstacleActivityPanel
+              connectionState={connectionState}
+              entries={activityView.entries}
+              hiddenCount={activityView.hiddenCount}
+              campusName={selectedCampus ? campusDefinition.name : null}
+              filter={activityFilter}
+              onFilter={setActivityFilter}
+              selectedObstacle={selectedObstacle}
+              onSelect={setSelectedObstacleId}
+              onFocus={focusObstacle}
+              zoneNameOf={zoneNameOf}
+              robotsById={robotsById}
+              nowMs={dtaroNowMs}
+            />
+          )}
+
           <SelectedRobotPanel
             robot={selectedRobot}
             followSelected={followSelected}
@@ -988,6 +1315,50 @@ function MapControlInner({ filtersHost }) {
         />
       )}
 
+      {/* The map's view: the clean campus, or the zone overlay. On the map itself, top centre. */}
+      {!mapFailure && zoneMapEnabled && selectedCampus && (
+        <div className="map-zone-mode" role="group" aria-label="Map view">
+          <button
+            type="button"
+            className={`map-zone-mode__option${zoneView === ZONE_VIEW.NORMAL ? ' is-active' : ''}`}
+            aria-pressed={zoneView === ZONE_VIEW.NORMAL}
+            onClick={() => setZoneView(ZONE_VIEW.NORMAL)}
+          >
+            Normal map
+          </button>
+          <button
+            type="button"
+            className={`map-zone-mode__option is-zones${zoneView === ZONE_VIEW.NORMAL ? '' : ' is-active'}`}
+            aria-pressed={zoneView !== ZONE_VIEW.NORMAL}
+            onClick={() => {
+              if (zoneView === ZONE_VIEW.NORMAL) setZoneView(zonePreview ? ZONE_VIEW.PROPOSAL : ZONE_VIEW.PUBLISHED);
+            }}
+          >
+            Zones
+            {/* What the overlay is, so an unpublished preview is never mistaken for live zones. */}
+            <span className={`map-zone-mode__tag${publishedActive || !zonePreview ? ' is-published' : ''}`}>
+              {publishedActive || !zonePreview ? 'published · diagnostic' : `${zonePreview.layout || 'proposal'} preview · not live`}
+            </span>
+          </button>
+        </div>
+      )}
+
+      {!mapFailure && previewActive && (
+        <div className="map-dtaro-preview-banner" role="note">
+          <span className="map-dtaro-preview-banner__long">
+            {zonePreview.layout ? `${zonePreview.layout} ` : ''}zone proposal preview
+            {zonePreview.validated ? ' — validated offline' : ''} — NOT approved, NOT published, not used for alerts.
+            {liveZones.zones.length > 0
+              ? ` Alerts use the published map (${liveZones.zones.length} zone${liveZones.zones.length === 1 ? '' : 's'}).`
+              : ''}
+          </span>
+          {/* A phone's short form: the long one ran to four lines over the obstacle panel. */}
+          <span className="map-dtaro-preview-banner__short">
+            {zonePreview.layout ? `${zonePreview.layout} ` : ''}preview — not approved, not published, not used for alerts
+          </span>
+        </div>
+      )}
+
       {/* Sits beside the coverage notice, and only when the validator has
           something to say. §3D: a route that contradicts the campus geometry is
           reported, never rendered away. */}
@@ -1024,6 +1395,32 @@ function MapControlInner({ filtersHost }) {
           chargingRestricted={!mayReadSimulator(session)}
           selectedStationId={selectedStationId}
           onPickStation={pickStation}
+          headerNote={legendZoneNote}
+          expanded={legendExpanded}
+          onExpandedChange={setLegendExpanded}
+          zoneSection={
+            zoneMapEnabled ? (
+              <ZoneLegendSection
+                status={liveZones.status}
+                zones={liveZones.zones}
+                hiddenZones={hiddenZones}
+                onToggleZone={toggleZone}
+                onShowAll={() => setHiddenZones(NO_HIDDEN_ZONES)}
+                spatialVersion={dtaroView?.spatialVersion ?? null}
+                preview={zonePreview}
+                mode={zoneView}
+                onModeChange={setZoneView}
+                areaRows={areaRows}
+                areasOn={areasOn}
+                onToggleAreas={setAreasOn}
+                areaNotes={areaNotes}
+                areaSource={campusDefinition.verificationRecord ? 'OpenStreetMap, checked by the project owner' : 'OpenStreetMap, not verified'}
+                alertsEnabled={alertsEnabled}
+                loadError={dtaroView?.error || null}
+                boundaryColor={campusFeatureCount > 1 ? theme.campus.boundaryLine : null}
+              />
+            ) : null
+          }
         />
       )}
 

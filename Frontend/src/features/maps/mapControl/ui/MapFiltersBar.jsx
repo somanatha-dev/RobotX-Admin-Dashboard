@@ -18,6 +18,11 @@ import { Button } from '@/components/ui/button.jsx';
  * the persistence in `useLocationFilters` are working and were deliberately
  * not redesigned; the 3D campus experience activates on top of it when a
  * campus is selected, rather than replacing it.
+ *
+ * The operational map shows the campus selector alone (`showHierarchy={false}`): RNSIT is the
+ * one campus RobotX operates, and World plus three "None" selects in front of it only led to a
+ * globe view (2026-10-23). Without the hierarchy there is no "no campus" choice and no filter
+ * reset either — the camera's own Reset (right rail) returns to the campus overview.
  */
 
 function toSelectableValue(id) {
@@ -53,11 +58,14 @@ export const MapFiltersBar = React.memo(function MapFiltersBar({
   resetAll,
   /** RBAC — a campus administrator's map: its one campus, no location hierarchy. */
   campusLocked = false,
+  /** Country / state / city / area selects, the "None" campus and the filter Reset. */
+  showHierarchy = true,
 }) {
+  const hierarchyShown = showHierarchy && !campusLocked;
   return (
     <div className="map-filters-bar" aria-label="Map location filters">
       <div className="map-filters-bar__group">
-        {campusLocked ? null : (
+        {!hierarchyShown ? null : (
         <>
         <Select value={toSelectableValue(countryId)} onValueChange={(v) => setCountryId(fromSelectableValue(v))}>
           <SelectTrigger className="map-filter-trigger">
@@ -135,7 +143,7 @@ export const MapFiltersBar = React.memo(function MapFiltersBar({
             <SelectValue placeholder={loading.campuses ? 'Loading…' : 'Campus'} />
           </SelectTrigger>
           <SelectContent>
-            {campusLocked ? null : <SelectItem value="__none__">None</SelectItem>}
+            {hierarchyShown ? <SelectItem value="__none__">None</SelectItem> : null}
             {Array.isArray(campuses) &&
               campuses.map((c) => (
                 <SelectItem key={c.id} value={String(c.id)}>
@@ -146,9 +154,11 @@ export const MapFiltersBar = React.memo(function MapFiltersBar({
         </Select>
       </div>
 
-      <Button type="button" variant="ghost" size="sm" onClick={resetAll} className="map-filters-bar__reset">
-        Reset
-      </Button>
+      {hierarchyShown && (
+        <Button type="button" variant="ghost" size="sm" onClick={resetAll} className="map-filters-bar__reset">
+          Reset
+        </Button>
+      )}
     </div>
   );
 });

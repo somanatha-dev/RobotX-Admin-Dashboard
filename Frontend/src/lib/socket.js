@@ -147,6 +147,15 @@ export const DASHBOARD_EVENTS = Object.freeze({
 	ROBOT_PAIRING_REJECTED: "robot_pairing_rejected",
 	ALERT_CREATED: "ALERT_CREATED",
 	REROUTE_ALERT: "REROUTE_ALERT",
+	/**
+	 * DTARO zone alerts (opt-in on the server): a recipient robot's verdict on an obstacle
+	 * alert — whether it meets the robot's commanded route. Information only; no reroute.
+	 */
+	OBSTACLE_RELEVANCE: "OBSTACLE_RELEVANCE",
+	/** DTARO zone alerts: a report the server refused (wrong region, unassigned cell, …). */
+	OBSTACLE_REPORT_REJECTED: "OBSTACLE_REPORT_REJECTED",
+	/** DTARO zone alerts: a further report of an obstacle already active in that cell (not re-broadcast). */
+	OBSTACLE_REPORT_MERGED: "OBSTACLE_REPORT_MERGED",
 });
 
 /**

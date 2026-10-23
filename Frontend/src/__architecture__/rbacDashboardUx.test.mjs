@@ -81,13 +81,15 @@ test('restricted, not "unknown": runtime badge, detail row and map legend say wh
 
 test('an ADMIN map loads no location hierarchy and is pinned to its campus', () => {
   const hook = code(read('features/maps/mapControl/hooks/useLocationFilters.js'));
-  assert.match(hook, /export function useLocationFilters\(\{ hierarchy = true, pinnedCampusId = null \} = \{\}\)/);
+  assert.match(hook, /export function useLocationFilters\(\{ hierarchy = true, pinnedCampusId = null, defaultCampusCode = null \} = \{\}\)/);
   const countries = hook.slice(hook.indexOf('fetchLocations({ type: \'COUNTRY\' })') - 200, hook.indexOf('fetchLocations({ type: \'COUNTRY\' })'));
   assert.match(countries, /if \(!hierarchy\) return undefined;/, 'the country list (and so the whole cascade) is never requested');
   assert.match(hook, /const campusId = pinnedCampusId \|\| selectedCampusIdState;/);
   assert.match(hook, /if \(pinnedCampusId\) return;/, 'a pinned selection cannot be changed');
   const map = code(read('features/maps/MapControl.jsx'));
-  assert.match(map, /useMemo\(\(\) => \(\{ hierarchy: superAdmin, pinnedCampusId \}\)/);
+  // The operational map loads no hierarchy for anyone now (2026-10-23); an ADMIN is still pinned,
+  // and only an unpinned map falls back to the operating campus.
+  assert.match(map, /\(\{ hierarchy: false, pinnedCampusId, defaultCampusCode: pinnedCampusId \? null : operatingCampusCode\(\) \}\)/);
   assert.match(map, /campusLocked=\{!superAdmin\}/);
   assert.match(map, /const bounds = pinnedCampusCode \? campusBounds\(pinnedCampusCode\) : operatingCampusBounds\(\);/);
 });

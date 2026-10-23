@@ -68,14 +68,21 @@ function persistFiltersSafe({ countryId, stateId, cityId, areaId, campusId }) {
 }
 
 /**
- * @param {{ hierarchy?: boolean, pinnedCampusId?: string|null }} [options]
+ * @param {{ hierarchy?: boolean, pinnedCampusId?: string|null, defaultCampusCode?: string|null }} [options]
  *   RBAC — `hierarchy: false` skips the country/state/city/area lists entirely (their endpoint
  *   is SUPER_ADMIN-only); `pinnedCampusId` holds the campus selection to a campus
- *   administrator's own campus, whatever was stored or picked.
+ *   administrator's own campus, whatever was stored or picked. `defaultCampusCode` is the
+ *   campus (`Campus.code`) selected once the campus list arrives when nothing valid is selected
+ *   — the operational map opens on it rather than on no campus at all.
  */
-export function useLocationFilters({ hierarchy = true, pinnedCampusId = null } = {}) {
-  // A pinned map never adopts another account's stored selection on a shared browser.
-  const [initialFilters] = useState(() => (pinnedCampusId ? { campusId: pinnedCampusId } : readStoredFiltersSafe()));
+export function useLocationFilters({ hierarchy = true, pinnedCampusId = null, defaultCampusCode = null } = {}) {
+  // A pinned map never adopts another account's stored selection on a shared browser. Without
+  // the hierarchy, stored country/state/city/area ids are not restored (nothing could show them).
+  const [initialFilters] = useState(() => {
+    if (pinnedCampusId) return { campusId: pinnedCampusId };
+    const stored = readStoredFiltersSafe();
+    return hierarchy ? stored : { campusId: stored.campusId ?? null };
+  });
 
   const [countries, setCountries] = useState([]);
   const [states, setStates] = useState([]);
@@ -104,7 +111,9 @@ export function useLocationFilters({ hierarchy = true, pinnedCampusId = null } =
     states: false,
     cities: false,
     areas: false,
-    campuses: false,
+    // Requested on mount, always: "loading" from the first render, so nothing reads the empty
+    // list before the request as "no campus".
+    campuses: true,
   });
 
   useEffect(() => {
@@ -147,7 +156,12 @@ export function useLocationFilters({ hierarchy = true, pinnedCampusId = null } =
       .listCampuses()
       .then((list) => {
         if (!alive) return;
-        setCampuses(Array.isArray(list) ? list.slice().sort(byNameAsc) : []);
+        const sorted = Array.isArray(list) ? list.slice().sort(byNameAsc) : [];
+        setCampuses(sorted);
+        // Nothing valid selected (first visit, or a stored campus that no longer exists): the
+        // default campus, if it is in the list. A valid stored choice is kept.
+        const fallback = defaultCampusCode ? sorted.find((c) => c?.code === defaultCampusCode) : null;
+        if (fallback) setCampusIdState((cur) => (cur && sorted.some((c) => c.id === cur) ? cur : fallback.id));
       })
       .catch(() => {
         // ignore
@@ -160,7 +174,7 @@ export function useLocationFilters({ hierarchy = true, pinnedCampusId = null } =
     return () => {
       alive = false;
     };
-  }, []);
+  }, [defaultCampusCode]);
 
   // When country changes: load states (keep stored children on first mount)
   useEffect(() => {
