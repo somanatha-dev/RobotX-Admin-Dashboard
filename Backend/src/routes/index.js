@@ -28,6 +28,8 @@ const shardsRoutes = require("./shards.routes");
 const privacyRoutes = require("./privacy.routes");
 // RBAC — campus administrator accounts (SUPER_ADMIN only).
 const usersRoutes = require("./users.routes");
+// DTARO — the published zone map for the dashboard (SUPER_ADMIN only, read-only).
+const dtaroRoutes = require("./dtaro.routes");
 
 const router = express.Router();
 
@@ -45,5 +47,6 @@ router.use("/health",    healthRoutes);
 router.use("/shards",    shardsRoutes);
 router.use("/privacy",   privacyRoutes);
 router.use("/users",     usersRoutes);
+router.use("/dtaro",     dtaroRoutes);
 
 module.exports = router;

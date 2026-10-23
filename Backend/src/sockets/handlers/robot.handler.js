@@ -11,6 +11,7 @@ const crypto = require("crypto");
 const { z } = require("zod");
 const { markOnline, markOffline, getRobotState, setRobotState } = require("../../services/robotRegistry.service");
 const { assignRobotToZone } = require("../../services/zoneManager.service");
+const dtaroZoneAlert = require("../../services/dtaroZoneAlert.service");
 const { DB_FLUSH_INTERVAL_MS } = require("../../config/liveness.constants");
 const robotStateCache = require("../../cache/robotStateCache");
 // PHASE 15 remediation (D-6) — the cutover switch is a conjunction, and this handler now
@@ -769,6 +770,8 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
           lat: true,
           lon: true,
           battery: true,
+          // DTARO zone alerts — what `admitSession` needs (zone rooms are simulated-fleet only).
+          ...dtaroZoneAlert.AUTH_SELECT,
           ...robotRetirementPolicy.lifecycleSelect(),
         },
       });
@@ -950,6 +953,7 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       setRobotSocket(robotId, socket);
       socket.data.robotId = robotId;
       socket.data.isAuthed = true;
+      dtaroZoneAlert.admitSession(socket, robot);
       // R2 — what the heartbeat flush needs to keep this session's durable expiry sliding while
       // the robot stays connected: its row and the hash of the bearer token it authenticated
       // with, never the token. Null for an mTLS session, which holds no bearer token.
@@ -1099,6 +1103,21 @@ function registerRobotHandlers(io, socket, { prisma, kv, logger, appLocals }) {
         }
       } catch {
         // zone assignment is non-critical — never block auth
+      }
+
+      // DTARO zone alerts — a new socket (every reconnect is one) has no zone room yet, so it
+      // is placed by the last position the server holds for this robot: the live registry,
+      // else the row read above. Telemetry keeps it current from here on.
+      if (dtaroZoneAlert.isEnabled()) {
+        try {
+          const live = await getRobotState(kv, robotId);
+          const lat = Number.isFinite(live?.lat) ? live.lat : Number.isFinite(robot.lat) ? robot.lat : null;
+          const lon = Number.isFinite(live?.lon) ? live.lon : Number.isFinite(robot.lon) ? robot.lon : null;
+          const synced = dtaroZoneAlert.syncMembership(socket, configOf(), lat, lon);
+          if (synced.membership) log.info("DTARO zone room joined", { robotId, room: synced.membership.room });
+        } catch {
+          // membership is non-critical — never block auth
+        }
       }
 
       log.info("Robot AUTH success", {

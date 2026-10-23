@@ -163,6 +163,15 @@ describe("Test G — the assignment engine cannot see the simulation discriminat
       //
       // Registered here rather than evaded, for the reason given above.
       "services/robotDispatchReadiness.service.js",
+      // DTARO ZONE ALERTS (2026-10-22) — a *scoping* reader, the same category as
+      // `positionObservation.service.js`: at AUTH it records whether the socket may join a
+      // zone room and report obstacles (simulated fleet only, physical integration being out
+      // of scope), through `simulationPolicy.isSimulatedRobot`. It decides nothing the engine
+      // sees: no feasibility, cost, solve, commitment or route reads it, and `robot.handler.js`
+      // itself holds no reference (it spreads this module's select and calls it).
+      //
+      // Registered here rather than evaded, for the reason given above.
+      "services/dtaroZoneAlert.service.js",
     ]);
 
     const unexpected = discriminatorReferences(filesUnder(SRC)).filter(

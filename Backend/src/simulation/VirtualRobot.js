@@ -79,6 +79,8 @@ const { io: ioClient } = require("socket.io-client");
 const crypto = require("crypto");
 const rootLogger = require("../config/logger");
 const { haversineMeters } = require("../utils/distance");
+// DTARO zone alerts — the receiver-side relevance test (footprint polygon vs commanded route).
+const { pathIntersectsPolygon } = require("../services/routeIntersection.service");
 
 /**
  * How close to a path's final waypoint counts as having reached it — the same 0.01 m the
@@ -542,6 +544,11 @@ class VirtualRobot {
     // Null — or a row whose coefficients are all null, which is what this deployment
     // actually has — makes the model refuse, which is the correct fail-closed outcome.
     energyModelParams,
+    // DTARO — the deterministic world this robot can sense (`dtaroScenario.worldObstaclesFor`):
+    // obstacles at fixed coordinates, each with a sensing radius. When supplied, it REPLACES
+    // the random self-report stream, so a run is reproducible and every report has a ground
+    // truth. Absent means the random stream, unchanged.
+    worldObstacles,
   } = {}) {
     this.robotId = robotId;
     this.lat = lat;
@@ -628,6 +635,13 @@ class VirtualRobot {
     const seedBasis = this._randomSeed === null ? String(robotId) : this._randomSeed;
     this._speedRandom = createRandom(forkSeed(seedBasis, "speed"));
     this._obstacleRandom = createRandom(forkSeed(seedBasis, "obstacle"));
+
+    // ── DTARO: deterministic world obstacles and what this robot knows of them ──
+    this._worldObstacles = Array.isArray(worldObstacles) && worldObstacles.length > 0 ? worldObstacles : null;
+    // World obstacle id → { at, outcome, obstacleId } for each one this robot reported.
+    this._reportedWorldObstacles = new Map();
+    // obstacleId → this robot's handling of an OBSTACLE_ALERT it received.
+    this._obstacleAlerts = new Map();
 
     // ── STEP 4: this robot's thermal environment ──────────────────────────────
     // A third independent stream, forked from the same basis, so the ambient sensor
@@ -1125,6 +1139,12 @@ class VirtualRobot {
 
     this.socket.on("TASK_ASSIGN", (payload) => this._onTaskAssign(payload));
     this.socket.on("REROUTE_ALERT", (payload) => this._onRerouteAlert(payload));
+
+    // DTARO zone alerts — an obstacle reported in this robot's zone, and the server's answer
+    // to a report this robot made.
+    this.socket.on("OBSTACLE_ALERT", (payload) => this._onObstacleAlert(payload));
+    this.socket.on("OBSTACLE_REPORT_ACK", (payload) => this._onObstacleReportOutcome("ACCEPTED", payload));
+    this.socket.on("OBSTACLE_REPORT_REJECTED", (payload) => this._onObstacleReportOutcome("REJECTED", payload));
 
     // Operator commands. The server persists a Command row and dispatches
     // "COMMAND" with the row's id; acknowledging it with COMMAND_ACK is what
@@ -3227,8 +3247,10 @@ class VirtualRobot {
       this._applyBattery();
     }
 
-    // 6) Obstacle report (while moving)
-    this._maybeReportObstacle();
+    // 6) Obstacle report: sensed from the deterministic world when one is configured,
+    //    otherwise the random self-report stream (while moving).
+    if (this._worldObstacles) this._senseWorldObstacles();
+    else this._maybeReportObstacle();
 
     // 7) Keep server offline-detector happy
     // Commitment-scoped while a mission is held (§12.2 lease renewal); a bare ping otherwise.
@@ -3899,6 +3921,163 @@ class VirtualRobot {
         this.log.warn(`[VR] ${this.robotId} obstacle detected (${severity})`);
       }
     } catch { /* ignore */ }
+  }
+
+  // ── DTARO: deterministic sensing and receiver-side relevance ──────────────
+
+  /** True once AUTH has succeeded on the current socket (handlers are registered on it). */
+  _sessionEstablished() {
+    return Boolean(this.socket && this.socket.connected && this._handlerSocket === this.socket);
+  }
+
+  /**
+   * Report each world obstacle within its sensing radius, once.
+   *
+   * Sensing waits for an authenticated session: a report sent before AUTH would be refused
+   * as unauthenticated while the obstacle was marked reported. An obstacle this robot already
+   * learned of through an OBSTACLE_ALERT (the same point to within a metre) is not reported
+   * again — its zone already knows.
+   */
+  _senseWorldObstacles() {
+    if (!this._sessionEstablished()) return;
+    for (const obstacle of this._worldObstacles) {
+      if (this._reportedWorldObstacles.has(obstacle.id)) continue;
+      const distanceM = haversineMeters(this.lat, this.lon, obstacle.lat, obstacle.lon);
+      if (distanceM > obstacle.senseRadiusM) continue;
+      const known = [...this._obstacleAlerts.values()].some(
+        (alert) => haversineMeters(alert.lat, alert.lon, obstacle.lat, obstacle.lon) <= 1,
+      );
+      if (known) {
+        this._reportedWorldObstacles.set(obstacle.id, { at: Date.now(), outcome: "ALREADY_ALERTED", obstacleId: null });
+        continue;
+      }
+      this._reportedWorldObstacles.set(obstacle.id, {
+        at: Date.now(),
+        outcome: "SENT",
+        obstacleId: null,
+        lat: obstacle.lat,
+        lon: obstacle.lon,
+      });
+      try {
+        this.socket.emit("OBSTACLE_REPORT", { lat: obstacle.lat, lon: obstacle.lon, severity: obstacle.severity });
+      } catch { /* ignore */ }
+      this.log.info(
+        `[VR] ${this.robotId} DTARO sensed world obstacle ${obstacle.id} at ${distanceM.toFixed(1)} m — OBSTACLE_REPORT sent`,
+      );
+    }
+  }
+
+  /** The server's answer to a report this robot made: recorded against that report. */
+  _onObstacleReportOutcome(outcome, payload) {
+    const lat = Number(payload?.lat);
+    const lon = Number(payload?.lon);
+    for (const record of this._reportedWorldObstacles.values()) {
+      if (record.outcome !== "SENT") continue;
+      // An ACK carries no coordinates, so it answers the oldest report still awaiting one;
+      // a rejection names its point.
+      if (outcome === "REJECTED" && Number.isFinite(lat) && Number.isFinite(lon) &&
+          haversineMeters(lat, lon, record.lat, record.lon) > 1) continue;
+      // A report of a cell that already holds an active obstacle is merged into it (not re-broadcast).
+      record.outcome = outcome === "ACCEPTED" && payload?.delivery === "MERGED" ? "MERGED" : outcome;
+      record.obstacleId = payload?.obstacleId ?? null;
+      record.reason = payload?.reason ?? null;
+      break;
+    }
+    if (outcome === "REJECTED") {
+      this.log.warn(`[VR] ${this.robotId} DTARO OBSTACLE_REPORT rejected: ${payload?.reason ?? "unknown"}`);
+    } else if (payload?.delivery === "MERGED") {
+      this.log.info(`[VR] ${this.robotId} DTARO OBSTACLE_REPORT merged into active ${payload?.obstacleId} — not re-broadcast`);
+    } else {
+      const recipients = Array.isArray(payload?.recipients) ? payload.recipients.join(", ") || "nobody" : "?";
+      this.log.info(`[VR] ${this.robotId} DTARO OBSTACLE_REPORT accepted as ${payload?.obstacleId} — delivered to ${recipients}`);
+    }
+  }
+
+  /**
+   * The route this robot is still commanded to drive: from where it is, along the rest of
+   * the current stop's path, then every later stop's path — exactly the geometry the OFFER
+   * (or a legacy TASK_ASSIGN) delivered. Nothing is computed or invented. A charger approach
+   * is the route to the reserved charger. An idle robot has none.
+   *
+   * @returns {{ source: string, taskId: string|null, points: Array<{lat:number, lon:number}> }}
+   */
+  _plannedRouteForRelevance() {
+    const here = { lat: this.lat, lon: this.lon };
+    const rest = (path, from) => (Array.isArray(path) ? path.slice(Math.max(0, from)) : []);
+    if (this.task && Array.isArray(this.task.stops) && Array.isArray(this.activePath)) {
+      const points = [here, ...rest(this.activePath, this.pathIndex)];
+      for (let i = this.stopIndex + 1; i < this.task.stops.length; i++) points.push(...rest(this.task.stops[i].path, 0));
+      return { source: "COMMANDED_ROUTE", taskId: this.task.taskId ?? null, points };
+    }
+    if (this._chargingPhase === "APPROACHING" && Array.isArray(this.activePath) && this.activePath.length > 0) {
+      return { source: "CHARGER_APPROACH", taskId: null, points: [here, ...rest(this.activePath, this.pathIndex)] };
+    }
+    return { source: "NONE", taskId: null, points: [] };
+  }
+
+  /**
+   * An obstacle was reported in this robot's zone. Decide whether its footprint meets the
+   * commanded route and say so; change nothing about the route or the motion.
+   *
+   * A relevant obstacle is registered (`obstacleAwareness()`) and reported with the decision
+   * `RELEVANT_NO_REPLAN`: no replanning authority exists in V1 (OD-3), and an unfenced local
+   * reroute would leave the corridor the completion is graded against. An irrelevant one is
+   * recorded as such and nothing else happens.
+   */
+  _onObstacleAlert(payload) {
+    const obstacleId = typeof payload?.obstacleId === "string" ? payload.obstacleId : null;
+    const polygon = payload?.footprint?.polygon;
+    if (!obstacleId || !Array.isArray(polygon) || polygon.length < 3) {
+      this.log.warn(`[VR] ${this.robotId} DTARO OBSTACLE_ALERT ignored — malformed payload`);
+      return;
+    }
+    if (payload.reportingRobotId === this.robotId) return;
+    if (this._obstacleAlerts.has(obstacleId)) return;
+
+    const route = this._plannedRouteForRelevance();
+    const relevant = route.points.length > 0 && pathIntersectsPolygon(route.points, polygon);
+    const decision = route.source === "NONE" ? "NO_PLANNED_ROUTE" : relevant ? "RELEVANT_NO_REPLAN" : "NOT_RELEVANT";
+
+    this._obstacleAlerts.set(obstacleId, {
+      obstacleId,
+      lat: Number(payload.lat),
+      lon: Number(payload.lon),
+      regionId: payload.regionId ?? null,
+      zoneId: payload.zoneId ?? null,
+      cellId: payload.cellId ?? null,
+      reportingRobotId: payload.reportingRobotId ?? null,
+      relevant,
+      routeSource: route.source,
+      taskId: route.taskId,
+      routePoints: route.points.length,
+      decision,
+      receivedAt: Date.now(),
+    });
+
+    try {
+      this.socket.emit("OBSTACLE_RELEVANCE", {
+        obstacleId,
+        relevant,
+        routeSource: route.source,
+        taskId: route.taskId,
+        routePoints: route.points.length,
+        decision,
+      });
+    } catch { /* ignore */ }
+
+    this.log.info(
+      `[VR] ${this.robotId} DTARO OBSTACLE_ALERT ${obstacleId} (zone ${payload.zoneId}) — ` +
+        `${relevant ? "RELEVANT: footprint meets the commanded route" : "not relevant"} ` +
+        `[${route.source}, ${route.points.length} pts] → ${decision}`,
+    );
+  }
+
+  /** What this robot reported and what it was told. Copies, for demos and tests. */
+  obstacleAwareness() {
+    return {
+      reported: [...this._reportedWorldObstacles.entries()].map(([worldId, record]) => ({ worldId, ...record })),
+      alerts: [...this._obstacleAlerts.values()].map((alert) => ({ ...alert })),
+    };
   }
 
   // ── Telemetry emit ────────────────────────────────────────────────────────

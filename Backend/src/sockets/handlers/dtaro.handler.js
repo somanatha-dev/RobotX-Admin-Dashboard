@@ -19,7 +19,9 @@ const { allow } = require("../rateLimit");
 // divert a Task to VERIFYING, so it is a per-shard decision like every other engine path.
 const agentGate = require("../../engine/cutover/agentGate");
 const { processObstacleReport } = require("../../services/alertDissemination.service");
-const { updateHealthStatus } = require("../../services/robotRegistry.service");
+const { updateHealthStatus, getRobotState } = require("../../services/robotRegistry.service");
+// DTARO zone-scoped alerts — the opt-in replacement for the legacy dissemination above.
+const dtaroZoneAlert = require("../../services/dtaroZoneAlert.service");
 const { z } = require("zod");
 const robotStateCache = require("../../cache/robotStateCache");
 // PHASE 5 (§12.5) — graded completion verification.
@@ -135,6 +137,81 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
 
       log.info("OBSTACLE_REPORT received", { robotId, lat, lon, severity });
 
+      if (dtaroZoneAlert.isEnabled()) {
+        // The server's latest held position of a robot: the live registry, then the cache.
+        // Never a field of any report.
+        const positionOf = async (id) => {
+          const live = await getRobotState(kv, id);
+          if (live && Number.isFinite(live.lat) && Number.isFinite(live.lon)) return { lat: live.lat, lon: live.lon, at: Number(live.updatedAt) || null };
+          const cached = robotStateCache.get(id);
+          if (cached && Number.isFinite(cached.lat) && Number.isFinite(cached.lon)) return { lat: cached.lat, lon: cached.lon, at: null };
+          return null;
+        };
+        const zoned = await dtaroZoneAlert.processReport({
+          io,
+          prisma,
+          kv,
+          snapshot: configOf(),
+          socket,
+          reporterRobotId: robotId,
+          report: { lat, lon, severity },
+          resolveReporterPosition: async () => {
+            const position = await positionOf(robotId);
+            return position ? { lat: position.lat, lon: position.lon } : null;
+          },
+          positionOf,
+        });
+        if (!zoned.accepted) {
+          log.warn("OBSTACLE_REPORT refused", { robotId, lat, lon, reason: zoned.reason });
+          return;
+        }
+        if (zoned.merged) {
+          // The cell already holds an active obstacle: recorded as a corroboration, not
+          // re-broadcast. The ACK names the obstacle the report joined.
+          log.info("OBSTACLE_REPORT merged into an active obstacle", {
+            robotId,
+            obstacleId: zoned.obstacle.obstacleId,
+            cellId: zoned.alert.cellId,
+            repeat: zoned.alert.repeat,
+          });
+          socket.emit("OBSTACLE_REPORT_ACK", {
+            obstacleId: zoned.obstacle.obstacleId,
+            affectedRobots: 0,
+            timestamp: zoned.obstacle.timestamp,
+            regionId: zoned.alert.regionId,
+            zoneId: zoned.alert.zoneId,
+            cellId: zoned.alert.cellId,
+            recipients: [],
+            delivery: "MERGED",
+            duplicateOf: zoned.obstacle.obstacleId,
+          });
+          return;
+        }
+        log.info("OBSTACLE_ALERT delivered", {
+          robotId,
+          obstacleId: zoned.obstacle.obstacleId,
+          regionId: zoned.alert.regionId,
+          zoneId: zoned.alert.zoneId,
+          cellId: zoned.alert.cellId,
+          recipients: zoned.recipients,
+          sameZoneRecipients: zoned.sameZoneRecipients,
+          crossZoneRecipients: zoned.crossZoneRecipients,
+          considered: zoned.recipientDecisions.map((d) => `${d.robotId}:${d.reason}${d.route ? `/${d.route.status}` : ""}`),
+          ...(zoned.crossZoneError ? { crossZoneError: zoned.crossZoneError } : {}),
+        });
+        socket.emit("OBSTACLE_REPORT_ACK", {
+          obstacleId: zoned.obstacle.obstacleId,
+          affectedRobots: zoned.recipients.length,
+          timestamp: zoned.obstacle.timestamp,
+          regionId: zoned.alert.regionId,
+          zoneId: zoned.alert.zoneId,
+          cellId: zoned.alert.cellId,
+          recipients: zoned.recipients,
+          delivery: "ZONE_ROOM",
+        });
+        return;
+      }
+
       const result = await processObstacleReport(prisma, kv, io, {
         lat,
         lon,
@@ -149,6 +226,31 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       });
     } catch (e) {
       log.error("OBSTACLE_REPORT handler failed", e);
+    }
+  });
+
+  // ─── OBSTACLE_RELEVANCE (DTARO zone alerts) ──────────────────────────────────
+  // A recipient's verdict on one OBSTACLE_ALERT: whether the obstacle's footprint meets the
+  // route it was commanded. Accepted only from a robot the alert was delivered to, and only
+  // relayed — it changes no route, task or engine state. Inert unless zone alerts are on.
+  socket.on(dtaroZoneAlert.RELEVANCE_EVENT, (payload) => {
+    try {
+      if (!dtaroZoneAlert.isEnabled()) return;
+      if (!allow(socket, dtaroZoneAlert.RELEVANCE_EVENT, { limit: 30, windowMs: 60_000, minIntervalMs: 0 })) return;
+      const robotId = toStringOrNull(socket.data.robotId);
+      if (!robotId) {
+        socket.emit("ERROR", { event: dtaroZoneAlert.RELEVANCE_EVENT, reason: "Not authenticated" });
+        return;
+      }
+      const outcome = dtaroZoneAlert.recordRelevance({ io, robotId, payload });
+      if (!outcome.accepted) {
+        log.warn("OBSTACLE_RELEVANCE refused", { robotId, obstacleId: payload?.obstacleId ?? null, reason: outcome.reason });
+        socket.emit("ERROR", { event: dtaroZoneAlert.RELEVANCE_EVENT, reason: outcome.reason });
+        return;
+      }
+      log.info("OBSTACLE_RELEVANCE", outcome.payload);
+    } catch (e) {
+      log.error("OBSTACLE_RELEVANCE handler failed", e);
     }
   });
 

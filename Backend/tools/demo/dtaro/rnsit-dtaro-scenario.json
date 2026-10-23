@@ -1,0 +1,8 @@
+{
+  "id": "rnsit-dtaro-demo-1",
+  "description": "One fixed obstacle on the RNSIT campus walkway between the Main Gate and Playground 1 (south of the parking lot). Coordinates are the midpoint of the campus-network route Main Gate -> Playground 1 (footway/path/service), rounded to 1e-6 deg. Simulation only; physical agents never load this file.",
+  "senseRadiusM": 15,
+  "obstacles": [
+    { "id": "OB-WALKWAY-1", "lat": 12.899823, "lon": 77.518413, "severity": "HIGH" }
+  ]
+}

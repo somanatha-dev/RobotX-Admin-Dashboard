@@ -30,6 +30,8 @@ const simulationPolicy = require("./simulationPolicy");
 // STEP 4 — the closed set of simulator tunables. `setConfig` was a no-op; see
 // `simulationConfig.js` for why this is nine numbers rather than a configuration framework.
 const simulationConfig = require("./simulationConfig");
+// DTARO — the deterministic world obstacles a scenario places (SIM_DTARO_SCENARIO), if any.
+const dtaroScenario = require("./dtaroScenario");
 const { hashSeed } = require("./random");
 // BATCH 2 — the development Charging Scheduler. It is driven from here and from nowhere
 // else, which is what confines its scope: every robot in `robots` passed
@@ -795,6 +797,9 @@ function createVirtualRobotSimulator({
       speedJitter:         config.speedJitter,
       obstacleProbability: config.obstacleProbability,
       initialBattery:      config.initialBattery,
+      // DTARO — when a scenario is active, the robot senses its fixed obstacles instead of
+      // drawing random self-reports. Undefined otherwise, which keeps the random stream.
+      worldObstacles:      dtaroScenario.worldObstaclesFor(),
       // Phase E — the charge trigger, when one has been configured for this process.
       chargeTriggerPct:    config.chargeTriggerPct,
       // A configured seed is *offset by the robot id* rather than used directly. Handing

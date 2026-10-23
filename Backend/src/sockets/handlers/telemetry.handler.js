@@ -4,6 +4,7 @@ const { allow } = require("../rateLimit");
 const { z } = require("zod");
 const { registryKey, buildMergedRegistryState, REGISTRY_TTL: REGISTRY_TTL_SEC } = require("../../services/robotRegistry.service");
 const { getZoneForCoordinates, applyZoneChangeSideEffects } = require("../../services/zoneManager.service");
+const dtaroZoneAlert = require("../../services/dtaroZoneAlert.service");
 const { haversineMeters } = require("../../utils/distance");
 const robotStateCache = require("../../cache/robotStateCache");
 const robotStatusPrecedence = require("../../services/robotStatusPrecedence");
@@ -1151,6 +1152,24 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
         writes.set(registryKeyStr, JSON.stringify(mergedRegistry), { ex: REGISTRY_TTL_SEC });
       } catch {
         // registry update is non-critical
+      }
+
+      // DTARO zone alerts — keep this socket in the zone room its accepted position resolves
+      // to, in the pinned published map. Socket-local: no registry or database write.
+      if (dtaroZoneAlert.isEnabled()) {
+        try {
+          const synced = dtaroZoneAlert.syncMembership(socket, configOf(), fullState.lat, fullState.lon);
+          if (synced.changed) {
+            log.info?.("DTARO zone room changed", {
+              robotId,
+              from: synced.previous ? synced.previous.room : null,
+              to: synced.membership ? synced.membership.room : null,
+              reason: synced.reason || null,
+            });
+          }
+        } catch {
+          // membership is non-critical
+        }
       }
 
       if (zoneChangeInfo) {
