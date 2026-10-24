@@ -156,6 +156,13 @@ export const DASHBOARD_EVENTS = Object.freeze({
 	OBSTACLE_REPORT_REJECTED: "OBSTACLE_REPORT_REJECTED",
 	/** DTARO zone alerts: a further report of an obstacle already active in that cell (not re-broadcast). */
 	OBSTACLE_REPORT_MERGED: "OBSTACLE_REPORT_MERGED",
+	/**
+	 * DTARO operator decisions (opt-in on the server, simulated fleet only): a report the server
+	 * accepted and is holding for an operator's STOP / REROUTE / REJECT_BROADCAST until its own 5 s
+	 * deadline — and every later change to that decision. Each carries the whole decision.
+	 */
+	OBSTACLE_DECISION_REQUIRED: "OBSTACLE_DECISION_REQUIRED",
+	OBSTACLE_DECISION_UPDATED: "OBSTACLE_DECISION_UPDATED",
 });
 
 /**

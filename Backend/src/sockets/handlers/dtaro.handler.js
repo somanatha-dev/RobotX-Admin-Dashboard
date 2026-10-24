@@ -22,6 +22,9 @@ const { processObstacleReport } = require("../../services/alertDissemination.ser
 const { updateHealthStatus, getRobotState } = require("../../services/robotRegistry.service");
 // DTARO zone-scoped alerts — the opt-in replacement for the legacy dissemination above.
 const dtaroZoneAlert = require("../../services/dtaroZoneAlert.service");
+// DTARO operator decisions (opt-in, simulated fleet only): delivery waits for STOP / REROUTE /
+// REJECT_BROADCAST, chosen by an operator or by the server's 5 s default.
+const obstacleDecision = require("../../services/dtaroObstacleDecision.service");
 const { z } = require("zod");
 const robotStateCache = require("../../cache/robotStateCache");
 // PHASE 5 (§12.5) — graded completion verification.
@@ -151,6 +154,7 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
           if (cached && Number.isFinite(cached.lat) && Number.isFinite(cached.lon)) return { lat: cached.lat, lon: cached.lon, at: null };
           return null;
         };
+        const deferDelivery = obstacleDecision.isEnabled();
         const zoned = await dtaroZoneAlert.processReport({
           io,
           prisma,
@@ -164,6 +168,7 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
             return position ? { lat: position.lat, lon: position.lon } : null;
           },
           positionOf,
+          deferDelivery,
         });
         if (!zoned.accepted) {
           log.warn("OBSTACLE_REPORT refused", { robotId, lat, lon, reason: zoned.reason });
@@ -178,6 +183,7 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
             cellId: zoned.alert.cellId,
             repeat: zoned.alert.repeat,
           });
+          if (deferDelivery) obstacleDecision.onMerged(zoned.obstacle.obstacleId, zoned.alert.corroborations);
           socket.emit("OBSTACLE_REPORT_ACK", {
             obstacleId: zoned.obstacle.obstacleId,
             affectedRobots: 0,
@@ -188,6 +194,41 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
             recipients: [],
             delivery: "MERGED",
             duplicateOf: zoned.obstacle.obstacleId,
+          });
+          return;
+        }
+        if (zoned.deferred) {
+          // Accepted and stored; NOTHING has been sent to any robot. The operator decides (or the
+          // server's deadline does), and only then is the fleet alerted or the alert suppressed.
+          const opened = obstacleDecision.open({
+            io,
+            prisma,
+            snapshotOf: configOf,
+            positionOf,
+            robotStateOf: (id) => getRobotState(kv, id),
+            report: zoned,
+            logger: log,
+          });
+          log.info("OBSTACLE_REPORT awaiting an operator decision", {
+            robotId,
+            obstacleId: zoned.obstacle.obstacleId,
+            decisionId: opened.decisionId,
+            deadlineAt: opened.deadlineAt,
+            regionId: zoned.alert.regionId,
+            zoneId: zoned.alert.zoneId,
+            cellId: zoned.alert.cellId,
+          });
+          socket.emit("OBSTACLE_REPORT_ACK", {
+            obstacleId: zoned.obstacle.obstacleId,
+            affectedRobots: 0,
+            timestamp: zoned.obstacle.timestamp,
+            regionId: zoned.alert.regionId,
+            zoneId: zoned.alert.zoneId,
+            cellId: zoned.alert.cellId,
+            recipients: [],
+            delivery: "AWAITING_DECISION",
+            decisionId: opened.decisionId,
+            decisionDeadline: opened.deadlineAt,
           });
           return;
         }
@@ -255,6 +296,31 @@ function registerDtaroHandlers(io, socket, { prisma, kv, logger, appLocals }) {
       log.info("OBSTACLE_RELEVANCE", outcome.payload);
     } catch (e) {
       log.error("OBSTACLE_RELEVANCE handler failed", e);
+    }
+  });
+
+  // ─── DTARO_SIM_NAV_ACK (DTARO operator decisions) ────────────────────────────
+  // A simulated robot's acknowledgement of a STOP / REROUTE instruction from an obstacle
+  // decision. Accepted only from the robot the instruction was sent to; it records what the robot
+  // says it did — progress and arrival are measured by the server from telemetry, not taken here.
+  socket.on(obstacleDecision.NAV_ACK_EVENT, (payload) => {
+    try {
+      if (!obstacleDecision.isEnabled()) return;
+      if (!allow(socket, obstacleDecision.NAV_ACK_EVENT, { limit: 30, windowMs: 60_000, minIntervalMs: 0 })) return;
+      const robotId = toStringOrNull(socket.data.robotId);
+      if (!robotId || socket.data.isAuthed !== true) {
+        socket.emit("ERROR", { event: obstacleDecision.NAV_ACK_EVENT, reason: "Not authenticated" });
+        return;
+      }
+      const outcome = obstacleDecision.recordNavAck({ robotId, payload });
+      if (!outcome.accepted) {
+        log.warn("DTARO_SIM_NAV_ACK refused", { robotId, decisionId: payload?.decisionId ?? null, reason: outcome.reason });
+        socket.emit("ERROR", { event: obstacleDecision.NAV_ACK_EVENT, reason: outcome.reason });
+        return;
+      }
+      log.info("DTARO_SIM_NAV_ACK", { robotId, decisionId: payload.decisionId, outcome: payload.outcome });
+    } catch (e) {
+      log.error("DTARO_SIM_NAV_ACK handler failed", e);
     }
   });
 

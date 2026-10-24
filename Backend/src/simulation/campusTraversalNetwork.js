@@ -41,6 +41,13 @@
  * kept inside is refused by name. With `maxAccessM` (a caller-declared bound; none is
  * defaulted here), a connector longer than it refuses. Without either, behaviour is as before.
  *
+ * ── Avoiding an area for one query (DTARO simulated detours) ────────────────
+ * Optional, per call: `route(from, to, { avoidSegment })`. A segment for which the predicate
+ * answers true — an edge, an access connector, the stretch between two endpoints on one way —
+ * is not used by THAT query; an edge touching the area is excluded whole, never clipped. The
+ * network, its memoised trees and every call without the option are unchanged. Supplied only
+ * by `dtaroDetour` (a simulated robot's detour around a reported obstacle's cell).
+ *
  * ── What it is NOT ──────────────────────────────────────────────────────────
  * Not B1, not a production router, not an adapter. `routing/productionRouter.js` and the
  * ADR-11/ADR-33 procurement are untouched. It is reached through `simulationRouter` for
@@ -81,6 +88,10 @@ const NETWORK_REFUSAL = Object.freeze({
   ACCESS_TOO_LONG: "ACCESS_TOO_LONG",
   /** The assembled path left the boundary. A guard: the build should make this unreachable. */
   ROUTE_LEAVES_BOUNDARY: "ROUTE_LEAVES_BOUNDARY",
+  /** With `avoidSegment`: no access connector from an endpoint to an admissible way avoids the area. */
+  ACCESS_MEETS_AVOIDED_AREA: "ACCESS_MEETS_AVOIDED_AREA",
+  /** With `avoidSegment`: the assembled path meets the avoided area. A guard, like ROUTE_LEAVES_BOUNDARY. */
+  ROUTE_MEETS_AVOIDED_AREA: "ROUTE_MEETS_AVOIDED_AREA",
 });
 
 const isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
@@ -229,9 +240,24 @@ function createCampusTraversalNetwork(input) {
   const n = vertices.length;
   const trees = new Map();
 
-  /** Single-source shortest paths from one vertex, memoised: the reusable middle portion. */
-  function treeFrom(sourceIndex) {
-    let tree = trees.get(sourceIndex);
+  const edgeKey = (u, v) => (u < v ? `${u}|${v}` : `${v}|${u}`);
+
+  /** The edges one query may not use: every segment the predicate rejects, as edge keys. */
+  function blockedEdges(avoidSegment) {
+    const blocked = new Set();
+    for (const segment of segments) {
+      if (avoidSegment(vertices[segment.a], vertices[segment.b])) blocked.add(edgeKey(segment.a, segment.b));
+    }
+    return blocked;
+  }
+
+  /**
+   * Single-source shortest paths from one vertex, memoised: the reusable middle portion. With
+   * `blocked` (one query's avoided edges) the tree is computed for that query only and never
+   * cached, so no other query can be answered from a tree that skipped edges.
+   */
+  function treeFrom(sourceIndex, blocked) {
+    let tree = blocked ? null : trees.get(sourceIndex);
     if (tree) return tree;
     const dist = new Float64Array(n).fill(Infinity);
     const prev = new Int32Array(n).fill(-1);
@@ -245,6 +271,7 @@ function createCampusTraversalNetwork(input) {
       if (u === -1) break;
       done[u] = 1;
       for (const [v, w] of adjacency[u]) {
+        if (blocked && blocked.has(edgeKey(u, v))) continue;
         const candidate = dist[u] + w;
         if (candidate < dist[v] || (candidate === dist[v] && prev[v] > u)) {
           dist[v] = candidate;
@@ -253,7 +280,7 @@ function createCampusTraversalNetwork(input) {
       }
     }
     tree = { dist, prev };
-    trees.set(sourceIndex, tree);
+    if (!blocked) trees.set(sourceIndex, tree);
     return tree;
   }
 
@@ -268,7 +295,7 @@ function createCampusTraversalNetwork(input) {
    * the query point (exact enough at campus scale; the route's length is then measured by
    * haversine over the resulting points, never in this frame).
    */
-  function snap(point) {
+  function snap(point, blocked, avoidSegment) {
     const lat0 = (point.lat * Math.PI) / 180;
     const kx = Math.cos(lat0) * (Math.PI / 180) * METRES_PER_RADIAN;
     const ky = (Math.PI / 180) * METRES_PER_RADIAN;
@@ -286,6 +313,8 @@ function createCampusTraversalNetwork(input) {
     // Nearest first; ties keep file order, so the choice stays deterministic.
     candidates.sort((x, y) => x.offset - y.offset || x.index - y.index);
     for (const candidate of candidates) {
+      // A query's avoided edge is no way to join the network by.
+      if (blocked && blocked.has(edgeKey(candidate.segment.a, candidate.segment.b))) continue;
       const A = vertices[candidate.segment.a];
       const B = vertices[candidate.segment.b];
       const at =
@@ -297,7 +326,7 @@ function createCampusTraversalNetwork(input) {
       const projected = { lat: at.lat, lon: at.lon };
       // Without containment the nearest segment is taken, exactly as before. With it, the
       // nearest segment whose straight connector stays inside the boundary is taken.
-      if (!containment || containment.containsSegment(point, projected)) {
+      if ((!containment || containment.containsSegment(point, projected)) && !(avoidSegment && avoidSegment(point, projected))) {
         return { a: candidate.segment.a, b: candidate.segment.b, point: projected };
       }
     }
@@ -311,8 +340,10 @@ function createCampusTraversalNetwork(input) {
    *
    * @param {{ lat: number, lon: number }} from
    * @param {{ lat: number, lon: number }} to
-   * @param {{ maxAccessM?: number }} [options] `maxAccessM`: the longest access connector the
-   *   caller admits. Absent, none is applied (and none is defaulted here)
+   * @param {{ maxAccessM?: number, avoidSegment?: (a: object, b: object) => boolean }} [options]
+   *   `maxAccessM`: the longest access connector the caller admits. Absent, none is applied (and
+   *   none is defaulted here). `avoidSegment`: this query may not use a segment it answers true
+   *   for (see the module header); absent, the query is exactly as before
    * @returns {{ ok: true, points: object[], distanceM: number, accessM: object, vertexCount: number }
    *          | { ok: false, refusal: string, reason: string }}
    */
@@ -340,9 +371,20 @@ function createCampusTraversalNetwork(input) {
       }
     }
 
-    const start = snap(from);
-    const end = snap(to);
+    const avoidSegment = options && typeof options.avoidSegment === "function" ? options.avoidSegment : null;
+    const blocked = avoidSegment ? blockedEdges(avoidSegment) : null;
+
+    const start = snap(from, blocked, avoidSegment);
+    const end = snap(to, blocked, avoidSegment);
     for (const [name, point, snapped] of [["origin", from, start], ["destination", to, end]]) {
+      if (snapped === null && avoidSegment) {
+        return {
+          ok: false,
+          refusal: NETWORK_REFUSAL.ACCESS_MEETS_AVOIDED_AREA,
+          reason: `no access connector from the ${name} (${point.lat}, ${point.lon}) to a permitted way avoids the excluded area` +
+            (containment ? " and stays inside the operating boundary" : ""),
+        };
+      }
       if (snapped === null) {
         return {
           ok: false,
@@ -374,10 +416,10 @@ function createCampusTraversalNetwork(input) {
     let best = null;
     const sameSegment =
       (start.a === end.a && start.b === end.b) || (start.a === end.b && start.b === end.a);
-    if (sameSegment) best = { cost: metres(start.point, end.point), via: [] };
+    if (sameSegment && !(avoidSegment && avoidSegment(start.point, end.point))) best = { cost: metres(start.point, end.point), via: [] };
 
     for (const exit of [start.a, start.b]) {
-      const tree = treeFrom(exit);
+      const tree = treeFrom(exit, blocked);
       for (const entry of [end.a, end.b]) {
         if (!(tree.dist[entry] < Infinity)) continue;
         const cost = metres(start.point, vertices[exit]) + tree.dist[entry] + metres(vertices[entry], end.point);
@@ -414,6 +456,18 @@ function createCampusTraversalNetwork(input) {
             ok: false,
             refusal: NETWORK_REFUSAL.ROUTE_LEAVES_BOUNDARY,
             reason: `the assembled ${source} route leaves the operating boundary between points ${i - 1} and ${i}`,
+          };
+        }
+      }
+    }
+
+    if (avoidSegment) {
+      for (let i = 1; i < points.length; i += 1) {
+        if (avoidSegment(points[i - 1], points[i])) {
+          return {
+            ok: false,
+            refusal: NETWORK_REFUSAL.ROUTE_MEETS_AVOIDED_AREA,
+            reason: `the assembled ${source} route meets the excluded area between points ${i - 1} and ${i}`,
           };
         }
       }

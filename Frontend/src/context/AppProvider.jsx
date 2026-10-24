@@ -36,7 +36,8 @@ import { SESSION_CHECK, sessionCheckOutcome, sessionRetryDelayMs } from '@/lib/s
 import { applyRerouteToCache, applyRobotOffline, applyRobotOnline, applyTaskUpdate, evictOnStandDown, evictOnTerminalUpdate, evictTerminalRoutes } from '@/lib/liveState.js';
 import { alertRecipientsSuffix, obstacleAlertFrom, obstacleRejectedLogLine, obstacleRelevanceLogLine, rerouteAlertLogLine } from '@/lib/obstacleAlert.js';
 import { OBSTACLE_EVENTS, isZoneDelivery, obstacleActivityStore } from '@/lib/obstacleActivity.js';
-import { getDtaroActivity } from '@/lib/api/dtaro.js';
+import { getDtaroActivity, getDtaroDecisions } from '@/lib/api/dtaro.js';
+import { CHOICE_TEXT, SOURCE as DECISION_SOURCE, obstacleDecisionStore } from '@/lib/obstacleDecision.js';
 import { DUPLICATE_OUTCOME, newIdempotencyKey } from '@/lib/idempotency.js';
 import { applyPairingRejection, connectPathFor } from '@/lib/robotEnrollment.js';
 import { buildRecommissionRequest, isRetiredIdRefusal, recommissionFailureMessage } from '@/lib/robotRecommission.js';
@@ -223,6 +224,12 @@ export default function AppProvider({ children }) {
           getDtaroActivity()
             .then(({ events }) => obstacleActivityStore.hydrate(events))
             .catch(() => {});
+          // And the operator decisions, with the server's deadline and clock: a decision still
+          // awaiting one reopens its panel with the countdown where the server has it.
+          const asked = Date.now();
+          getDtaroDecisions()
+            .then(({ decisions }) => obstacleDecisionStore.hydrate(decisions, asked, Date.now()))
+            .catch(() => {});
         }
         // Applied only if no poll that started later has already landed a newer report.
         simulatorSyncRef.current.settle(simulatorTicket, simulatorNext || null);
@@ -332,6 +339,7 @@ export default function AppProvider({ children }) {
     taskPathCacheRef.current.clear();
     // DTARO obstacle activity belongs to the session that received it.
     obstacleActivityStore.reset();
+    obstacleDecisionStore.reset();
     // The map page parks its Mapbox map between visits; a session that ended keeps none of it.
     evictParkedMap();
     setTaskRoutes({});
@@ -1244,6 +1252,31 @@ export default function AppProvider({ children }) {
       if (line) addEvent(line, 'warning');
     };
 
+    // DTARO operator decisions — the whole decision, as the server holds it, on every change.
+    // The store keeps the newest revision only (a replayed or late event is ignored); the event
+    // log gets one line when a decision is required and one when it is committed.
+    const loggedDecisions = new Set();
+    const onObstacleDecision = (data) => {
+      obstacleDecisionStore.apply(data, Date.now());
+      const id = typeof data?.decisionId === 'string' ? data.decisionId : null;
+      if (!id) return;
+      const reporter = data?.obstacle && data?.reporter?.robotId ? data.reporter.robotId : null;
+      if (!data.decision && !loggedDecisions.has(`${id}:required`)) {
+        loggedDecisions.add(`${id}:required`);
+        addEvent(`Obstacle reported${reporter ? ` by ${reporter}` : ''} (simulated) — operator decision required before the server's default`, 'critical');
+      }
+      if (data.decision && !loggedDecisions.has(`${id}:decided`)) {
+        loggedDecisions.add(`${id}:decided`);
+        const choice = CHOICE_TEXT[data.decision.choice] || data.decision.choice;
+        addEvent(
+          data.decision.source === DECISION_SOURCE.DEFAULT_TIMEOUT
+            ? `Obstacle decision: ${choice} applied by the server — no operator decision within 5 s`
+            : `Obstacle decision: ${choice} chosen by an operator`,
+          'warning'
+        );
+      }
+    };
+
     // ── PHASE 15 — §3.4's intake acknowledgement ────────────────────────────
     //
     // `task_accepted` is the honest event: the task was validated, admitted,
@@ -1336,6 +1369,8 @@ export default function AppProvider({ children }) {
     socket.on(DASHBOARD_EVENTS.OBSTACLE_RELEVANCE, onObstacleRelevance);
     socket.on(DASHBOARD_EVENTS.OBSTACLE_REPORT_REJECTED, onObstacleReportRejected);
     socket.on(DASHBOARD_EVENTS.OBSTACLE_REPORT_MERGED, onObstacleReportMerged);
+    socket.on(DASHBOARD_EVENTS.OBSTACLE_DECISION_REQUIRED, onObstacleDecision);
+    socket.on(DASHBOARD_EVENTS.OBSTACLE_DECISION_UPDATED, onObstacleDecision);
 
     return () => {
       socket.off(DASHBOARD_EVENTS.ROBOT_UPDATE, onRobotUpdate);
@@ -1357,6 +1392,8 @@ export default function AppProvider({ children }) {
       socket.off(DASHBOARD_EVENTS.OBSTACLE_RELEVANCE, onObstacleRelevance);
       socket.off(DASHBOARD_EVENTS.OBSTACLE_REPORT_REJECTED, onObstacleReportRejected);
       socket.off(DASHBOARD_EVENTS.OBSTACLE_REPORT_MERGED, onObstacleReportMerged);
+      socket.off(DASHBOARD_EVENTS.OBSTACLE_DECISION_REQUIRED, onObstacleDecision);
+      socket.off(DASHBOARD_EVENTS.OBSTACLE_DECISION_UPDATED, onObstacleDecision);
     };
   }, [addEvent, refreshDbState, setDecisionRequest]);
   // ─────────────────────────────────────────────────────────────────────────

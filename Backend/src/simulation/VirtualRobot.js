@@ -642,6 +642,13 @@ class VirtualRobot {
     this._reportedWorldObstacles = new Map();
     // obstacleId → this robot's handling of an OBSTACLE_ALERT it received.
     this._obstacleAlerts = new Map();
+    // DTARO operator decisions — stop index → the detour this robot drives for that leg instead of
+    // the commanded path (a simulation-only navigation field: `task.stops[i].path`, the commanded
+    // route, is never written). Cleared with the mission.
+    this._dtaroDetours = new Map();
+    // navId → { outcome, reason } of each DTARO_SIM_NAV applied, so a redelivery is re-acknowledged
+    // and never applied twice.
+    this._dtaroNavApplied = new Map();
 
     // ── STEP 4: this robot's thermal environment ──────────────────────────────
     // A third independent stream, forked from the same basis, so the ambient sensor
@@ -1145,6 +1152,8 @@ class VirtualRobot {
     this.socket.on("OBSTACLE_ALERT", (payload) => this._onObstacleAlert(payload));
     this.socket.on("OBSTACLE_REPORT_ACK", (payload) => this._onObstacleReportOutcome("ACCEPTED", payload));
     this.socket.on("OBSTACLE_REPORT_REJECTED", (payload) => this._onObstacleReportOutcome("REJECTED", payload));
+    // DTARO operator decisions — a STOP or a detour for an obstacle decision (simulated only).
+    this.socket.on("DTARO_SIM_NAV", (payload) => this._onDtaroSimNav(payload));
 
     // Operator commands. The server persists a Command row and dispatches
     // "COMMAND" with the row's id; acknowledging it with COMMAND_ACK is what
@@ -2295,6 +2304,8 @@ class VirtualRobot {
 
     // A fresh, real assignment supersedes anything that was only queued.
     this._pendingResume = null;
+    // DTARO — a detour planned for the previous mission never carries into this one.
+    this._dtaroDetours.clear();
 
     this.task = {
       taskId,
@@ -2418,6 +2429,14 @@ class VirtualRobot {
     // start partway through its own sequence.
     this.stopIndex  = 0;
     this._carryingPayload = false;
+    // A detour belongs to the mission it was planned for.
+    this._dtaroDetours.clear();
+  }
+
+  /** The path this robot drives for a stop: its DTARO detour if it holds one, else the commanded path. */
+  _pathForStop(index) {
+    const detour = this._dtaroDetours.get(index);
+    return detour ? detour.points : this.task.stops[index].path;
   }
 
   /**
@@ -3425,7 +3444,8 @@ class VirtualRobot {
         const next = this.task.stops[nextIndex];
         this.stopIndex  = nextIndex;
         this.pathIndex  = 0;
-        this.activePath = next.path;
+        // DTARO — a detour planned for this leg replaces the path driven, never `next.path`.
+        this.activePath = this._pathForStop(nextIndex);
         this.waitUntil  = null;
         this.phase      = phasesForStopType(next.stopType).moving;
         this.log.info(
@@ -3987,6 +4007,8 @@ class VirtualRobot {
       this.log.warn(`[VR] ${this.robotId} DTARO OBSTACLE_REPORT rejected: ${payload?.reason ?? "unknown"}`);
     } else if (payload?.delivery === "MERGED") {
       this.log.info(`[VR] ${this.robotId} DTARO OBSTACLE_REPORT merged into active ${payload?.obstacleId} — not re-broadcast`);
+    } else if (payload?.delivery === "AWAITING_DECISION") {
+      this.log.info(`[VR] ${this.robotId} DTARO OBSTACLE_REPORT accepted as ${payload?.obstacleId} — held for an operator decision (${payload?.decisionId})`);
     } else {
       const recipients = Array.isArray(payload?.recipients) ? payload.recipients.join(", ") || "nobody" : "?";
       this.log.info(`[VR] ${this.robotId} DTARO OBSTACLE_REPORT accepted as ${payload?.obstacleId} — delivered to ${recipients}`);
@@ -4070,6 +4092,129 @@ class VirtualRobot {
         `${relevant ? "RELEVANT: footprint meets the commanded route" : "not relevant"} ` +
         `[${route.source}, ${route.points.length} pts] → ${decision}`,
     );
+  }
+
+  // ── DTARO operator decisions: simulated stop and detour ────────────────────
+
+  /**
+   * A STOP or REROUTE the server sent for an obstacle decision (`dtaroObstacleDecision`).
+   *
+   * STOP is this simulator's own stop (`_applyStop`: PAUSED, released by RESUME). REROUTE installs
+   * a detour per leg in `_dtaroDetours` and drives it; the commanded mission (`task.stops`) is not
+   * touched. A detour this robot cannot verify — another mission, a leg that does not end at its
+   * stop, a path or a join from here that meets the obstacle — is refused, and the robot STOPS
+   * rather than drive on towards the obstacle. Applied once per `navId`; a redelivery is
+   * re-acknowledged with the first outcome. The acknowledgement is what the robot did; the server
+   * measures progress itself, from telemetry.
+   */
+  _onDtaroSimNav(payload) {
+    const navId = typeof payload?.navId === "string" ? payload.navId : null;
+    const decisionId = typeof payload?.decisionId === "string" ? payload.decisionId : null;
+    if (!navId || !decisionId) {
+      this.log.warn(`[VR] ${this.robotId} DTARO_SIM_NAV ignored — malformed payload`);
+      return;
+    }
+    const applied = this._dtaroNavApplied.get(navId);
+    if (applied) {
+      this._ackDtaroNav(navId, decisionId, applied.outcome, applied.reason);
+      return;
+    }
+    let outcome;
+    let reason = null;
+    if (payload.action === "STOP") {
+      this._applyStop(`DTARO_STOP (${payload.reason || "obstacle decision"})`);
+      outcome = "STOPPED";
+      reason = payload.reason || null;
+    } else if (payload.action === "REROUTE") {
+      const refusal = this._installDtaroDetours(payload);
+      if (refusal) {
+        this._applyStop(`DTARO_DETOUR_REFUSED (${refusal})`);
+        outcome = "REFUSED_STOPPED";
+        reason = refusal;
+      } else if (this.status === "PAUSED" || this._stopLatched) {
+        // Held (an operator or an earlier decision stopped it): the detour is installed, so a RESUME
+        // drives the safe path, but nothing here un-stops the robot.
+        outcome = "STOPPED";
+        reason = "HELD: alternate route installed; the robot stays stopped until RESUME";
+      } else {
+        outcome = "REROUTING";
+      }
+    } else {
+      this.log.warn(`[VR] ${this.robotId} DTARO_SIM_NAV ignored — unknown action ${payload.action}`);
+      return;
+    }
+    this._dtaroNavApplied.set(navId, { outcome, reason, at: Date.now() });
+    // Bounded: the oldest instructions are forgotten first (each decision sends one per robot).
+    while (this._dtaroNavApplied.size > 100) this._dtaroNavApplied.delete(this._dtaroNavApplied.keys().next().value);
+    this._ackDtaroNav(navId, decisionId, outcome, reason);
+    this.log.info(`[VR] ${this.robotId} DTARO_SIM_NAV ${payload.action} for obstacle ${payload.obstacleId} → ${outcome}${reason ? ` (${reason})` : ""}`);
+  }
+
+  /** Verify and install a detour message; returns the refusal, or null once installed. */
+  _installDtaroDetours(payload) {
+    if (!this.task || !Array.isArray(this.task.stops) || !this.phase) return "NO_MISSION";
+    if (payload.taskId && payload.taskId !== this.task.taskId) return "TASK_CHANGED";
+    const polygon = Array.isArray(payload.footprint) ? payload.footprint : null;
+    if (!polygon || polygon.length < 3) return "NO_FOOTPRINT";
+    if (!Array.isArray(payload.legs) || payload.legs.length === 0) return "NO_LEGS";
+    const valid = (p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon);
+    // Every other active obstacle the server named: the detour must keep clear of them too.
+    const others = (Array.isArray(payload.avoid) ? payload.avoid : []).filter((poly) => Array.isArray(poly) && poly.length >= 3);
+    const meets = (points) => pathIntersectsPolygon(points, polygon) || others.some((poly) => pathIntersectsPolygon(points, poly));
+
+    const staged = new Map();
+    for (const leg of payload.legs) {
+      const index = leg && leg.stopIndex;
+      if (!Number.isInteger(index) || index < 0 || index >= this.task.stops.length) return "UNKNOWN_STOP";
+      if (index < this.stopIndex) continue; // already driven
+      const points = Array.isArray(leg.points) ? leg.points : [];
+      if (points.length < 2 || !points.every(valid)) return "MALFORMED_DETOUR";
+      const commanded = this.task.stops[index].path;
+      const end = commanded[commanded.length - 1];
+      const last = points[points.length - 1];
+      if (!valid(end) || haversineMeters(last.lat, last.lon, end.lat, end.lon) > 0.5) return "DETOUR_DOES_NOT_END_AT_STOP";
+      if (meets(points)) return "DETOUR_MEETS_OBSTACLE";
+      staged.set(index, { points: points.map((p) => ({ lat: p.lat, lon: p.lon })), navId: payload.navId, decisionId: payload.decisionId, obstacleId: payload.obstacleId ?? null });
+    }
+
+    // The leg being driven now is joined from where this robot actually is: a straight
+    // connector to the detour's start (the position the server planned from), which must not
+    // meet the obstacle either. A robot already at that stop (dwelling) has nothing to change.
+    const current = staged.get(this.stopIndex);
+    let driven = null;
+    if (current) {
+      const phases = phasesForStopType(this.task.stops[this.stopIndex].stopType);
+      if (this.phase === phases.moving) {
+        const here = { lat: this.lat, lon: this.lon };
+        if (meets([here, current.points[0]])) return "JOIN_MEETS_OBSTACLE";
+        driven = [here, ...current.points];
+        current.points = driven;
+      } else {
+        staged.delete(this.stopIndex);
+      }
+    }
+    if (staged.size === 0) return "NOTHING_AHEAD_TO_DETOUR";
+
+    for (const [index, detour] of staged) this._dtaroDetours.set(index, detour);
+    if (driven) {
+      this.activePath = driven;
+      this.pathIndex = 0;
+    }
+    return null;
+  }
+
+  _ackDtaroNav(navId, decisionId, outcome, reason) {
+    try {
+      this.socket.emit("DTARO_SIM_NAV_ACK", { navId, decisionId, outcome, reason: reason ?? null });
+    } catch { /* ignore */ }
+  }
+
+  /** The detours this robot holds and the instructions it applied. Copies, for demos and tests. */
+  dtaroNavigation() {
+    return {
+      detours: [...this._dtaroDetours.entries()].map(([stopIndex, d]) => ({ stopIndex, ...d, points: d.points.map((p) => ({ ...p })) })),
+      applied: [...this._dtaroNavApplied.entries()].map(([navId, a]) => ({ navId, ...a })),
+    };
   }
 
   /** What this robot reported and what it was told. Copies, for demos and tests. */

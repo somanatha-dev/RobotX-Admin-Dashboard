@@ -2,6 +2,15 @@ import React, { useState } from 'react';
 
 import { CONNECTION } from '@/lib/connectionState.js';
 import {
+  AFFECTED_TEXT,
+  CHOICE_TEXT,
+  EXECUTION_TEXT,
+  ROBOT_STATE_TEXT,
+  SOURCE,
+  STATUS_TEXT as DECISION_STATUS_TEXT,
+  decisionCounts,
+} from '@/lib/obstacleDecision.js';
+import {
   ACTIVITY_FILTER,
   RECIPIENT_STATUS,
   REFUSAL_TEXT,
@@ -15,8 +24,9 @@ import {
  * UI LAYER — DTARO obstacle awareness: reports, deliveries, each recipient's verdict, refusals.
  *
  * Every line is a backend event (see `lib/obstacleActivity.js`); nothing is composed to look
- * complete. A recipient with no verdict yet says so. A verdict is a DECISION: no robot is
- * rerouted in V1, and the panel says that rather than implying a route changed. Reports come
+ * complete. A recipient with no verdict yet says so. A verdict is a DECISION: no commanded route
+ * ever changes, and the panel says that rather than implying one did. With operator decisions on
+ * (`decisions`), a REROUTE is a simulated detour the simulator drives, shown as such. Reports come
  * from simulated robots only — the server refuses any other — and the panel says that too.
  */
 
@@ -84,7 +94,108 @@ function SummaryChips({ counts }) {
   );
 }
 
-function ObstacleDetail({ obstacle, zoneName, robotsById, onFocus, nowMs }) {
+const place = (p) => (p ? p.name || coordinate(p.lat, p.lon) || 'Unavailable' : 'Unavailable');
+
+/**
+ * DTARO operator decisions — the history (newest first) and, per decision, the affected robots:
+ * id, state, origin, destination, why it was included, the action and its progress. Every line
+ * is the server's decision record (`lib/obstacleDecision.js`).
+ */
+function DecisionHistory({ decisions, robotsById, onFocus }) {
+  const [openId, setOpenId] = useState(null);
+  if (!decisions || decisions.length === 0) {
+    return <p className="map-obstacle__muted">No obstacle decision yet. Each report waits up to 5 s for an operator; then the server applies Reroute.</p>;
+  }
+  return (
+    <ul className="map-obstacle__list" aria-label="Obstacle decisions">
+      {decisions.map((d) => {
+        const counts = decisionCounts(d);
+        const open = openId === d.decisionId;
+        const choice = d.decision ? CHOICE_TEXT[d.decision.choice] || d.decision.choice : null;
+        const affected = (d.robots || []).filter((r) => r.affected);
+        return (
+          <li key={d.decisionId} data-decision-entry={d.decisionId}>
+            <button type="button" className="map-obstacle__entry" aria-expanded={open} onClick={() => setOpenId(open ? null : d.decisionId)}>
+              <span className="map-obstacle__time">{clockOf(Date.parse(d.receivedAt)) || '--:--:--'}</span>
+              <span className="map-obstacle__line">
+                {choice ? <strong>{choice}</strong> : <strong>Awaiting decision</strong>}
+                {d.decision && <span className="map-obstacle__muted"> · {d.decision.source === SOURCE.DEFAULT_TIMEOUT ? 'automatic (server default)' : 'manual'}</span>}
+                <span className="map-obstacle__muted"> · reported by {d.reporter?.robotId || 'unknown'}</span>
+              </span>
+              <span className="map-obstacle__chips">
+                <span className="map-obstacle__chip is-sim">simulated</span>
+                <span className="map-obstacle__chip is-clear">{DECISION_STATUS_TEXT[d.status] || d.status}</span>
+                {d.propagation?.outcome === 'PROPAGATED' && <span className="map-obstacle__chip is-active">alerted {counts.delivered}</span>}
+                {d.propagation?.outcome === 'SUPPRESSED' && <span className="map-obstacle__chip is-refused">suppressed {counts.suppressed}</span>}
+                {counts.rerouted > 0 && <span className="map-obstacle__chip is-cross">rerouted {counts.rerouted}</span>}
+                {counts.noSafeRoute > 0 && <span className="map-obstacle__chip is-refused">no safe route {counts.noSafeRoute}</span>}
+                {counts.stopped > 0 && <span className="map-obstacle__chip is-relevant">stopped {counts.stopped}</span>}
+              </span>
+            </button>
+            {open && (
+              <section className="map-obstacle__detail" aria-label={`Decision ${d.decisionId}`}>
+                {d.decision?.reason && <p className="map-obstacle__muted">{d.decision.reason}</p>}
+                {d.propagation?.outcome === 'SUPPRESSED' && (
+                  <p className="map-obstacle__note">
+                    Broadcast rejected — fleet alert suppressed{d.propagation.suppressedRecipients?.length ? ` for ${d.propagation.suppressedRecipients.join(', ')}` : ''}. The
+                    obstacle is not confirmed absent.
+                  </p>
+                )}
+                <div className="map-obstacle__subhead">Affected robots ({affected.length})</div>
+                {affected.length === 0 ? (
+                  <p className="map-obstacle__muted">None: no simulated robot's remaining route meets the obstacle.</p>
+                ) : (
+                  <ul className="map-obstacle__recipients">
+                    {affected.map((r) => {
+                      const live = robotsById.get(r.robotId);
+                      const state = live?.status || r.state;
+                      return (
+                        <li key={r.robotId} data-decision-robot={r.robotId}>
+                          <span className="map-obstacle__mono">{r.robotId}</span>
+                          <span className="map-obstacle__chip is-clear">{state ? ROBOT_STATE_TEXT[state] || String(state).toLowerCase() : 'state unavailable'}</span>
+                          <span className="map-obstacle__why">{AFFECTED_TEXT[r.affectedReason] || r.affectedReason}</span>
+                          <span className="map-obstacle__muted">
+                            {place(r.origin)} → {place(r.destination)}
+                          </span>
+                          <span className="map-obstacle__why">
+                            {r.execution
+                              ? `${EXECUTION_TEXT[r.execution.state] || r.execution.state}${r.execution.progress ? ` · ${Math.round(r.execution.progress.fraction * 100)} %` : ''}`
+                              : d.decision
+                                ? 'no instruction'
+                                : 'awaiting decision'}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                {(d.history || []).length > 0 && (
+                  <details className="map-obstacle__considered">
+                    <summary>Timeline ({d.history.length})</summary>
+                    <ol className="map-obstacle__recipients">
+                      {d.history.map((h, i) => (
+                        <li key={i}>
+                          <span className="map-obstacle__time">{clockOf(Date.parse(h.at)) || ''}</span> {h.text}
+                        </li>
+                      ))}
+                    </ol>
+                  </details>
+                )}
+                {Number.isFinite(d.obstacle?.lat) && (
+                  <button type="button" className="map-obstacle__focus" onClick={() => onFocus(d.obstacle)}>
+                    Show on map
+                  </button>
+                )}
+              </section>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function ObstacleDetail({ obstacle, zoneName, robotsById, onFocus, nowMs, decisionsOn = false }) {
   const expired = isExpired(obstacle, nowMs);
   const location = coordinate(obstacle.lat, obstacle.lon);
   const reporter = obstacle.reportingRobotId ? robotsById.get(obstacle.reportingRobotId) : null;
@@ -179,10 +290,17 @@ function ObstacleDetail({ obstacle, zoneName, robotsById, onFocus, nowMs }) {
       {obstacle.partial && (
         <p className="map-obstacle__muted">This page opened after the report; only the verdicts received since are shown.</p>
       )}
-      <p className="map-obstacle__note">
-        Decision only: a relevant robot flags the obstacle on its commanded route. Reroute: not available — no robot
-        is rerouted and no commanded route changes until an authorised, fenced reroute exists (owner decision OD-3).
-      </p>
+      {decisionsOn ? (
+        <p className="map-obstacle__note">
+          This alert was delivered by an operator decision (see Decisions). A reroute there is simulation-only: the simulator
+          drives an alternate route, and the commanded route the assignment engine issued is unchanged.
+        </p>
+      ) : (
+        <p className="map-obstacle__note">
+          Decision only: a relevant robot flags the obstacle on its commanded route. Reroute: not available — no robot
+          is rerouted and no commanded route changes until an authorised, fenced reroute exists (owner decision OD-3).
+        </p>
+      )}
       {location && (
         <button type="button" className="map-obstacle__focus" onClick={() => onFocus(obstacle)}>
           Show on map
@@ -222,6 +340,8 @@ export function ObstacleActivityPanel({
   nowMs,
   /** Collapsed by default; the map opens it when an obstacle is picked. */
   initiallyOpen = false,
+  /** DTARO operator decisions in scope, or null when the server has them switched off. */
+  decisions = null,
 }) {
   const [open, setOpen] = useState(initiallyOpen);
   // An obstacle picked on the map opens the panel on its details. Adjusted during render (the
@@ -261,6 +381,13 @@ export function ObstacleActivityPanel({
             <p className="map-obstacle__warn" role="status">
               {note}
             </p>
+          )}
+
+          {decisions && (
+            <section aria-label="Obstacle decisions" data-decision-history>
+              <div className="map-obstacle__subhead">Decisions</div>
+              <DecisionHistory decisions={decisions} robotsById={robotsById} onFocus={onFocus} />
+            </section>
           )}
 
           <div className="map-segmented map-obstacle__filters" role="group" aria-label="Filter activity">
@@ -361,6 +488,7 @@ export function ObstacleActivityPanel({
               robotsById={robotsById}
               onFocus={onFocus}
               nowMs={nowMs}
+              decisionsOn={Boolean(decisions)}
             />
           )}
         </div>

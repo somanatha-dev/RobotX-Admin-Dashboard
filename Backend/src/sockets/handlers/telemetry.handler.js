@@ -5,6 +5,7 @@ const { z } = require("zod");
 const { registryKey, buildMergedRegistryState, REGISTRY_TTL: REGISTRY_TTL_SEC } = require("../../services/robotRegistry.service");
 const { getZoneForCoordinates, applyZoneChangeSideEffects } = require("../../services/zoneManager.service");
 const dtaroZoneAlert = require("../../services/dtaroZoneAlert.service");
+const obstacleDecision = require("../../services/dtaroObstacleDecision.service");
 const { haversineMeters } = require("../../utils/distance");
 const robotStateCache = require("../../cache/robotStateCache");
 const robotStatusPrecedence = require("../../services/robotStatusPrecedence");
@@ -1169,6 +1170,15 @@ function registerTelemetryHandlers(io, socket, { prisma, kv, logger, appLocals }
           }
         } catch {
           // membership is non-critical
+        }
+        // DTARO operator decisions — the server's own measure of a simulated robot's progress
+        // along a detour it was sent. In memory; reads and writes nothing else.
+        if (obstacleDecision.isEnabled() && socket.data.dtaroEligible === true) {
+          try {
+            obstacleDecision.onPosition(robotId, fullState.lat, fullState.lon);
+          } catch {
+            // progress tracking is non-critical
+          }
         }
       }
 

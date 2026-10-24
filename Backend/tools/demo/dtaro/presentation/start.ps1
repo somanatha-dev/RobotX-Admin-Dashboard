@@ -3,10 +3,16 @@
 # Both run hidden; logs go to %TEMP%\robotx-dtaro-presentation\{server,web}.log.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\demo\dtaro\presentation\start.ps1
+param(
+  [string]$Instance = "",
+  # Obstacle reports wait for an operator decision (STOP / REROUTE / REJECT_BROADCAST; the server
+  # applies REROUTE after 5 s): DTARO_OPERATOR_DECISION_ENABLED=true for THIS server process only.
+  [switch]$OperatorDecisions
+)
 $ErrorActionPreference = "Stop"
 $BACKEND = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")).Path
 $FRONTEND = (Resolve-Path (Join-Path $BACKEND "..\Frontend")).Path
-$SP = Join-Path $env:TEMP "robotx-dtaro-presentation"
+$SP = Join-Path $env:TEMP "robotx-dtaro-presentation$Instance"
 if (-not (Test-Path "$SP\demo.json")) { throw "run setup.ps1 first" }
 $cfg = Get-Content "$SP\demo.json" -Raw | ConvertFrom-Json
 foreach ($port in @($cfg.apiPort, $cfg.webPort)) {
@@ -16,6 +22,8 @@ foreach ($port in @($cfg.apiPort, $cfg.webPort)) {
 $env:ROBOTX_ENV_FILE = $cfg.envFile
 $env:DATABASE_URL = $cfg.databaseUrl
 Remove-Item Env:ROBOTX_ENV -ErrorAction SilentlyContinue
+# The process environment wins over the env file (dotenv never overrides a variable already set).
+if ($OperatorDecisions) { $env:DTARO_OPERATOR_DECISION_ENABLED = "true" } else { Remove-Item Env:DTARO_OPERATOR_DECISION_ENABLED -ErrorAction SilentlyContinue }
 $server = Start-Process -FilePath "node" -WorkingDirectory $BACKEND -WindowStyle Hidden -PassThru `
   -RedirectStandardOutput "$SP\server.log" -RedirectStandardError "$SP\server.err.log" `
   -ArgumentList "tools/demo/startV1Server.js", "--database-url", $cfg.databaseUrl, "--port", "$($cfg.apiPort)", "--host", "127.0.0.1"
@@ -40,4 +48,6 @@ $web.Id | Set-Content -Encoding ascii "$SP\web.pid"
 $envLines = Get-Content $cfg.envFile
 $email = ($envLines | Where-Object { $_ -like "SEED_ADMIN_EMAIL=*" }) -replace "^SEED_ADMIN_EMAIL=", ""
 Write-Host "dashboard: http://127.0.0.1:$($cfg.webPort)/map  (sign in as $email; the password is SEED_ADMIN_PASSWORD in $($cfg.envFile))"
-Write-Host "Next: node tools\demo\dtaro\presentation\runDemo.js"
+$instanceArg = if ($Instance) { " --instance $Instance" } else { "" }
+if ($OperatorDecisions) { Write-Host "Operator decisions ON. Next: node tools\demo\dtaro\presentation\runDecisionDemo.js$instanceArg [--pause]" }
+else { Write-Host "Next: node tools\demo\dtaro\presentation\runDemo.js$instanceArg" }

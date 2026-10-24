@@ -41,6 +41,13 @@
  * Membership lives on the socket (`socket.data.dtaroZone`), not in the registry, so a
  * reconnect — which is always a new server-side socket — starts with no membership and is
  * re-joined at AUTH from the last known position. That closes audit FI-2 for these rooms.
+ *
+ * ── Deferred delivery (operator decisions, `dtaroObstacleDecision.service`) ──
+ * With `deferDelivery`, `processReport` stops after the report is accepted, deduplicated and
+ * stored: NO robot room receives anything and no ALERT_CREATED is sent. Fleet delivery is then a
+ * separate stage the decision service starts once a decision is committed — `propagateAlert`
+ * (STOP / REROUTE) or `suppressAlert` (REJECT_BROADCAST) — and each obstacle can be delivered or
+ * suppressed once only. Without it (the default), delivery is immediate, exactly as before.
  */
 
 const h3 = require("h3-js");
@@ -51,7 +58,7 @@ const ekb = require("./ekb.service");
 const simulationPolicy = require("../simulation/simulationPolicy");
 const dashboardBroadcast = require("../sockets/dashboardBroadcast");
 const commandedRoute = require("./dtaroCommandedRoute.service");
-const { selectRecipients } = require("./dtaroRecipientPolicy");
+const { selectRecipients, REASON: RECIPIENT_REASON } = require("./dtaroRecipientPolicy");
 
 /** The recipient policy `ALERT_CREATED` names: the zone room plus remaining-route crossings. */
 const RECIPIENT_POLICY = "ZONE_PLUS_REMAINING_ROUTE";
@@ -343,7 +350,7 @@ function reject(io, socket, reporterRobotId, report, reason, detail) {
  *   `positionOf` is the server's latest held position of any robot (registry, then cache),
  *   used to cut its commanded corridor. Absent, corridors are used whole (conservative).
  */
-async function processReport({ io, prisma, kv, snapshot, socket, reporterRobotId, report, resolveReporterPosition, positionOf }) {
+async function processReport({ io, prisma, kv, snapshot, socket, reporterRobotId, report, resolveReporterPosition, positionOf, deferDelivery = false }) {
   const { lat, lon, severity } = report;
 
   if (socket.data.dtaroEligible !== true) {
@@ -408,7 +415,8 @@ async function processReport({ io, prisma, kv, snapshot, socket, reporterRobotId
     });
 
     const zoneRoomName = zoneRoom(located.regionId, located.zoneId);
-    const zoneMembers = await recipientsOf(io, zoneRoomName, reporterRobotId);
+    // Deferred: nobody is a recipient until a decision delivers the alert (`propagateAlert`).
+    const zoneMembers = deferDelivery ? [] : await recipientsOf(io, zoneRoomName, reporterRobotId);
     const ledgerEntry = {
       obstacleId: stored.obstacleId,
       regionId: located.regionId,
@@ -420,6 +428,9 @@ async function processReport({ io, prisma, kv, snapshot, socket, reporterRobotId
       corroborations: new Set(),
       verdicts: new Map(),
       expiresAtMs: Date.parse(stored.expiresAt) || Date.now() + 300_000,
+      // Delivery stage: IMMEDIATE (the default), or AWAITING → PROPAGATED | SUPPRESSED.
+      delivery: deferDelivery ? DELIVERY.AWAITING : DELIVERY.IMMEDIATE,
+      alert: null,
     };
     ledgerPut(ledgerEntry);
     return { obstacle: stored, room: zoneRoomName, sameZoneRecipients: zoneMembers, entry: ledgerEntry };
@@ -442,12 +453,39 @@ async function processReport({ io, prisma, kv, snapshot, socket, reporterRobotId
     timestamp: obstacle.timestamp,
     expiresAt: obstacle.expiresAt,
   };
+  entry.alert = alert;
+
+  if (deferDelivery) {
+    // Accepted and stored; delivery waits for a committed decision. Nothing has been emitted.
+    return { accepted: true, deferred: true, obstacle, alert, room, footprint, located, recipients: [], sameZoneRecipients: [], crossZoneRecipients: [], recipientDecisions: [], crossZoneError: null };
+  }
+
+  const delivered = await deliverAlert({ io, prisma, entry, alert, located, footprint, reporterRobotId, sameZoneRecipients, positionOf });
+  return { accepted: true, obstacle, alert, room, ...delivered };
+}
+
+/** The delivery stages of a ledger entry. */
+const DELIVERY = Object.freeze({
+  IMMEDIATE: "IMMEDIATE",
+  AWAITING: "AWAITING",
+  PROPAGATED: "PROPAGATED",
+  SUPPRESSED: "SUPPRESSED",
+});
+
+/**
+ * Deliver an accepted obstacle's alert: the zone room, then the cross-zone robots, then the
+ * dashboard's ALERT_CREATED. `extra` fields (a decision's id and choice) are added to the alert
+ * and to ALERT_CREATED; without them both are exactly as they always were.
+ */
+async function deliverAlert({ io, prisma, entry, alert, located, footprint, reporterRobotId, sameZoneRecipients, positionOf, extra = null }) {
+  const room = entry.room;
+  const robotAlert = extra ? { ...alert, ...extra } : alert;
 
   // The reporter is excluded by its robot room, so a reporter with two sockets is excluded
   // from both. Delivery is the Socket.IO room, the same mechanism the Redis adapter extends.
   // The zone room goes first and waits on nothing: the cross-zone step below reads the
   // database, and a slow or failed read must never delay or withhold a same-zone alert.
-  io.to(room).except(`robot:${reporterRobotId}`).emit(ALERT_EVENT, alert);
+  io.to(room).except(`robot:${reporterRobotId}`).emit(ALERT_EVENT, robotAlert);
 
   // Cross-zone step (owner policy 2026-10-23): same-region robots in other zones whose
   // remaining COMMANDED route meets the footprint. Each is added to the ledger before it is
@@ -455,7 +493,7 @@ async function processReport({ io, prisma, kv, snapshot, socket, reporterRobotId
   const crossZone = await crossZoneStep({ io, prisma, located, footprint, reporterRobotId, sameZoneRecipients, positionOf });
   for (const robotId of crossZone.recipients) {
     entry.recipients.add(robotId);
-    io.to(`robot:${robotId}`).emit(ALERT_EVENT, { ...alert, via: "REMAINING_ROUTE" });
+    io.to(`robot:${robotId}`).emit(ALERT_EVENT, { ...robotAlert, via: "REMAINING_ROUTE" });
   }
   const recipients = [...entry.recipients].sort();
 
@@ -463,15 +501,15 @@ async function processReport({ io, prisma, kv, snapshot, socket, reporterRobotId
   // ALERT_CREATED is not on dashboardBroadcast's campus allow-list, and this does not add it.
   try {
     toDashboard(io, "ALERT_CREATED", {
-      obstacleId: obstacle.obstacleId,
-      lat,
-      lon,
+      obstacleId: alert.obstacleId,
+      lat: alert.lat,
+      lon: alert.lon,
       zoneId: located.zoneId,
       zoneName: null,
-      severity,
+      severity: alert.severity,
       reportingRobotId: reporterRobotId,
-      timestamp: obstacle.timestamp,
-      expiresAt: obstacle.expiresAt,
+      timestamp: alert.timestamp,
+      expiresAt: alert.expiresAt,
       regionId: located.regionId,
       cellId: located.cellId,
       room,
@@ -485,10 +523,48 @@ async function processReport({ io, prisma, kv, snapshot, socket, reporterRobotId
       crossZoneRecipients: crossZone.recipients,
       recipientDecisions: crossZone.decisions,
       ...(crossZone.error ? { crossZoneError: crossZone.error } : {}),
+      ...(extra || {}),
     });
   } catch { /* ignore */ }
 
-  return { accepted: true, obstacle, alert, room, recipients, sameZoneRecipients, crossZoneRecipients: crossZone.recipients, recipientDecisions: crossZone.decisions, crossZoneError: crossZone.error || null };
+  return { recipients, sameZoneRecipients, crossZoneRecipients: crossZone.recipients, recipientDecisions: crossZone.decisions, crossZoneError: crossZone.error || null };
+}
+
+/**
+ * Deliver a DEFERRED obstacle's alert, once, after a decision to do so (STOP / REROUTE). The zone
+ * room's members are read now, at delivery, so a robot that entered the zone while the operator
+ * decided is alerted too.
+ *
+ * @param {{ io: object, prisma: object, obstacleId: string, extra?: object, positionOf?: Function }} args
+ * @returns {Promise<{ ok: true, recipients: string[], sameZoneRecipients: string[], crossZoneRecipients: string[], recipientDecisions: object[], crossZoneError: string|null }
+ *          | { ok: false, reason: string }>}
+ */
+async function propagateAlert({ io, prisma, obstacleId, extra = null, positionOf }) {
+  const entry = ledgerGet(obstacleId);
+  if (!entry) return { ok: false, reason: "OBSTACLE_EXPIRED" };
+  if (entry.delivery !== DELIVERY.AWAITING) return { ok: false, reason: `DELIVERY_${entry.delivery}` };
+  // Claimed synchronously, before any await: a second caller finds PROPAGATED and stops.
+  entry.delivery = DELIVERY.PROPAGATED;
+  const located = { regionId: entry.regionId, zoneId: entry.zoneId, cellId: entry.cellId };
+  const footprint = { kind: "H3_CELL", cellId: entry.cellId, polygon: cellFootprint(entry.cellId) };
+  const sameZoneRecipients = await recipientsOf(io, entry.room, entry.reportingRobotId);
+  for (const robotId of sameZoneRecipients) entry.recipients.add(robotId);
+  const delivered = await deliverAlert({ io, prisma, entry, alert: entry.alert, located, footprint, reporterRobotId: entry.reportingRobotId, sameZoneRecipients, positionOf, extra });
+  return { ok: true, ...delivered };
+}
+
+/**
+ * Suppress a DEFERRED obstacle's alert for good (REJECT_BROADCAST): it can never be delivered
+ * afterwards, by this decision or any other. Nothing is emitted to any robot room.
+ *
+ * @returns {{ ok: true } | { ok: false, reason: string }}
+ */
+function suppressAlert({ obstacleId }) {
+  const entry = ledgerGet(obstacleId);
+  if (!entry) return { ok: false, reason: "OBSTACLE_EXPIRED" };
+  if (entry.delivery !== DELIVERY.AWAITING) return { ok: false, reason: `DELIVERY_${entry.delivery}` };
+  entry.delivery = DELIVERY.SUPPRESSED;
+  return { ok: true };
 }
 
 /**
@@ -521,44 +597,8 @@ async function eligibleRobots(io, preferZoneId) {
  */
 async function crossZoneStep({ io, prisma, located, footprint, reporterRobotId, sameZoneRecipients, positionOf }) {
   try {
-    const candidates = await eligibleRobots(io, located.zoneId);
     const inZoneRoom = new Set(sameZoneRecipients);
-    const sameRegion = candidates.filter((r) => r.regionId === located.regionId && r.robotId !== reporterRobotId);
-    const routes = await commandedRoute.readCommandedRoutes(prisma, sameRegion.map((r) => r.robotId));
-    const toleranceM = commandedRoute.corridorToleranceM();
-    const routeFacts = new Map();
-    for (const robot of sameRegion) {
-      const route = routes.get(robot.robotId) || { status: commandedRoute.ROUTE_STATUS.LOOKUP_FAILED, points: [] };
-      let position = null;
-      if (route.status === commandedRoute.ROUTE_STATUS.OK && typeof positionOf === "function") {
-        position = await Promise.resolve(positionOf(robot.robotId)).catch(() => null);
-      }
-      const remaining = route.status === commandedRoute.ROUTE_STATUS.OK ? commandedRoute.remainingRoute(route.points, position, { toleranceM }) : null;
-      routeFacts.set(robot.robotId, {
-        source: "OFFER",
-        status: route.status,
-        commitmentId: route.commitmentId || null,
-        offerCreatedAt: route.offerCreatedAt || null,
-        leaseExpired: route.leaseExpired === true,
-        corridorPoints: route.points.length,
-        cut: remaining ? remaining.cut : null,
-        remainingPoints: remaining ? remaining.points.length : 0,
-        offRouteM: remaining ? remaining.offRouteM : null,
-        positionAt: position && Number.isFinite(position.at) ? position.at : null,
-        remaining: remaining && remaining.points.length > 0 ? remaining.points : null,
-      });
-    }
-
-    const picked = selectRecipients({
-      obstacle: { regionId: located.regionId, zoneId: located.zoneId, footprint: footprint.polygon },
-      robots: candidates.map((r) => ({
-        ...r,
-        remainingRoute: routeFacts.has(r.robotId) ? routeFacts.get(r.robotId).remaining : null,
-        // A route the server could not establish is unknown, not absent (conservative policy).
-        routeUnknown: routeFacts.has(r.robotId) && commandedRoute.UNKNOWN_ROUTE_STATUSES.includes(routeFacts.get(r.robotId).status),
-      })),
-      reporterRobotId,
-    });
+    const { candidates, routeFacts, picked } = await assessRecipients({ io, prisma, located, footprint: footprint.polygon, reporterRobotId, positionOf });
     const recipients = picked.crossZone.filter((robotId) => !inZoneRoom.has(robotId)).sort();
     const alerted = new Set([...inZoneRoom, ...recipients]);
     const decisions = picked.decisions.map((d) => {
@@ -572,6 +612,69 @@ async function crossZoneStep({ io, prisma, located, footprint, reporterRobotId, 
   } catch (error) {
     return { recipients: [], decisions: [], error: String((error && error.message) || error) };
   }
+}
+
+/**
+ * `assessFleet` plus the recipient policy's verdict for every candidate (`selectRecipients`). The
+ * one place the policy is applied: the cross-zone step and the operator-decision step both read it
+ * here, so the policy stays wired through this service only.
+ *
+ * @returns {Promise<{ candidates: object[], routeFacts: Map, details: Map, picked: object }>}
+ */
+async function assessRecipients({ io, prisma, located, footprint, reporterRobotId, positionOf, includeReporter = false }) {
+  const fleet = await assessFleet({ io, prisma, located, reporterRobotId, positionOf, includeReporter });
+  const picked = selectRecipients({
+    obstacle: { regionId: located.regionId, zoneId: located.zoneId, footprint },
+    robots: fleet.candidates.map((r) => ({
+      ...r,
+      remainingRoute: fleet.routeFacts.has(r.robotId) ? fleet.routeFacts.get(r.robotId).remaining : null,
+      // A route the server could not establish is unknown, not absent (conservative policy).
+      routeUnknown: fleet.routeFacts.has(r.robotId) && commandedRoute.UNKNOWN_ROUTE_STATUSES.includes(fleet.routeFacts.get(r.robotId).status),
+    })),
+    reporterRobotId,
+  });
+  return { ...fleet, picked };
+}
+
+/**
+ * The server's view of every eligible robot for one obstacle: its zone membership and, for each
+ * same-region robot, its commanded route read from the server and cut at its server-held
+ * position. `routeFacts` is what `ALERT_CREATED` reports (plus the `remaining` points); `details`
+ * keeps what the decision step also needs — the raw route (stops, task) and the position used.
+ * The reporter is left out unless `includeReporter`.
+ *
+ * @returns {Promise<{ candidates: object[], routeFacts: Map<string, object>, details: Map<string, { route: object, position: object|null, segmentIndex: number|null }> }>}
+ */
+async function assessFleet({ io, prisma, located, reporterRobotId, positionOf, includeReporter = false }) {
+  const candidates = await eligibleRobots(io, located.zoneId);
+  const sameRegion = candidates.filter((r) => r.regionId === located.regionId && (includeReporter || r.robotId !== reporterRobotId));
+  const routes = await commandedRoute.readCommandedRoutes(prisma, sameRegion.map((r) => r.robotId));
+  const toleranceM = commandedRoute.corridorToleranceM();
+  const routeFacts = new Map();
+  const details = new Map();
+  for (const robot of sameRegion) {
+    const route = routes.get(robot.robotId) || { status: commandedRoute.ROUTE_STATUS.LOOKUP_FAILED, points: [] };
+    let position = null;
+    if (route.status === commandedRoute.ROUTE_STATUS.OK && typeof positionOf === "function") {
+      position = await Promise.resolve(positionOf(robot.robotId)).catch(() => null);
+    }
+    const remaining = route.status === commandedRoute.ROUTE_STATUS.OK ? commandedRoute.remainingRoute(route.points, position, { toleranceM }) : null;
+    details.set(robot.robotId, { route, position, segmentIndex: remaining ? remaining.segmentIndex : null });
+    routeFacts.set(robot.robotId, {
+      source: "OFFER",
+      status: route.status,
+      commitmentId: route.commitmentId || null,
+      offerCreatedAt: route.offerCreatedAt || null,
+      leaseExpired: route.leaseExpired === true,
+      corridorPoints: route.points.length,
+      cut: remaining ? remaining.cut : null,
+      remainingPoints: remaining ? remaining.points.length : 0,
+      offRouteM: remaining ? remaining.offRouteM : null,
+      positionAt: position && Number.isFinite(position.at) ? position.at : null,
+      remaining: remaining && remaining.points.length > 0 ? remaining.points : null,
+    });
+  }
+  return { candidates, routeFacts, details };
 }
 
 /**
@@ -609,6 +712,21 @@ function recordRelevance({ io, robotId, payload }) {
   return { accepted: true, payload: relayed };
 }
 
+/**
+ * Every obstacle still active in a region (unexpired ledger entries), with its footprint: what a
+ * simulated detour must keep clear of, whatever was decided about each.
+ *
+ * @returns {Array<{ obstacleId: string, cellId: string, polygon: Array<{lat:number, lon:number}> }>}
+ */
+function activeObstacles(regionId) {
+  const out = [];
+  for (const [obstacleId] of ledger) {
+    const entry = ledgerGet(obstacleId);
+    if (entry && entry.regionId === regionId && entry.cellId) out.push({ obstacleId, cellId: entry.cellId, polygon: cellFootprint(entry.cellId) });
+  }
+  return out;
+}
+
 /** Test seam. */
 function resetForTests() {
   ledger.clear();
@@ -634,6 +752,14 @@ module.exports = {
   cellFootprint,
   syncMembership,
   processReport,
+  propagateAlert,
+  suppressAlert,
+  assessFleet,
+  assessRecipients,
+  RECIPIENT_REASON,
+  eligibleRobots,
+  activeObstacles,
+  DELIVERY,
   recordRelevance,
   ledgerGet,
   recentActivity,

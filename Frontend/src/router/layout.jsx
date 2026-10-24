@@ -5,6 +5,7 @@ import { WifiOff, X } from 'lucide-react';
 import AuthChallengeModal from '@/components/modals/AuthChallengeModal.jsx';
 import CreateTaskModal from '@/components/modals/CreateTaskModal.jsx';
 import DecisionRequiredModal from '@/components/modals/DecisionRequiredModal.jsx';
+import ObstacleDecisionPanel from '@/components/modals/ObstacleDecisionPanel.jsx';
 import { connectionBanner } from '@/lib/connectionState.js';
 import { isWideLayout, subscribeWideLayout } from '@/lib/viewport.js';
 
@@ -146,6 +147,9 @@ export default function Layout() {
       {decisionRequest && !authRequest && (
         <DecisionRequiredModal decisionRequest={decisionRequest} onDismiss={handleDismissAlert} />
       )}
+
+      {/* DTARO operator decisions: opened only by the server's OBSTACLE_DECISION_REQUIRED. */}
+      {!authRequest && <ObstacleDecisionPanel />}
     </div>
   );
 }

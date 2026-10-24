@@ -11,11 +11,13 @@
 param(
   [int]$DbPort = 55480,
   [int]$ApiPort = 3140,
-  [int]$WebPort = 5190
+  [int]$WebPort = 5190,
+  # A second, independent stack (its own %TEMP% directory): e.g. -Instance "-decisions" with other ports.
+  [string]$Instance = ""
 )
 $ErrorActionPreference = "Stop"
 $BACKEND = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")).Path
-$SP = Join-Path $env:TEMP "robotx-dtaro-presentation"
+$SP = Join-Path $env:TEMP "robotx-dtaro-presentation$Instance"
 $PG = "C:\Program Files\PostgreSQL\18\bin"
 $DB = "robotx_dtaro_presentation"
 $USER_NAME = "dtarodemo"
@@ -83,4 +85,5 @@ try {
 }
 finally { Pop-Location }
 
-Write-Host "Ready (G4 published and pinned in the throwaway database). Next: tools\demo\dtaro\presentation\start.ps1"
+$instanceArg = if ($Instance) { " -Instance $Instance" } else { "" }
+Write-Host "Ready (G4 published and pinned in the throwaway database). Next: tools\demo\dtaro\presentation\start.ps1$instanceArg [-OperatorDecisions]"

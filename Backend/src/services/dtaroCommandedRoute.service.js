@@ -85,6 +85,21 @@ function corridorFactsOf(payload) {
 }
 
 /**
+ * The corridor stop by stop, in the OFFER's order: each stop's type and its own path points. Used
+ * by the DTARO decision step to name a robot's legs and their ends; empty when any point is
+ * malformed (the whole corridor is then unknown, as `corridorFactsOf` decides).
+ */
+function stopsOf(payload) {
+  if (corridorFactsOf(payload).malformed) return [];
+  const stops = payload && Array.isArray(payload.stopSequence) ? payload.stopSequence : [];
+  return stops.map((stop, index) => ({
+    index,
+    stopType: stop && typeof stop.stopType === "string" ? stop.stopType : null,
+    points: (Array.isArray(stop && stop.path) ? stop.path : []).map((p) => ({ lat: p.lat, lon: p.lon })),
+  }));
+}
+
+/**
  * The commanded corridor of each robot, read in three queries whatever the number of robots.
  *
  * @param {object|null} prisma
@@ -154,6 +169,9 @@ async function readCommandedRoutes(prisma, robotIds, options = {}) {
         // reconciler does), so its route is still the last one the server commanded.
         leaseExpired: Number.isFinite(leaseMs) ? leaseMs <= nowMs : false,
         points: points.length >= 2 ? points : [],
+        // The task the OFFER discharges, and its corridor per stop (DTARO decision step).
+        taskId: offer && offer.payload && typeof offer.payload.taskId === "string" ? offer.payload.taskId : null,
+        stops: offer && points.length >= 2 ? stopsOf(offer.payload) : [],
       });
     }
     return out;
@@ -216,4 +234,4 @@ function remainingRoute(points, position, { toleranceM }) {
   return { cut: CUT.AT_POSITION, points: out, segmentIndex: chosen.i, offRouteM: Math.round(nearest * 10) / 10 };
 }
 
-module.exports = { ROUTE_STATUS, UNKNOWN_ROUTE_STATUSES, CUT, TOLERANCE_ENV, corridorOf, corridorFactsOf, readCommandedRoutes, corridorToleranceM, remainingRoute };
+module.exports = { ROUTE_STATUS, UNKNOWN_ROUTE_STATUSES, CUT, TOLERANCE_ENV, corridorOf, corridorFactsOf, stopsOf, readCommandedRoutes, corridorToleranceM, remainingRoute };

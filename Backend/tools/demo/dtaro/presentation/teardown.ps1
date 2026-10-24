@@ -2,8 +2,9 @@
 # %TEMP%\robotx-dtaro-presentation. Touches nothing else.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\demo\dtaro\presentation\teardown.ps1
+param([string]$Instance = "")
 $ErrorActionPreference = "Stop"
-$SP = Join-Path $env:TEMP "robotx-dtaro-presentation"
+$SP = Join-Path $env:TEMP "robotx-dtaro-presentation$Instance"
 $PG = "C:\Program Files\PostgreSQL\18\bin"
 if (-not (Test-Path $SP)) { Write-Host "nothing to remove"; return }
 

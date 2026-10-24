@@ -27,6 +27,7 @@ const simulationPolicy = require("./src/simulation/simulationPolicy");
 const { rehydrateSimulatedRobots } = require("./src/simulation/rehydrate");
 const { outboxDeliveryArm: dispatchOutboxCommand } = require("./src/services/commandDispatcher.service");
 const agentProbe = require("./src/services/agentProbe.service");
+const dtaroObstacleDecision = require("./src/services/dtaroObstacleDecision.service");
 const { scheduleRestartRedispatch } = require("./src/services/legacyTaskRedispatch.service");
 const { ensureAdminUser } = require("./src/services/adminBootstrap.service");
 const configService = require("./src/engine/config/service");
@@ -578,6 +579,13 @@ async function start() {
   // socket (P14-R1) — which, with the propagator above, is now true rather than merely
   // possible.
   initSocketServer(io, { prisma, kv, logger, appLocals: app.locals });
+
+  // DTARO operator decisions (DTARO_OPERATOR_DECISION_ENABLED, simulated fleet only): a decision a
+  // previous process left open is marked ABANDONED_ON_RESTART — its timer and its simulated
+  // execution died with that process, and nothing is executed late. Off: the table is not touched.
+  if (dtaroObstacleDecision.isEnabled()) {
+    dtaroObstacleDecision.recoverAfterRestart(prisma, { logger }).catch(() => {});
+  }
 
   // Robots a previous process was serving when it died kept `isOnline: true`: their disconnect
   // handlers never ran. Once, at startup, a row whose socket exists nowhere in the cluster gets

@@ -307,12 +307,73 @@ With the switch on, an alert reaches the obstacle's zone room **and** every simu
 - **With today's map** (one zone, `rnsit-z1`) every robot on campus is in the zone room, so `crossZoneRecipients` is empty; `recipientDecisions` still records each robot's server-side route verdict. Cross-zone delivery takes effect only with a multi-zone published map, which is not published (G4 is a proposal).
 - **Physical robots** are still not recipients (A-6).
 
+## Operator decisions on reported obstacles (2026-10-24) — SIMULATED fleet only
+
+Behind a second switch, **`DTARO_OPERATOR_DECISION_ENABLED=true`**, which takes effect only with `DTARO_ZONE_ALERTS_ENABLED=true` and is **off by default (and off in production)**. Off, everything above is unchanged. On, a report no longer alerts anyone at once; the server holds it for an operator (`src/services/dtaroObstacleDecision.service.js`):
+
+1. **Report** — accepted, deduplicated and stored exactly as before (`processReport` with `deferDelivery`); **no robot room receives anything**.
+2. **Decision event** — `OBSTACLE_DECISION_REQUIRED` to SUPER_ADMIN dashboards, with every robot the server considered and why, and a server deadline exactly **5 s** after acceptance. The dashboard opens its decision panel from this event only.
+3. **Commit** — at most one, ever: `STOP`, `REROUTE` or `REJECT_BROADCAST` by an operator (`POST /api/dtaro/decisions/:id`), or **`REROUTE` by the server at the deadline** (`DEFAULT_TIMEOUT`), whether or not any dashboard is connected. A synchronous compare-and-set in the process plus a status-guarded update of the `DtaroObstacleDecision` row. A late, conflicting or replayed request is refused (409) with the committed decision; a retry under the same idempotency key gets the committed result (200).
+4. **Propagation or suppression** — STOP / REROUTE: the ordinary `OBSTACLE_ALERT` goes to the zone room and cross-zone recipients, once, after the commit, carrying `decisionId` / `decision`. REJECT_BROADCAST: delivery is suppressed for good (`DELIVERY_SUPPRESSED`); no recipient receives an alert or an instruction, and the suppressed recipients are recorded.
+5. **Simulated execution** — `DTARO_SIM_NAV` to each affected simulated robot's own sockets (never to a socket that is not a DTARO-eligible simulated session):
+   - **affected** = its remaining commanded route meets the obstacle's cell, or its route cannot be read (conservative), or it is the reporter heading into it;
+   - **STOP** → the simulator's own stop (`PAUSED`; release with the existing RESUME);
+   - **REROUTE** → a detour per crossing leg from `src/simulation/dtaroDetour.js`: the same contained campus network and permitted ways, with every segment that meets the obstacle's cell or leaves its region excluded for that query, then re-checked independently. **No safe alternate route → the robot is stopped**, with the reason. The robot drives the detour from a simulation-only field (`VirtualRobot._dtaroDetours`); `task.stops`, the OFFER, the Commitment, the Leg and the Task are never written;
+   - **REJECT_BROADCAST** → only the reporter, and only if it is heading into the obstacle, is stopped.
+   Progress and arrival are measured by the server from telemetry, not taken from the robot.
+
+**Restart:** a decision a previous process left open (received before this process's recovery started) is marked `ABANDONED_ON_RESTART` at boot and shown with that reason; nothing is executed late. Rows older than `DTARO_DECISION_RETENTION_DAYS` (30) are deleted at boot. *Limitation:* recovery cannot tell a dead process from a live one. During a rolling deploy where the old instance still serves, the new instance marks the old one's open decisions abandoned in the audit table. The old process then fails its status-guarded decision write and says so on the decision (`persistence.ok: false`). Its later state writes are not status-guarded, so such a row can end with a final status but empty decision columns, while its `outcome` JSON still records the decision. Its in-memory decision and robots are unaffected. Render runs one instance, and the feature is off in production; revisit this (an instance id on each row) before running more than one.
+
+**Completion grading is unchanged**: it still grades against the OFFER corridor, so a robot that drove a detour may be graded insufficient. That is the honest outcome of leaving the commanded route alone.
+
+### Production rollout (not done — each step needs the owner's approval)
+
+The code is safe to deploy before the table exists: with the switch off nothing reads or writes `DtaroObstacleDecision`.
+
+1. Take a fresh, verified Neon snapshot. Then apply migration `20261024120000_dtaro_obstacle_decision` from a clean `git archive` export of the reviewed commit, as `docs/runbooks/environments.md` describes (`migrate deploy --confirm-database <name>`). It is additive: one new table and nothing else.
+2. Deploy with `DTARO_OPERATOR_DECISION_ENABLED` unset (off). Check the dashboard: `GET /api/dtaro/zones` should report `operatorDecisionsEnabled: false`.
+3. Only after a verification run on a non-production copy: set `DTARO_OPERATOR_DECISION_ENABLED=true` in Render and restart. It does nothing unless `DTARO_ZONE_ALERTS_ENABLED=true`. Never set `SIM_DTARO_SCENARIO` in production.
+4. Rollback: unset the switch and restart; alerts are then delivered at once, as before. The table can stay.
+
+### Presentation flow
+
+```powershell
+# A second, independent stack (the relevance-only one above can keep running):
+powershell -ExecutionPolicy Bypass -File tools\demo\dtaro\presentation\setup.ps1 -DbPort 55481 -ApiPort 3141 -WebPort 5191 -Instance "-decisions"
+powershell -ExecutionPolicy Bypass -File tools\demo\dtaro\presentation\start.ps1 -Instance "-decisions" -OperatorDecisions
+node tools\demo\dtaro\presentation\runDecisionDemo.js --instance -decisions --pause
+powershell -ExecutionPolicy Bypass -File tools\demo\dtaro\presentation\teardown.ps1 -Instance "-decisions"
+```
+
+Open `http://127.0.0.1:5191/map`, sign in (password: `SEED_ADMIN_PASSWORD` in that stack's `demo.env`), select RNSIT. The driver reports four obstacles, each in a fresh cell, and checks each against an independent oracle (G4 cell lookup, 1 m sampling of every OFFER corridor and detour, the robots' own telemetry trail):
+
+| Step | What happens | Expected on the dashboard |
+|---|---|---|
+| A | operator chooses **REROUTE** | panel, countdown; affected robots with a safe detour drive it (solid line; the commanded route stays dashed); others stop with "No safe alternate route available" |
+| B | operator **rejects the broadcast** | "Broadcast rejected — fleet alert suppressed for N robot(s)"; no ALERT_CREATED, and no robot verdict (every robot answers every alert it receives, so silence proves none was delivered) |
+| C | **nobody decides** | at 5 s the panel turns to "Reroute — applied automatically by the server"; a late click is refused |
+| D | operator chooses **STOP** | affected robots report PAUSED and stay put; unaffected robots carry on |
+
+With `--pause` the driver waits for Enter **before** each step, so you can show the dashboard. After each report it still sends the decision itself, through the same `POST /api/dtaro/decisions/:id` the panel's buttons use, within about a second. So during steps A, B and D, watch the panel rather than clicking it: a click that reaches the server first is committed instead, and the driver's own request is then refused (409), failing that step's "committed" check. Step C is the one to leave alone, so the server's 5 s default lands.
+
+### Protocol (additive)
+
+| Event / route | Direction | Payload |
+|---|---|---|
+| `OBSTACLE_DECISION_REQUIRED`, `OBSTACLE_DECISION_UPDATED` | server → dashboard (SUPER_ADMIN) | the whole decision: `{ decisionId, revision (only rises), status, provenance: "SIMULATED", serverNow, receivedAt, deadlineAt, windowMs: 5000, defaultDecision: "REROUTE", decision: { choice, source: MANUAL\|DEFAULT_TIMEOUT, reason, decidedAt, decidedBy }, obstacle: { obstacleId, lat, lon, cellId, zoneId, regionId, severity, footprint, expiresAt, detection: { source: "SIMULATED_ROBOT_REPORT", confidence: null } }, reporter, robots: [{ robotId, name, role, relevanceReason, affected, affectedReason, routeStatus, state, position, taskId, origin, destination, originalRoute, routeProgress, preview, execution: { action, state, reason, alternatePath, originalPath, progress } }], propagation: { outcome: PROPAGATED\|SUPPRESSED, delivered, suppressedRecipients }, counts, history }` |
+| `GET /api/dtaro/decisions` | dashboard → server (SUPER_ADMIN) | `{ enabled, serverNow, windowMs, decisions }`: live and recent archived decisions, for reconnect |
+| `POST /api/dtaro/decisions/:decisionId` | dashboard → server (SUPER_ADMIN) | `{ decision, idempotencyKey }` → 200 `COMMITTED` / `ALREADY_COMMITTED`; 409 `ALREADY_DECIDED` / `DEFAULT_ALREADY_APPLIED` / `DEADLINE_PASSED` / `NOT_AWAITING_DECISION`; 400; 404. Feature off: 404 |
+| `DTARO_SIM_NAV` | server → one simulated robot's sockets | `{ navId, decisionId, obstacleId, action: STOP\|REROUTE, reason, text?, provenance: "SIMULATED", footprint, taskId?, commitmentId?, legs?: [{ stopIndex, stopType, to, points }] }` |
+| `DTARO_SIM_NAV_ACK` | robot → server | `{ navId, decisionId, outcome: STOPPED\|REROUTING\|REFUSED_STOPPED, reason }`; accepted once, only from the target |
+| `OBSTACLE_REPORT_ACK` | server → reporter | with decisions on: `delivery: "AWAITING_DECISION"`, `recipients: []`, `decisionId`, `decisionDeadline` |
+| `OBSTACLE_ALERT`, `ALERT_CREATED` | as above | plus `decisionId`, `decision`, `decisionSource` when delivered by a decision |
+
 ## Not done, on purpose
 
-- **No reroute, replan or path mutation (OD-3).** A relevant robot records the obstacle and reports `RELEVANT_NO_REPLAN`.
+- **No engine reroute, replan or path mutation (OD-3).** The commanded route is never changed. A relevant robot records the obstacle and reports `RELEVANT_NO_REPLAN`. With operator decisions on, a REROUTE is a simulated detour only (above); no physical robot and no engine record is involved.
 - **No change to the V1 engine.** No engine module was touched.
 - **Dedup is per published cell only.** There is no plausibility distance and no confirmed clearance. The lifecycle is the existing 300 s EKB TTL, and expiry is not shown as clear (OD-4, OD-5). The dedup index is per process, like the delivery ledger.
-- **Reroute is blocked, not just deferred.** The `REROUTE` mission command has no producer. Completion is graded against the OFFER corridor only. The campus router takes no blocked-edge input. Any of these would need a frozen-engine change and owner decision OD-3.
+- **An engine reroute is blocked, not just deferred.** The `REROUTE` mission command has no producer. Completion is graded against the OFFER corridor only. The campus router's only blocked-edge input is the simulation-only per-query `avoidSegment` (used for simulated detours, never by the engine). A real reroute would need a frozen-engine change and owner decision OD-3.
 - **No replay to a robot that reconnects after the alert.**
 - **The delivery ledger is per process.** With a cross-process adapter, a relevance answer that reaches another process is refused (fails closed).
 - **Physical robots are neither zone members nor accepted reporters.**

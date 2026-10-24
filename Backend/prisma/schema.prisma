@@ -469,6 +469,62 @@ model ObstacleEvent {
   @@index([expiresAt])
 }
 
+/// DTARO — the audit row of one operator decision on a reported obstacle (SIMULATED fleet only;
+/// `services/dtaroObstacleDecision.service.js`, behind DTARO_OPERATOR_DECISION_ENABLED). Written
+/// only by that service; the status-guarded commit is what makes "at most one decision" hold in
+/// the database as well as in the process. Holds no robot telemetry beyond the report's point.
+/// CHECK constraints (status, decision, decisionSource, decided-together) live in the migration.
+model DtaroObstacleDecision {
+  id         String @id @default(uuid())
+  decisionId String @unique
+  obstacleId String
+
+  regionId String
+  zoneId   String
+  cellId   String
+  lat      Float
+  lon      Float
+  severity String?
+
+  reportingRobotId String
+
+  /// REPORTED | AWAITING_OPERATOR_DECISION | DECIDED | PROPAGATED | SUPPRESSED | EXECUTING |
+  /// COMPLETED | EXPIRED | ABANDONED_ON_RESTART
+  status String
+
+  /// Server time the report was accepted, and exactly DECISION_WINDOW_MS later.
+  receivedAt DateTime
+  deadlineAt DateTime
+  /// The obstacle's own lifetime (the EKB TTL).
+  expiresAt  DateTime
+
+  /// STOP | REROUTE | REJECT_BROADCAST, null until decided.
+  decision        String?
+  /// MANUAL | DEFAULT_TIMEOUT
+  decisionSource  String?
+  decidedByUserId String?
+  decidedAt       DateTime?
+  idempotencyKey  String?
+
+  propagatedAt DateTime?
+  suppressedAt DateTime?
+  completedAt  DateTime?
+
+  /// Who the server considered at the report, and why (robot ids and reason codes only).
+  recipients Json?
+  /// The decision's outcome: propagation or suppression, each robot's execution, the history.
+  outcome    Json?
+
+  abandonedReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([regionId, cellId])
+  @@index([receivedAt])
+}
+
 //////////////////////////////////////////////////////
 // CAMPUS (OPTIONAL: GROUP ROBOTS + TASKS)
 //////////////////////////////////////////////////////

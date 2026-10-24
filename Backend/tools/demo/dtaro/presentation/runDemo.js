@@ -31,9 +31,11 @@ const BACKEND = path.resolve(__dirname, "../../../..");
 const h3 = require(path.join(BACKEND, "node_modules/h3-js"));
 const { io: ioClient } = require(path.join(BACKEND, "node_modules/socket.io-client"));
 
-const SP = path.join(os.tmpdir(), "robotx-dtaro-presentation");
-const PSQL = "C:\\Program Files\\PostgreSQL\\18\\bin\\psql.exe";
 const ARGS = new Set(process.argv.slice(2));
+// `--instance <suffix>`: a second stack set up with `setup.ps1 -Instance <suffix>`.
+const INSTANCE = process.argv.includes("--instance") ? process.argv[process.argv.indexOf("--instance") + 1] || "" : "";
+const SP = path.join(os.tmpdir(), `robotx-dtaro-presentation${INSTANCE}`);
+const PSQL = "C:\\Program Files\\PostgreSQL\\18\\bin\\psql.exe";
 
 // ── Configuration and the disposable-target guard ─────────────────────────────
 
@@ -275,6 +277,10 @@ function evaluate(s, label, r) {
   }
   if (rnsit && rnsit.id) await s.api("PUT", `/api/campuses/${rnsit.id}/region`, { regionId: "rnsit" });
   const zones = (await s.api("GET", "/api/dtaro/zones")).json;
+  if (zones.operatorDecisionsEnabled === true) {
+    console.error("This server holds each report for an operator decision (start.ps1 -OperatorDecisions): run runDecisionDemo.js, or restart without the switch.");
+    process.exit(2);
+  }
   evidence.servedMap = { configVersion: zones.configVersion, alertsEnabled: zones.alertsEnabled, zones: (zones.zones || []).map((z) => `${z.zoneId} (${z.cellCount} cells)`) };
   note(`server serves config v${zones.configVersion}: ${evidence.servedMap.zones.join(", ")}; alerts ${zones.alertsEnabled ? "ON" : "OFF"}`);
   check("G4 is served: four zones, 64 cells, alerts on", zones.alertsEnabled === true && (zones.zones || []).length === 4 && (zones.zones || []).reduce((n, z) => n + z.cellCount, 0) === 64);

@@ -68,6 +68,9 @@ export async function requestJson(path, { method = 'GET', body, headers, errorMe
     // `ENGINE_CANCELLATION_UNAVAILABLE`), so a caller can tell a refusal it expects from
     // a failure without matching on the sentence.
     err.code = typeof data?.code === 'string' ? data.code : null;
+    // The parsed refusal itself, for a caller whose refusal carries state (a DTARO decision that
+    // was already committed answers 409 with the committed decision).
+    err.body = data ?? null;
     throw err;
   }
   return data;

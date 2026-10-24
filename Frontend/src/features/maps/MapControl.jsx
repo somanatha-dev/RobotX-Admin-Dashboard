@@ -73,6 +73,8 @@ import './mapControl/ui/campusUi.css';
 // ── DTARO: published zones and obstacle awareness ────────────────────────────
 import { getDtaroZones } from '@/lib/api/dtaro.js';
 import { ACTIVITY_FILTER, activityEntries, obstacleActivityStore } from '@/lib/obstacleActivity.js';
+import { decisionsInScope, obstacleDecisionStore } from '@/lib/obstacleDecision.js';
+import { useDtaroDecisionLayer } from './dtaro/useDtaroDecisionLayer.js';
 import { CONNECTION } from '@/lib/connectionState.js';
 import { operatingRegionFor } from './campus/campusRegistry.js';
 import {
@@ -503,6 +505,8 @@ function MapControlInner({ filtersHost }) {
   const dtaroView = superAdmin ? dtaroFetched : null;
   const zoneMapEnabled = superAdmin;
   const alertsEnabled = dtaroView?.alertsEnabled === true;
+  // Obstacle reports wait for an operator's STOP / REROUTE / REJECT_BROADCAST (server switch).
+  const operatorDecisionsEnabled = alertsEnabled && dtaroView?.operatorDecisionsEnabled === true;
 
   // A campus shows its own region's zones only: the region the campus record names, else the
   // registry's operating region for its code — the same one tasks are submitted to.
@@ -560,6 +564,11 @@ function MapControlInner({ filtersHost }) {
     () => (selectedObstacleId ? scopedObstacles.find((o) => o.obstacleId === selectedObstacleId) || null : null),
     [scopedObstacles, selectedObstacleId]
   );
+  const decisionState = useSyncExternalStore(obstacleDecisionStore.subscribe, obstacleDecisionStore.getSnapshot);
+  const scopedDecisions = useMemo(
+    () => (operatorDecisionsEnabled ? decisionsInScope(decisionState, regionScope) : []),
+    [operatorDecisionsEnabled, decisionState, regionScope]
+  );
   const zoneNameOf = useCallback(
     (zoneId, regionId) => liveZones.zones.find((z) => z.zoneId === zoneId && z.regionId === regionId)?.name || null,
     [liveZones]
@@ -607,6 +616,15 @@ function MapControlInner({ filtersHost }) {
     themeRef,
     subscribeToTheme,
     onSelectObstacle: setSelectedObstacleId,
+  });
+
+  // What each obstacle decision did: original vs alternate route, robot rings, decision state.
+  useDtaroDecisionLayer(mapRef, {
+    isMapLoaded: isMapLoaded && environmentReady,
+    enabled: operatorDecisionsEnabled,
+    decisions: scopedDecisions,
+    robots: globalRobots,
+    nowMs: dtaroNowMs,
   });
 
   // The published zone at the map centre, named in the legend header while the published map is
@@ -1289,6 +1307,7 @@ function MapControlInner({ filtersHost }) {
               zoneNameOf={zoneNameOf}
               robotsById={robotsById}
               nowMs={dtaroNowMs}
+              decisions={operatorDecisionsEnabled ? scopedDecisions : null}
             />
           )}
 
