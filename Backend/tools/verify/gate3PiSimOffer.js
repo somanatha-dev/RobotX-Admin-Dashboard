@@ -29,6 +29,13 @@
  * handler IN-PROCESS (no HTTP server, nothing listening), and this side checks the
  * backend: Leg transitions, CUSTODY, TASK_COMPLETE, VerificationEvidence SUFFICIENT,
  * Leg SETTLED, Task COMPLETED, and the dashboard socket's TASK_UPDATED COMPLETED.
+ *
+ * OFFER-ACCEPTANCE DEMONSTRATION (--offer-acceptance-demo): the Pi runs with
+ * ROBOTX_OFFER_ACCEPTANCE_DEMO=1 and ROBOTX_ESP32_MOTION_ENABLED=0, no custody path and no
+ * camera stand-in (tests/integration/offer_acceptance_demo_harness.py), and the declaration
+ * requires the agent's readiness report, as the deployed one does. PASS = the physical unit is
+ * offered a Leg, the Pi ACCEPTs it, the Leg is ACCEPTED and the Task bound to the unit, and the
+ * Pi wrote no DRIVE or STOP to the ESP32 and renewed no lease.
  */
 
 const path = require("path");
@@ -58,6 +65,11 @@ const SIGNING_KEY = "gate1-disposable-signing-key-" + "0".repeat(16);
 const ADMIN = { email: "gate1-admin@localhost", password: "Gate1-Disposable-Passw0rd!" };
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), "gate3-"));
 const COMPLETION = argv.includes("--completion");
+const OFFER_DEMO = argv.includes("--offer-acceptance-demo");
+if (COMPLETION && OFFER_DEMO) {
+  console.error("--completion and --offer-acceptance-demo are exclusive: the demonstration never drives");
+  process.exit(2);
+}
 // The physical unit's commissioning specification (a harness declaration on a throwaway
 // database). Gate 3b's stand-in GPS never moves faster than its maxSpeedMps.
 const SPEC = { massKg: 5, maxSpeedMps: 1.2, normalSpeedMps: 1.0, batteryCapacityWh: 43, batteryReservePct: 20, payloadCapacityKg: 3, initialBatteryPct: 85 };
@@ -137,6 +149,7 @@ async function main() {
         charging: { policy: "MANUAL_OUT_OF_SERVICE" },
         stateOfCharge: { policy: "OPERATOR_DECLARED", maxAgeSeconds: 7200 },
         emergencyStop: { mechanism: "SOFTWARE_STOP_LATCH" },
+        ...(OFFER_DEMO ? { readiness: { policy: "AGENT_REPORT_REQUIRED" } } : {}),
         site: { ambientC: { min: 18, max: 38 }, terrain: "FLAT_DECLARED", connectivityDeadZones: "NONE_DECLARED", constrictions: "NONE_DECLARED", stopStartCyclesPerHop: 1, snapRadiusM: SNAP_RADIUS_M },
         localisation: { referenceRadiusM: 25, acceptedFixTypes: ["3D", "RTK_FLOAT", "RTK_FIXED"] },
         risk: { failureProbabilityPrior: 0.05, routeHazardCu: 0 },
@@ -223,7 +236,8 @@ async function main() {
   let markReady;
   const piReady = new Promise((resolve) => { markReady = resolve; });
   const piExit = new Promise((resolve) => {
-    const child = spawn(PYTHON, ["-m", "tests.integration.gate3_harness"], {
+    const piModule = OFFER_DEMO ? "tests.integration.offer_acceptance_demo_harness" : "tests.integration.gate3_harness";
+    const child = spawn(PYTHON, ["-m", piModule], {
       cwd: PI_REPO,
       env: {
         ...process.env,
@@ -252,6 +266,7 @@ async function main() {
         GATE3_REPORT: reportFile,
         GATE3_TIMEOUT_S: "200",
         ...(COMPLETION ? { GATE3B: "1", GATE3B_FULL_SPEED_MPS: String(SPEC.maxSpeedMps) } : {}),
+        ...(OFFER_DEMO ? { ROBOTX_OFFER_ACCEPTANCE_DEMO: "1", ROBOTX_ESP32_MOTION_ENABLED: "0", ROBOTX_CUSTODY_CONFIRMATION: "none" } : {}),
       },
     });
     child.stdout.on("data", (chunk) => {
@@ -403,6 +418,25 @@ async function main() {
     const pass = pi.status === 0 && backendOk && Object.values(checks).every(Boolean);
     log(pass ? "PASS — Gate 3b: OFFER → real Pi agent → pickup → ACQUIRED → drop → RELEASED → TASK_COMPLETE → SUFFICIENT → SETTLED → COMPLETED"
       : `FAIL — Gate 3b: pi exit ${pi.status}, backend checks ${backendOk}, completion ${JSON.stringify(checks)}`);
+    process.exit(pass ? 0 : 1);
+  }
+  if (OFFER_DEMO) {
+    const accepted = await (async () => {
+      const prisma3 = require(path.join(BACKEND, "src/db/prisma")).getPrisma();
+      const tasks = await prisma3.task.findMany({ where: { robot: { robotId: ROBOT_ID } }, select: { taskId: true, status: true } });
+      await prisma3.$disconnect();
+      return tasks;
+    })();
+    const checks = {
+      offerAcked: db.outbox.some((row) => row.command === "OFFER" && row.state === "ACKED"),
+      legAccepted: db.legs.some((leg) => leg.state === "ACCEPTED"),
+      taskBoundToPhysicalUnit: accepted.some((t) => t.status === "ASSIGNED"),
+      noMotorCommand: Boolean(piReport) && !(piReport.wire_commands || []).some((cmd) => cmd === "DRIVE" || cmd === "STOP"),
+    };
+    log("offer-acceptance demonstration (backend):", JSON.stringify({ ...checks, tasks: accepted }));
+    const pass = pi.status === 0 && backendOk && Object.values(checks).every(Boolean);
+    log(pass ? "PASS — signed OFFER → real Pi agent (demonstration mode) → OFFER_ACCEPT → Leg ACCEPTED; no motor command, no lease renewal"
+      : `FAIL — offer-acceptance demonstration: pi exit ${pi.status}, backend checks ${backendOk}, ${JSON.stringify(checks)}`);
     process.exit(pass ? 0 : 1);
   }
   const pass = pi.status === 0 && backendOk;

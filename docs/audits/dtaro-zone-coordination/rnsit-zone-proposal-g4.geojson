@@ -1,0 +1,7050 @@
+{
+ "type": "FeatureCollection",
+ "name": "rnsit-zone-proposal-g4",
+ "campusId": "RNSIT",
+ "generator": {
+  "tool": "Backend/tools/campus/rnsitZoneLayoutG4.js",
+  "method": {
+   "seedPolicy": "BASELINE",
+   "sampleResolution": 14,
+   "roadClasses": [
+    "footway",
+    "path",
+    "service"
+   ],
+   "network": "boundary-contained campus traversal network from rnsit-campus-osm.geojson: 74 OSM vertices, 79 segments, 1 connected component(s), ways of class [footway, path, service], 19 segment(s) outside or touching the boundary excluded",
+   "reviewThresholds": {
+    "lowFootprintShare": 0.05,
+    "lowNetworkMarginM": 28.7
+   }
+  }
+ },
+ "proposal": {
+  "layout": "G4",
+  "stage": "DECIDED",
+  "validated": true,
+  "status": "RESOLVED_PENDING_OWNER_APPROVAL",
+  "approved": false,
+  "published": false,
+  "notice": "VALIDATED PROPOSAL (offline checks pass). Not published, not pinned, not approved by the owner. The published map is still one zone, rnsit-z1.",
+  "assignmentDigest": "13be3a93ec62ebea6e7843e9c0230f2e3fe412a0235845faac33939929145d39",
+  "generatedAssignmentDigest": "52bb2005c4bea6698bd65b615ce99406c0c3882e4e376c5b87ff4ae3376f51cb",
+  "unresolvedCells": 0,
+  "decidedCells": 15,
+  "boundary": {
+   "way": "way/1120154292",
+   "sha256": "04cb64c4205dc59462e149501fdd93b412106cfdc8d7249661bc8f3f47dc08b4"
+  }
+ },
+ "features": [
+  {
+   "type": "Feature",
+   "id": "perimeter:way/1120154292",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5187278,
+       12.8996306
+      ],
+      [
+       77.5188634,
+       12.8995965
+      ],
+      [
+       77.5190055,
+       12.9002031
+      ],
+      [
+       77.5197566,
+       12.9022816
+      ],
+      [
+       77.5189935,
+       12.9024215
+      ],
+      [
+       77.5190015,
+       12.9024816
+      ],
+      [
+       77.518398,
+       12.9025796
+      ],
+      [
+       77.5175585,
+       12.9025509
+      ],
+      [
+       77.5170891,
+       12.9025365
+      ],
+      [
+       77.5170676,
+       12.9020254
+      ],
+      [
+       77.5167149,
+       12.9010515
+      ],
+      [
+       77.5162806,
+       12.9000909
+      ],
+      [
+       77.5156838,
+       12.9002873
+      ],
+      [
+       77.515575,
+       12.9000645
+      ],
+      [
+       77.515009,
+       12.8991128
+      ],
+      [
+       77.516385,
+       12.8988932
+      ],
+      [
+       77.5165634,
+       12.9000566
+      ],
+      [
+       77.5170747,
+       12.8999947
+      ],
+      [
+       77.5187278,
+       12.8996306
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "CAMPUS_PERIMETER",
+    "source": "way/1120154292",
+    "note": "Authoritative RNSIT boundary (RD-2026-08-30-01), copied verbatim; unchanged by this proposal"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "zone:rnsit-z-west",
+   "geometry": {
+    "type": "MultiPolygon",
+    "coordinates": [
+     [
+      [
+       [
+        77.51770016003579,
+        12.90093702087282
+       ],
+       [
+        77.51787527733337,
+        12.901139936232271
+       ],
+       [
+        77.51813205621922,
+        12.901088149767805
+       ],
+       [
+        77.51830717474127,
+        12.90129106543815
+       ],
+       [
+        77.51822551365947,
+        12.90154576761979
+       ],
+       [
+        77.51840063268799,
+        12.901748683647853
+       ],
+       [
+        77.51831897147599,
+        12.902003385606507
+       ],
+       [
+        77.51849409101096,
+        12.902206301992226
+       ],
+       [
+        77.51841242966874,
+        12.902461003727861
+       ],
+       [
+        77.51815564887288,
+        12.902512788450288
+       ],
+       [
+        77.51807398748178,
+        12.902767489335377
+       ],
+       [
+        77.51781720735508,
+        12.902819273160421
+       ],
+       [
+        77.51764208925613,
+        12.902616356681076
+       ],
+       [
+        77.51738531043523,
+        12.902668140189453
+       ],
+       [
+        77.51730364907661,
+        12.902922839596451
+       ],
+       [
+        77.51704687092487,
+        12.90297462220744
+       ],
+       [
+        77.51687175476847,
+        12.902771705992143
+       ],
+       [
+        77.51695341604574,
+        12.90251700721267
+       ],
+       [
+        77.51677830039579,
+        12.902314091355041
+       ],
+       [
+        77.51685996154283,
+        12.902059392352504
+       ],
+       [
+        77.51668484639934,
+        12.901856476852556
+       ],
+       [
+        77.51676650741616,
+        12.901601777627004
+       ],
+       [
+        77.51659139277913,
+        12.901398862484783
+       ],
+       [
+        77.51667305366573,
+        12.901144163036246
+       ],
+       [
+        77.51692982927075,
+        12.901092378102373
+       ],
+       [
+        77.51701149010849,
+        12.900837677803313
+       ],
+       [
+        77.51726826638267,
+        12.900785891972102
+       ],
+       [
+        77.5174433824558,
+        12.900988807020655
+       ],
+       [
+        77.51770016003579,
+        12.90093702087282
+       ]
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_ZONE",
+    "status": "PROPOSED — NOT PUBLISHED",
+    "zoneId": "rnsit-z-west",
+    "name": "RNSIT West — CSE/ISE/CSDS, ECE, Civil & AIML, hostels",
+    "cellCount": 15,
+    "components": 1,
+    "colour": "#0072B2"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "zone:rnsit-z-east",
+   "geometry": {
+    "type": "MultiPolygon",
+    "coordinates": [
+     [
+      [
+       [
+        77.51847049672574,
+        12.90078166000138
+       ],
+       [
+        77.51855215762842,
+        12.900526956746283
+       ],
+       [
+        77.51880893785246,
+        12.900475168487173
+       ],
+       [
+        77.51889059870625,
+        12.900220464381634
+       ],
+       [
+        77.5191473795994,
+        12.900168675225233
+       ],
+       [
+        77.51932250027542,
+        12.900371590755004
+       ],
+       [
+        77.51924083934031,
+        12.900626295488037
+       ],
+       [
+        77.51941596052278,
+        12.90082921137554
+       ],
+       [
+        77.51933429945747,
+        12.901083915885653
+       ],
+       [
+        77.5195094211464,
+        12.901286832130845
+       ],
+       [
+        77.51976620461862,
+        12.901235043819065
+       ],
+       [
+        77.51994132753198,
+        12.90143796037508
+       ],
+       [
+        77.51985966625516,
+        12.901692665289723
+       ],
+       [
+        77.52003478967498,
+        12.901895582203373
+       ],
+       [
+        77.51995312826796,
+        12.902150286895022
+       ],
+       [
+        77.52012825219424,
+        12.90235320416631
+       ],
+       [
+        77.520046590657,
+        12.902607908634923
+       ],
+       [
+        77.51978980527478,
+        12.902659695204788
+       ],
+       [
+        77.51961468206646,
+        12.902456777886686
+       ],
+       [
+        77.51935789798996,
+        12.90250856413984
+       ],
+       [
+        77.51927623648511,
+        12.902763267130462
+       ],
+       [
+        77.5190194530777,
+        12.902815052486254
+       ],
+       [
+        77.51884433181182,
+        12.90261213543211
+       ],
+       [
+        77.51858754971016,
+        12.90266392047121
+       ],
+       [
+        77.51850588823774,
+        12.902918621983797
+       ],
+       [
+        77.51824910680521,
+        12.902970406125531
+       ],
+       [
+        77.51807398748178,
+        12.902767489335377
+       ],
+       [
+        77.51815564887288,
+        12.902512788450288
+       ],
+       [
+        77.51841242966874,
+        12.902461003727861
+       ],
+       [
+        77.51849409101096,
+        12.902206301992226
+       ],
+       [
+        77.51831897147599,
+        12.902003385606507
+       ],
+       [
+        77.51840063268799,
+        12.901748683647853
+       ],
+       [
+        77.51822551365947,
+        12.90154576761979
+       ],
+       [
+        77.51830717474127,
+        12.90129106543815
+       ],
+       [
+        77.51856395493287,
+        12.90123927865701
+       ],
+       [
+        77.51864561596578,
+        12.900984575624872
+       ],
+       [
+        77.51847049672574,
+        12.90078166000138
+       ]
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_ZONE",
+    "status": "PROPOSED — NOT PUBLISHED",
+    "zoneId": "rnsit-z-east",
+    "name": "RNSIT East — Main Building, Canara Bank, Canteen (north), Basketball Court, Mec & EEE, MBA",
+    "cellCount": 17,
+    "components": 1,
+    "colour": "#E69F00"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "zone:rnsit-z-south",
+   "geometry": {
+    "type": "MultiPolygon",
+    "coordinates": [
+     [
+      [
+       [
+        77.51785168615588,
+        12.899715297020643
+       ],
+       [
+        77.51793334671679,
+        12.899460593947314
+       ],
+       [
+        77.51819012436174,
+        12.899408804843498
+       ],
+       [
+        77.51836524208241,
+        12.899611719393674
+       ],
+       [
+        77.51862202103315,
+        12.899559929973249
+       ],
+       [
+        77.5187036816265,
+        12.89930522542196
+       ],
+       [
+        77.51896046124632,
+        12.899253435104265
+       ],
+       [
+        77.51913558090943,
+        12.899456349918472
+       ],
+       [
+        77.51905392023473,
+        12.899711055097283
+       ],
+       [
+        77.5192290404043,
+        12.89991397026928
+       ],
+       [
+        77.5191473795994,
+        12.900168675225233
+       ],
+       [
+        77.51889059870625,
+        12.900220464381634
+       ],
+       [
+        77.51880893785246,
+        12.900475168487173
+       ],
+       [
+        77.51855215762842,
+        12.900526956746283
+       ],
+       [
+        77.51847049672574,
+        12.90078166000138
+       ],
+       [
+        77.51864561596578,
+        12.900984575624872
+       ],
+       [
+        77.51856395493287,
+        12.90123927865701
+       ],
+       [
+        77.51830717474127,
+        12.90129106543815
+       ],
+       [
+        77.51813205621922,
+        12.901088149767805
+       ],
+       [
+        77.51787527733337,
+        12.901139936232271
+       ],
+       [
+        77.51770016003579,
+        12.90093702087282
+       ],
+       [
+        77.5174433824558,
+        12.900988807020655
+       ],
+       [
+        77.51726826638267,
+        12.900785891972102
+       ],
+       [
+        77.51734992717158,
+        12.90053119082256
+       ],
+       [
+        77.5171748116049,
+        12.900328276131779
+       ],
+       [
+        77.51725647226357,
+        12.900073574759325
+       ],
+       [
+        77.51708135720338,
+        12.899870660426341
+       ],
+       [
+        77.51716301773183,
+        12.899615958830992
+       ],
+       [
+        77.51741979340183,
+        12.89956417094107
+       ],
+       [
+        77.51759490918005,
+        12.899767085227174
+       ],
+       [
+        77.51785168615588,
+        12.899715297020643
+       ]
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_ZONE",
+    "status": "PROPOSED — NOT PUBLISHED",
+    "zoneId": "rnsit-z-south",
+    "name": "RNSIT South — Auditorium, Canteen (south), Shiva Temple",
+    "cellCount": 14,
+    "components": 1,
+    "colour": "#009E73"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "zone:rnsit-z-southwest",
+   "geometry": {
+    "type": "MultiPolygon",
+    "coordinates": [
+     [
+      [
+       [
+        77.51655601548462,
+        12.89926191876504
+       ],
+       [
+        77.5167311288139,
+        12.899464832429189
+       ],
+       [
+        77.51664946836681,
+        12.899719533396967
+       ],
+       [
+        77.51682458220253,
+        12.899922447418971
+       ],
+       [
+        77.51708135720338,
+        12.899870660426341
+       ],
+       [
+        77.51725647226357,
+        12.900073574759325
+       ],
+       [
+        77.5171748116049,
+        12.900328276131779
+       ],
+       [
+        77.51734992717158,
+        12.90053119082256
+       ],
+       [
+        77.51726826638267,
+        12.900785891972102
+       ],
+       [
+        77.51701149010849,
+        12.900837677803313
+       ],
+       [
+        77.51692982927075,
+        12.901092378102373
+       ],
+       [
+        77.51667305366573,
+        12.901144163036246
+       ],
+       [
+        77.51649793953514,
+        12.90094124825177
+       ],
+       [
+        77.516241165236,
+        12.900993032869035
+       ],
+       [
+        77.51606605232992,
+        12.900790118395527
+       ],
+       [
+        77.51614771300493,
+        12.900535419351588
+       ],
+       [
+        77.51597260060528,
+        12.900332505235884
+       ],
+       [
+        77.51571582824869,
+        12.900384290117266
+       ],
+       [
+        77.51554071707356,
+        12.900181376312558
+       ],
+       [
+        77.51528394602289,
+        12.900233160877374
+       ],
+       [
+        77.51510883607227,
+        12.900030247383663
+       ],
+       [
+        77.51519049645428,
+        12.899775549371999
+       ],
+       [
+        77.51501538701012,
+        12.89957263623619
+       ],
+       [
+        77.5150970472619,
+        12.899317938001655
+       ],
+       [
+        77.51492193832418,
+        12.899115025223736
+       ],
+       [
+        77.51500359844573,
+        12.898860326766378
+       ],
+       [
+        77.51526036758641,
+        12.898808540459305
+       ],
+       [
+        77.51543547724218,
+        12.899011453190354
+       ],
+       [
+        77.51569224768876,
+        12.898959666566736
+       ],
+       [
+        77.51577390784287,
+        12.898704966631326
+       ],
+       [
+        77.51603067895867,
+        12.898653179110408
+       ],
+       [
+        77.51620579055701,
+        12.898856092105639
+       ],
+       [
+        77.51646256297867,
+        12.898804304268172
+       ],
+       [
+        77.51663767580149,
+        12.899007217574434
+       ],
+       [
+        77.51655601548462,
+        12.89926191876504
+       ]
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_ZONE",
+    "status": "PROPOSED — NOT PUBLISHED",
+    "zoneId": "rnsit-z-southwest",
+    "name": "RNSIT South-west — RNS International School and the south-west lobe",
+    "cellCount": 18,
+    "components": 1,
+    "colour": "#CC79A7"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510480fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51836524208241,
+       12.899611719393674
+      ],
+      [
+       77.51828358144016,
+       12.899866423094558
+      ],
+      [
+       77.51802680315855,
+       12.8999182116177
+      ],
+      [
+       77.51785168615588,
+       12.899715297020643
+      ],
+      [
+       77.51793334671679,
+       12.899460593947314
+      ],
+      [
+       77.51819012436174,
+       12.899408804843498
+      ],
+      [
+       77.51836524208241,
+       12.899611719393674
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014510480fff",
+    "zoneId": "rnsit-z-south",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.242,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 327.1,
+     "rnsit-z-east": 175.8,
+     "rnsit-z-south": 70.4,
+     "rnsit-z-southwest": 192.4
+    },
+    "networkMarginM": 105.4,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510482fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51845869966729,
+       12.900069338002536
+      ],
+      [
+       77.51837703889483,
+       12.900324041480523
+      ],
+      [
+       77.51812025997654,
+       12.90037582942301
+      ],
+      [
+       77.51794514246741,
+       12.900172914468172
+      ],
+      [
+       77.51802680315855,
+       12.8999182116177
+      ],
+      [
+       77.51828358144016,
+       12.899866423094558
+      ],
+      [
+       77.51845869966729,
+       12.900069338002536
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014510482fff",
+    "zoneId": "rnsit-z-south",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 66,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 351.3,
+     "rnsit-z-east": 198.6,
+     "rnsit-z-south": 93.2,
+     "rnsit-z-southwest": 216.7
+    },
+    "networkMarginM": 105.4,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510483fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51802680315855,
+       12.8999182116177
+      ],
+      [
+       77.51794514246741,
+       12.900172914468172
+      ],
+      [
+       77.51768836485492,
+       12.900224702094016
+      ],
+      [
+       77.51751324857024,
+       12.90002178745009
+      ],
+      [
+       77.51759490918005,
+       12.899767085227174
+      ],
+      [
+       77.51785168615588,
+       12.899715297020643
+      ],
+      [
+       77.51802680315855,
+       12.8999182116177
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014510483fff",
+    "zoneId": "rnsit-z-south",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.81,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 287.4,
+     "rnsit-z-east": 221,
+     "rnsit-z-south": 115.6,
+     "rnsit-z-southwest": 152.7
+    },
+    "networkMarginM": 37.1,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510486fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51879713997826,
+       12.899762844834338
+      ],
+      [
+       77.51871547925468,
+       12.900017549162758
+      ],
+      [
+       77.51845869966729,
+       12.900069338002536
+      ],
+      [
+       77.51828358144016,
+       12.899866423094558
+      ],
+      [
+       77.51836524208241,
+       12.899611719393674
+      ],
+      [
+       77.51862202103315,
+       12.899559929973249
+      ],
+      [
+       77.51879713997826,
+       12.899762844834338
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014510486fff",
+    "zoneId": "rnsit-z-south",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.837,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 136,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 371.7,
+     "rnsit-z-east": 136,
+     "rnsit-z-south": 30.6,
+     "rnsit-z-southwest": 237.1
+    },
+    "networkMarginM": 105.4,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510489fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5167311288139,
+       12.899464832429189
+      ],
+      [
+       77.51664946836681,
+       12.899719533396967
+      ],
+      [
+       77.51639269467182,
+       12.899771320072986
+      ],
+      [
+       77.51621758206058,
+       12.899568406361972
+      ],
+      [
+       77.5162992424263,
+       12.899313706021799
+      ],
+      [
+       77.51655601548462,
+       12.89926191876504
+      ],
+      [
+       77.5167311288139,
+       12.899464832429189
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014510489fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.516,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 364.8,
+     "rnsit-z-east": 428.1,
+     "rnsit-z-south": 267.2,
+     "rnsit-z-southwest": 184.9
+    },
+    "networkMarginM": 82.3,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451048afff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51725647226357,
+       12.900073574759325
+      ],
+      [
+       77.5171748116049,
+       12.900328276131779
+      ],
+      [
+       77.5169180359674,
+       12.900380062543693
+      ],
+      [
+       77.51674292162522,
+       12.900177148163861
+      ],
+      [
+       77.51682458220253,
+       12.899922447418971
+      ],
+      [
+       77.51708135720338,
+       12.899870660426341
+      ],
+      [
+       77.51725647226357,
+       12.900073574759325
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b601451048afff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.799,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 244.3,
+     "rnsit-z-east": 316.7,
+     "rnsit-z-south": 155.8,
+     "rnsit-z-southwest": 64.3
+    },
+    "networkMarginM": 91.5,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451048bfff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51682458220253,
+       12.899922447418971
+      ],
+      [
+       77.51674292162522,
+       12.900177148163861
+      ],
+      [
+       77.51648614729356,
+       12.900228934259186
+      ],
+      [
+       77.51631103417587,
+       12.900026020190309
+      ],
+      [
+       77.51639269467182,
+       12.899771320072986
+      ],
+      [
+       77.51664946836681,
+       12.899719533396967
+      ],
+      [
+       77.51682458220253,
+       12.899922447418971
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b601451048bfff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.612,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 300.1,
+     "rnsit-z-east": 363.4,
+     "rnsit-z-south": 202.5,
+     "rnsit-z-southwest": 120.1
+    },
+    "networkMarginM": 82.3,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451048efff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51759490918005,
+       12.899767085227174
+      ],
+      [
+       77.51751324857024,
+       12.90002178745009
+      ],
+      [
+       77.51725647226357,
+       12.900073574759325
+      ],
+      [
+       77.51708135720338,
+       12.899870660426341
+      ],
+      [
+       77.51716301773183,
+       12.899615958830992
+      ],
+      [
+       77.51741979340183,
+       12.89956417094107
+      ],
+      [
+       77.51759490918005,
+       12.899767085227174
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b601451048efff",
+    "zoneId": "rnsit-z-south",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.213,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 242.3,
+     "rnsit-z-east": 259.2,
+     "rnsit-z-south": 98.3,
+     "rnsit-z-southwest": 105
+    },
+    "networkMarginM": 6.8,
+    "flags": [
+     "BOUNDARY_CELL",
+     "LOW_NETWORK_MARGIN"
+    ],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510490fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51898405781048,
+       12.900678084063815
+      ],
+      [
+       77.51890239682649,
+       12.90093278794642
+      ],
+      [
+       77.51864561596578,
+       12.900984575624872
+      ],
+      [
+       77.51847049672574,
+       12.90078166000138
+      ],
+      [
+       77.51855215762842,
+       12.900526956746283
+      ],
+      [
+       77.51880893785246,
+       12.900475168487173
+      ],
+      [
+       77.51898405781048,
+       12.900678084063815
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b6014510490fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "EVIDENCE_DECISION",
+    "tieLabel": "T01",
+    "competingZones": [
+     "rnsit-z-east",
+     "rnsit-z-south"
+    ],
+    "decision": {
+     "rule": "R2_INSTRUMENTS_AGREE",
+     "confidence": "MEDIUM",
+     "evidenceConfidence": "MEDIUM",
+     "seedSensitive": false,
+     "from": null
+    },
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 37,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 268.1,
+     "rnsit-z-east": 70.9,
+     "rnsit-z-south": 82.4,
+     "rnsit-z-southwest": 286
+    },
+    "networkMarginM": 11.6,
+    "flags": [],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510491fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51855215762842,
+       12.900526956746283
+      ],
+      [
+       77.51847049672574,
+       12.90078166000138
+      ],
+      [
+       77.51821371717078,
+       12.900833447363176
+      ],
+      [
+       77.51803859915519,
+       12.900630532050574
+      ],
+      [
+       77.51812025997654,
+       12.90037582942301
+      ],
+      [
+       77.51837703889483,
+       12.900324041480523
+      ],
+      [
+       77.51855215762842,
+       12.900526956746283
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014510491fff",
+    "zoneId": "rnsit-z-south",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 72,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 233.8,
+     "rnsit-z-east": 138.7,
+     "rnsit-z-south": 48.1,
+     "rnsit-z-southwest": 251.8
+    },
+    "networkMarginM": 90.5,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510492fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51907751729098,
+       12.901135703880767
+      ],
+      [
+       77.51899585617677,
+       12.901390407540429
+      ],
+      [
+       77.51873907467939,
+       12.901442194638229
+      ],
+      [
+       77.51856395493287,
+       12.90123927865701
+      ],
+      [
+       77.51864561596578,
+       12.900984575624872
+      ],
+      [
+       77.51890239682649,
+       12.90093278794642
+      ],
+      [
+       77.51907751729098,
+       12.901135703880767
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014510492fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 23,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 297.9,
+     "rnsit-z-east": 24.3,
+     "rnsit-z-south": 140,
+     "rnsit-z-southwest": 343.6
+    },
+    "networkMarginM": 115.7,
+    "flags": [],
+    "l4ZoneId": "rnsit-z4"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510493fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51864561596578,
+       12.900984575624872
+      ],
+      [
+       77.51856395493287,
+       12.90123927865701
+      ],
+      [
+       77.51830717474127,
+       12.90129106543815
+      ],
+      [
+       77.51813205621922,
+       12.901088149767805
+      ],
+      [
+       77.51821371717078,
+       12.900833447363176
+      ],
+      [
+       77.51847049672574,
+       12.90078166000138
+      ],
+      [
+       77.51864561596578,
+       12.900984575624872
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b6014510493fff",
+    "zoneId": "rnsit-z-south",
+    "basis": "EVIDENCE_DECISION",
+    "tieLabel": "T02",
+    "competingZones": [
+     "rnsit-z-east",
+     "rnsit-z-south"
+    ],
+    "decision": {
+     "rule": "R2_INSTRUMENTS_AGREE",
+     "confidence": "HIGH",
+     "evidenceConfidence": "HIGH",
+     "seedSensitive": false,
+     "from": null
+    },
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 42,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 244.6,
+     "rnsit-z-east": 151.2,
+     "rnsit-z-south": 58.9,
+     "rnsit-z-southwest": 262.6
+    },
+    "networkMarginM": 92.3,
+    "flags": [],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510494fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51932250027542,
+       12.900371590755004
+      ],
+      [
+       77.51924083934031,
+       12.900626295488037
+      ],
+      [
+       77.51898405781048,
+       12.900678084063815
+      ],
+      [
+       77.51880893785246,
+       12.900475168487173
+      ],
+      [
+       77.51889059870625,
+       12.900220464381634
+      ],
+      [
+       77.5191473795994,
+       12.900168675225233
+      ],
+      [
+       77.51932250027542,
+       12.900371590755004
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014510494fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.551,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 6,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 412.5,
+     "rnsit-z-east": 22.8,
+     "rnsit-z-south": 114.4,
+     "rnsit-z-southwest": 342.9
+    },
+    "networkMarginM": 91.6,
+    "flags": [
+     "LOW_FOOTPRINT_SHARE"
+    ],
+    "l4ZoneId": "rnsit-z4"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510495fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51889059870625,
+       12.900220464381634
+      ],
+      [
+       77.51880893785246,
+       12.900475168487173
+      ],
+      [
+       77.51855215762842,
+       12.900526956746283
+      ],
+      [
+       77.51837703889483,
+       12.900324041480523
+      ],
+      [
+       77.51845869966729,
+       12.900069338002536
+      ],
+      [
+       77.51871547925468,
+       12.900017549162758
+      ],
+      [
+       77.51889059870625,
+       12.900220464381634
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014510495fff",
+    "zoneId": "rnsit-z-south",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 306.5,
+     "rnsit-z-east": 121.8,
+     "rnsit-z-south": 59.1,
+     "rnsit-z-southwest": 279.4
+    },
+    "networkMarginM": 62.7,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510496fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51941596052278,
+       12.90082921137554
+      ],
+      [
+       77.51933429945747,
+       12.901083915885653
+      ],
+      [
+       77.51907751729098,
+       12.901135703880767
+      ],
+      [
+       77.51890239682649,
+       12.90093278794642
+      ],
+      [
+       77.51898405781048,
+       12.900678084063815
+      ],
+      [
+       77.51924083934031,
+       12.900626295488037
+      ],
+      [
+       77.51941596052278,
+       12.90082921137554
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014510496fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.726,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 149,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 365.4,
+     "rnsit-z-east": 10.6,
+     "rnsit-z-south": 171.5,
+     "rnsit-z-southwest": 399.9
+    },
+    "networkMarginM": 160.9,
+    "flags": [],
+    "l4ZoneId": "rnsit-z4"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510498fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51778182090604,
+       12.900682319095738
+      ],
+      [
+       77.51770016003579,
+       12.90093702087282
+      ],
+      [
+       77.5174433824558,
+       12.900988807020655
+      ],
+      [
+       77.51726826638267,
+       12.900785891972102
+      ],
+      [
+       77.51734992717158,
+       12.90053119082256
+      ],
+      [
+       77.5176067041149,
+       12.900479404094028
+      ],
+      [
+       77.51778182090604,
+       12.900682319095738
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014510498fff",
+    "zoneId": "rnsit-z-south",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 65,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 164.1,
+     "rnsit-z-east": 223.3,
+     "rnsit-z-south": 43.7,
+     "rnsit-z-southwest": 182.1
+    },
+    "networkMarginM": 120.5,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014510499fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51734992717158,
+       12.90053119082256
+      ],
+      [
+       77.51726826638267,
+       12.900785891972102
+      ],
+      [
+       77.51701149010849,
+       12.900837677803313
+      ],
+      [
+       77.51683637525987,
+       12.900634763065693
+      ],
+      [
+       77.5169180359674,
+       12.900380062543693
+      ],
+      [
+       77.5171748116049,
+       12.900328276131779
+      ],
+      [
+       77.51734992717158,
+       12.90053119082256
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014510499fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 2
+    },
+    "networkM": {
+     "rnsit-z-west": 233.5,
+     "rnsit-z-east": 292.7,
+     "rnsit-z-south": 89.5,
+     "rnsit-z-southwest": 203.8
+    },
+    "networkMarginM": 114.3,
+    "flags": [
+     "LOW_FOOTPRINT_SHARE",
+     "INSTRUMENTS_DISAGREE"
+    ],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451049afff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51787527733337,
+       12.901139936232271
+      ],
+      [
+       77.51779361633294,
+       12.901394637786417
+      ],
+      [
+       77.51753683811624,
+       12.901446423353557
+      ],
+      [
+       77.51736172153669,
+       12.90124350794727
+      ],
+      [
+       77.5174433824558,
+       12.900988807020655
+      ],
+      [
+       77.51770016003579,
+       12.90093702087282
+      ],
+      [
+       77.51787527733337,
+       12.901139936232271
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b601451049afff",
+    "zoneId": "rnsit-z-west",
+    "basis": "EVIDENCE_DECISION",
+    "tieLabel": "T03",
+    "competingZones": [
+     "rnsit-z-south",
+     "rnsit-z-west"
+    ],
+    "decision": {
+     "rule": "R4_ONLY_CONNECTED_OPTION",
+     "confidence": "LOW",
+     "evidenceConfidence": "LOW",
+     "seedSensitive": false,
+     "from": null
+    },
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 76,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 121.1,
+     "rnsit-z-east": 206.5,
+     "rnsit-z-south": 106.5,
+     "rnsit-z-southwest": 176.2
+    },
+    "networkMarginM": 14.6,
+    "flags": [],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451049bfff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5174433824558,
+       12.900988807020655
+      ],
+      [
+       77.51736172153669,
+       12.90124350794727
+      ],
+      [
+       77.51710494462583,
+       12.901295293197753
+      ],
+      [
+       77.51692982927075,
+       12.901092378102373
+      ],
+      [
+       77.51701149010849,
+       12.900837677803313
+      ],
+      [
+       77.51726826638267,
+       12.900785891972102
+      ],
+      [
+       77.5174433824558,
+       12.900988807020655
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b601451049bfff",
+    "zoneId": "rnsit-z-west",
+    "basis": "CONNECTIVITY_REPAIR",
+    "tieLabel": "T04",
+    "competingZones": [
+     "rnsit-z-south",
+     "rnsit-z-southwest",
+     "rnsit-z-west"
+    ],
+    "decision": {
+     "rule": "R3_CONNECTIVITY_REPAIR",
+     "confidence": "LOW",
+     "evidenceConfidence": "LOW",
+     "seedSensitive": false,
+     "from": null
+    },
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 2
+    },
+    "networkM": {
+     "rnsit-z-west": 86.9,
+     "rnsit-z-east": 250.7,
+     "rnsit-z-south": 112.3,
+     "rnsit-z-southwest": 104.9
+    },
+    "networkMarginM": 18,
+    "flags": [],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451049cfff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51812025997654,
+       12.90037582942301
+      ],
+      [
+       77.51803859915519,
+       12.900630532050574
+      ],
+      [
+       77.51778182090604,
+       12.900682319095738
+      ],
+      [
+       77.5176067041149,
+       12.900479404094028
+      ],
+      [
+       77.51768836485492,
+       12.900224702094016
+      ],
+      [
+       77.51794514246741,
+       12.900172914468172
+      ],
+      [
+       77.51812025997654,
+       12.90037582942301
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b601451049cfff",
+    "zoneId": "rnsit-z-south",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 212,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 217.5,
+     "rnsit-z-east": 276.7,
+     "rnsit-z-south": 73.5,
+     "rnsit-z-southwest": 200.3
+    },
+    "networkMarginM": 126.8,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451049dfff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51768836485492,
+       12.900224702094016
+      ],
+      [
+       77.5176067041149,
+       12.900479404094028
+      ],
+      [
+       77.51734992717158,
+       12.90053119082256
+      ],
+      [
+       77.5171748116049,
+       12.900328276131779
+      ],
+      [
+       77.51725647226357,
+       12.900073574759325
+      ],
+      [
+       77.51751324857024,
+       12.90002178745009
+      ],
+      [
+       77.51768836485492,
+       12.900224702094016
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b601451049dfff",
+    "zoneId": "rnsit-z-south",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 5,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 211.6,
+     "rnsit-z-east": 270.8,
+     "rnsit-z-south": 67.6,
+     "rnsit-z-southwest": 136.5
+    },
+    "networkMarginM": 68.8,
+    "flags": [
+     "LOW_FOOTPRINT_SHARE"
+    ],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451049efff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51821371717078,
+       12.900833447363176
+      ],
+      [
+       77.51813205621922,
+       12.901088149767805
+      ],
+      [
+       77.51787527733337,
+       12.901139936232271
+      ],
+      [
+       77.51770016003579,
+       12.90093702087282
+      ],
+      [
+       77.51778182090604,
+       12.900682319095738
+      ],
+      [
+       77.51803859915519,
+       12.900630532050574
+      ],
+      [
+       77.51821371717078,
+       12.900833447363176
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b601451049efff",
+    "zoneId": "rnsit-z-south",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 4,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 10,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 174.5,
+     "rnsit-z-east": 166,
+     "rnsit-z-south": 54.2,
+     "rnsit-z-southwest": 192.5
+    },
+    "networkMarginM": 111.8,
+    "flags": [
+     "LOW_FOOTPRINT_SHARE"
+    ],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b60145104b1fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51913558090943,
+       12.899456349918472
+      ],
+      [
+       77.51905392023473,
+       12.899711055097283
+      ],
+      [
+       77.51879713997826,
+       12.899762844834338
+      ],
+      [
+       77.51862202103315,
+       12.899559929973249
+      ],
+      [
+       77.5187036816265,
+       12.89930522542196
+      ],
+      [
+       77.51896046124632,
+       12.899253435104265
+      ],
+      [
+       77.51913558090943,
+       12.899456349918472
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b60145104b1fff",
+    "zoneId": "rnsit-z-south",
+    "basis": "EVIDENCE_DECISION",
+    "tieLabel": "T05",
+    "competingZones": [
+     "rnsit-z-south"
+    ],
+    "decision": {
+     "rule": "R1_SINGLE_NEIGHBOUR",
+     "confidence": "HIGH",
+     "evidenceConfidence": "HIGH",
+     "seedSensitive": false,
+     "from": null
+    },
+    "centreInBoundary": false,
+    "insideFraction": 0.111,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 401.1,
+     "rnsit-z-east": 109.5,
+     "rnsit-z-south": 38,
+     "rnsit-z-southwest": 266.4
+    },
+    "networkMarginM": 71.5,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b60145104b3fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5192290404043,
+       12.89991397026928
+      ],
+      [
+       77.5191473795994,
+       12.900168675225233
+      ],
+      [
+       77.51889059870625,
+       12.900220464381634
+      ],
+      [
+       77.51871547925468,
+       12.900017549162758
+      ],
+      [
+       77.51879713997826,
+       12.899762844834338
+      ],
+      [
+       77.51905392023473,
+       12.899711055097283
+      ],
+      [
+       77.5192290404043,
+       12.89991397026928
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b60145104b3fff",
+    "zoneId": "rnsit-z-south",
+    "basis": "EVIDENCE_DECISION",
+    "tieLabel": "T06",
+    "competingZones": [
+     "rnsit-z-east",
+     "rnsit-z-south"
+    ],
+    "decision": {
+     "rule": "R2_INSTRUMENTS_AGREE",
+     "confidence": "MEDIUM",
+     "evidenceConfidence": "MEDIUM",
+     "seedSensitive": true,
+     "from": null
+    },
+    "centreInBoundary": false,
+    "insideFraction": 0.446,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 21,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 422.7,
+     "rnsit-z-east": 72.6,
+     "rnsit-z-south": 59.6,
+     "rnsit-z-southwest": 288
+    },
+    "networkMarginM": 13.1,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b60145104c2fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51543547724218,
+       12.899011453190354
+      ],
+      [
+       77.51535381703924,
+       12.899266152275336
+      ],
+      [
+       77.5150970472619,
+       12.899317938001655
+      ],
+      [
+       77.51492193832418,
+       12.899115025223736
+      ],
+      [
+       77.51500359844573,
+       12.898860326766378
+      ],
+      [
+       77.51526036758641,
+       12.898808540459305
+      ],
+      [
+       77.51543547724218,
+       12.899011453190354
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b60145104c2fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.376,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 492.7,
+     "rnsit-z-east": 556,
+     "rnsit-z-south": 395.1,
+     "rnsit-z-southwest": 312.8
+    },
+    "networkMarginM": 82.3,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b60145104d0fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51596080967145,
+       12.899620192721432
+      ],
+      [
+       77.51587914925689,
+       12.89987489221116
+      ],
+      [
+       77.51562237753697,
+       12.899926677673298
+      ],
+      [
+       77.51544726686829,
+       12.899723764226438
+      ],
+      [
+       77.51552892720147,
+       12.8994690653643
+      ],
+      [
+       77.51578569828472,
+       12.899417279321437
+      ],
+      [
+       77.51596080967145,
+       12.899620192721432
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b60145104d0fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 420.4,
+     "rnsit-z-east": 483.6,
+     "rnsit-z-south": 322.7,
+     "rnsit-z-southwest": 240.4
+    },
+    "networkMarginM": 82.3,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b60145104d1fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51552892720147,
+       12.8994690653643
+      ],
+      [
+       77.51544726686829,
+       12.899723764226438
+      ],
+      [
+       77.51519049645428,
+       12.899775549371999
+      ],
+      [
+       77.51501538701012,
+       12.89957263623619
+      ],
+      [
+       77.5150970472619,
+       12.899317938001655
+      ],
+      [
+       77.51535381703924,
+       12.899266152275336
+      ],
+      [
+       77.51552892720147,
+       12.8994690653643
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b60145104d1fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.531,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 458.6,
+     "rnsit-z-east": 521.8,
+     "rnsit-z-south": 360.9,
+     "rnsit-z-southwest": 278.6
+    },
+    "networkMarginM": 82.3,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b60145104d2fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51605426115009,
+       12.900077805969032
+      ],
+      [
+       77.51597260060528,
+       12.900332505235884
+      ],
+      [
+       77.51571582824869,
+       12.900384290117266
+      ],
+      [
+       77.51554071707356,
+       12.900181376312558
+      ],
+      [
+       77.51562237753697,
+       12.899926677673298
+      ],
+      [
+       77.51587914925689,
+       12.89987489221116
+      ],
+      [
+       77.51605426115009,
+       12.900077805969032
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b60145104d2fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.714,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 376.2,
+     "rnsit-z-east": 439.5,
+     "rnsit-z-south": 278.6,
+     "rnsit-z-southwest": 196.3
+    },
+    "networkMarginM": 82.3,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b60145104d3fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51562237753697,
+       12.899926677673298
+      ],
+      [
+       77.51554071707356,
+       12.900181376312558
+      ],
+      [
+       77.51528394602289,
+       12.900233160877374
+      ],
+      [
+       77.51510883607227,
+       12.900030247383663
+      ],
+      [
+       77.51519049645428,
+       12.899775549371999
+      ],
+      [
+       77.51544726686829,
+       12.899723764226438
+      ],
+      [
+       77.51562237753697,
+       12.899926677673298
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b60145104d3fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.163,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 413.6,
+     "rnsit-z-east": 476.9,
+     "rnsit-z-south": 315.9,
+     "rnsit-z-southwest": 233.6
+    },
+    "networkMarginM": 82.3,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b60145104d4fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5162992424263,
+       12.899313706021799
+      ],
+      [
+       77.51621758206058,
+       12.899568406361972
+      ],
+      [
+       77.51596080967145,
+       12.899620192721432
+      ],
+      [
+       77.51578569828472,
+       12.899417279321437
+      ],
+      [
+       77.51586735856905,
+       12.899162579608841
+      ],
+      [
+       77.51612413032151,
+       12.899110792668655
+      ],
+      [
+       77.5162992424263,
+       12.899313706021799
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b60145104d4fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 398.6,
+     "rnsit-z-east": 461.8,
+     "rnsit-z-south": 300.9,
+     "rnsit-z-southwest": 218.6
+    },
+    "networkMarginM": 82.3,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b60145104d5fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51586735856905,
+       12.899162579608841
+      ],
+      [
+       77.51578569828472,
+       12.899417279321437
+      ],
+      [
+       77.51552892720147,
+       12.8994690653643
+      ],
+      [
+       77.51535381703924,
+       12.899266152275336
+      ],
+      [
+       77.51543547724218,
+       12.899011453190354
+      ],
+      [
+       77.51569224768876,
+       12.898959666566736
+      ],
+      [
+       77.51586735856905,
+       12.899162579608841
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b60145104d5fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.936,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 464.9,
+     "rnsit-z-east": 528.2,
+     "rnsit-z-south": 367.2,
+     "rnsit-z-southwest": 284.9
+    },
+    "networkMarginM": 82.3,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b60145104d6fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51639269467182,
+       12.899771320072986
+      ],
+      [
+       77.51631103417587,
+       12.900026020190309
+      ],
+      [
+       77.51605426115009,
+       12.900077805969032
+      ],
+      [
+       77.51587914925689,
+       12.89987489221116
+      ],
+      [
+       77.51596080967145,
+       12.899620192721432
+      ],
+      [
+       77.51621758206058,
+       12.899568406361972
+      ],
+      [
+       77.51639269467182,
+       12.899771320072986
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b60145104d6fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 352.3,
+     "rnsit-z-east": 415.6,
+     "rnsit-z-south": 254.6,
+     "rnsit-z-southwest": 172.3
+    },
+    "networkMarginM": 82.3,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b60145104f2fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51663767580149,
+       12.899007217574434
+      ],
+      [
+       77.51655601548462,
+       12.89926191876504
+      ],
+      [
+       77.5162992424263,
+       12.899313706021799
+      ],
+      [
+       77.51612413032151,
+       12.899110792668655
+      ],
+      [
+       77.51620579055701,
+       12.898856092105639
+      ],
+      [
+       77.51646256297867,
+       12.898804304268172
+      ],
+      [
+       77.51663767580149,
+       12.899007217574434
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b60145104f2fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.496,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 413.2,
+     "rnsit-z-east": 476.4,
+     "rnsit-z-south": 315.5,
+     "rnsit-z-southwest": 233.2
+    },
+    "networkMarginM": 82.3,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b60145104f3fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51620579055701,
+       12.898856092105639
+      ],
+      [
+       77.51612413032151,
+       12.899110792668655
+      ],
+      [
+       77.51586735856905,
+       12.899162579608841
+      ],
+      [
+       77.51569224768876,
+       12.898959666566736
+      ],
+      [
+       77.51577390784287,
+       12.898704966631326
+      ],
+      [
+       77.51603067895867,
+       12.898653179110408
+      ],
+      [
+       77.51620579055701,
+       12.898856092105639
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b60145104f3fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.356,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 431.6,
+     "rnsit-z-east": 494.9,
+     "rnsit-z-south": 333.9,
+     "rnsit-z-southwest": 251.6
+    },
+    "networkMarginM": 82.3,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512841fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51858754971016,
+       12.90266392047121
+      ],
+      [
+       77.51850588823774,
+       12.902918621983797
+      ],
+      [
+       77.51824910680521,
+       12.902970406125531
+      ],
+      [
+       77.51807398748178,
+       12.902767489335377
+      ],
+      [
+       77.51815564887288,
+       12.902512788450288
+      ],
+      [
+       77.51841242966874,
+       12.902461003727861
+      ],
+      [
+       77.51858754971016,
+       12.90266392047121
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b6014512841fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "EVIDENCE_DECISION",
+    "tieLabel": "T07",
+    "competingZones": [
+     "rnsit-z-east",
+     "rnsit-z-west"
+    ],
+    "decision": {
+     "rule": "R2_INSTRUMENTS_AGREE",
+     "confidence": "MEDIUM",
+     "evidenceConfidence": "HIGH",
+     "seedSensitive": true,
+     "from": null
+    },
+    "centreInBoundary": false,
+    "insideFraction": 0.163,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 4,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 68.4,
+     "rnsit-z-east": 17.7,
+     "rnsit-z-south": 300.1,
+     "rnsit-z-southwest": 359.9
+    },
+    "networkMarginM": 50.7,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512844fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51935789798996,
+       12.90250856413984
+      ],
+      [
+       77.51927623648511,
+       12.902763267130462
+      ],
+      [
+       77.5190194530777,
+       12.902815052486254
+      ],
+      [
+       77.51884433181182,
+       12.90261213543211
+      ],
+      [
+       77.51892599323534,
+       12.902357433068978
+      ],
+      [
+       77.51918277600609,
+       12.9023056471325
+      ],
+      [
+       77.51935789798996,
+       12.90250856413984
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512844fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.16,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 145.3,
+     "rnsit-z-east": 57.5,
+     "rnsit-z-south": 282.7,
+     "rnsit-z-southwest": 436.7
+    },
+    "networkMarginM": 87.8,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": "rnsit-z3"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512845fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51892599323534,
+       12.902357433068978
+      ],
+      [
+       77.51884433181182,
+       12.90261213543211
+      ],
+      [
+       77.51858754971016,
+       12.90266392047121
+      ],
+      [
+       77.51841242966874,
+       12.902461003727861
+      ],
+      [
+       77.51849409101096,
+       12.902206301992226
+      ],
+      [
+       77.5187508724759,
+       12.902154516372429
+      ],
+      [
+       77.51892599323534,
+       12.902357433068978
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512845fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.805,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 60,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 117,
+     "rnsit-z-east": 23.2,
+     "rnsit-z-south": 308.9,
+     "rnsit-z-southwest": 408.4
+    },
+    "networkMarginM": 93.8,
+    "flags": [],
+    "l4ZoneId": "rnsit-z3"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512849fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51738531043523,
+       12.902668140189453
+      ],
+      [
+       77.51730364907661,
+       12.902922839596451
+      ],
+      [
+       77.51704687092487,
+       12.90297462220744
+      ],
+      [
+       77.51687175476847,
+       12.902771705992143
+      ],
+      [
+       77.51695341604574,
+       12.90251700721267
+      ],
+      [
+       77.51721019356079,
+       12.902465224020945
+      ],
+      [
+       77.51738531043523,
+       12.902668140189453
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512849fff",
+    "zoneId": "rnsit-z-west",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.047,
+    "footprintSamples": {
+     "rnsit-z-west": 2,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 38.8,
+     "rnsit-z-east": 134.8,
+     "rnsit-z-south": 380.7,
+     "rnsit-z-southwest": 440.4
+    },
+    "networkMarginM": 96.1,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": "rnsit-z2"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451284cfff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51815564887288,
+       12.902512788450288
+      ],
+      [
+       77.51807398748178,
+       12.902767489335377
+      ],
+      [
+       77.51781720735508,
+       12.902819273160421
+      ],
+      [
+       77.51764208925613,
+       12.902616356681076
+      ],
+      [
+       77.5177237505659,
+       12.902361656423505
+      ],
+      [
+       77.51798053005592,
+       12.902309872017755
+      ],
+      [
+       77.51815564887288,
+       12.902512788450288
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b601451284cfff",
+    "zoneId": "rnsit-z-west",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.493,
+    "footprintSamples": {
+     "rnsit-z-west": 67,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 24.1,
+     "rnsit-z-east": 63.3,
+     "rnsit-z-south": 309.2,
+     "rnsit-z-southwest": 369
+    },
+    "networkMarginM": 39.2,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": "rnsit-z2"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451284dfff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5177237505659,
+       12.902361656423505
+      ],
+      [
+       77.51764208925613,
+       12.902616356681076
+      ],
+      [
+       77.51738531043523,
+       12.902668140189453
+      ],
+      [
+       77.51721019356079,
+       12.902465224020945
+      ],
+      [
+       77.51729185478919,
+       12.902210524390883
+      ],
+      [
+       77.51754863297342,
+       12.902158740301807
+      ],
+      [
+       77.5177237505659,
+       12.902361656423505
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b601451284dfff",
+    "zoneId": "rnsit-z-west",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.828,
+    "footprintSamples": {
+     "rnsit-z-west": 131,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 15.7,
+     "rnsit-z-east": 118.8,
+     "rnsit-z-south": 364.7,
+     "rnsit-z-southwest": 424.5
+    },
+    "networkMarginM": 103.1,
+    "flags": [],
+    "l4ZoneId": "rnsit-z2"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512860fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51960288214627,
+       12.901744453020857
+      ],
+      [
+       77.51952122082055,
+       12.901999157085033
+      ],
+      [
+       77.51926443738071,
+       12.902050943918852
+      ],
+      [
+       77.51908931590332,
+       12.901848027269144
+      ],
+      [
+       77.51917097714774,
+       12.901593323832481
+      ],
+      [
+       77.51942775995087,
+       12.901541536418001
+      ],
+      [
+       77.51960288214627,
+       12.901744453020857
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512860fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.983,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 186,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 269.5,
+     "rnsit-z-east": 16.8,
+     "rnsit-z-south": 282.6,
+     "rnsit-z-southwest": 511.1
+    },
+    "networkMarginM": 252.7,
+    "flags": [],
+    "l4ZoneId": "rnsit-z4"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512861fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51917097714774,
+       12.901593323832481
+      ],
+      [
+       77.51908931590332,
+       12.901848027269144
+      ],
+      [
+       77.51883253376926,
+       12.901899813786278
+      ],
+      [
+       77.51865741351628,
+       12.90169689744739
+      ],
+      [
+       77.51873907467939,
+       12.901442194638229
+      ],
+      [
+       77.51899585617677,
+       12.901390407540429
+      ],
+      [
+       77.51917097714774,
+       12.901593323832481
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b6014512861fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "EVIDENCE_DECISION",
+    "tieLabel": "T08",
+    "competingZones": [
+     "rnsit-z-east"
+    ],
+    "decision": {
+     "rule": "R1_SINGLE_NEIGHBOUR",
+     "confidence": "HIGH",
+     "evidenceConfidence": "HIGH",
+     "seedSensitive": false,
+     "from": null
+    },
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 34,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 248.1,
+     "rnsit-z-east": 53.1,
+     "rnsit-z-south": 194.3,
+     "rnsit-z-southwest": 397.9
+    },
+    "networkMarginM": 141.2,
+    "flags": [],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512862fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51969634352241,
+       12.902202074045526
+      ],
+      [
+       77.51961468206646,
+       12.902456777886686
+      ],
+      [
+       77.51935789798996,
+       12.90250856413984
+      ],
+      [
+       77.51918277600609,
+       12.9023056471325
+      ],
+      [
+       77.51926443738071,
+       12.902050943918852
+      ],
+      [
+       77.51952122082055,
+       12.901999157085033
+      ],
+      [
+       77.51969634352241,
+       12.902202074045526
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512862fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.72,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 101,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 204,
+     "rnsit-z-east": 18.8,
+     "rnsit-z-south": 284.6,
+     "rnsit-z-southwest": 488.2
+    },
+    "networkMarginM": 185.2,
+    "flags": [],
+    "l4ZoneId": "rnsit-z3"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512863fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51926443738071,
+       12.902050943918852
+      ],
+      [
+       77.51918277600609,
+       12.9023056471325
+      ],
+      [
+       77.51892599323534,
+       12.902357433068978
+      ],
+      [
+       77.5187508724759,
+       12.902154516372429
+      ],
+      [
+       77.51883253376926,
+       12.901899813786278
+      ],
+      [
+       77.51908931590332,
+       12.901848027269144
+      ],
+      [
+       77.51926443738071,
+       12.902050943918852
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512863fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 38,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 198.2,
+     "rnsit-z-east": 26,
+     "rnsit-z-south": 248.1,
+     "rnsit-z-southwest": 451.7
+    },
+    "networkMarginM": 172.2,
+    "flags": [],
+    "l4ZoneId": "rnsit-z3"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512864fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51994132753198,
+       12.90143796037508
+      ],
+      [
+       77.51985966625516,
+       12.901692665289723
+      ],
+      [
+       77.51960288214627,
+       12.901744453020857
+      ],
+      [
+       77.51942775995087,
+       12.901541536418001
+      ],
+      [
+       77.5195094211464,
+       12.901286832130845
+      ],
+      [
+       77.51976620461862,
+       12.901235043819065
+      ],
+      [
+       77.51994132753198,
+       12.90143796037508
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512864fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.041,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 282.7,
+     "rnsit-z-east": 30.1,
+     "rnsit-z-south": 247.7,
+     "rnsit-z-southwest": 476.1
+    },
+    "networkMarginM": 217.6,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": "rnsit-z4"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512865fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5195094211464,
+       12.901286832130845
+      ],
+      [
+       77.51942775995087,
+       12.901541536418001
+      ],
+      [
+       77.51917097714774,
+       12.901593323832481
+      ],
+      [
+       77.51899585617677,
+       12.901390407540429
+      ],
+      [
+       77.51907751729098,
+       12.901135703880767
+      ],
+      [
+       77.51933429945747,
+       12.901083915885653
+      ],
+      [
+       77.5195094211464,
+       12.901286832130845
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512865fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.875,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 193,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 318.6,
+     "rnsit-z-east": 34.6,
+     "rnsit-z-south": 225.3,
+     "rnsit-z-southwest": 453.7
+    },
+    "networkMarginM": 190.7,
+    "flags": [],
+    "l4ZoneId": "rnsit-z4"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512866fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.52003478967498,
+       12.901895582203373
+      ],
+      [
+       77.51995312826796,
+       12.902150286895022
+      ],
+      [
+       77.51969634352241,
+       12.902202074045526
+      ],
+      [
+       77.51952122082055,
+       12.901999157085033
+      ],
+      [
+       77.51960288214627,
+       12.901744453020857
+      ],
+      [
+       77.51985966625516,
+       12.901692665289723
+      ],
+      [
+       77.52003478967498,
+       12.901895582203373
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b6014512866fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "EVIDENCE_DECISION",
+    "tieLabel": "T09",
+    "competingZones": [
+     "rnsit-z-east"
+    ],
+    "decision": {
+     "rule": "R1_SINGLE_NEIGHBOUR",
+     "confidence": "HIGH",
+     "evidenceConfidence": "HIGH",
+     "seedSensitive": false,
+     "from": null
+    },
+    "centreInBoundary": false,
+    "insideFraction": 0.169,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 9,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 228.5,
+     "rnsit-z-east": 13.2,
+     "rnsit-z-south": 303.9,
+     "rnsit-z-southwest": 512.7
+    },
+    "networkMarginM": 215.3,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512868fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51840063268799,
+       12.901748683647853
+      ],
+      [
+       77.51831897147599,
+       12.902003385606507
+      ],
+      [
+       77.51806219131683,
+       12.902055170909618
+      ],
+      [
+       77.51788707300632,
+       12.901852254834743
+      ],
+      [
+       77.51796873413697,
+       12.901597553503603
+      ],
+      [
+       77.51822551365947,
+       12.90154576761979
+      ],
+      [
+       77.51840063268799,
+       12.901748683647853
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b6014512868fff",
+    "zoneId": "rnsit-z-west",
+    "basis": "EVIDENCE_DECISION",
+    "tieLabel": "T10",
+    "competingZones": [
+     "rnsit-z-east",
+     "rnsit-z-west"
+    ],
+    "decision": {
+     "rule": "R2_INSTRUMENTS_AGREE",
+     "confidence": "MEDIUM",
+     "evidenceConfidence": "MEDIUM",
+     "seedSensitive": false,
+     "from": null
+    },
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 1,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 37,
+     "rnsit-z-east": 122.4,
+     "rnsit-z-south": 222.6,
+     "rnsit-z-southwest": 282.4
+    },
+    "networkMarginM": 85.4,
+    "flags": [],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512869fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51796873413697,
+       12.901597553503603
+      ],
+      [
+       77.51788707300632,
+       12.901852254834743
+      ],
+      [
+       77.51763029415295,
+       12.901904039821195
+      ],
+      [
+       77.51745517706692,
+       12.901701124057176
+      ],
+      [
+       77.51753683811624,
+       12.901446423353557
+      ],
+      [
+       77.51779361633294,
+       12.901394637786417
+      ],
+      [
+       77.51796873413697,
+       12.901597553503603
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512869fff",
+    "zoneId": "rnsit-z-west",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 134,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 68,
+     "rnsit-z-east": 153.4,
+     "rnsit-z-south": 157.1,
+     "rnsit-z-southwest": 226.8
+    },
+    "networkMarginM": 85.4,
+    "flags": [],
+    "l4ZoneId": "rnsit-z2"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451286afff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51849409101096,
+       12.902206301992226
+      ],
+      [
+       77.51841242966874,
+       12.902461003727861
+      ],
+      [
+       77.51815564887288,
+       12.902512788450288
+      ],
+      [
+       77.51798053005592,
+       12.902309872017755
+      ],
+      [
+       77.51806219131683,
+       12.902055170909618
+      ],
+      [
+       77.51831897147599,
+       12.902003385606507
+      ],
+      [
+       77.51849409101096,
+       12.902206301992226
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b601451286afff",
+    "zoneId": "rnsit-z-west",
+    "basis": "CONNECTIVITY_REPAIR",
+    "tieLabel": "C1",
+    "competingZones": null,
+    "decision": {
+     "rule": "R3_CONNECTIVITY_REPAIR",
+     "confidence": "LOW",
+     "evidenceConfidence": "LOW",
+     "seedSensitive": false,
+     "from": "rnsit-z-east"
+    },
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 7,
+     "rnsit-z-east": 74,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 79.1,
+     "rnsit-z-east": 71.6,
+     "rnsit-z-south": 264.7,
+     "rnsit-z-southwest": 324.5
+    },
+    "networkMarginM": 7.5,
+    "flags": [],
+    "l4ZoneId": "rnsit-z3"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451286bfff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51806219131683,
+       12.902055170909618
+      ],
+      [
+       77.51798053005592,
+       12.902309872017755
+      ],
+      [
+       77.5177237505659,
+       12.902361656423505
+      ],
+      [
+       77.51754863297342,
+       12.902158740301807
+      ],
+      [
+       77.51763029415295,
+       12.901904039821195
+      ],
+      [
+       77.51788707300632,
+       12.901852254834743
+      ],
+      [
+       77.51806219131683,
+       12.902055170909618
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b601451286bfff",
+    "zoneId": "rnsit-z-west",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 151,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 31.9,
+     "rnsit-z-east": 154.7,
+     "rnsit-z-south": 254.8,
+     "rnsit-z-southwest": 254.9
+    },
+    "networkMarginM": 122.8,
+    "flags": [],
+    "l4ZoneId": "rnsit-z2"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451286cfff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51873907467939,
+       12.901442194638229
+      ],
+      [
+       77.51865741351628,
+       12.90169689744739
+      ],
+      [
+       77.51840063268799,
+       12.901748683647853
+      ],
+      [
+       77.51822551365947,
+       12.90154576761979
+      ],
+      [
+       77.51830717474127,
+       12.90129106543815
+      ],
+      [
+       77.51856395493287,
+       12.90123927865701
+      ],
+      [
+       77.51873907467939,
+       12.901442194638229
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b601451286cfff",
+    "zoneId": "rnsit-z-east",
+    "basis": "EVIDENCE_DECISION",
+    "tieLabel": "T11",
+    "competingZones": [
+     "rnsit-z-east"
+    ],
+    "decision": {
+     "rule": "R1_SINGLE_NEIGHBOUR",
+     "confidence": "HIGH",
+     "evidenceConfidence": "HIGH",
+     "seedSensitive": false,
+     "from": null
+    },
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 316.9,
+     "rnsit-z-east": 67.6,
+     "rnsit-z-south": 208.8,
+     "rnsit-z-southwest": 412.4
+    },
+    "networkMarginM": 141.2,
+    "flags": [],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451286dfff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51830717474127,
+       12.90129106543815
+      ],
+      [
+       77.51822551365947,
+       12.90154576761979
+      ],
+      [
+       77.51796873413697,
+       12.901597553503603
+      ],
+      [
+       77.51779361633294,
+       12.901394637786417
+      ],
+      [
+       77.51787527733337,
+       12.901139936232271
+      ],
+      [
+       77.51813205621922,
+       12.901088149767805
+      ],
+      [
+       77.51830717474127,
+       12.90129106543815
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b601451286dfff",
+    "zoneId": "rnsit-z-west",
+    "basis": "EVIDENCE_DECISION",
+    "tieLabel": "T12",
+    "competingZones": [
+     "rnsit-z-south",
+     "rnsit-z-west"
+    ],
+    "decision": {
+     "rule": "R2_INSTRUMENTS_AGREE",
+     "confidence": "HIGH",
+     "evidenceConfidence": "HIGH",
+     "seedSensitive": false,
+     "from": null
+    },
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 29,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 27.8,
+     "rnsit-z-east": 173.3,
+     "rnsit-z-south": 273.5,
+     "rnsit-z-southwest": 333.2
+    },
+    "networkMarginM": 145.5,
+    "flags": [],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b601451286efff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51883253376926,
+       12.901899813786278
+      ],
+      [
+       77.5187508724759,
+       12.902154516372429
+      ],
+      [
+       77.51849409101096,
+       12.902206301992226
+      ],
+      [
+       77.51831897147599,
+       12.902003385606507
+      ],
+      [
+       77.51840063268799,
+       12.901748683647853
+      ],
+      [
+       77.51865741351628,
+       12.90169689744739
+      ],
+      [
+       77.51883253376926,
+       12.901899813786278
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b601451286efff",
+    "zoneId": "rnsit-z-east",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 27,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 160.9,
+     "rnsit-z-east": 67.1,
+     "rnsit-z-south": 347.9,
+     "rnsit-z-southwest": 452.3
+    },
+    "networkMarginM": 93.8,
+    "flags": [],
+    "l4ZoneId": "rnsit-z3"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512875fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.52012825219424,
+       12.90235320416631
+      ],
+      [
+       77.520046590657,
+       12.902607908634923
+      ],
+      [
+       77.51978980527478,
+       12.902659695204788
+      ],
+      [
+       77.51961468206646,
+       12.902456777886686
+      ],
+      [
+       77.51969634352241,
+       12.902202074045526
+      ],
+      [
+       77.51995312826796,
+       12.902150286895022
+      ],
+      [
+       77.52012825219424,
+       12.90235320416631
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512875fff",
+    "zoneId": "rnsit-z-east",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.02,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 240.3,
+     "rnsit-z-east": 39.8,
+     "rnsit-z-south": 320.9,
+     "rnsit-z-southwest": 524.5
+    },
+    "networkMarginM": 200.5,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": "rnsit-z3"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512b20fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51657960029152,
+       12.900686548580271
+      ],
+      [
+       77.51649793953514,
+       12.90094124825177
+      ],
+      [
+       77.516241165236,
+       12.900993032869035
+      ],
+      [
+       77.51606605232992,
+       12.900790118395527
+      ],
+      [
+       77.51614771300493,
+       12.900535419351588
+      ],
+      [
+       77.5164044866674,
+       12.900483634153606
+      ],
+      [
+       77.51657960029152,
+       12.900686548580271
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b6014512b20fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "EVIDENCE_DECISION",
+    "tieLabel": "T13",
+    "competingZones": [
+     "rnsit-z-southwest"
+    ],
+    "decision": {
+     "rule": "R1_SINGLE_NEIGHBOUR",
+     "confidence": "HIGH",
+     "evidenceConfidence": "HIGH",
+     "seedSensitive": false,
+     "from": null
+    },
+    "centreInBoundary": false,
+    "insideFraction": 0.006,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 147.2,
+     "rnsit-z-east": 356.8,
+     "rnsit-z-south": 218.4,
+     "rnsit-z-southwest": 6.6
+    },
+    "networkMarginM": 140.6,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512b24fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5169180359674,
+       12.900380062543693
+      ],
+      [
+       77.51683637525987,
+       12.900634763065693
+      ],
+      [
+       77.51657960029152,
+       12.900686548580271
+      ],
+      [
+       77.5164044866674,
+       12.900483634153606
+      ],
+      [
+       77.51648614729356,
+       12.900228934259186
+      ],
+      [
+       77.51674292162522,
+       12.900177148163861
+      ],
+      [
+       77.5169180359674,
+       12.900380062543693
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512b24fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.968,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 127
+    },
+    "networkM": {
+     "rnsit-z-west": 175.9,
+     "rnsit-z-east": 385.5,
+     "rnsit-z-south": 230.5,
+     "rnsit-z-southwest": 18
+    },
+    "networkMarginM": 157.9,
+    "flags": [],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512b25fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51648614729356,
+       12.900228934259186
+      ],
+      [
+       77.5164044866674,
+       12.900483634153606
+      ],
+      [
+       77.51614771300493,
+       12.900535419351588
+      ],
+      [
+       77.51597260060528,
+       12.900332505235884
+      ],
+      [
+       77.51605426115009,
+       12.900077805969032
+      ],
+      [
+       77.51631103417587,
+       12.900026020190309
+      ],
+      [
+       77.51648614729356,
+       12.900228934259186
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512b25fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "NETWORK",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.274,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 340.2,
+     "rnsit-z-east": 403.4,
+     "rnsit-z-south": 242.5,
+     "rnsit-z-southwest": 160.2
+    },
+    "networkMarginM": 82.3,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": "rnsit-z5"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512b26fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51701149010849,
+       12.900837677803313
+      ],
+      [
+       77.51692982927075,
+       12.901092378102373
+      ],
+      [
+       77.51667305366573,
+       12.901144163036246
+      ],
+      [
+       77.51649793953514,
+       12.90094124825177
+      ],
+      [
+       77.51657960029152,
+       12.900686548580271
+      ],
+      [
+       77.51683637525987,
+       12.900634763065693
+      ],
+      [
+       77.51701149010849,
+       12.900837677803313
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "DECIDED_CELL",
+    "cellId": "8b6014512b26fff",
+    "zoneId": "rnsit-z-southwest",
+    "basis": "EVIDENCE_DECISION",
+    "tieLabel": "T14",
+    "competingZones": [
+     "rnsit-z-southwest",
+     "rnsit-z-west"
+    ],
+    "decision": {
+     "rule": "R2_INSTRUMENTS_AGREE",
+     "confidence": "HIGH",
+     "evidenceConfidence": "HIGH",
+     "seedSensitive": false,
+     "from": null
+    },
+    "centreInBoundary": true,
+    "insideFraction": 0.773,
+    "footprintSamples": {
+     "rnsit-z-west": 0,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 128
+    },
+    "networkM": {
+     "rnsit-z-west": 121.9,
+     "rnsit-z-east": 331.5,
+     "rnsit-z-south": 193.1,
+     "rnsit-z-southwest": 39.2
+    },
+    "networkMarginM": 82.7,
+    "flags": [],
+    "l4ZoneId": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512b30fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5171983995194,
+       12.901752908726973
+      ],
+      [
+       77.51711673842121,
+       12.902007608580073
+      ],
+      [
+       77.51685996154283,
+       12.902059392352504
+      ],
+      [
+       77.51668484639934,
+       12.901856476852556
+      ],
+      [
+       77.51676650741616,
+       12.901601777627004
+      ],
+      [
+       77.51702328365786,
+       12.901549993273843
+      ],
+      [
+       77.5171983995194,
+       12.901752908726973
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512b30fff",
+    "zoneId": "rnsit-z-west",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.379,
+    "footprintSamples": {
+     "rnsit-z-west": 68,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 75.2,
+     "rnsit-z-east": 241.2,
+     "rnsit-z-south": 232.2,
+     "rnsit-z-southwest": 137.5
+    },
+    "networkMarginM": 62.2,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": "rnsit-z2"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512b32fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51729185478919,
+       12.902210524390883
+      ],
+      [
+       77.51721019356079,
+       12.902465224020945
+      ],
+      [
+       77.51695341604574,
+       12.90251700721267
+      ],
+      [
+       77.51677830039579,
+       12.902314091355041
+      ],
+      [
+       77.51685996154283,
+       12.902059392352504
+      ],
+      [
+       77.51711673842121,
+       12.902007608580073
+      ],
+      [
+       77.51729185478919,
+       12.902210524390883
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512b32fff",
+    "zoneId": "rnsit-z-west",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": false,
+    "insideFraction": 0.399,
+    "footprintSamples": {
+     "rnsit-z-west": 64,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 58.2,
+     "rnsit-z-east": 224.1,
+     "rnsit-z-south": 285.8,
+     "rnsit-z-southwest": 191.2
+    },
+    "networkMarginM": 133,
+    "flags": [
+     "BOUNDARY_CELL"
+    ],
+    "l4ZoneId": "rnsit-z2"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512b34fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51753683811624,
+       12.901446423353557
+      ],
+      [
+       77.51745517706692,
+       12.901701124057176
+      ],
+      [
+       77.5171983995194,
+       12.901752908726973
+      ],
+      [
+       77.51702328365786,
+       12.901549993273843
+      ],
+      [
+       77.51710494462583,
+       12.901295293197753
+      ],
+      [
+       77.51736172153669,
+       12.90124350794727
+      ],
+      [
+       77.51753683811624,
+       12.901446423353557
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512b34fff",
+    "zoneId": "rnsit-z-west",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 61,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 27,
+     "rnsit-z-east": 338.4,
+     "rnsit-z-south": 200,
+     "rnsit-z-southwest": 146.7
+    },
+    "networkMarginM": 119.8,
+    "flags": [],
+    "l4ZoneId": "rnsit-z2"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512b35fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51710494462583,
+       12.901295293197753
+      ],
+      [
+       77.51702328365786,
+       12.901549993273843
+      ],
+      [
+       77.51676650741616,
+       12.901601777627004
+      ],
+      [
+       77.51659139277913,
+       12.901398862484783
+      ],
+      [
+       77.51667305366573,
+       12.901144163036246
+      ],
+      [
+       77.51692982927075,
+       12.901092378102373
+      ],
+      [
+       77.51710494462583,
+       12.901295293197753
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512b35fff",
+    "zoneId": "rnsit-z-west",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 0.569,
+    "footprintSamples": {
+     "rnsit-z-west": 93,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 112.8,
+     "rnsit-z-east": 293.9,
+     "rnsit-z-south": 184.1,
+     "rnsit-z-southwest": 89.4
+    },
+    "networkMarginM": 23.4,
+    "flags": [
+     "INSTRUMENTS_DISAGREE"
+    ],
+    "l4ZoneId": "rnsit-z2"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "cell:8b6014512b36fff",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51763029415295,
+       12.901904039821195
+      ],
+      [
+       77.51754863297342,
+       12.902158740301807
+      ],
+      [
+       77.51729185478919,
+       12.902210524390883
+      ],
+      [
+       77.51711673842121,
+       12.902007608580073
+      ],
+      [
+       77.5171983995194,
+       12.901752908726973
+      ],
+      [
+       77.51745517706692,
+       12.901701124057176
+      ],
+      [
+       77.51763029415295,
+       12.901904039821195
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "PROPOSED_CELL",
+    "cellId": "8b6014512b36fff",
+    "zoneId": "rnsit-z-west",
+    "basis": "FOOTPRINT",
+    "tieLabel": null,
+    "competingZones": null,
+    "decision": null,
+    "centreInBoundary": true,
+    "insideFraction": 1,
+    "footprintSamples": {
+     "rnsit-z-west": 203,
+     "rnsit-z-east": 0,
+     "rnsit-z-south": 0,
+     "rnsit-z-southwest": 0
+    },
+    "networkM": {
+     "rnsit-z-west": 15.7,
+     "rnsit-z-east": 181.7,
+     "rnsit-z-south": 281.9,
+     "rnsit-z-southwest": 197.4
+    },
+    "networkMarginM": 166,
+    "flags": [],
+    "l4ZoneId": "rnsit-z2"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/151617521",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5181465,
+       12.9021655
+      ],
+      [
+       77.5178649,
+       12.9009027
+      ],
+      [
+       77.5187055,
+       12.9007246
+      ],
+      [
+       77.5188942,
+       12.9015709
+      ],
+      [
+       77.5189871,
+       12.9019874
+      ],
+      [
+       77.5181465,
+       12.9021655
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/151617521",
+    "label": "Sports ground (unnamed; sport=cricket;football)",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": null,
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638927",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5190099,
+       12.9021416
+      ],
+      [
+       77.5189992,
+       12.9020931
+      ],
+      [
+       77.5190412,
+       12.9020843
+      ],
+      [
+       77.5190519,
+       12.9021328
+      ],
+      [
+       77.5190099,
+       12.9021416
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638927",
+    "label": "Canara Bank",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638928",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5192591,
+       12.9023347
+      ],
+      [
+       77.5192457,
+       12.9022802
+      ],
+      [
+       77.5192339,
+       12.9022317
+      ],
+      [
+       77.519574,
+       12.9021528
+      ],
+      [
+       77.5195934,
+       12.902232
+      ],
+      [
+       77.5193186,
+       12.9022958
+      ],
+      [
+       77.5193244,
+       12.9023195
+      ],
+      [
+       77.5192591,
+       12.9023347
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638928",
+    "label": "Canteen",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638929",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.517128,
+       12.9022593
+      ],
+      [
+       77.5170904,
+       12.9020832
+      ],
+      [
+       77.5178711,
+       12.9019246
+      ],
+      [
+       77.517893,
+       12.9020271
+      ],
+      [
+       77.5179087,
+       12.9021007
+      ],
+      [
+       77.5175252,
+       12.902181
+      ],
+      [
+       77.517128,
+       12.9022593
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638929",
+    "label": "CSE, ISE & CSDS Department",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638932",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5175504,
+       12.9024564
+      ],
+      [
+       77.5175485,
+       12.9022717
+      ],
+      [
+       77.5180474,
+       12.9022667
+      ],
+      [
+       77.5180484,
+       12.9023674
+      ],
+      [
+       77.5180493,
+       12.9024513
+      ],
+      [
+       77.5177366,
+       12.9024545
+      ],
+      [
+       77.5175504,
+       12.9024564
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638932",
+    "label": "ECE Department",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638933",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5180048,
+       12.9020463
+      ],
+      [
+       77.5179905,
+       12.9020417
+      ],
+      [
+       77.5179809,
+       12.9020254
+      ],
+      [
+       77.5179785,
+       12.9020044
+      ],
+      [
+       77.5179817,
+       12.9019874
+      ],
+      [
+       77.5179937,
+       12.9019788
+      ],
+      [
+       77.5180048,
+       12.9019812
+      ],
+      [
+       77.5180159,
+       12.9019936
+      ],
+      [
+       77.5180215,
+       12.9020099
+      ],
+      [
+       77.5180207,
+       12.9020269
+      ],
+      [
+       77.5180136,
+       12.9020378
+      ],
+      [
+       77.5180048,
+       12.9020463
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638933",
+    "label": "Fountain",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": null,
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638934",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5171261,
+       12.9019407
+      ],
+      [
+       77.5168386,
+       12.901238
+      ],
+      [
+       77.5169915,
+       12.9011786
+      ],
+      [
+       77.517279,
+       12.9018812
+      ],
+      [
+       77.5171261,
+       12.9019407
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638934",
+    "label": "Hostel",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638935",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5171049,
+       12.9024917
+      ],
+      [
+       77.5171104,
+       12.9023557
+      ],
+      [
+       77.5173021,
+       12.902363
+      ],
+      [
+       77.5174863,
+       12.9023701
+      ],
+      [
+       77.5174808,
+       12.9025061
+      ],
+      [
+       77.5171049,
+       12.9024917
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638935",
+    "label": "Hostel",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638936",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5178118,
+       12.9017577
+      ],
+      [
+       77.5176679,
+       12.9010591
+      ],
+      [
+       77.5178075,
+       12.9010318
+      ],
+      [
+       77.5178568,
+       12.901271
+      ],
+      [
+       77.5179217,
+       12.9015862
+      ],
+      [
+       77.5179514,
+       12.9017304
+      ],
+      [
+       77.5178118,
+       12.9017577
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638936",
+    "label": "Hostel",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638937",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5181508,
+       12.9023649
+      ],
+      [
+       77.5181277,
+       12.9022574
+      ],
+      [
+       77.5189409,
+       12.9020917
+      ],
+      [
+       77.5189628,
+       12.9021936
+      ],
+      [
+       77.5186421,
+       12.9022589
+      ],
+      [
+       77.51865,
+       12.9023278
+      ],
+      [
+       77.518558,
+       12.9023538
+      ],
+      [
+       77.5185432,
+       12.902285
+      ],
+      [
+       77.5181508,
+       12.9023649
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638937",
+    "label": "Main Building",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638938",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5184408,
+       12.8999116
+      ],
+      [
+       77.5184852,
+       12.9000492
+      ],
+      [
+       77.5182258,
+       12.9001288
+      ],
+      [
+       77.5181813,
+       12.8999911
+      ],
+      [
+       77.5184408,
+       12.8999116
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638938",
+    "label": "Shiva Temple",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-south",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638939",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5183592,
+       12.9025234
+      ],
+      [
+       77.5184299,
+       12.9025149
+      ],
+      [
+       77.5184347,
+       12.9025524
+      ],
+      [
+       77.518364,
+       12.9025609
+      ],
+      [
+       77.5183592,
+       12.9025234
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638939",
+    "label": "toilets",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638940",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.518494,
+       12.9021654
+      ],
+      [
+       77.5184813,
+       12.9021072
+      ],
+      [
+       77.5186101,
+       12.9020806
+      ],
+      [
+       77.5186228,
+       12.9021388
+      ],
+      [
+       77.518494,
+       12.9021654
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638940",
+    "label": "theatre",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638941",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5191789,
+       12.9018735
+      ],
+      [
+       77.5190799,
+       12.9016084
+      ],
+      [
+       77.5189612,
+       12.9012904
+      ],
+      [
+       77.5192475,
+       12.9011888
+      ],
+      [
+       77.5194652,
+       12.901772
+      ],
+      [
+       77.5191789,
+       12.9018735
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638941",
+    "label": "RNSIT Mec and EEE Department",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638942",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5187847,
+       12.9005972
+      ],
+      [
+       77.5187114,
+       12.9003842
+      ],
+      [
+       77.5186079,
+       12.9000832
+      ],
+      [
+       77.5188221,
+       12.9000131
+      ],
+      [
+       77.518999,
+       12.9005272
+      ],
+      [
+       77.5187847,
+       12.9005972
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638942",
+    "label": "building (unnamed)",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": null,
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638943",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5190138,
+       12.9011913
+      ],
+      [
+       77.5189417,
+       12.9009884
+      ],
+      [
+       77.5188333,
+       12.9006838
+      ],
+      [
+       77.5190397,
+       12.9006141
+      ],
+      [
+       77.5192202,
+       12.9011215
+      ],
+      [
+       77.5190138,
+       12.9011913
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638943",
+    "label": "RNSIT MBA block",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638954",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5195065,
+       12.9021246
+      ],
+      [
+       77.5194338,
+       12.9018477
+      ],
+      [
+       77.5194716,
+       12.9018383
+      ],
+      [
+       77.5195443,
+       12.9021152
+      ],
+      [
+       77.5195065,
+       12.9021246
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638954",
+    "label": "parking",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/204638955",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5195704,
+       12.9021083
+      ],
+      [
+       77.5194872,
+       12.9018285
+      ],
+      [
+       77.5195228,
+       12.9018185
+      ],
+      [
+       77.519606,
+       12.9020983
+      ],
+      [
+       77.5195704,
+       12.9021083
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/204638955",
+    "label": "parking",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/347078123",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51965,
+       12.9022798
+      ],
+      [
+       77.5196149,
+       12.9021746
+      ],
+      [
+       77.5196723,
+       12.9021564
+      ],
+      [
+       77.5197074,
+       12.9022616
+      ],
+      [
+       77.51965,
+       12.9022798
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/347078123",
+    "label": "building (unnamed)",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": null,
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/348134468",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5166633,
+       12.9006363
+      ],
+      [
+       77.5165483,
+       12.9003452
+      ],
+      [
+       77.5167231,
+       12.9002796
+      ],
+      [
+       77.5168381,
+       12.9005708
+      ],
+      [
+       77.5166633,
+       12.9006363
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/348134468",
+    "label": "building (unnamed)",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": null,
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/348135401",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5168263,
+       12.9010427
+      ],
+      [
+       77.5166713,
+       12.9006597
+      ],
+      [
+       77.5168413,
+       12.9005944
+      ],
+      [
+       77.5169962,
+       12.9009774
+      ],
+      [
+       77.5168263,
+       12.9010427
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/348135401",
+    "label": "building (unnamed)",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": null,
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/1224937858",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5183405,
+       12.9009952
+      ],
+      [
+       77.5182453,
+       12.9010227
+      ],
+      [
+       77.5181796,
+       12.9009534
+      ],
+      [
+       77.5182091,
+       12.900858
+      ],
+      [
+       77.5183003,
+       12.9008344
+      ],
+      [
+       77.5183647,
+       12.900905
+      ],
+      [
+       77.5183405,
+       12.9009952
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/1224937858",
+    "label": "RN Shetty Statue",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-south",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/1224937859",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5179364,
+       12.9003483
+      ],
+      [
+       77.5180261,
+       12.9003181
+      ],
+      [
+       77.5181867,
+       12.9003063
+      ],
+      [
+       77.5182558,
+       12.9004251
+      ],
+      [
+       77.518268,
+       12.9005282
+      ],
+      [
+       77.5181257,
+       12.9005995
+      ],
+      [
+       77.5180301,
+       12.9006287
+      ],
+      [
+       77.5179364,
+       12.9003483
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/1224937859",
+    "label": "RNSIT auditorium",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-south",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/1224941276",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5168263,
+       12.9010427
+      ],
+      [
+       77.5166633,
+       12.9006363
+      ],
+      [
+       77.5165483,
+       12.9003452
+      ],
+      [
+       77.5167231,
+       12.9002796
+      ],
+      [
+       77.5168381,
+       12.9005708
+      ],
+      [
+       77.5169962,
+       12.9009774
+      ],
+      [
+       77.5168263,
+       12.9010427
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/1224941276",
+    "label": "RNS International School",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-southwest",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/1224941277",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.519212,
+       12.9019081
+      ],
+      [
+       77.5193492,
+       12.901874
+      ],
+      [
+       77.519412,
+       12.9021139
+      ],
+      [
+       77.5192749,
+       12.9021481
+      ],
+      [
+       77.519212,
+       12.9019081
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/1224941277",
+    "label": "Basketball Court",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/1363986210",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.517124,
+       12.9013312
+      ],
+      [
+       77.5170508,
+       12.9011508
+      ],
+      [
+       77.5174646,
+       12.9009913
+      ],
+      [
+       77.5175378,
+       12.9011718
+      ],
+      [
+       77.517124,
+       12.9013312
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/1363986210",
+    "label": "building (unnamed)",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": null,
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/1363986211",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5172306,
+       12.9016093
+      ],
+      [
+       77.5171663,
+       12.9014506
+      ],
+      [
+       77.5175314,
+       12.90131
+      ],
+      [
+       77.5175957,
+       12.9014686
+      ],
+      [
+       77.5172306,
+       12.9016093
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/1363986211",
+    "label": "building (unnamed)",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": null,
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/1486312654",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5185252,
+       12.9000252
+      ],
+      [
+       77.5184624,
+       12.8998361
+      ],
+      [
+       77.518456,
+       12.8998167
+      ],
+      [
+       77.5187778,
+       12.8997509
+      ],
+      [
+       77.5188573,
+       12.8999465
+      ],
+      [
+       77.5185252,
+       12.9000252
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/1486312654",
+    "label": "motorcycle_parking",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-south",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/1486312655",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.5176216,
+       12.9007541
+      ],
+      [
+       77.5175201,
+       12.9004882
+      ],
+      [
+       77.5179364,
+       12.9003483
+      ],
+      [
+       77.5180301,
+       12.9006287
+      ],
+      [
+       77.5176216,
+       12.9007541
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/1486312655",
+    "label": "Canteen",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-south",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "way/1486312656",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.51733,
+       12.9019164
+      ],
+      [
+       77.5172582,
+       12.90175
+      ],
+      [
+       77.5175888,
+       12.901598
+      ],
+      [
+       77.517681,
+       12.9017777
+      ],
+      [
+       77.51733,
+       12.9019164
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "way/1486312656",
+    "label": "RNSIT Civil and AIML Block",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "node/1644443078",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.5183793,
+     12.9017846
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "node/1644443078",
+    "label": "RNS Institute of Technology",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": null,
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "node/2146315474",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.5185188,
+     12.9022871
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "node/2146315474",
+    "label": "Canara Bank",
+    "sourceKind": "OSM",
+    "verification": "OSM only, not site-checked",
+    "memberOfProposedZone": null,
+    "ownershipNote": "visual landmark; cells are owned by the zone table, not by this outline"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "supplemental:rnsit-main-gate",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.519241,
+     12.902682
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "supplemental:rnsit-main-gate",
+    "label": "RNSIT Main Gate Entrance",
+    "sourceKind": "USER_SUPPLIED_POINT",
+    "verification": "UNVERIFIED",
+    "insideBoundary": false,
+    "memberOfProposedZone": null,
+    "ownershipNote": "unverified point; not a seed; owns no cell"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "supplemental:rnsit-food-court",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.518043,
+     12.900817
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "supplemental:rnsit-food-court",
+    "label": "RNSIT Food Court",
+    "sourceKind": "USER_SUPPLIED_POINT",
+    "verification": "UNVERIFIED",
+    "insideBoundary": true,
+    "memberOfProposedZone": null,
+    "ownershipNote": "unverified point; not a seed; owns no cell"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "supplemental:rnsit-playground-2",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.516086,
+     12.899483
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "supplemental:rnsit-playground-2",
+    "label": "RNSIT Playground 2",
+    "sourceKind": "USER_SUPPLIED_POINT",
+    "verification": "UNVERIFIED",
+    "insideBoundary": true,
+    "memberOfProposedZone": null,
+    "ownershipNote": "unverified point; not a seed; owns no cell"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "supplemental:rnsit-playground-1",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.517158,
+     12.899442
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "supplemental:rnsit-playground-1",
+    "label": "RNSIT Playground 1",
+    "sourceKind": "USER_SUPPLIED_POINT",
+    "verification": "UNVERIFIED",
+    "insideBoundary": false,
+    "memberOfProposedZone": null,
+    "ownershipNote": "unverified point; not a seed; owns no cell"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "supplemental:rnsit-parking-lot",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.518158,
+     12.89975
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "supplemental:rnsit-parking-lot",
+    "label": "RNSIT Parking Lot",
+    "sourceKind": "USER_SUPPLIED_POINT",
+    "verification": "UNVERIFIED",
+    "insideBoundary": false,
+    "memberOfProposedZone": null,
+    "ownershipNote": "unverified point; not a seed; owns no cell"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "supplemental:rnsit-pre-university-college",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.518715,
+     12.900411
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "supplemental:rnsit-pre-university-college",
+    "label": "RNSIT Pre-University College",
+    "sourceKind": "USER_SUPPLIED_POINT",
+    "verification": "UNVERIFIED",
+    "insideBoundary": true,
+    "memberOfProposedZone": null,
+    "ownershipNote": "unverified point; not a seed; owns no cell"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "supplemental:rnsit-innovation-center",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.517603,
+     12.900729
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "supplemental:rnsit-innovation-center",
+    "label": "Innovation Center",
+    "sourceKind": "USER_SUPPLIED_POINT",
+    "verification": "UNVERIFIED",
+    "insideBoundary": true,
+    "memberOfProposedZone": null,
+    "ownershipNote": "unverified point; not a seed; owns no cell"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "supplemental:rnsit-canara-bank",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.518589,
+     12.902348
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "supplemental:rnsit-canara-bank",
+    "label": "CANARA BANK",
+    "sourceKind": "USER_SUPPLIED_POINT",
+    "verification": "UNVERIFIED",
+    "insideBoundary": true,
+    "memberOfProposedZone": null,
+    "ownershipNote": "unverified point; not a seed; owns no cell"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "supplemental:rns-first-grade-college",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.517575,
+     12.901151
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "supplemental:rns-first-grade-college",
+    "label": "RNS FIRST GRADE COLLEGE",
+    "sourceKind": "USER_SUPPLIED_POINT",
+    "verification": "UNVERIFIED",
+    "insideBoundary": true,
+    "memberOfProposedZone": null,
+    "ownershipNote": "unverified point; not a seed; owns no cell"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "supplemental:rns-evening-college",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.517575,
+     12.901151
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "supplemental:rns-evening-college",
+    "label": "RNS Evening College",
+    "sourceKind": "USER_SUPPLIED_POINT",
+    "verification": "UNVERIFIED",
+    "insideBoundary": true,
+    "memberOfProposedZone": null,
+    "ownershipNote": "unverified point; not a seed; owns no cell"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "supplemental:rnsit-cyber-security-department",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.517667,
+     12.901389
+    ]
+   },
+   "properties": {
+    "role": "LANDMARK",
+    "source": "supplemental:rnsit-cyber-security-department",
+    "label": "RNSIT Cyber Security Department",
+    "sourceKind": "USER_SUPPLIED_POINT",
+    "verification": "UNVERIFIED",
+    "insideBoundary": true,
+    "memberOfProposedZone": null,
+    "ownershipNote": "unverified point; not a seed; owns no cell"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/1224941276@12.9003252,77.5165087",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.5165086534731,
+     12.900325152787481
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/1224941276@12.9003252,77.5165087",
+    "label": "RNS International School access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-southwest",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/1224941276@12.9005095,77.5165540",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51655399423724,
+     12.900509525352238
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/1224941276@12.9005095,77.5165540",
+    "label": "RNS International School access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-southwest",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/1224941276@12.9006557,77.5166098",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51660975222867,
+     12.900655706665296
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/1224941276@12.9006557,77.5166098",
+    "label": "RNS International School access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-southwest",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/1486312656@12.9015559,77.5175710",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51757098324876,
+     12.901555927301535
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/1486312656@12.9015559,77.5175710",
+    "label": "RNSIT Civil and AIML Block access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/1486312656@12.9016238,77.5174022",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51740224980547,
+     12.901623819556233
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/1486312656@12.9016238,77.5174022",
+    "label": "RNSIT Civil and AIML Block access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/1486312656@12.9017572,77.5172387",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51723865612439,
+     12.901757231854873
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/1486312656@12.9017572,77.5172387",
+    "label": "RNSIT Civil and AIML Block access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/204638929@12.9019038,77.5178665",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51786653930475,
+     12.901903775654269
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/204638929@12.9019038,77.5178665",
+    "label": "CSE, ISE & CSDS Department access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/204638929@12.9019849,77.5174766",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51747659306234,
+     12.901984919242112
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/204638929@12.9019849,77.5174766",
+    "label": "CSE, ISE & CSDS Department access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/204638929@12.9022081,77.5175153",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.5175153,
+     12.9022081
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/204638929@12.9022081,77.5175153",
+    "label": "CSE, ISE & CSDS Department access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/204638932@12.9022725,77.5175171",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51751711226768,
+     12.902272538733262
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/204638932@12.9022725,77.5175171",
+    "label": "ECE Department access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/204638932@12.9024572,77.5175223",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51752230427567,
+     12.902457150764135
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/204638932@12.9024572,77.5175223",
+    "label": "ECE Department access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/204638932@12.9024973,77.5177348",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51773484320087,
+     12.90249726154037
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/204638932@12.9024973,77.5177348",
+    "label": "ECE Department access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-west",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/204638941@12.9012163,77.5190952",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51909519234962,
+     12.901216261988516
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/204638941@12.9012163,77.5190952",
+    "label": "RNSIT Mec and EEE Department access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/204638941@12.9012693,77.5189529",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51895292236534,
+     12.90126930469214
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/204638941@12.9012693,77.5189529",
+    "label": "RNSIT Mec and EEE Department access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/204638941@12.9017654,77.5194880",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51948795643862,
+     12.901765424934457
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/204638941@12.9017654,77.5194880",
+    "label": "RNSIT Mec and EEE Department access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/204638943@12.9006048,77.5190657",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51906569280129,
+     12.900604810733144
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/204638943@12.9006048,77.5190657",
+    "label": "RNSIT MBA block access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/204638943@12.9008569,77.5191605",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.5191605031256,
+     12.900856880993693
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/204638943@12.9008569,77.5191605",
+    "label": "RNSIT MBA block access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "access:RNSIT:way/204638943@12.9011088,77.5192554",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.51925543127192,
+     12.901108817331814
+    ]
+   },
+   "properties": {
+    "role": "VERIFIED_ACCESS_POINT",
+    "source": "access:RNSIT:way/204638943@12.9011088,77.5192554",
+    "label": "RNSIT MBA block access",
+    "sourceKind": "ACCESS_REGISTER",
+    "verification": "verified (OWNER_SITE_CHECK)",
+    "memberOfProposedZone": "rnsit-z-east",
+    "ownershipNote": "network seed of its building's zone"
+   }
+  }
+ ]
+}
